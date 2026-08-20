@@ -88,8 +88,86 @@ function makeComment(overrides = {}) {
   };
 }
 
-function makeManager({ reviewId = 'rev-1', chatPanel = { open: vi.fn() }, sources = ['github'] } = {}) {
-  return new ExternalCommentManager({ reviewId, chatPanel, sources });
+/**
+ * Mirror FileCommentManager.createFileCommentsZone: a per-file zone with an
+ * inner container, inserted at the top of the file wrapper. Both the
+ * file-level and the anchor-trust suites render into it.
+ */
+function addZone(file = 'src/app.js') {
+  const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
+  const zone = document.createElement('div');
+  zone.className = 'file-comments-zone';
+  zone.dataset.fileName = file;
+  const container = document.createElement('div');
+  container.className = 'file-comments-container';
+  zone.appendChild(container);
+  wrapper.insertBefore(zone, wrapper.firstChild);
+  return { zone, container };
+}
+
+/** A GENUINE file-level comment (GitHub subject_type='file') — no line anchor. */
+function fileLevelComment(overrides = {}) {
+  return makeComment({
+    is_file_level: 1,
+    line_start: null,
+    line_end: null,
+    diff_position: null,
+    original_line_start: null,
+    original_line_end: null,
+    ...overrides,
+  });
+}
+
+/**
+ * @param {Object} [options]
+ * @param {boolean} [options.trustPreciseAnchors] - omit for the production
+ *   default (true). See the ANCHOR TRUST section of the module header.
+ * @param {number|null} [options.anchorPRNumber] - named in the provenance note.
+ * @param {string|null} [options.anchorCommitSha] - the commit the rendered diff
+ *   IS. Omit (or null) to leave the per-comment gate disarmed, as in PR mode.
+ * @param {boolean} [options.trustLeftAnchors] - omit for the production
+ *   default (true), i.e. PR mode, where the rendered diff's left side IS the
+ *   PR's base commit.
+ */
+function makeManager({
+  reviewId = 'rev-1',
+  chatPanel = { open: vi.fn() },
+  sources = ['github'],
+  trustPreciseAnchors,
+  anchorPRNumber,
+  anchorCommitSha,
+  trustLeftAnchors,
+} = {}) {
+  return new ExternalCommentManager({
+    reviewId,
+    chatPanel,
+    sources,
+    trustPreciseAnchors,
+    anchorPRNumber,
+    anchorCommitSha,
+    trustLeftAnchors,
+  });
+}
+
+/** A comment on a line the PR REMOVED — numbered against the PR's BASE. */
+function leftComment(overrides = {}) {
+  return makeComment({ side: 'LEFT', ...overrides });
+}
+
+/**
+ * The head-side provenance sentence, verbatim. Pinned as a constant so a
+ * reworded base-side note can never quietly rewrite the head-side one.
+ */
+const HEAD_NOTE = 'From PR #42 — these comments were written against a different commit '
+  + 'than the code shown here, so this thread appears at file level rather than on its '
+  + 'original line.';
+
+/** Externally-settleable promise, for pinning concurrency orderings. */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 describe('ExternalCommentManager.render', async () => {
@@ -562,6 +640,9 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
     expect(order).toEqual(['sync:start', 'sync:end', 'get']);
     expect(r1.syncResult).toEqual({ count: 1, lostAnchors: 0, deleted: 0, syncedAt: 'now' });
     expect(r1.syncError).toBeNull();
+    // Ownership released once, by the promise that held it.
+    expect(mgr._inflight).toBeNull();
+    expect(mgr._inflightIsSync).toBe(false);
   });
 
   it('syncAndRender: sync failure does not block render — syncError surfaced, render still happens', async () => {
@@ -581,6 +662,145 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
     expect(result.syncResult).toBeNull();
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // Asymmetric in-flight rules.
+  //
+  // A GET-only load may JOIN a sync (the sync's GET is strictly better).
+  // The reverse must not: a sync that joined a GET-only load would return
+  // that load's result — no POST, no syncResult, no syncError — so the
+  // mirror is never synced and the caller fires no toast. It CHAINS
+  // instead. `_inflightIsSync` is what tells the two apart.
+  // ---------------------------------------------------------------------
+
+  const SYNC_BODY = { count: 1, lostAnchors: 0, deleted: 0, syncedAt: 'now' };
+
+  it('syncAndRender during a GET-only load CHAINS: the POST still fires exactly once', async () => {
+    // Regression: it used to return the in-flight GET-only promise, silently
+    // skipping the sync — the refresh button appeared to work and did not.
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const threads = [makeComment({ id: 1 })];
+    const order = [];
+    const getGate = deferred();
+
+    global.fetch = vi.fn(() => {
+      order.push('get');
+      return getGate.promise.then(() => ({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ threads }),
+      }));
+    });
+    const syncFn = vi.fn(async () => { order.push('sync'); return SYNC_BODY; });
+
+    const mgr = makeManager({ reviewId: 'r-1' });
+    const loadP = mgr.loadAndRender();
+    const syncP = mgr.syncAndRender({ syncFn });
+
+    // Distinct promises, and the sync now owns `_inflight` so any later
+    // GET-only caller joins the full sync+load rather than the stale load.
+    expect(syncP).not.toBe(loadP);
+    expect(mgr._inflight).toBe(syncP);
+    expect(mgr._inflightIsSync).toBe(true);
+
+    getGate.resolve();
+    const [, syncResult] = await Promise.all([loadP, syncP]);
+
+    expect(syncFn).toHaveBeenCalledTimes(1);
+    expect(syncResult.syncResult).toEqual(SYNC_BODY);
+    expect(syncResult.syncError).toBeNull();
+    // The sync waited for the pending load before POSTing, then did its own GET.
+    expect(order).toEqual(['get', 'sync', 'get']);
+    expect(mgr._inflight).toBeNull();
+    expect(mgr._inflightIsSync).toBe(false);
+  });
+
+  it('syncAndRender during another syncAndRender JOINS: one POST total', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const threads = [makeComment({ id: 1 })];
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ threads }),
+    });
+    const syncGate = deferred();
+    const syncFn = vi.fn(async () => { await syncGate.promise; return SYNC_BODY; });
+
+    const mgr = makeManager({ reviewId: 'r-1' });
+    const p1 = mgr.syncAndRender({ syncFn });
+    const p2 = mgr.syncAndRender({ syncFn });
+
+    expect(p2).toBe(p1);
+
+    syncGate.resolve();
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1).toBe(r2);
+    expect(syncFn).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mgr._inflight).toBeNull();
+    expect(mgr._inflightIsSync).toBe(false);
+  });
+
+  it('a REJECTING in-flight load does not stop the chained sync', async () => {
+    // The pending load's failure belongs to its own caller. Swallowing it
+    // here is what keeps a refresh from being cancelled by an unrelated
+    // rebuild that happened to be in flight.
+    const loadGate = deferred();
+    const mgr = makeManager({ reviewId: 'r-1' });
+    const fetchAndRender = vi.spyOn(mgr, '_fetchAllAndRender')
+      .mockImplementationOnce(() => loadGate.promise)
+      .mockImplementation(async () => ({ errors: [] }));
+    const syncFn = vi.fn(async () => SYNC_BODY);
+
+    const loadP = mgr.loadAndRender();
+    const loadSettled = loadP.catch((err) => err);
+    const syncP = mgr.syncAndRender({ syncFn });
+
+    loadGate.reject(new Error('load boom'));
+
+    expect(await loadSettled).toMatchObject({ message: 'load boom' });
+    const syncResult = await syncP;
+
+    expect(syncFn).toHaveBeenCalledTimes(1);
+    expect(syncResult.syncResult).toEqual(SYNC_BODY);
+    expect(fetchAndRender).toHaveBeenCalledTimes(2);
+    expect(mgr._inflight).toBeNull();
+    expect(mgr._inflightIsSync).toBe(false);
+  });
+
+  it('the losing load does not clear `_inflight` out from under the sync that chained onto it', async () => {
+    // Ownership hazard: both `.finally()` handlers clear `_inflight`, so
+    // each must first check the promise is still its own. Otherwise the
+    // load's completion would blank the sync's slot and a third caller
+    // would start a duplicate round-trip.
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const threads = [makeComment({ id: 1 })];
+    const getGate = deferred();
+    global.fetch = vi.fn(() => getGate.promise.then(() => ({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ threads }),
+    })));
+    const syncGate = deferred();
+    const syncFn = vi.fn(async () => { await syncGate.promise; return SYNC_BODY; });
+
+    const mgr = makeManager({ reviewId: 'r-1' });
+    const loadP = mgr.loadAndRender();
+    const syncP = mgr.syncAndRender({ syncFn });
+
+    // Let the first load settle while the sync is still working.
+    getGate.resolve();
+    await loadP;
+    expect(mgr._inflight).toBe(syncP);
+
+    // A GET-only caller arriving now must join the sync, not start a race.
+    const joiner = mgr.loadAndRender();
+    expect(joiner).toBe(syncP);
+
+    syncGate.resolve();
+    await Promise.all([syncP, joiner]);
+
+    expect(syncFn).toHaveBeenCalledTimes(1);
+    expect(mgr._inflight).toBeNull();
   });
 });
 
@@ -947,32 +1167,6 @@ describe('ExternalCommentManager file-level threads', async () => {
     delete window.prManager;
     vi.restoreAllMocks();
   });
-
-  // Mirror FileCommentManager.createFileCommentsZone: a per-file zone with an
-  // inner container, inserted at the top of the file wrapper.
-  function addZone(file = 'src/app.js') {
-    const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-    const zone = document.createElement('div');
-    zone.className = 'file-comments-zone';
-    zone.dataset.fileName = file;
-    const container = document.createElement('div');
-    container.className = 'file-comments-container';
-    zone.appendChild(container);
-    wrapper.insertBefore(zone, wrapper.firstChild);
-    return { zone, container };
-  }
-
-  function fileLevelComment(overrides = {}) {
-    return makeComment({
-      is_file_level: 1,
-      line_start: null,
-      line_end: null,
-      diff_position: null,
-      original_line_start: null,
-      original_line_end: null,
-      ...overrides,
-    });
-  }
 
   it('renders a file-level thread into the zone, not as a diff-line row', async () => {
     buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
@@ -1367,6 +1561,676 @@ describe('ExternalCommentManager._resolveAnchor fallback (forward-compat)', asyn
     const mgr = makeManager();
     const a = mgr._resolveAnchor({ file: 'a.js', is_file_level: true });
     expect(a).toEqual({ file: 'a.js', fileLevel: true });
+  });
+});
+
+// =======================================================================
+// ANCHOR TRUST (local mode)
+//
+// A comment's (file, line, side) was resolved against the PR head commit.
+// In PR mode the rendered diff IS that commit. In local mode it is the
+// working tree against a base, so the same line number can point at
+// different content — and `_findDiffLineRow` matches on the number alone,
+// which would anchor confidently to the wrong line. When the caller reports
+// `trustPreciseAnchors: false`, every LINE thread degrades into the file
+// zone carrying a provenance note; genuine file-level threads are untouched
+// because they never had a line anchor to lose.
+//
+// See plans/bridge-local-and-pr-modes.md decision 8.
+// =======================================================================
+describe('ExternalCommentManager anchor trust', async () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  it('trusted (default): a line thread anchors to its diff row with no provenance note', async () => {
+    const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const target = rowsByKey.get('src/app.js:10:RIGHT');
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager({ anchorPRNumber: 42 });
+    expect(mgr.trustPreciseAnchors).toBe(true);
+    const comment = makeComment({ id: 11, body: 'precise' });
+    expect(mgr._resolveAnchor(comment)).toEqual({ file: 'src/app.js', line: 10, side: 'RIGHT' });
+
+    mgr.threadsBySource.set('github', [comment]);
+    await mgr.render();
+
+    const rows = document.querySelectorAll('.external-comment-row');
+    expect(rows.length).toBe(1);
+    expect(rows[0].tagName).toBe('TR');
+    expect(target.nextSibling).toBe(rows[0]);
+    // Nothing degraded, nothing in the file zone, no provenance note.
+    expect(container.querySelector('.external-comment-row')).toBeNull();
+    expect(document.querySelector('.external-comment-provenance')).toBeNull();
+  });
+
+  it('untrusted: the same line thread degrades into the file zone with a provenance note', async () => {
+    const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const target = rowsByKey.get('src/app.js:10:RIGHT');
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager({ trustPreciseAnchors: false, anchorPRNumber: 42 });
+    const comment = makeComment({ id: 11, body: 'approximate' });
+    expect(mgr._resolveAnchor(comment)).toEqual({
+      file: 'src/app.js',
+      fileLevel: true,
+      degraded: true,
+    });
+
+    mgr.threadsBySource.set('github', [comment]);
+    await mgr.render();
+
+    const card = container.querySelector('.external-comment-row');
+    expect(card).not.toBeNull();
+    // Degraded, NOT a genuine file-level comment — the classes differ so CSS
+    // and the reviewer can tell the two apart.
+    expect(card.classList.contains('external-comment-row--anchor-degraded')).toBe(true);
+    expect(card.classList.contains('external-comment-row--file-level')).toBe(false);
+    expect(card.dataset.threadId).toBe('11');
+    // The line it *claimed* must not have gained a row.
+    expect(target.nextSibling).toBeNull();
+
+    const note = card.querySelector('.external-comment-provenance');
+    expect(note).not.toBeNull();
+    expect(note.textContent).toContain('PR #42');
+    expect(note.textContent).toContain('file level');
+  });
+
+  it('untrusted: a GENUINE file-level thread keeps --file-level and gets NO note', async () => {
+    // It never had a line anchor, so nothing about its placement is
+    // approximate — claiming otherwise would be noise on every such thread.
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager({ trustPreciseAnchors: false, anchorPRNumber: 42 });
+    const comment = fileLevelComment({ id: 13, body: 'whole file' });
+    expect(mgr._resolveAnchor(comment)).toEqual({ file: 'src/app.js', fileLevel: true });
+
+    mgr.threadsBySource.set('github', [comment]);
+    await mgr.render();
+
+    const card = container.querySelector('.external-comment-row');
+    expect(card.classList.contains('external-comment-row--file-level')).toBe(true);
+    expect(card.classList.contains('external-comment-row--anchor-degraded')).toBe(false);
+    expect(card.querySelector('.external-comment-provenance')).toBeNull();
+  });
+
+  it('untrusted with an unknown PR number: the note says "the associated PR"', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager({ trustPreciseAnchors: false, anchorPRNumber: null });
+    mgr.threadsBySource.set('github', [makeComment({ id: 14 })]);
+    await mgr.render();
+
+    const note = container.querySelector('.external-comment-provenance');
+    expect(note.textContent).toContain('the associated PR');
+    expect(note.textContent).not.toContain('PR #');
+  });
+
+  // Partial-update setter over four independent fields. The rule is the same
+  // for all of them — present means apply, absent means leave alone — so it is
+  // pinned once here rather than re-permuted inside each gate's suite.
+  describe('setAnchorContext', () => {
+    it('applies each field that is present', () => {
+      const mgr = makeManager();
+      mgr.setAnchorContext({
+        trustPreciseAnchors: false,
+        trustLeftAnchors: false,
+        prNumber: 5,
+        commitSha: 'sha-local',
+      });
+      expect(mgr.trustPreciseAnchors).toBe(false);
+      expect(mgr.trustLeftAnchors).toBe(false);
+      expect(mgr.anchorPRNumber).toBe(5);
+      expect(mgr.anchorCommitSha).toBe('sha-local');
+    });
+
+    it('leaves every OMITTED field untouched', () => {
+      // The caller may learn the PR number before it can compare head SHAs,
+      // and arms the per-comment gate later still.
+      const mgr = makeManager({
+        trustPreciseAnchors: false,
+        trustLeftAnchors: false,
+        anchorPRNumber: 1,
+        anchorCommitSha: 'sha-local',
+      });
+
+      mgr.setAnchorContext({ prNumber: 9 });
+
+      expect(mgr.anchorPRNumber).toBe(9);
+      expect(mgr.trustPreciseAnchors).toBe(false);
+      expect(mgr.trustLeftAnchors).toBe(false);
+      expect(mgr.anchorCommitSha).toBe('sha-local');
+
+      // ...and the reverse direction: trusting flags stay true.
+      const trusting = makeManager({ anchorPRNumber: 3 });
+      trusting.setAnchorContext({ prNumber: 9 });
+      expect(trusting.trustPreciseAnchors).toBe(true);
+      expect(trusting.trustLeftAnchors).toBe(true);
+    });
+
+    it('an explicit null clears the PR number and disarms the commit gate', () => {
+      const mgr = makeManager({ anchorPRNumber: 3, anchorCommitSha: 'sha-local' });
+      mgr.setAnchorContext({ prNumber: null, commitSha: null });
+      expect(mgr.anchorPRNumber).toBeNull();
+      expect(mgr.anchorCommitSha).toBeNull();
+    });
+  });
+
+  it('re-render after a context flip re-decides placement (nothing latches per thread)', async () => {
+    // The capability and the head_sha comparison can both land AFTER the
+    // first paint (association backfill, cold metadata cache), so a second
+    // render with a different context must move the thread — in both
+    // directions.
+    const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const target = rowsByKey.get('src/app.js:10:RIGHT');
+    const { container } = addZone('src/app.js');
+
+    const mgr = makeManager({ anchorPRNumber: 42 });
+    mgr.threadsBySource.set('github', [makeComment({ id: 15 })]);
+
+    await mgr.render();
+    expect(target.nextSibling).not.toBeNull();
+    expect(container.querySelector('.external-comment-row')).toBeNull();
+
+    // Trust withdrawn: render() clears first, so the row moves to the zone.
+    mgr.setAnchorContext({ trustPreciseAnchors: false });
+    await mgr.render();
+    expect(target.nextSibling).toBeNull();
+    expect(container.querySelector('.external-comment-row--anchor-degraded')).not.toBeNull();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+
+    // Trust restored (e.g. the user committed and local HEAD now matches).
+    mgr.setAnchorContext({ trustPreciseAnchors: true });
+    await mgr.render();
+    expect(target.nextSibling).not.toBeNull();
+    expect(container.querySelector('.external-comment-row')).toBeNull();
+    expect(document.querySelector('.external-comment-provenance')).toBeNull();
+    expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // GATE 2 — per-comment commit sha.
+  //
+  // Gate 1 compares two page-load snapshots (local HEAD cached on currentPR;
+  // the PR's head_sha from the TTL-less pr_metadata cache), so a PR that
+  // advances mid-session still looks like a match. Each synced row carries
+  // the commit it was anchored to, fetched fresh, so the manager can catch
+  // that per thread. Armed only when the caller supplies `commitSha`.
+  // ---------------------------------------------------------------------
+  describe('gate 2: per-comment commit sha', () => {
+    it('disarmed (no anchorCommitSha): a mismatched commit_sha STILL anchors precisely', () => {
+      // PR-mode parity guarantee. The diff IS the PR head there, so the
+      // per-comment check must never fire and change existing behaviour.
+      const mgr = makeManager();
+      expect(mgr.anchorCommitSha).toBeNull();
+
+      const anchor = mgr._resolveAnchor(makeComment({
+        commit_sha: 'somewhere-else',
+        original_commit_sha: 'somewhere-else',
+      }));
+
+      expect(anchor).toEqual({ file: 'src/app.js', line: 10, side: 'RIGHT' });
+    });
+
+    it('armed + mismatched commit_sha degrades WHILE trustPreciseAnchors is still true', async () => {
+      // The entire point of the second gate: gate 1 says "same commit"
+      // because both its operands are stale, and only the row's own sha
+      // knows better.
+      const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+      const target = rowsByKey.get('src/app.js:10:RIGHT');
+      const { container } = addZone('src/app.js');
+
+      const mgr = makeManager({ anchorCommitSha: 'sha-local', anchorPRNumber: 8 });
+      expect(mgr.trustPreciseAnchors).toBe(true);
+
+      const comment = makeComment({
+        id: 21,
+        commit_sha: 'sha-pr-moved-on',
+        original_commit_sha: 'sha-pr-moved-on',
+      });
+      expect(mgr._resolveAnchor(comment)).toEqual({
+        file: 'src/app.js',
+        fileLevel: true,
+        degraded: true,
+      });
+
+      mgr.threadsBySource.set('github', [comment]);
+      await mgr.render();
+
+      const card = container.querySelector('.external-comment-row');
+      expect(card.classList.contains('external-comment-row--anchor-degraded')).toBe(true);
+      expect(target.nextSibling).toBeNull();
+      // The note is re-derived from the same predicate, so it appears for a
+      // gate-2 degrade exactly as it does for gate 1.
+      expect(card.querySelector('.external-comment-provenance').textContent).toContain('PR #8');
+      // Session-level trust was never touched.
+      expect(mgr.trustPreciseAnchors).toBe(true);
+    });
+
+    it('armed + a row carrying no commit shas: gate 1 answer stands (trusted)', () => {
+      // Upstream recorded no commit for the row — there is nothing to
+      // contradict gate 1, so degrading would be guessing.
+      const mgr = makeManager({ anchorCommitSha: 'sha-local' });
+
+      const anchor = mgr._resolveAnchor(makeComment({
+        commit_sha: null,
+        original_commit_sha: null,
+      }));
+
+      expect(anchor).toEqual({ file: 'src/app.js', line: 10, side: 'RIGHT' });
+    });
+
+    it('outdated row compares original_commit_sha, not commit_sha', () => {
+      // `_resolveAnchor` prefers the ORIGINAL line for an outdated row, so
+      // the commit checked must be the one that owns that line.
+      const mgr = makeManager({ anchorCommitSha: 'sha-local' });
+
+      // Original matches (live does not) → the line we picked is trustworthy.
+      expect(mgr._resolveAnchor(makeComment({
+        is_outdated: 1,
+        line_end: null,
+        original_line_end: 20,
+        commit_sha: 'sha-other',
+        original_commit_sha: 'sha-local',
+      }))).toEqual({ file: 'src/app.js', line: 20, side: 'RIGHT' });
+
+      // Inverted: the live sha matches but the ORIGINAL one doesn't, and the
+      // original is the anchor being used → degrade.
+      expect(mgr._resolveAnchor(makeComment({
+        is_outdated: 1,
+        line_end: null,
+        original_line_end: 20,
+        commit_sha: 'sha-local',
+        original_commit_sha: 'sha-other',
+      }))).toEqual({ file: 'src/app.js', fileLevel: true, degraded: true });
+    });
+
+    it('non-outdated row falls back to original_commit_sha when commit_sha is missing', () => {
+      const mgr = makeManager({ anchorCommitSha: 'sha-local' });
+
+      expect(mgr._resolveAnchor(makeComment({
+        is_outdated: 0,
+        commit_sha: null,
+        original_commit_sha: 'sha-local',
+      }))).toEqual({ file: 'src/app.js', line: 10, side: 'RIGHT' });
+
+      expect(mgr._resolveAnchor(makeComment({
+        is_outdated: 0,
+        commit_sha: null,
+        original_commit_sha: 'sha-other',
+      }))).toEqual({ file: 'src/app.js', fileLevel: true, degraded: true });
+    });
+
+    it('gate 1 false beats a matching per-comment sha', () => {
+      // The gates are independent and both fail-safe: either can degrade.
+      const mgr = makeManager({ trustPreciseAnchors: false, anchorCommitSha: 'sha-local' });
+
+      expect(mgr._resolveAnchor(makeComment({ commit_sha: 'sha-local' }))).toEqual({
+        file: 'src/app.js',
+        fileLevel: true,
+        degraded: true,
+      });
+    });
+
+  });
+
+  describe('gate 3: LEFT-side anchors and the PR base', () => {
+    // A diff has a base AND a head. RIGHT numbers come from the head; LEFT
+    // numbers (comments on removed lines) come from the BASE. Gates 1 and 2
+    // only ever compare heads, so LEFT needs its own gate.
+
+    it('defaults to true, so a manager that never got the field behaves exactly as before', () => {
+      // PR-mode parity: the caller passes `trustLeftAnchors: true` there, and
+      // an older/partial caller passes nothing at all. Both must anchor LEFT
+      // threads precisely, as they always have.
+      const bare = new ExternalCommentManager({ reviewId: 'rev-1' });
+      expect(bare.trustLeftAnchors).toBe(true);
+
+      const mgr = makeManager({ anchorPRNumber: 42 });
+      expect(mgr.trustLeftAnchors).toBe(true);
+      expect(mgr._anchorDegradeReason(leftComment(), false)).toBeNull();
+      expect(mgr._anchorTrusted(leftComment(), false)).toBe(true);
+      expect(mgr._resolveAnchor(leftComment())).toEqual({
+        file: 'src/app.js', line: 10, side: 'LEFT',
+      });
+    });
+
+    it("LEFT degrades with reason 'base' when trustLeftAnchors is false EVEN THOUGH the heads match", () => {
+      // The exact hole this gate closes: both head-side gates are satisfied
+      // (session trust on, per-comment sha equal to the rendered commit) and
+      // the anchor is still meaningless, because our left side is a
+      // different base.
+      const mgr = makeManager({
+        trustPreciseAnchors: true,
+        anchorCommitSha: 'sha-local',
+        trustLeftAnchors: false,
+      });
+      const left = leftComment({ commit_sha: 'sha-local', original_commit_sha: 'sha-local' });
+
+      expect(mgr.trustPreciseAnchors).toBe(true);
+      expect(mgr._anchorDegradeReason(left, false)).toBe('base');
+      expect(mgr._anchorTrusted(left, false)).toBe(false);
+      expect(mgr._resolveAnchor(left)).toEqual({
+        file: 'src/app.js', fileLevel: true, degraded: true,
+      });
+    });
+
+    it('a comment with no explicit side counts as RIGHT and ignores the base gate', () => {
+      const mgr = makeManager({ trustLeftAnchors: false });
+      const sideless = makeComment({ side: null });
+      expect(mgr._anchorDegradeReason(sideless, false)).toBeNull();
+      expect(mgr._resolveAnchor(sideless)).toEqual({
+        file: 'src/app.js', line: 10, side: 'RIGHT',
+      });
+    });
+
+    it("head-side gates answer first: a head mismatch on a LEFT comment reports 'head'", () => {
+      // Ordering matters for the note wording — when the heads genuinely
+      // disagree, that is the honest explanation even for a LEFT comment.
+      const gate1 = makeManager({ trustPreciseAnchors: false, trustLeftAnchors: false });
+      expect(gate1._anchorDegradeReason(leftComment(), false)).toBe('head');
+
+      const gate2 = makeManager({ anchorCommitSha: 'sha-local', trustLeftAnchors: false });
+      expect(gate2._anchorDegradeReason(
+        leftComment({ commit_sha: 'sha-elsewhere', original_commit_sha: 'sha-elsewhere' }),
+        false
+      )).toBe('head');
+    });
+
+    it('trustLeftAnchors false + heads matching: LEFT degrades, RIGHT anchors — in one render', async () => {
+      const { rowsByKey } = buildDiffTable({
+        lines: [{ line: 10, side: 'RIGHT' }, { line: 10, side: 'LEFT' }],
+      });
+      const rightRow = rowsByKey.get('src/app.js:10:RIGHT');
+      const leftRow = rowsByKey.get('src/app.js:10:LEFT');
+      const { container } = addZone('src/app.js');
+
+      const mgr = makeManager({ trustLeftAnchors: false, anchorPRNumber: 42 });
+      mgr.threadsBySource.set('github', [
+        makeComment({ id: 30, body: 'on the head side' }),
+        leftComment({ id: 31, body: 'on a removed line' }),
+      ]);
+      await mgr.render();
+
+      // RIGHT thread: precise row anchor, no note.
+      expect(rightRow.nextSibling).not.toBeNull();
+      expect(rightRow.nextSibling.dataset.threadId).toBe('30');
+      expect(rightRow.nextSibling.querySelector('.external-comment-provenance')).toBeNull();
+
+      // LEFT thread: nothing on the line it claimed, a degraded zone card.
+      expect(leftRow.nextSibling).toBeNull();
+      const card = container.querySelector('.external-comment-row');
+      expect(card.dataset.threadId).toBe('31');
+      expect(card.classList.contains('external-comment-row--anchor-degraded')).toBe(true);
+      expect(card.querySelector('.external-comment-provenance')).not.toBeNull();
+    });
+
+    describe('provenance note wording', () => {
+      it('the base-side note names the BASE and does not assert a head mismatch', async () => {
+        buildDiffTable({ lines: [{ line: 10, side: 'LEFT' }] });
+        const { container } = addZone('src/app.js');
+
+        const mgr = makeManager({ trustLeftAnchors: false, anchorPRNumber: 42 });
+        mgr.threadsBySource.set('github', [leftComment({ id: 33 })]);
+        await mgr.render();
+
+        const text = container.querySelector('.external-comment-provenance').textContent;
+        expect(text).toContain('PR #42');
+        expect(text).toContain('base commit');
+        expect(text).toContain('removed');
+        expect(text).toContain('file level');
+        // The heads DO agree here — saying otherwise would be a false claim.
+        expect(text).not.toContain('written against a different commit');
+        expect(text).not.toBe(HEAD_NOTE);
+      });
+
+      it('the head-side note keeps its existing wording verbatim', async () => {
+        buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+        const { container } = addZone('src/app.js');
+
+        const mgr = makeManager({ trustPreciseAnchors: false, anchorPRNumber: 42 });
+        mgr.threadsBySource.set('github', [makeComment({ id: 34 })]);
+        await mgr.render();
+
+        expect(container.querySelector('.external-comment-provenance').textContent).toBe(HEAD_NOTE);
+      });
+    });
+  });
+
+  it('untrusted threads still land somewhere when the file has no comments zone', async () => {
+    // Last-resort wrapper append — degraded placement must never mean a
+    // dropped thread.
+    const { wrapper } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+
+    const mgr = makeManager({ trustPreciseAnchors: false, anchorPRNumber: 42 });
+    mgr.threadsBySource.set('github', [makeComment({ id: 16 })]);
+    await mgr.render();
+
+    const card = wrapper.querySelector('.external-comment-row--anchor-degraded');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.external-comment-provenance')).not.toBeNull();
+  });
+});
+
+describe('ExternalCommentManager chat context anchor trust', async () => {
+  // The card can degrade a thread to file level and STILL hand the agent
+  // PR-head coordinates through the chat button, because ChatPanel treats
+  // `line_start`/`line_end` as authoritative against the LOCAL diff: it
+  // quotes the local patch at those numbers (DiffContext.extractHunkForLines)
+  // and asserts `file:line` in the prompt header. So the chat hooks must ride
+  // the same gate the placement did.
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    delete window.prManager;
+    vi.restoreAllMocks();
+  });
+
+  /** Render a thread (root + one reply) and return the two chat buttons. */
+  async function renderThreadWithReply(mgr, root) {
+    mgr.threadsBySource.set('github', [root]);
+    await mgr.render();
+    return {
+      replyBtn: document.querySelector('.external-comment.is-reply .external-comment-chat-btn'),
+      rootBtn: document.querySelector('.external-comment:not(.is-reply) .external-comment-chat-btn'),
+    };
+  }
+
+  function rootWithReply(overrides = {}, replyOverrides = {}) {
+    return makeComment({
+      id: 1,
+      body: 'root body',
+      replies: [makeComment({ id: 42, body: 'reply body', parent_id: 1, ...replyOverrides })],
+      ...overrides,
+    });
+  }
+
+  it('trusted: the comment payload is unchanged — lines pass through, no extra fields', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, anchorPRNumber: 42 });
+
+    const { replyBtn } = await renderThreadWithReply(mgr, rootWithReply());
+    replyBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].commentContext;
+    expect(ctx.line_start).toBe(10);
+    expect(ctx.line_end).toBe(10);
+    expect(ctx).not.toHaveProperty('isFileLevel');
+    expect(ctx).not.toHaveProperty('anchorNote');
+  });
+
+  it('untrusted (head gate): the comment payload nulls the lines and goes file-scoped', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    addZone('src/app.js');
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, trustPreciseAnchors: false, anchorPRNumber: 42 });
+
+    const { replyBtn } = await renderThreadWithReply(mgr, rootWithReply());
+    replyBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].commentContext;
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    // ChatPanel honours `isFileLevel` on the comment path (it skips
+    // extractHunkForLines and labels the scope), so say so explicitly.
+    expect(ctx.isFileLevel).toBe(true);
+    expect(ctx.anchorNote).toBe(HEAD_NOTE);
+    // Everything else still flows.
+    expect(ctx.file).toBe('src/app.js');
+    expect(ctx.commentId).toBe(42);
+    expect(ctx.body).toBe('reply body');
+  });
+
+  it('untrusted (base gate, LEFT): the comment payload nulls the lines and explains the base', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'LEFT' }] });
+    addZone('src/app.js');
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, trustLeftAnchors: false, anchorPRNumber: 42 });
+
+    const { replyBtn } = await renderThreadWithReply(
+      mgr,
+      rootWithReply({ side: 'LEFT' }, { side: 'LEFT' })
+    );
+    replyBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].commentContext;
+    expect(ctx.side).toBe('LEFT');
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    expect(ctx.isFileLevel).toBe(true);
+    expect(ctx.anchorNote).toContain('base commit');
+    expect(ctx.anchorNote).not.toContain('written against a different commit');
+  });
+
+  it('a GENUINE file-level comment is file-scoped with no provenance note', async () => {
+    // It never had a line anchor, so nothing is approximate — but ChatPanel
+    // should still be told the scope rather than left to infer it from a
+    // null line number.
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    addZone('src/app.js');
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, anchorPRNumber: 42 });
+
+    const root = fileLevelComment({
+      id: 1,
+      replies: [fileLevelComment({ id: 43, body: 'file reply', parent_id: 1 })],
+    });
+    const { replyBtn } = await renderThreadWithReply(mgr, root);
+    replyBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].commentContext;
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    expect(ctx.isFileLevel).toBe(true);
+    expect(ctx).not.toHaveProperty('anchorNote');
+  });
+
+  it('trusted: the thread payload is unchanged — lines pass through, no note', async () => {
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, anchorPRNumber: 42 });
+
+    const { rootBtn } = await renderThreadWithReply(mgr, rootWithReply());
+    rootBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].threadContext;
+    expect(ctx.line_start).toBe(10);
+    expect(ctx.line_end).toBe(10);
+    expect(ctx).not.toHaveProperty('anchorNote');
+  });
+
+  it('untrusted (head gate): the thread payload nulls the lines', async () => {
+    // `_sendThreadContextMessage` has NO isFileLevel guard — it keys its hunk
+    // extraction and its `file:line` header purely on `line_start` — so on
+    // this path the lines must actually be null.
+    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    addZone('src/app.js');
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, trustPreciseAnchors: false, anchorPRNumber: 42 });
+
+    const { rootBtn } = await renderThreadWithReply(mgr, rootWithReply());
+    rootBtn.click();
+
+    const ctx = chatPanel.open.mock.calls[0][0].threadContext;
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    expect(ctx.anchorNote).toBe(HEAD_NOTE);
+    // The discussion itself is untouched — only the coordinates are.
+    expect(ctx.rootId).toBe(1);
+    expect(ctx.file).toBe('src/app.js');
+    expect(ctx.comments.map((c) => c.body)).toEqual(['root body', 'reply body']);
+  });
+
+  it('an outdated trusted thread still sends its original_line_* coordinates', async () => {
+    // Regression guard: the trust gate must not swallow the outdated
+    // fallback that the un-degraded path depends on.
+    buildDiffTable({ lines: [{ line: 20, side: 'RIGHT' }] });
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel });
+
+    const outdated = {
+      is_outdated: 1,
+      line_start: null,
+      line_end: null,
+      original_line_start: 20,
+      original_line_end: 20,
+    };
+    const { rootBtn, replyBtn } = await renderThreadWithReply(
+      mgr,
+      rootWithReply(outdated, { ...outdated, id: 42 })
+    );
+
+    rootBtn.click();
+    const threadCtx = chatPanel.open.mock.calls[0][0].threadContext;
+    expect(threadCtx.line_start).toBe(20);
+    expect(threadCtx.line_end).toBe(20);
+
+    replyBtn.click();
+    const commentCtx = chatPanel.open.mock.calls[1][0].commentContext;
+    expect(commentCtx.line_start).toBe(20);
+    expect(commentCtx.line_end).toBe(20);
+    expect(commentCtx.isOutdated).toBe(true);
+  });
+});
+
+describe('ExternalCommentManager.openThreadChat (public entry point)', () => {
+  // Used by AIPanel's Review-panel quick action. Must be the SAME gated path
+  // as the inline card button — a delegate, not a parallel implementation.
+  it('untrusted: nulls the lines and carries the provenance note', () => {
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, trustPreciseAnchors: false, anchorPRNumber: 42 });
+
+    mgr.openThreadChat(makeComment({ replies: [] }));
+
+    const ctx = chatPanel.open.mock.calls[0][0].threadContext;
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    expect(ctx.anchorNote).toBe(HEAD_NOTE);
+  });
+
+  it('trusted: passes the lines through unchanged', () => {
+    const chatPanel = { open: vi.fn() };
+    const mgr = makeManager({ chatPanel, anchorPRNumber: 42 });
+
+    mgr.openThreadChat(makeComment({ replies: [] }));
+
+    const ctx = chatPanel.open.mock.calls[0][0].threadContext;
+    expect(ctx.line_start).toBe(10);
+    expect(ctx.line_end).toBe(10);
+    expect(ctx).not.toHaveProperty('anchorNote');
   });
 });
 

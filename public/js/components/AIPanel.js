@@ -58,15 +58,16 @@ class AIPanel {
         this.bindEvents();
         this.setupKeyboardNavigation();
         this.setupSegmentOverflow();
-        // Hide the External segment when:
-        //   1. Local mode — no external source exists for local reviews.
-        //   2. The `external_comments` feature toggle is off in config.
-        // Both are synchronous flags (set before this constructor runs) so
-        // the segment never flashes into view when it shouldn't.
+        // Only the `external_comments` kill switch is applied here. That flag
+        // is synchronous (set by /runtime-config.js before this file loads),
+        // so the segment never flashes into view when it is off. The
+        // `canViewPRComments` CAPABILITY is deliberately NOT read here — see
+        // `PRManager._updateExternalCommentsAffordances`, which owns that
+        // policy; until it fires, each page's static markup carries the right
+        // pre-capability state (pr.html visible, local.html `hidden`).
         if (typeof window !== 'undefined') {
-            const localMode = window.PAIR_REVIEW_LOCAL_MODE;
             const externalDisabled = window.PAIR_REVIEW_RUNTIME_CONFIG?.external_comments_enabled === false;
-            if (localMode || externalDisabled) {
+            if (externalDisabled) {
                 this.segmentExternalBtn?.setAttribute('hidden', '');
             }
         }
@@ -428,14 +429,46 @@ class AIPanel {
     }
 
     /**
+     * Show or hide the "External" segment button.
+     *
+     * A dumb setter by design; the policy lives in its only caller,
+     * `PRManager._updateExternalCommentsAffordances`.
+     *
+     * On an actual change it re-runs `restoreSegmentSelection`, which
+     * recomputes selectable segments from the `hidden` attributes — so hiding
+     * while "External" is selected falls back to "AI" rather than stranding
+     * the panel on an invisible filter, and revealing it lets a stored
+     * "external" preference take effect.
+     *
+     * @param {boolean} visible
+     */
+    setExternalSegmentVisible(visible) {
+        if (!this.segmentExternalBtn) return;
+        const wasVisible = !this.segmentExternalBtn.hasAttribute('hidden');
+        const next = Boolean(visible);
+        if (wasVisible === next) return;
+
+        if (next) {
+            this.segmentExternalBtn.removeAttribute('hidden');
+        } else {
+            this.segmentExternalBtn.setAttribute('hidden', '');
+        }
+
+        this.restoreSegmentSelection();
+        // Showing/hiding a button changes scrollWidth without firing a
+        // resize or scroll event, so the overflow chevrons need a nudge.
+        this.updateSegmentScrollChevrons?.();
+    }
+
+    /**
      * Restore segment selection from localStorage (PR-specific)
      */
     restoreSegmentSelection() {
         if (!this.segmentBtns) return;
 
-        // Set of segment values currently available in the DOM. In Local mode
-        // the External button is hidden — never restore to it. Any stored
-        // value not present in the bar (legacy or hidden) falls back to 'ai'.
+        // Set of segment values currently available in the DOM — never restore
+        // to a hidden one. Any stored value not present in the bar (legacy or
+        // hidden) falls back to 'ai'.
         const availableSegments = new Set();
         this.segmentBtns.forEach(btn => {
             if (!btn.hasAttribute('hidden')) {
@@ -644,14 +677,13 @@ class AIPanel {
     updateSegmentCounts() {
         const aiCount = this.findings.length;
         const commentsCount = this.comments.length;
-        // External threads are PR-only; hidden in Local mode. The button is
-        // [hidden], but the count is harmless to compute either way.
+        // Harmless without a PR target: the button is [hidden] and the list
+        // is empty, so the count is 0 either way.
         // Defensive: legacy test fixtures construct panels via Object.create
         // without externalThreads — fall back to an empty array length.
         const externalCount = this.externalThreads?.length ?? 0;
-        // 'All' = every visible category. In Local mode the External button
-        // is hidden and externalThreads stays at length 0 anyway, so the sum
-        // collapses naturally.
+        // 'All' = every visible category; the external term collapses to 0
+        // when the button is hidden.
         const allCount = aiCount + commentsCount + externalCount;
 
         if (this.segmentBtns) {
@@ -701,9 +733,6 @@ class AIPanel {
                 break;
             case 'all':
             default:
-                // Combine findings, comments, and external threads.
-                // In Local mode externalThreads is always empty so this
-                // collapses to findings + comments, matching prior behavior.
                 items = [
                     ...this.findings.map(f => ({ ...f, _itemType: 'finding' })),
                     ...this.comments.map(c => ({ ...c, _itemType: 'comment' })),
@@ -1013,9 +1042,16 @@ class AIPanel {
             return;
         }
 
-        // External thread chat — mirrors ExternalCommentManager._openThreadChat.
-        // The button carries data-thread-id + data-source; the full thread is
-        // looked up from this.externalThreads so replies are included.
+        // External thread chat — delegates to the manager's gated path
+        // (openThreadChat → _openThreadChat), so the Review-panel quick action
+        // shares the anchor-trust gate with the inline card button: untrusted
+        // or file-level anchors ship null lines + an anchorNote instead of
+        // wrong-coordinate-system line numbers. The button carries
+        // data-thread-id; the full thread is looked up from
+        // this.externalThreads so replies are included. externalThreads is
+        // populated only from window.externalCommentManager.getAllThreads(),
+        // so the manager is guaranteed present here. ChatPanel resolves
+        // reviewId itself from window.prManager.currentPR.id.
         if (btn.dataset.itemType === 'external') {
             const threadId = btn.dataset.threadId;
             const numericId = threadId != null && threadId !== '' ? Number(threadId) : null;
@@ -1023,38 +1059,7 @@ class AIPanel {
                 String(t.id) === String(threadId) ||
                 (numericId != null && t.id === numericId)
             );
-            if (thread) {
-                const outdated = thread.is_outdated === 1 || thread.is_outdated === true;
-                const replies = Array.isArray(thread.replies) ? thread.replies : [];
-                window.chatPanel.open({
-                    reviewId,
-                    threadContext: {
-                        rootId: thread.id,
-                        source: 'external',
-                        externalSource: thread.source,
-                        file: thread.file,
-                        side: thread.side || 'RIGHT',
-                        line_start: outdated ? thread.original_line_start : thread.line_start,
-                        line_end: outdated ? thread.original_line_end : thread.line_end,
-                        comments: [
-                            {
-                                author: thread.author,
-                                body: thread.body,
-                                isOutdated: !!outdated,
-                                externalUrl: thread.external_url,
-                                externalCreatedAt: thread.external_created_at,
-                            },
-                            ...replies.map((r) => ({
-                                author: r.author,
-                                body: r.body,
-                                isOutdated: !!(r.is_outdated === 1 || r.is_outdated === true),
-                                externalUrl: r.external_url,
-                                externalCreatedAt: r.external_created_at,
-                            })),
-                        ],
-                    },
-                });
-            }
+            if (thread) window.externalCommentManager.openThreadChat(thread);
             return;
         }
 
@@ -1126,7 +1131,8 @@ class AIPanel {
         if (itemType === 'external') {
             const source = item.dataset.source || '';
             const threadId = item.dataset.threadId || itemId;
-            this.scrollToExternalThread(threadId, source, file, line);
+            // Deliberate click — opts into the miss handling; see `notify`.
+            this.scrollToExternalThread(threadId, source, file, line, { notify: true });
             return;
         }
 
@@ -1391,8 +1397,16 @@ class AIPanel {
      * @param {string} source - External source key (e.g. 'github')
      * @param {string} file - File path for collapse-expand fallback
      * @param {string|number} line - Anchor line; used for file/line fallback
+     * @param {Object} [options]
+     * @param {boolean} [options.notify=false] - Opt in to the miss handling at
+     *   the end of this method. Only user-initiated clicks (`onFindingClick`)
+     *   pass true: positional j/k navigation walks every item in the segment,
+     *   which in local mode routinely includes threads on unrendered files —
+     *   Toast.showToast has no dedupe, so it would stack one toast per
+     *   keystroke, and each autorepeat tick would pull in another context file
+     *   unprompted. Silence is the correct default for navigation.
      */
-    async scrollToExternalThread(threadId, source, file, line) {
+    async scrollToExternalThread(threadId, source, file, line, { notify = false } = {}) {
         const myGen = ++this._navGen;
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
@@ -1403,7 +1417,9 @@ class AIPanel {
             try { await window.prManager.ensureFileBodyRendered(file); } catch { /* best effort */ }
         }
 
-        const doScroll = () => {
+        // Extracted from the scroll so the click path can re-run it unchanged
+        // after bringing the file into view as a context file.
+        const findRow = () => {
             let target = null;
 
             // Most reliable: match on (threadId, source). `data-thread-id`
@@ -1440,26 +1456,98 @@ class AIPanel {
                 }
             }
 
-            if (target) {
-                const minimizer = window.prManager?.commentMinimizer;
-                let scrollTarget = target;
-                if (minimizer?.active) {
-                    minimizer.expandForElement(target);
-                    scrollTarget = minimizer.findDiffRowFor(target) || target;
-                }
-                this._scrollDiffTarget(scrollTarget);
+            return target;
+        };
 
-                // Transient focus flash. The class is removed after 2s — if
-                // the row is rebuilt before then, the class is lost with it,
-                // which is fine: the flash is purely cosmetic.
-                target.classList.add('external-comment-row--focused');
-                setTimeout(() => target.classList.remove('external-comment-row--focused'), 2000);
+        const focusRow = (target) => {
+            const minimizer = window.prManager?.commentMinimizer;
+            let scrollTarget = target;
+            if (minimizer?.active) {
+                minimizer.expandForElement(target);
+                scrollTarget = minimizer.findDiffRowFor(target) || target;
             }
+            this._scrollDiffTarget(scrollTarget);
+
+            // Transient focus flash. The class is removed after 2s — if
+            // the row is rebuilt before then, the class is lost with it,
+            // which is fine: the flash is purely cosmetic.
+            target.classList.add('external-comment-row--focused');
+            setTimeout(() => target.classList.remove('external-comment-row--focused'), 2000);
         };
 
         // A newer navigation took over while we awaited — let it win.
         if (myGen !== this._navGen) return;
-        doScroll();
+
+        const found = findRow();
+        if (found) {
+            focusRow(found);
+            return;
+        }
+
+        // Miss. The panel lists every thread the review has, but only files
+        // present in the rendered diff can hold a row — near-impossible in PR
+        // mode, routine in local mode (a scoped review, or a PR comment on a
+        // file you haven't touched). That is not an unrenderable state, it is
+        // an un-added CONTEXT FILE: one with a focused line range renders
+        // exactly like a diff file, giving the thread a real wrapper and
+        // comment zone to anchor into. Click path only — see `notify`.
+        if (!notify) return;
+
+        // `ensureContextFile` does arithmetic on the line bounds, and `line`
+        // arrives as a dataset string on the click path ('5' + 499 would
+        // concatenate). Coerce here; a file-level thread with no anchor
+        // passes null and gets ensureContextFile's default window.
+        const anchor = Number.isFinite(Number(line)) && line !== null && line !== ''
+            ? parseInt(line, 10)
+            : null;
+
+        let ensured = null;
+        if (file && typeof window.prManager?.ensureContextFile === 'function') {
+            try {
+                // Pass the start only. `ensureContextFile` centres a ~21-line
+                // window (±10) when `lineEnd` is null, but treats an explicit
+                // end as an exact range — passing `anchor` twice would render
+                // a context file containing precisely one line, leaving the
+                // reviewer no surrounding code to read the comment against.
+                ensured = await window.prManager.ensureContextFile(file, anchor, null);
+            } catch {
+                ensured = null; // best effort — fall through to the toast
+            }
+        }
+
+        // The context-file round trip hits the network; the user may have
+        // navigated on while it was in flight.
+        if (myGen !== this._navGen) return;
+
+        if (ensured) {
+            // `loadContextFiles` rendered the file but knows nothing about
+            // external comments, so the rows must be re-anchored before the
+            // thread exists in the DOM. `render()` calls `clear()` first and
+            // is idempotent, so re-running it is safe.
+            try {
+                await window.externalCommentManager?.render?.();
+            } catch { /* best effort — the retry below decides */ }
+
+            if (myGen !== this._navGen) return;
+
+            const retried = findRow();
+            if (retried) {
+                focusRow(retried);
+                return;
+            }
+        }
+
+        // The file genuinely could not be brought into view.
+        //
+        // `window.toast` is an OBJECT of level methods, not a callable —
+        // mirrors ExternalCommentManager._toast, including its legacy
+        // `window.showToast(message, level)` fallback.
+        const message = 'Could not bring that file into view';
+        if (typeof window.toast?.showInfo === 'function') {
+            window.toast.showInfo(message);
+        } else if (typeof window.showToast === 'function') {
+            window.showToast(message, 'info');
+        }
     }
 
     // ========================================
@@ -1484,8 +1572,8 @@ class AIPanel {
         this.segmentControlScroll.addEventListener('scroll', update, { passive: true });
 
         // Observe size changes on the scroll container itself. Triggered by
-        // panel resize, segment hidden/shown (e.g. local-mode gate), and
-        // window resize.
+        // panel resize, segment hidden/shown (e.g. `setExternalSegmentVisible`),
+        // and window resize.
         if (typeof ResizeObserver !== 'undefined') {
             this._segmentResizeObserver = new ResizeObserver(update);
             this._segmentResizeObserver.observe(this.segmentControlScroll);
@@ -2322,6 +2410,7 @@ class AIPanel {
         if (item._itemType === 'comment') {
             this.scrollToComment(itemId, file, line, item.side);
         } else if (item._itemType === 'external') {
+            // Positional navigation (j/k, prev/next): no `notify` — see there.
             this.scrollToExternalThread(itemId, item.source, file, line);
         } else {
             this.scrollToFinding(itemId, file, line, item.side);

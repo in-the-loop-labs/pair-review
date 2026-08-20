@@ -9,12 +9,25 @@
  *  - _normalizeExternalThread() handles outdated → original_line_* fallback.
  *  - renderExternalThreadItem() produces the expected DOM hooks.
  *  - sortItemsByFileOrder() interleaves external + finding + comment items.
- *  - restoreSegmentSelection() falls back to 'ai' when 'external' is hidden
- *    (Local mode) even if localStorage has the value.
+ *  - restoreSegmentSelection() falls back to 'ai' when the External button is
+ *    hidden, even if localStorage has the value.
+ *  - setExternalSegmentVisible() reveals/hides the External button and never
+ *    strands the panel on an invisible segment.
+ *  - The constructor hides the External button ONLY for the
+ *    `external_comments` kill switch — visibility per review is a capability
+ *    (`canViewPRComments`), pushed in later by PRManager, never a mode sniff.
+ *  - scrollToExternalThread's `notify` flag: the off-diff handling (context
+ *    file + toast) is opt-in for deliberate clicks, so positional j/k
+ *    navigation across off-diff threads stays silent and side-effect free.
+ *  - The off-diff click path: ensureContextFile → externalCommentManager
+ *    .render() → retry the row lookup → toast only on genuine failure.
  *
- * Uses Object.create(AIPanel.prototype) to test the actual production
- * methods without triggering the constructor's DOM dependencies. Matches
- * the pattern established in ai-panel-collapse.test.js.
+ * Most tests use Object.create(AIPanel.prototype) to exercise the actual
+ * production methods without triggering the constructor's DOM dependencies
+ * (the pattern established in ai-panel-collapse.test.js). The constructor
+ * describe near the bottom is the exception: it builds a real AIPanel against
+ * a stubbed DOM, because what the constructor itself decides is the thing
+ * under test.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -60,6 +73,11 @@ global.localStorage = {
 global.CustomEvent = class CustomEvent {};
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
+// The REAL manager: openQuickActionChat delegates external-thread chats to
+// ExternalCommentManager.openThreadChat so the Review-panel quick action
+// shares the anchor-trust gate with the inline card button. Tests below
+// route through the production method — never a re-implementation.
+const { ExternalCommentManager } = require('../../public/js/modules/external-comment-manager.js');
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -588,7 +606,7 @@ describe('AIPanel.restoreSegmentSelection with hidden external button', () => {
     };
   }
 
-  it('falls back to "ai" when stored value is "external" but button is hidden (Local mode)', () => {
+  it('falls back to "ai" when stored value is "external" but the button is hidden', () => {
     mockLocalStorage['reviewPanelSegment_owner/repo#1'] = 'external';
     const panel = createTestPanel({
       segmentBtns: [
@@ -604,7 +622,7 @@ describe('AIPanel.restoreSegmentSelection with hidden external button', () => {
     expect(panel.selectedSegment).toBe('ai');
   });
 
-  it('honors "external" when the button is visible (PR mode)', () => {
+  it('honors "external" when the button is visible', () => {
     mockLocalStorage['reviewPanelSegment_owner/repo#1'] = 'external';
     const panel = createTestPanel({
       segmentBtns: [
@@ -633,19 +651,214 @@ describe('AIPanel.restoreSegmentSelection with hidden external button', () => {
 });
 
 // -----------------------------------------------------------------------
+// setExternalSegmentVisible — the setter PRManager drives
+//
+// AIPanel is deliberately dumb here: the policy (capability × feature
+// toggle) lives in PRManager._updateExternalCommentsAffordances. What this
+// method owes its caller is (a) the `hidden` attribute follows the argument,
+// (b) an actual change re-runs restoreSegmentSelection so the panel is never
+// stranded on an invisible segment, and (c) a no-change call costs nothing.
+// -----------------------------------------------------------------------
+
+describe('AIPanel.setExternalSegmentVisible', () => {
+  /** Segment button whose `hidden` attribute actually mutates. */
+  function makeToggleBtn(segment, hidden = false) {
+    const attrs = new Set(hidden ? ['hidden'] : []);
+    return {
+      dataset: { segment },
+      classList: { toggle: vi.fn() },
+      hasAttribute: (name) => attrs.has(name),
+      setAttribute: vi.fn((name) => attrs.add(name)),
+      removeAttribute: vi.fn((name) => attrs.delete(name)),
+    };
+  }
+
+  function makePanel({ externalHidden = false, selectedSegment = 'ai' } = {}) {
+    const external = makeToggleBtn('external', externalHidden);
+    const panel = createTestPanel({
+      segmentBtns: [makeToggleBtn('ai'), makeToggleBtn('comments'), external, makeToggleBtn('all')],
+      segmentExternalBtn: external,
+      selectedSegment,
+      levelFilter: { classList: { add: vi.fn() } },
+    });
+    panel.renderFindings = vi.fn();
+    return { panel, external };
+  }
+
+  it('reveals a hidden button and re-runs the segment restore', () => {
+    const { panel, external } = makePanel({ externalHidden: true });
+    const restore = vi.spyOn(panel, 'restoreSegmentSelection');
+
+    panel.setExternalSegmentVisible(true);
+
+    expect(external.hasAttribute('hidden')).toBe(false);
+    expect(restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides a visible button and re-runs the segment restore', () => {
+    const { panel, external } = makePanel({ externalHidden: false });
+    const restore = vi.spyOn(panel, 'restoreSegmentSelection');
+
+    panel.setExternalSegmentVisible(false);
+
+    expect(external.hasAttribute('hidden')).toBe(true);
+    expect(restore).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op when visibility is unchanged — no attribute churn, no restore', () => {
+    // Called on every capability refresh (PR load, local metadata warm-up,
+    // scope change), so an unchanged call must not clobber the user's current
+    // segment selection.
+    const { panel, external } = makePanel({ externalHidden: false, selectedSegment: 'external' });
+    const restore = vi.spyOn(panel, 'restoreSegmentSelection');
+
+    panel.setExternalSegmentVisible(true);
+
+    expect(restore).not.toHaveBeenCalled();
+    expect(external.setAttribute).not.toHaveBeenCalled();
+    expect(external.removeAttribute).not.toHaveBeenCalled();
+    expect(panel.selectedSegment).toBe('external');
+  });
+
+  it('hiding while "external" is selected leaves a selectable segment (no stranding)', () => {
+    // The strand-prevention contract: without the restoreSegmentSelection
+    // call the panel would keep filtering on an invisible segment and render
+    // an empty list with no visible way back.
+    mockLocalStorage['reviewPanelSegment_owner/repo#1'] = 'external';
+    const { panel } = makePanel({ externalHidden: false, selectedSegment: 'external' });
+
+    panel.setExternalSegmentVisible(false);
+
+    expect(panel.selectedSegment).not.toBe('external');
+    expect(panel.selectedSegment).toBe('ai');
+  });
+});
+
+// -----------------------------------------------------------------------
+// Constructor — what AIPanel itself is allowed to decide
+//
+// These build a REAL AIPanel against a stubbed DOM (rather than
+// Object.create) because the thing under test is the constructor's own
+// decision. Duplicating that decision in the test would assert nothing.
+// -----------------------------------------------------------------------
+
+describe('AIPanel constructor: External segment visibility', () => {
+  let savedWindow;
+  let savedDocument;
+
+  beforeEach(() => {
+    savedWindow = global.window;
+    savedDocument = global.document;
+  });
+
+  afterEach(() => {
+    global.window = savedWindow;
+    global.document = savedDocument;
+  });
+
+  function makeSegmentBtn(segment, hidden = false) {
+    const attrs = new Set(hidden ? ['hidden'] : []);
+    return {
+      dataset: { segment },
+      classList: { toggle: vi.fn(), add: vi.fn(), remove: vi.fn() },
+      hasAttribute: (name) => attrs.has(name),
+      setAttribute: vi.fn((name) => attrs.add(name)),
+      removeAttribute: vi.fn((name) => attrs.delete(name)),
+      addEventListener: vi.fn(),
+    };
+  }
+
+  /**
+   * Construct a real AIPanel over a minimal DOM: an #ai-panel shell and a
+   * #segment-control holding the four segment buttons. Everything else the
+   * constructor reaches for resolves to null, which its own guards handle.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.killSwitch] - `external_comments_enabled: false`
+   * @param {boolean} [options.localMode] - legacy `PAIR_REVIEW_LOCAL_MODE`
+   * @param {boolean} [options.externalHiddenInMarkup] - local.html ships the
+   *   button `hidden`; pr.html ships it visible.
+   * @param {boolean} [options.withExternalBtn] - false models markup with no
+   *   External button at all.
+   */
+  function constructPanel({
+    killSwitch = false,
+    localMode = false,
+    externalHiddenInMarkup = false,
+    withExternalBtn = true,
+  } = {}) {
+    const externalBtn = withExternalBtn ? makeSegmentBtn('external', externalHiddenInMarkup) : null;
+    const segmentBtns = [makeSegmentBtn('ai'), makeSegmentBtn('comments'), makeSegmentBtn('all')];
+    if (externalBtn) segmentBtns.splice(2, 0, externalBtn);
+
+    const segmentControl = {
+      querySelectorAll: vi.fn(() => segmentBtns),
+      querySelector: vi.fn((sel) => (sel.includes('data-segment="external"') ? externalBtn : null)),
+      appendChild: vi.fn(),
+    };
+    const panelEl = {
+      classList: { contains: vi.fn(() => false), add: vi.fn(), remove: vi.fn() },
+    };
+
+    global.document = {
+      ...savedDocument,
+      getElementById: vi.fn((id) => {
+        if (id === 'ai-panel') return panelEl;
+        if (id === 'segment-control') return segmentControl;
+        return null;
+      }),
+    };
+    global.window = {
+      ...savedWindow,
+      PAIR_REVIEW_LOCAL_MODE: localMode,
+      PAIR_REVIEW_RUNTIME_CONFIG: killSwitch
+        ? { external_comments_enabled: false }
+        : { external_comments_enabled: true },
+    };
+
+    const panel = new AIPanel();
+    return { panel, externalBtn };
+  }
+
+  it('hides the External segment when the external_comments kill switch is off', () => {
+    const { panel, externalBtn } = constructPanel({ killSwitch: true });
+
+    expect(panel.segmentExternalBtn).toBe(externalBtn);
+    expect(externalBtn.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('does NOT hide it in local mode when the kill switch is off — the mode sniff is gone', () => {
+    // Regression for Phase 2: the constructor used to read
+    // `window.PAIR_REVIEW_LOCAL_MODE` and hide the segment outright, which
+    // made a local review with an associated PR unable to show its comments.
+    // Visibility is now a capability PRManager pushes in afterwards.
+    const { externalBtn } = constructPanel({ localMode: true, killSwitch: false });
+
+    expect(externalBtn.hasAttribute('hidden')).toBe(false);
+    expect(externalBtn.setAttribute).not.toHaveBeenCalledWith('hidden', '');
+  });
+
+});
+
+// -----------------------------------------------------------------------
 // scrollToExternalThread
 // -----------------------------------------------------------------------
 
 describe('AIPanel.scrollToExternalThread', () => {
   let originalDocument;
+  let originalWindow;
 
   beforeEach(() => {
     originalDocument = global.document;
+    originalWindow = global.window;
     global.window = { ...global.window };
   });
 
   afterEach(() => {
     global.document = originalDocument;
+    // Restore the pristine window too: these tests install toast doubles on
+    // it, and the clone above would otherwise carry them into later suites.
+    global.window = originalWindow;
   });
 
   function setupDocumentWithRow({ threadId = '101', source = 'github' } = {}) {
@@ -666,6 +879,15 @@ describe('AIPanel.scrollToExternalThread', () => {
       querySelectorAll: vi.fn(() => []),
     };
     return { row, focusedClass };
+  }
+
+  /** A document where no `.external-comment-row` matches anything. */
+  function setupEmptyDocument() {
+    global.document = {
+      ...originalDocument,
+      querySelector: vi.fn(() => null),
+      querySelectorAll: vi.fn(() => []),
+    };
   }
 
   it('finds the row by (threadId, source) and scrolls it into view', () => {
@@ -693,15 +915,376 @@ describe('AIPanel.scrollToExternalThread', () => {
     vi.useRealTimers();
   });
 
-  it('is a no-op when no matching row is in the DOM', () => {
-    global.document = {
-      ...originalDocument,
-      querySelector: vi.fn(() => null),
-      querySelectorAll: vi.fn(() => []),
-    };
+  it('does not throw when no matching row is in the DOM and no toast is installed', () => {
+    setupEmptyDocument();
     const panel = createTestPanel();
     panel.expandFileIfCollapsed = vi.fn(() => false);
     expect(() => panel.scrollToExternalThread('999', 'github', 'src/x.js', 1)).not.toThrow();
+  });
+
+  // The panel lists every thread the review has, but only files present in
+  // the rendered diff can hold a row. In local mode that gap is routine (a
+  // scoped review, or a PR comment on a file you haven't touched). A CLICK
+  // resolves it by adding the file as a context file; only a genuine failure
+  // to bring the file into view falls through to a toast.
+  //
+  // NOTE: every case below passes `{ notify: true }` because the toast is now
+  // opt-in. The default-false behaviour has its own describe further down.
+  describe('no matching row: last-resort toast', () => {
+    const MESSAGE = 'Could not bring that file into view';
+
+    it('uses window.toast.showInfo — an object of level methods, not a callable', async () => {
+      setupEmptyDocument();
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo, showError: vi.fn(), showWarning: vi.fn(), showSuccess: vi.fn() };
+      global.window.showToast = vi.fn();
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'src/x.js', 1, { notify: true });
+
+      expect(showInfo).toHaveBeenCalledWith(MESSAGE);
+      // Preferred path wins; the legacy shim is not also fired.
+      expect(global.window.showToast).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the legacy window.showToast(message, level) shim', async () => {
+      setupEmptyDocument();
+      delete global.window.toast;
+      global.window.showToast = vi.fn();
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'src/x.js', 1, { notify: true });
+
+      expect(global.window.showToast).toHaveBeenCalledWith(MESSAGE, 'info');
+    });
+
+    it('stays silent when the row IS found', async () => {
+      setupDocumentWithRow({ threadId: '42', source: 'github' });
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5, { notify: true });
+
+      expect(showInfo).not.toHaveBeenCalled();
+    });
+
+  });
+
+  // -------------------------------------------------------------------
+  // notify: the toast (and the context-file round trip) is opt-in
+  //
+  // scrollToExternalThread has two callers: onFindingClick (a deliberate
+  // click) and scrollToCurrentItem (positional j/k navigation). Navigation
+  // walks every item in the segment, including threads whose files aren't in
+  // the rendered diff, so per-miss side effects must NOT fire there.
+  // -------------------------------------------------------------------
+  describe('notify flag', () => {
+    it('does NOT toast or add a context file on a miss when notify is left at its default', async () => {
+      setupEmptyDocument();
+      const showInfo = vi.fn();
+      const ensureContextFile = vi.fn(async () => ({ type: 'context', contextFile: { id: 1 } }));
+      const render = vi.fn(async () => {});
+      global.window.toast = { showInfo };
+      global.window.showToast = vi.fn();
+      global.window.prManager = { ensureContextFile };
+      global.window.externalCommentManager = { render };
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'src/x.js', 1);
+
+      expect(showInfo).not.toHaveBeenCalled();
+      expect(global.window.showToast).not.toHaveBeenCalled();
+      expect(ensureContextFile).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // The actual regression: j/k autorepeat across off-diff threads
+  //
+  // Toast.showToast appends a node per call with a 5000ms timer and no
+  // dedupe, so N off-diff threads used to mean N stacked toasts. Assert at
+  // the navigation level, not just on the flag.
+  // -------------------------------------------------------------------
+  describe('keyboard navigation across off-diff external threads', () => {
+    it('produces ZERO toasts and adds NO context files when goToNext walks several unrenderable threads', async () => {
+      setupEmptyDocument();
+      const showInfo = vi.fn();
+      const ensureContextFile = vi.fn(async () => ({ type: 'context', contextFile: { id: 1 } }));
+      global.window.toast = { showInfo };
+      global.window.showToast = vi.fn();
+      global.window.prManager = { ensureContextFile };
+      global.window.externalCommentManager = { render: vi.fn(async () => {}) };
+
+      const panel = createTestPanel({
+        selectedSegment: 'external',
+        externalThreads: [
+          makeThread({ id: 1, external_id: 'gh-1', file: 'off/a.js', line_start: 3 }),
+          makeThread({ id: 2, external_id: 'gh-2', file: 'off/b.js', line_start: 4 }),
+          makeThread({ id: 3, external_id: 'gh-3', file: 'off/c.js', line_start: 5 }),
+          makeThread({ id: 4, external_id: 'gh-4', file: 'off/d.js', line_start: 6 }),
+        ],
+        fileOrder: new Map([['off/a.js', 0], ['off/b.js', 1], ['off/c.js', 2], ['off/d.js', 3]]),
+      });
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      // Four autorepeat ticks + one wrap-around.
+      for (let i = 0; i < 5; i++) {
+        panel.goToNext();
+        // Drain any microtasks the async scroll queued before the next tick.
+        await Promise.resolve();
+      }
+
+      expect(showInfo).not.toHaveBeenCalled();
+      expect(global.window.showToast).not.toHaveBeenCalled();
+      expect(ensureContextFile).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Off-diff click: add a context file on demand, re-anchor, retry
+  // -------------------------------------------------------------------
+  describe('off-diff click adds a context file', () => {
+    /**
+     * A document whose `.external-comment-row` lookup misses until
+     * `revealRow()` is called — modelling the wrapper that only exists once
+     * the context file has been rendered and the external rows re-anchored.
+     */
+    function setupLateRow({ threadId = '999' } = {}) {
+      let present = false;
+      const row = {
+        classList: { add: vi.fn(), remove: vi.fn() },
+        scrollIntoView: vi.fn(),
+        closest: vi.fn(() => null),
+      };
+      global.document = {
+        ...originalDocument,
+        querySelector: vi.fn((selector) => {
+          if (!present) return null;
+          if (selector.includes(`data-thread-id="${threadId}"`)) return row;
+          return null;
+        }),
+        querySelectorAll: vi.fn(() => []),
+      };
+      return { row, revealRow: () => { present = true; } };
+    }
+
+    it('calls ensureContextFile with the thread file and line, renders, retries, and stays silent', async () => {
+      const { row, revealRow } = setupLateRow({ threadId: '999' });
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+
+      const order = [];
+      let querySelectorCallsAtRender = 0;
+
+      const ensureContextFile = vi.fn(async () => {
+        order.push('ensureContextFile');
+        return { type: 'context', contextFile: { id: 7, file: 'off/x.js', line_start: 1, line_end: 21 } };
+      });
+      const render = vi.fn(async () => {
+        order.push('render');
+        querySelectorCallsAtRender = global.document.querySelector.mock.calls.length;
+        revealRow();
+      });
+
+      global.window.prManager = { ensureContextFile };
+      global.window.externalCommentManager = { render };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      // `line` arrives as a dataset STRING on the click path.
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', '5', { notify: true });
+
+      // Coerced to a number (ensureContextFile does arithmetic on the bounds),
+      // and the END is deliberately null: ensureContextFile centres a ~21-line
+      // window only when lineEnd is null, and treats an explicit end as an
+      // exact range. Passing the anchor twice would render a context file
+      // containing exactly one line, with no surrounding code to read the
+      // comment against.
+      expect(ensureContextFile).toHaveBeenCalledWith('off/x.js', 5, null);
+      // Re-anchor happens AFTER the context file lands, not before.
+      expect(order).toEqual(['ensureContextFile', 'render']);
+      // The lookup was re-run after render(), and this time it hit.
+      expect(global.document.querySelector.mock.calls.length).toBeGreaterThan(querySelectorCallsAtRender);
+      expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+      expect(row.classList.add).toHaveBeenCalledWith('external-comment-row--focused');
+      // Resolved, so nothing to tell the reviewer.
+      expect(showInfo).not.toHaveBeenCalled();
+    });
+
+    it('retries after a { type: "diff" } result too', async () => {
+      // A distinct branch: ensureContextFile answers `{type:'diff'}` when the
+      // file turns out to already be in the diff — the row was missing only
+      // because the wrapper had not rendered yet. No context file is created,
+      // but the retry must still run, so the guard is `if (ensured)`, not a
+      // check for `type === 'context'`.
+      const { row, revealRow } = setupLateRow({ threadId: '999' });
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+
+      const ensureContextFile = vi.fn(async () => ({ type: 'diff' }));
+      const render = vi.fn(async () => { revealRow(); });
+
+      global.window.prManager = { ensureContextFile };
+      global.window.externalCommentManager = { render };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', '5', { notify: true });
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+      expect(showInfo).not.toHaveBeenCalled();
+    });
+
+    it('passes a null anchor for a file-level thread with no line', async () => {
+      setupEmptyDocument();
+      const ensureContextFile = vi.fn(async () => null);
+      global.window.prManager = { ensureContextFile };
+      global.window.toast = { showInfo: vi.fn() };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('12', 'github', 'off/x.js', null, { notify: true });
+
+      expect(ensureContextFile).toHaveBeenCalledWith('off/x.js', null, null);
+    });
+
+    it('toasts exactly once when ensureContextFile resolves null', async () => {
+      setupEmptyDocument();
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+      const render = vi.fn(async () => {});
+      global.window.prManager = { ensureContextFile: vi.fn(async () => null) };
+      global.window.externalCommentManager = { render };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', 5, { notify: true });
+
+      expect(showInfo).toHaveBeenCalledTimes(1);
+      expect(showInfo).toHaveBeenCalledWith('Could not bring that file into view');
+      // Nothing was rendered, so there is nothing to re-anchor.
+      expect(render).not.toHaveBeenCalled();
+    });
+
+    it('toasts once when ensureContextFile rejects', async () => {
+      setupEmptyDocument();
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+      global.window.prManager = { ensureContextFile: vi.fn(async () => { throw new Error('boom'); }) };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', 5, { notify: true });
+
+      expect(showInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it('toasts when the retry still misses after the context file rendered', async () => {
+      setupEmptyDocument(); // row never appears
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+      global.window.prManager = {
+        ensureContextFile: vi.fn(async () => ({ type: 'context', contextFile: { id: 3 } })),
+      };
+      global.window.externalCommentManager = { render: vi.fn(async () => {}) };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', 5, { notify: true });
+
+      expect(global.window.externalCommentManager.render).toHaveBeenCalledTimes(1);
+      expect(showInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it('abandons the scroll when a newer navigation started during the round trip', async () => {
+      // The _navGen guard: a slow context-file fetch must not scroll after
+      // the user has moved on.
+      const { row, revealRow } = setupLateRow({ threadId: '999' });
+      const showInfo = vi.fn();
+      global.window.toast = { showInfo };
+
+      const panel = createTestPanel();
+      panel.expandFileIfCollapsed = vi.fn(() => false);
+
+      global.window.prManager = {
+        ensureContextFile: vi.fn(async () => {
+          // Simulate the user pressing j while the POST is in flight.
+          panel._navGen++;
+          return { type: 'context', contextFile: { id: 9 } };
+        }),
+      };
+      global.window.externalCommentManager = { render: vi.fn(async () => { revealRow(); }) };
+
+      await panel.scrollToExternalThread('999', 'github', 'off/x.js', 5, { notify: true });
+
+      expect(global.window.externalCommentManager.render).not.toHaveBeenCalled();
+      expect(row.scrollIntoView).not.toHaveBeenCalled();
+      expect(showInfo).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// -----------------------------------------------------------------------
+// onFindingClick — the deliberate-click entry point
+// -----------------------------------------------------------------------
+
+describe('AIPanel.onFindingClick for external items', () => {
+  it('passes { notify: true } through to scrollToExternalThread', () => {
+    const panel = createTestPanel({
+      selectedSegment: 'external',
+      externalThreads: [makeThread({ id: 100, external_id: 'gh-100', file: 'src/utils.js', line_start: 5 })],
+      fileOrder: new Map([['src/utils.js', 0]]),
+    });
+    const scrollSpy = vi.fn();
+    panel.scrollToExternalThread = scrollSpy;
+    panel.scrollToComment = vi.fn();
+    panel.scrollToFinding = vi.fn();
+
+    panel.onFindingClick({
+      dataset: {
+        id: '100',
+        itemType: 'external',
+        file: 'src/utils.js',
+        line: '5',
+        index: '0',
+        threadId: '100',
+        source: 'github',
+      },
+    });
+
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith('100', 'github', 'src/utils.js', '5', { notify: true });
+  });
+
+  it('leaves comment and finding clicks on their own scroll paths', () => {
+    const panel = createTestPanel({
+      selectedSegment: 'all',
+      comments: [{ id: 10, file: 'src/utils.js', line_start: 2 }],
+      fileOrder: new Map([['src/utils.js', 0]]),
+    });
+    panel.scrollToExternalThread = vi.fn();
+    panel.scrollToComment = vi.fn();
+    panel.scrollToFinding = vi.fn();
+
+    panel.onFindingClick({
+      dataset: { id: '10', itemType: 'comment', file: 'src/utils.js', line: '2', index: '0' },
+    });
+
+    expect(panel.scrollToComment).toHaveBeenCalled();
+    expect(panel.scrollToExternalThread).not.toHaveBeenCalled();
   });
 });
 
@@ -855,9 +1438,36 @@ describe('AIPanel.renderExternalThreadItem chat button', () => {
 });
 
 describe('AIPanel.openQuickActionChat for external threads', () => {
-  it('dispatches threadContext with replies for the external thread', () => {
+  // The external branch delegates to the REAL manager's public
+  // openThreadChat, so these tests wire an actual ExternalCommentManager
+  // (with a spy chat panel) onto window — the same object AIPanel reaches
+  // for in production. The manager owns the payload shape AND the
+  // anchor-trust gate; AIPanel only looks the thread up.
+
+  /**
+   * Install window.chatPanel + a real manager sharing the same open spy.
+   * `managerOptions` seeds the anchor-trust flags (defaults = PR mode,
+   * everything trusted).
+   */
+  function wireManager(managerOptions = {}) {
     const open = vi.fn();
-    global.window = { ...global.window, chatPanel: { open }, prManager: { currentPR: { id: 5 } } };
+    const chatPanel = { open };
+    const manager = new ExternalCommentManager({
+      reviewId: 'rev-1',
+      chatPanel,
+      ...managerOptions,
+    });
+    global.window = {
+      ...global.window,
+      chatPanel,
+      prManager: { currentPR: { id: 5 } },
+      externalCommentManager: manager,
+    };
+    return { open, manager };
+  }
+
+  it('delegates to the manager and dispatches threadContext with replies', () => {
+    const { open } = wireManager();
 
     const panel = createTestPanel({
       externalThreads: [
@@ -890,7 +1500,9 @@ describe('AIPanel.openQuickActionChat for external threads', () => {
 
     expect(open).toHaveBeenCalledTimes(1);
     const arg = open.mock.calls[0][0];
-    expect(arg.reviewId).toBe(5);
+    // The manager's payload carries no reviewId — ChatPanel.open resolves it
+    // from window.prManager.currentPR.id, the same value AIPanel used to pass.
+    expect(arg.reviewId).toBeUndefined();
     expect(arg.threadContext).toMatchObject({
       rootId: 42,
       source: 'external',
@@ -906,8 +1518,7 @@ describe('AIPanel.openQuickActionChat for external threads', () => {
   });
 
   it('uses original_line_* when the thread is outdated', () => {
-    const open = vi.fn();
-    global.window = { ...global.window, chatPanel: { open }, prManager: { currentPR: { id: 1 } } };
+    const { open } = wireManager();
 
     const panel = createTestPanel({
       externalThreads: [
@@ -936,9 +1547,50 @@ describe('AIPanel.openQuickActionChat for external threads', () => {
     expect(arg.threadContext.comments[0].isOutdated).toBe(true);
   });
 
+  it('REGRESSION: an untrusted anchor opened from the Review panel nulls the lines', () => {
+    // The old inline branch built its own threadContext and shipped
+    // line_start/line_end unconditionally — a degraded local-mode anchor
+    // reached ChatPanel as exact PR-head coordinates, and
+    // _sendThreadContextMessage keys hunk extraction and its `file:line`
+    // header purely on line_start (no isFileLevel guard). Nulled lines are
+    // the ONLY protection, so this path must produce them.
+    const { open } = wireManager({ trustPreciseAnchors: false, anchorPRNumber: 7 });
+
+    const panel = createTestPanel({
+      externalThreads: [
+        {
+          id: 42,
+          source: 'github',
+          author: 'octocat',
+          body: 'Root body',
+          file: 'src/a.js',
+          side: 'RIGHT',
+          line_start: 7,
+          line_end: 9,
+          is_outdated: 0,
+          replies: [],
+        },
+      ],
+    });
+
+    panel.openQuickActionChat({
+      dataset: { itemType: 'external', threadId: '42', source: 'github' },
+    });
+
+    expect(open).toHaveBeenCalledTimes(1);
+    const ctx = open.mock.calls[0][0].threadContext;
+    expect(ctx.line_start).toBeNull();
+    expect(ctx.line_end).toBeNull();
+    // The provenance note rides along so the agent knows WHY there is no line.
+    expect(ctx.anchorNote).toContain('PR #7');
+    expect(ctx.anchorNote).toContain('written against a different commit');
+    // The discussion itself still flows.
+    expect(ctx.file).toBe('src/a.js');
+    expect(ctx.comments[0].body).toBe('Root body');
+  });
+
   it('is a no-op when no matching thread is in state', () => {
-    const open = vi.fn();
-    global.window = { ...global.window, chatPanel: { open }, prManager: null };
+    const { open } = wireManager();
     const panel = createTestPanel({ externalThreads: [] });
     panel.openQuickActionChat({
       dataset: { itemType: 'external', threadId: '999', source: 'github' },

@@ -4891,6 +4891,26 @@ div.external-comment-row {
   letter-spacing: 0.04em;
 }
 
+/* Provenance note on anchor-degraded threads: a local review whose working
+   tree has moved past the PR head can't trust the PR's line numbers, so the
+   thread is shown at file level and says so. See ANCHOR TRUST in
+   public/js/modules/external-comment-manager.js. */
+.external-comment-provenance {
+  padding: 4px 8px;
+  border-left: 3px solid var(--color-border-primary, #d0d7de);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-secondary, #57606a);
+  background: var(--color-bg-secondary, #f6f8fa);
+  border-radius: 0 4px 4px 0;
+}
+
+[data-theme="dark"] .external-comment-provenance {
+  color: var(--color-text-secondary, #8b949e);
+  background: var(--color-bg-tertiary, #1c2128);
+  border-left-color: var(--color-border-primary, #30363d);
+}
+
 [data-theme="dark"] .external-comment {
   background: var(--ec-subtle);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
@@ -8969,6 +8989,17 @@ body.resizing * {
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: var(--transition-ui-fast);
+}
+
+/* `display: flex` above is author-origin, so it beats the UA stylesheet's
+   non-`!important` `[hidden] { display: none }`. Without this override the
+   `hidden` attribute is inert for these buttons — which is the entire gating
+   mechanism for #refresh-external-comments-btn-panel (local.html ships it
+   hidden, pr.html does not, and _updateExternalCommentsAffordances toggles
+   only that attribute). Same trap already handled for .segment-btn[hidden]
+   and .segment-scroll[hidden]. */
+.findings-nav-btn[hidden] {
+  display: none;
 }
 
 .findings-nav-btn:hover:not(:disabled) {

@@ -243,7 +243,7 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     expect(res.body.error).toBe('Invalid review ID');
   });
 
-  it('returns empty threads for a local-mode review even if rows were force-inserted', async () => {
+  it('returns empty threads for a local-mode review with NO association, even if rows were force-inserted', async () => {
     // Promote the seeded review to local mode.
     db.prepare(
       "UPDATE reviews SET review_type = 'local', local_path = '/tmp/repo', pr_number = NULL WHERE id = ?"
@@ -257,4 +257,33 @@ describe('GET /api/reviews/:reviewId/external-comments', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ threads: [] });
   });
+
+  it('returns threads for a local-mode review WITH an associated PR', async () => {
+    // Phase 2: the association resolves a comment target, so the mirror is
+    // read back exactly as it is for a PR-mode review. Sync and fetch share
+    // one resolver — rows written under this review id must be readable.
+    db.prepare(
+      `UPDATE reviews
+         SET review_type = 'local', local_path = '/checkout/local', pr_number = NULL,
+             associated_pr_number = 7, associated_pr_repository = 'assoc-owner/assoc-repo'
+       WHERE id = ?`
+    ).run(reviewId);
+
+    await repo.upsert(reviewId, 'github', makeRow({ external_id: 'assoc-root', body: 'from PR #7' }));
+    await repo.upsert(reviewId, 'github', makeRow({
+      external_id: 'assoc-reply',
+      in_reply_to_id: 'assoc-root',
+      external_created_at: '2026-01-02T00:00:00Z',
+      body: 'a reply'
+    }));
+    await repo.resolveParents(reviewId, 'github');
+
+    const res = await request(server).get(`/api/reviews/${reviewId}/external-comments`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.threads).toHaveLength(1);
+    expect(res.body.threads[0].external_id).toBe('assoc-root');
+    expect(res.body.threads[0].replies.map(r => r.external_id)).toEqual(['assoc-reply']);
+  });
+
 });

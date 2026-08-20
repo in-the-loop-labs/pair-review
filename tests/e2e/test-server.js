@@ -134,6 +134,30 @@ const mockAISuggestions = [
   }
 ];
 
+/**
+ * Local review that HAS an associated GitHub PR (migration 56's
+ * `associated_pr_*` columns) — the Phase 2 fixture for
+ * tests/e2e/external-comments.spec.js.
+ *
+ * Deliberately a SEPARATE row from the plain local review (id 2): that one is
+ * the "no associated PR" fixture and the External segment must stay hidden on
+ * it, so it must not grow an association. Its `local_diffs` row is also keyed
+ * to id 2 (review_id is the PK there), which is why this review gets its own.
+ *
+ * `headSha` intentionally EQUALS PR #1's `head_sha` in the seeded
+ * `pr_metadata` row below, so the default (unmocked) state is the
+ * anchor-trusted one: local HEAD === PR head → precise `(file, line, side)`
+ * anchoring. Tests that want the degraded branch patch
+ * `associatedPR.head_sha` in the `/api/local/:id` response instead.
+ */
+const LOCAL_PR_REVIEW = Object.freeze({
+  id: 3,
+  path: '/tmp/test-local-repo-with-pr',
+  headSha: 'def456head',
+  prNumber: 1,
+  repository: 'test-owner/test-repo'
+});
+
 const mockWorktreeResponses = {
   // This diff tests the line number offset scenario:
   // - utils.js: First hunk at line 1-8 has +3 net change (adds 4, removes 1)
@@ -253,6 +277,43 @@ function insertTestData(db) {
     JSON.stringify({ files_changed: 1, additions: 25, deletions: 10 }),
     now
   );
+
+  // Local review WITH an associated GitHub PR — see LOCAL_PR_REVIEW above.
+  // The id is explicit (not autoincrement) so the spec can address
+  // /local/3 without re-querying, and so this row can never silently take
+  // the id another fixture assumes.
+  //
+  // `local_path` differs from review 2's on purpose: the partial unique index
+  // idx_reviews_local covers (local_path, local_head_sha, local_head_branch)
+  // for review_type='local'.
+  db.prepare(`
+    INSERT INTO reviews (
+      id, repository, status, review_type, local_path, local_head_sha,
+      associated_pr_number, associated_pr_repository, created_at, updated_at
+    )
+    VALUES (?, ?, 'draft', 'local', ?, ?, ?, ?, ?, ?)
+  `).run(
+    LOCAL_PR_REVIEW.id,
+    LOCAL_PR_REVIEW.repository,
+    LOCAL_PR_REVIEW.path,
+    LOCAL_PR_REVIEW.headSha,
+    LOCAL_PR_REVIEW.prNumber,
+    LOCAL_PR_REVIEW.repository,
+    now,
+    now
+  );
+
+  // Same diff fixture as the other local review, so external comments have
+  // the familiar src/utils.js:3 / src/main.js:12 anchors to land on.
+  db.prepare(`
+    INSERT INTO local_diffs (review_id, diff_text, stats, captured_at)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    LOCAL_PR_REVIEW.id,
+    mockWorktreeResponses.generateUnifiedDiff,
+    JSON.stringify({ files_changed: 2, additions: 25, deletions: 10 }),
+    now
+  );
 }
 
 /**
@@ -344,7 +405,15 @@ async function startTestServer(port) {
   // in-app DB overrides so the effective config the routes read mirrors
   // production wiring (src/server.js).
   const { GlobalSettingsService } = require('../../src/settings/global-settings-service');
-  const e2eBaseConfig = { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' };
+  // `external_comments: true` is stated, not assumed. Runtime config treats
+  // only a literal `false` as disabled (src/routes/config.js), so omitting the
+  // key would ALSO enable the feature — the associated-PR specs would then be
+  // passing by omission rather than by exercising the production opt-in. A spec
+  // that wants the disabled state must set `external_comments: false`
+  // explicitly rather than relying on absence.
+  const e2eBaseConfig = {
+    github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet', external_comments: true
+  };
   // Production-shaped layers: the raw `config` layer must carry the SAME values
   // as e2eBaseConfig so /api/settings source attribution (which walks the raw
   // layers) agrees with /api/config (the merged effective config). A bare
@@ -357,7 +426,12 @@ async function startTestServer(port) {
     baseConfig: e2eBaseConfig,
     layers: [
       { name: 'default', data: {} },
-      { name: 'config', data: { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' } }
+      {
+        name: 'config',
+        data: {
+          github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet', external_comments: true
+        }
+      }
     ]
   });
   app.set('db', db);
@@ -943,4 +1017,4 @@ async function startTestServer(port) {
   return { server, db, app, port };
 }
 
-module.exports = { startTestServer };
+module.exports = { startTestServer, LOCAL_PR_REVIEW };
