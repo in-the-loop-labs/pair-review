@@ -430,10 +430,13 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
     // The verification imperative invites narration ("I'll verify...") ahead
     // of the JSON, which breaks extraction (opus-5, eval 2026-08-18) — the
-    // section must restate JSON-only output itself, with a concrete negative
-    // example of the observed preamble
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('no preamble');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('nothing before the opening `{`');
+    // section must restate JSON-only output itself. Do NOT quote an example
+    // of the forbidden preamble: an earlier guard did, and the next eval's
+    // one consolidation failure emitted that quoted sentence near-verbatim
+    // (priming). The guard describes the ban without demonstrating it.
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('no sentence announcing what you will do');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('The first character of your reply is `{`');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).not.toContain("I'll verify");
   });
 
   it('thorough consolidation should carry adversarial verification as a flow-conditional placeholder', () => {

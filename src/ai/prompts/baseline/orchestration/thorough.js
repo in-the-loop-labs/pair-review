@@ -327,7 +327,7 @@ Some input suggestions are marked as [FILE-LEVEL]. These are observations about 
 - Ensure the final set tells a coherent story about the PR's quality
 
 ### Reply Shape
-- Your reply is the JSON object alone — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`
+- Your reply is the JSON object alone — no sentence announcing what you will do, no narration of what you did. The first character of your reply is \`{\`
 </section>`;
 
 /**

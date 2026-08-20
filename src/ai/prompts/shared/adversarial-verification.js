@@ -51,6 +51,6 @@ You cannot deep-verify everything, so spend verification where it changes the ou
 3. **Dropping requires evidence; doubt does not.** Discard a finding only when you found concrete proof it is wrong. If you could not verify it either way, keep it at its original confidence — inability to verify is not refutation.
 4. **Record what you checked.** Append your verification steps to the finding's reasoning array. A finding you verified against the code warrants higher confidence than one you merely passed through.
 
-Do all of this before writing your reply. The reply itself is only the JSON object — no preamble such as "I'll verify the key findings against the code first", no narration of your process, nothing before the opening \`{\`.`;
+Do all of this before writing your reply. The reply itself is only the JSON object — no sentence announcing what you will do, no narration of what you did. The first character of your reply is \`{\`.`;
 
 module.exports = { ADVERSARIAL_VERIFICATION_SECTION };
