@@ -24,12 +24,23 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { mergeInstructions } = require('../utils/instructions');
-const { getGitHubToken, resolveHostBinding, resolveBindingRepositoryFromPR, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
-const { isDualHostRepo } = require('../utils/host-resolution');
+const { getGitHubToken, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
 const { backgroundQueue } = require('../ai/background-queue');
 const localReview = require('../local-review');
 const { generateScopedDiff, computeScopedDigest, getBranchCommitCount, getFirstCommitSubject, detectAndBuildBranchInfo, detectPRForBranch, findMergeBase, getCurrentBranch, getRepositoryName, getUntrackedFiles } = localReview;
-const { getAssociatedPR, buildCapabilities, getCachedPRMetadata, fetchPRMetadata, splitRepository, resolveFetchCredential } = require('../providers/pr-context');
+// `resolveRepositoryBinding` / `resolveAssociationBinding` live beside
+// `fetchPRMetadata` so the WRITE and READ sides share ONE host resolver — see
+// the `resolveRepositoryBinding` docblock in src/providers/pr-context.js.
+const {
+  getAssociatedPR,
+  buildCapabilities,
+  getCachedPRMetadata,
+  fetchPRMetadata,
+  resolveFetchCredential,
+  resolveRepositoryBinding,
+  resolveAssociationBinding,
+  _hostBindingInternals,
+} = require('../providers/pr-context');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -128,182 +139,6 @@ function recordPRMetadataNegative(association) {
   recordPRDetectionNegative(association.repository, prMetadataNegativeKey(association));
 }
 
-/**
- * Resolve the host binding for a `repos[...]` binding KEY, never throwing.
- *
- * Standing invariant: if a repo has an alt host configured, EVERY GitHub call
- * for that repo must go through the resolved binding, never the bare global
- * token — `GitHubClient` normalises a bare token into a github.com binding,
- * which silently targets the wrong host with the wrong credential. The binding
- * also carries repo-scoped `token` / `token_command` credentials that
- * `app.get('githubToken')` (the GLOBAL token, set in src/server.js) does not.
- *
- * Called with no `options`, `resolveHostBinding` only applies the ambiguity
- * rule and cannot throw — but local mode resolves bindings on a background
- * path where a config-shape surprise must not take down the request, so the
- * failure is logged and downgraded to "no binding" (bare-token fallback).
- *
- * Takes a binding KEY (user-chosen; need not look like owner/repo). Callers
- * holding a repository IDENTITY must go through `resolveRepositoryBinding`,
- * which performs the identity → key translation first.
- */
-function tryResolveHostBinding(bindingRepository, config) {
-  try {
-    return resolveHostBinding(bindingRepository, config || {});
-  } catch (err) {
-    logger.warn(`Host binding resolution failed for ${bindingRepository}: ${err.message}`);
-    return null;
-  }
-}
-
-/**
- * Short-lived negative memo for association host-binding resolution.
- *
- * `resolveAssociationBinding` runs on the hot path of `GET /api/local/:reviewId`
- * and it runs BEFORE `res.json` — `hasGitHubToken` ships in that payload, so the
- * binding genuinely cannot be deferred below the response. `resolveHostBinding`
- * may shell out (`repos[...].token_command`, `config.github_token_command`).
- *
- * config.js memoizes only SUCCESSFUL command output: `_cachedRepoTokens.set` is
- * reached after the empty-output and throw checks, so `_runTokenCommand` returns
- * `''` UNCACHED on failure (src/config.js:489-501). A broken or expired command
- * — `gh auth token` with gh logged out is the common one — therefore re-runs
- * `execSync` with a 5s timeout on EVERY request and blocks the response for up
- * to five seconds each time.
- *
- * Caching that failure inside `_runTokenCommand` would be the general fix, but
- * it is a shared function with several callers outside this route; bounding the
- * exposure here is the surgical version. Only token-less resolutions are
- * memoized — a successful command is already cached in config.js for the life
- * of the process, and re-memoizing it here would shadow `binding.refresh()`.
- *
- * TTL is deliberately short (30s): long enough that a page load's burst (the
- * main GET, the /pr-metadata follow-up, and the frontend's retry budget)
- * collapses to a single shell-out, short enough that a user who repairs their
- * credential mid-session gets a live retry on their next reload rather than
- * being told "no GitHub" for minutes.
- *
- * Keyed by config object (WeakMap) then binding key, so a token-less result for
- * one config can never answer for another — production has exactly one config
- * object (loaded once at startup, no hot reload), and tests that mount a fresh
- * config are isolated for free.
- */
-const HOST_BINDING_FAILURE_TTL_MS = 30 * 1000;
-let hostBindingFailureCache = new WeakMap();
-
-function _clearHostBindingFailureCache() {
-  hostBindingFailureCache = new WeakMap();
-}
-
-/**
- * Resolve the host binding for a repository IDENTITY (`<owner>/<repo>` as
- * GitHub/the git remote reports it), NOT a config key.
- *
- * `config.repos[...]` keys are not always the raw owner/repo: a monorepo-style
- * entry serves many captured owner/repo via `url_pattern`, and only
- * `resolveBindingRepositoryFromPR` probes for that (`resolveHostBinding` does
- * not). Skipping the translation makes `getRepoConfig` miss the entry, so the
- * binding silently degrades to github.com with the global token — the exact
- * failure the binding exists to prevent. Same order as every other repo-scoped
- * resolution in the codebase (src/server.js, src/setup/pr-setup.js,
- * src/routes/config.js, src/routes/stack-analysis.js,
- * src/external/github-adapter.js): identity → binding key → binding.
- *
- * Despite its name, `resolveBindingRepositoryFromPR` needs only the owner/repo
- * pair, so it is equally correct for a local review's own repository identity
- * (derived from the git remote) as for an associated PR's — both are the same
- * `<owner>/<repo>` shape it matches `repos[...]` keys and `url_pattern`
- * captures against.
- *
- * AMBIGUOUS (GUESSED) HOSTS
- * -------------------------
- * The two-argument form applies the ambiguity rule, so a DUAL repo (`api_host`
- * + `exclusive: false`) always yields the github.com flavour here — a GUESS,
- * because a dual repo's PRs may live on either host and local mode has no PR
- * identity to look the real one up with. Such a binding is stamped
- * `hostAmbiguous: true` so consumers can refuse to PERSIST the guess; see
- * `fetchPRMetadata` (src/providers/pr-context.js), which will not create a
- * pr_metadata row from it. Without that, a background cache warm the user never
- * asked for would pin the (repo, PR) pair to github.com forever: NULL in
- * `pr_metadata.host` is indistinguishable from "unknown" on a fresh INSERT, so
- * PR-mode setup reads the row back as authoritative and skips the alt-host
- * probe (`storedHostToOption` → `{ host: null }` → `hostKnown = true`).
- *
- * `hostAmbiguous` is added HERE, by this route helper — it is NOT part of the
- * `resolveHostBinding` contract (which returns `{ apiHost, host, token,
- * features, source, refresh }` and never this field). It is set on a shallow
- * COPY so the field can never leak back into config.js's own bookkeeping.
- * Consumers must treat its absence as "not known to be a guess", not as
- * "verified".
- *
- * Runtime gap that remains DEFERRED (its own follow-up): nothing here resolves
- * a dual repo's real host. Doing so needs the host derived from the git remote,
- * not from the stored metadata row — the binding is resolved BEFORE
- * fetchPRMetadata, so on a cold cache there is no row. What that leaves, for a
- * dual repo only:
- *   - GATED: no pr_metadata row is created from the guess, so PR-mode setup
- *     still sees "host unknown" and still probes. The local-mode PR pill simply
- *     stays hidden.
- *   - STILL DEFERRED: branch → PR detection below runs with the guessed
- *     github.com flavour, so a mirrored branch name can associate the wrong
- *     host's PR. Unchanged from before this feature, and bounded — it writes
- *     one review row's `associated_pr_number`, not the shared metadata cache
- *     PR mode reads back as authoritative.
- *
- * @param {string|null|undefined} repository - owner/repo identity
- * @param {Object} config - Application config
- * @param {number} [now] - Injectable clock for the negative memo (tests only;
- *   never wait a TTL out in real time — tests/CONVENTIONS.md)
- * @returns {Object|null} binding (possibly `hostAmbiguous`), or null when
- *   unresolvable
- */
-function resolveRepositoryBinding(repository, config, now = Date.now()) {
-  if (!repository) return null;
-  const parts = splitRepository(repository);
-  if (!parts) return null;
-  const safeConfig = config || {};
-  const bindingRepository = resolveBindingRepositoryFromPR(parts.owner, parts.repo, safeConfig);
-
-  // Negative memo — see HOST_BINDING_FAILURE_TTL_MS. `resolveBindingRepositoryFromPR`
-  // above is a pure config lookup; only the resolution below can shell out.
-  const cacheKey = String(bindingRepository ?? '');
-  let perConfig = hostBindingFailureCache.get(safeConfig);
-  const cached = perConfig && perConfig.get(cacheKey);
-  if (cached) {
-    if (now - cached.at <= HOST_BINDING_FAILURE_TTL_MS) return cached.binding;
-    perConfig.delete(cacheKey);
-  }
-
-  const resolved = tryResolveHostBinding(bindingRepository, safeConfig);
-  // Mark the guess BEFORE memoizing so both the fresh and the memoized answer
-  // carry it (and the memo's object identity is stable for callers).
-  const binding = (resolved && isDualHostRepo(safeConfig, bindingRepository))
-    ? { ...resolved, hostAmbiguous: true }
-    : resolved;
-  if (binding && !binding.token) {
-    if (!perConfig) {
-      perConfig = new Map();
-      hostBindingFailureCache.set(safeConfig, perConfig);
-    }
-    perConfig.set(cacheKey, { at: now, binding });
-  }
-  return binding;
-}
-
-/**
- * `resolveRepositoryBinding` for an associated PR. The association carries a
- * PR identity (`<owner>/<repo>`), which is exactly the identity shape the
- * repository resolver translates.
- *
- * @param {{prNumber: number, repository: string}|null} association
- * @param {Object} config - Application config
- * @param {number} [now] - Injectable clock for the negative memo (tests only)
- * @returns {Object|null} binding, or null when unresolvable
- */
-function resolveAssociationBinding(association, config, now = Date.now()) {
-  if (!association || !association.repository) return null;
-  return resolveRepositoryBinding(association.repository, config, now);
-}
 
 const router = express.Router();
 
@@ -746,7 +581,13 @@ router.post('/api/local/start', async (req, res) => {
     // When a PR is discovered, detectAndBuildBranchInfo persists associated_pr_number +
     // associated_pr_repository to the reviews row via reviewRepo. Same call shape used
     // by the CLI entry path in handleLocalReview (src/local-review.js) — keep them in sync.
-    const branchBinding = repository ? resolveHostBinding(repository, config) : null;
+    //
+    // A WRITE side: must resolve the host through `resolveRepositoryBinding`,
+    // never a raw `resolveHostBinding` — see "THE ONE RESOLVER FOR BOTH SIDES"
+    // on that function (src/providers/pr-context.js).
+    const branchBinding = repository
+      ? resolveRepositoryBinding(repository, config, { localPath: repoPath })
+      : null;
     const branchInfo = await detectAndBuildBranchInfo(repoPath, branch, {
       repository,
       diff,
@@ -813,6 +654,220 @@ router.post('/api/local/start', async (req, res) => {
 });
 
 /**
+ * Resolve the repository identity + current branch for a local review.
+ *
+ * The stored `repository` is not always in `owner/repo` form (CLI sessions can
+ * seed a bare directory name). Read-only: a GET never writes the refreshed
+ * values back.
+ *
+ * Shared by `GET /api/local/:reviewId` and `/pr-metadata`: the env-var
+ * fallback and the `includes('/')` guard are exactly the inputs
+ * `canDetectPRAssociation` gates on, so the two endpoints must not be free to
+ * disagree about them.
+ *
+ * Calls through the `localReview` module NAMESPACE so `vi.spyOn(localReview,
+ * ...)` is observed — same reason as `generateScopedDiff` in the diff route.
+ *
+ * @param {Object} review - Row from `getLocalReviewById`
+ * @returns {Promise<{repositoryName: string|null, branchName: string}>}
+ */
+async function resolveReviewRepoAndBranch(review) {
+  let repositoryName = review.repository;
+  let branchName = 'unknown';
+
+  if (review.local_path) {
+    try {
+      // Always fetch current branch from the working directory
+      branchName = await localReview.getCurrentBranch(review.local_path);
+
+      if (repositoryName && !repositoryName.includes('/')) {
+        const freshRepoName = await localReview.getRepositoryName(review.local_path);
+        if (freshRepoName && freshRepoName.includes('/')) {
+          repositoryName = freshRepoName;
+          // Just use the fresh name for this response - don't write to DB in GET
+          logger.log('API', `Using fresh repository name from git remote: ${freshRepoName}`, 'cyan');
+        }
+      }
+    } catch (repoError) {
+      // Keep the original name if we can't get a better one
+      logger.warn(`Could not refresh repository/branch info: ${repoError.message}`);
+    }
+  }
+
+  // Fall back to env var if local_path is not available (e.g. CLI-started sessions)
+  if (branchName === 'unknown') {
+    branchName = process.env.PAIR_REVIEW_BRANCH || 'unknown';
+    if (branchName !== 'unknown') {
+      logger.log('API', `Using PAIR_REVIEW_BRANCH env var for branch: ${branchName}`, 'cyan');
+    }
+  }
+
+  return { repositoryName, branchName };
+}
+
+/**
+ * Is branch → PR association detection worth attempting for this review?
+ *
+ * Pure predicate over already-resolved inputs, deliberately cheap: it is
+ * checked BEFORE any host-binding resolution because that step can shell out
+ * to a `token_command` (execSync, 5s timeout), and an already-associated
+ * review must never pay that cost.
+ *
+ * `force` (the explicit `?refresh=1`) bypasses ONLY the negative cache — never
+ * the structural checks, which describe reviews with nothing to detect. Without
+ * the bypass, one probe that lost to a rate limit parked a five-minute negative
+ * that every later call honoured, the External refresh button included, leaving
+ * the user no in-page way to recover.
+ *
+ * @param {{review: Object, repositoryName: ?string, branchName: string,
+ *   force?: boolean}} params - `review` is a row from `getLocalReviewById`;
+ *   `force` is the explicit user refresh.
+ * @returns {boolean}
+ */
+function canDetectPRAssociation({ review, repositoryName, branchName, force = false }) {
+  return Boolean(
+    !review.associated_pr_number
+    && review.local_path
+    && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
+    && repositoryName && repositoryName.includes('/')
+    && (force || !isPRDetectionRecentlyNegative(repositoryName, branchName))
+  );
+}
+
+/**
+ * In-flight PR-detection probes, keyed `${repository}\u0000${branch}`.
+ *
+ * A first page load runs detection TWICE for the same (repo, branch): the main
+ * GET fires it and forgets it after `res.json`, and the client's follow-up
+ * `/pr-metadata` awaits its own. Neither has recorded a negative yet when the
+ * other starts, so both pass `canDetectPRAssociation` and both hit GitHub —
+ * which is how a rate-limited probe ends up parking the negative that `force`
+ * above exists to escape. A concurrent caller now JOINS the running probe. The
+ * entry is deleted in a `finally` so a rejection cannot poison the key.
+ *
+ * Keyed on (repository, branch) only — matching the negative cache — so two
+ * reviews of the same branch in DIFFERENT checkouts share one probe. The
+ * joiner's own row is not written (the probe persists to the initiator's
+ * reviewId), which is the safe direction: it can never inherit an association
+ * resolved against another checkout's host. Its next load simply detects
+ * again, since the map is empty by then.
+ */
+const inFlightPRDetections = new Map();
+
+
+/**
+ * Run branch → PR association detection for a local review. Never throws.
+ *
+ * ONE construction of the detection arguments, TWO callers with opposite
+ * scheduling:
+ *
+ *   - `GET /api/local/:reviewId` fires it and forgets it, AFTER `res.json`,
+ *     so the page-load path never waits on GitHub.
+ *   - `GET /api/local/:reviewId/pr-metadata` AWAITS it — see that endpoint's
+ *     header for the dirty-tree deadlock that makes it necessary.
+ *
+ * Guards live in `canDetectPRAssociation` (negative cache, `force`) and
+ * `inFlightPRDetections` (probe de-duplication).
+ *
+ * A WRITE side: resolves through `resolveRepositoryBinding`, threading
+ * `localPath` so a DUAL repo binds the host its checkout points at — see "THE
+ * ONE RESOLVER FOR BOTH SIDES" on that function (providers/pr-context.js).
+ *
+ * Race guard: `associatePR()` (inside `detectPRForBranch`) updates only WHERE
+ * `associated_pr_number IS NULL`, so a concurrent write is never clobbered,
+ * and a row deleted meanwhile simply matches 0 rows.
+ *
+ * @param {Object} params - `review`, `reviewId`, `repositoryName`,
+ *   `branchName`, `config` (already resolved), `reviewRepo`, and `force`
+ *   (explicit user refresh). `resolvedToken` is the GLOBAL token from
+ *   `req.app.get('githubToken')` — never re-resolve via `getGitHubToken` here.
+ * @returns {Promise<Object|null>} detection result, or null
+ */
+async function runPRAssociationDetection({ review, reviewId, repositoryName, branchName, config, resolvedToken, reviewRepo, force = false }) {
+  if (!canDetectPRAssociation({ review, repositoryName, branchName, force })) return null;
+
+  // Join a probe already running for this (repo, branch) rather than opening a
+  // second one — see `inFlightPRDetections`. A forced refresh joins too: the
+  // in-flight probe IS a live answer, so re-asking GitHub would buy nothing.
+  const inFlightKey = prDetectionCacheKey(repositoryName, branchName);
+  const running = inFlightPRDetections.get(inFlightKey);
+  if (running) return running;
+
+  const probe = (async () => {
+    // Resolved INSIDE the guard, never above it — see `canDetectPRAssociation`.
+    const detectionBinding = resolveRepositoryBinding(repositoryName, config, { localPath: review.local_path });
+    const detectionToken = detectionBinding?.token || resolvedToken;
+    if (!detectionToken) return null;
+
+    try {
+      const detection = await detectPRForBranch(review.local_path, branchName, {
+        repository: repositoryName,
+        githubToken: detectionToken,
+        hostBinding: detectionBinding,
+        enableGraphite: config.enable_graphite === true,
+        reviewRepo,
+        reviewId
+      });
+      if (!detection || !detection.prNumber) {
+        recordPRDetectionNegative(repositoryName, branchName);
+      }
+      return detection;
+    } catch (err) {
+      logger.warn(`PR association detection failed for review #${reviewId}: ${err.message}`);
+      return null;
+    }
+  })();
+
+  // Registered before the first await point of any joiner.
+  inFlightPRDetections.set(inFlightKey, probe);
+  try {
+    return await probe;
+  } finally {
+    inFlightPRDetections.delete(inFlightKey);
+  }
+}
+
+/**
+ * Resolve the host binding a GitHub call for THIS review would use, and the
+ * `hasGitHubToken` capability that goes with it. One rule, both endpoints
+ * (`GET /api/local/:reviewId` and `/pr-metadata`), so the flag can never
+ * disagree between them.
+ *
+ * With an association, the binding is the ASSOCIATION's repository — which may
+ * differ from the review's own (a fork, a monorepo `url_pattern` entry).
+ *
+ * WITHOUT one, it is the review's OWN repository, not the bare global token.
+ * `app.get('githubToken')` ignores `repos[...].token` / `token_command`
+ * entirely, so a user whose only credential is repo-scoped was told
+ * `hasGitHubToken: false` — and `_maybeWarmPRMetadata` returns early on that
+ * flag, so it never called `/pr-metadata`, the one endpoint that can CREATE
+ * the association on a dirty tree.
+ *
+ * `resolveFetchCredential` is the arbiter in both cases, never
+ * `binding.token || globalToken` — see its docblock in pr-context.js.
+ *
+ * @param {Object} params - `association`, `repositoryName` (the review's own),
+ *   `config` (already resolved), `localPath` (the review's checkout), and
+ *   `resolvedToken` (the GLOBAL token from `app.get('githubToken')`).
+ * @returns {{binding: Object|null, hasToken: boolean}}
+ */
+function resolveReviewCredential({ association, repositoryName, config, localPath, resolvedToken }) {
+  const binding = association
+    ? resolveAssociationBinding(association, config, { localPath })
+    : resolveRepositoryBinding(repositoryName, config, { localPath });
+  return { binding, hasToken: Boolean(resolveFetchCredential(binding, resolvedToken)) };
+}
+
+/** Read the persisted PR association off a review row, or null. */
+function associationFromReview(review) {
+  if (!review || !review.associated_pr_number || !review.associated_pr_repository) return null;
+  return {
+    prNumber: review.associated_pr_number,
+    repository: review.associated_pr_repository,
+  };
+}
+
+/**
  * Get local review metadata
  */
 router.get('/api/local/:reviewId', async (req, res) => {
@@ -840,36 +895,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // try to get a fresh one from git remote for display purposes only.
     // Note: GET requests are read-only - no database writes here.
     // Repository name updates happen during session creation or refresh.
-    let repositoryName = review.repository;
-    let branchName = 'unknown';
-    if (review.local_path) {
-      try {
-        const { getRepositoryName, getCurrentBranch } = require('../local-review');
-
-        // Always fetch current branch from the working directory
-        branchName = await getCurrentBranch(review.local_path);
-
-        if (repositoryName && !repositoryName.includes('/')) {
-          const freshRepoName = await getRepositoryName(review.local_path);
-          if (freshRepoName && freshRepoName.includes('/')) {
-            repositoryName = freshRepoName;
-            // Just use the fresh name for this response - don't write to DB in GET
-            logger.log('API', `Using fresh repository name from git remote: ${freshRepoName}`, 'cyan');
-          }
-        }
-      } catch (repoError) {
-        // Keep the original name if we can't get a better one
-        logger.warn(`Could not refresh repository/branch info: ${repoError.message}`);
-      }
-    }
-
-    // Fall back to env var if local_path is not available (e.g. CLI-started sessions)
-    if (branchName === 'unknown') {
-      branchName = process.env.PAIR_REVIEW_BRANCH || 'unknown';
-      if (branchName !== 'unknown') {
-        logger.log('API', `Using PAIR_REVIEW_BRANCH env var for branch: ${branchName}`, 'cyan');
-      }
-    }
+    const { repositoryName, branchName } = await resolveReviewRepoAndBranch(review);
 
     // Build scope info for the response.
     // normalizeScope clamps any legacy invalid scopes (e.g. branch-only,
@@ -877,6 +903,26 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // from the working tree and the diff must match what they see.
     const { start: scopeStart, end: scopeEnd } = reviewScope(review);
     const baseBranch = review.local_base_branch || null;
+    const scopeIncludesBranch = includesBranch(scopeStart);
+
+    // LEFT-side anchor inputs: `mergeBaseSha` (what our diff's left column IS)
+    // and `scopeIncludesBranch`, both consumed by `_externalAnchorContext` in
+    // public/js/pr.js. They are NOT redundant with each other, and
+    // `mergeBaseSha` is null whenever the scope excludes the branch — see that
+    // function for why an equal sha alone must not buy left-side trust.
+    //
+    // This handler generates no diff, so the value is read the cheap way —
+    // one `git merge-base`, non-fatal, via the module namespace so tests can
+    // stub it. `set-scope`/`refresh` get theirs from `generateScopedDiff`.
+    let mergeBaseSha = null;
+    if (scopeIncludesBranch && review.local_path && baseBranch) {
+      try {
+        mergeBaseSha = await localReview.findMergeBase(review.local_path, baseBranch);
+      } catch (mergeBaseError) {
+        logger.debug(`Could not resolve merge-base for review #${reviewId}: ${mergeBaseError.message}`);
+        mergeBaseSha = null;
+      }
+    }
 
     // When scope does NOT include branch, check for branch detection info
     // Frontend uses this to suggest expanding scope to include branch.
@@ -946,9 +992,7 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // (req.app.get('githubToken')). Never re-resolve via getGitHubToken()
     // here — that would re-run `gh auth token` on every metadata GET.
     const resolvedToken = req.app.get('githubToken') || '';
-    const association = (review.associated_pr_number && review.associated_pr_repository)
-      ? { prNumber: review.associated_pr_number, repository: review.associated_pr_repository }
-      : null;
+    const association = associationFromReview(review);
 
     // Repo-aware credential resolution. `app.get('githubToken')` is the GLOBAL
     // token — it ignores repos[...].token / token_command and knows nothing
@@ -960,28 +1004,29 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // it is genuinely on the blocking path, and resolveHostBinding may shell
     // out to a token_command. config.js caches only SUCCESSFUL command output,
     // so a broken command would otherwise re-run `execSync` (5s timeout) on
-    // every GET; resolveAssociationBinding's negative memo bounds that to once
-    // per 30s. (The background base-branch block further down resolves its own
-    // binding per request, but that block runs AFTER res.json and blocks
-    // nothing.)
+    // every GET; the resolver's own token-less negative memo bounds that to
+    // once per 30s, and its git-remote read is memoized per checkout path for
+    // the life of the process. (The background base-branch block
+    // further down resolves its own binding per request, but that block runs
+    // AFTER res.json and blocks nothing.)
     //
-    // Goes through resolveAssociationBinding so the PR identity is translated
+    // Goes through resolveReviewCredential so the PR identity is translated
     // into a `repos[...]` key first — a raw owner/repo lookup misses
-    // url_pattern-keyed entries.
-    const associationBinding = resolveAssociationBinding(association, localConfig);
+    // url_pattern-keyed entries. `localPath` is threaded through so a DUAL
+    // repo binds the host its checkout names; see that helper's docblock.
+    //
     // hasGitHubToken answers "is GitHub reachable for THIS review?" — it gates
     // the frontend's cold-cache warm-up call, so a repo-scoped or alt-host
     // credential has to count even when no global token is configured.
     // Otherwise exactly the alt-host users this binding fix targets would
     // never trigger the fetch that makes their pill appear.
-    //
-    // Ask the provider's own rule rather than re-deriving it: an alt-host
-    // binding with an empty token is NOT covered by the global github.com
-    // token, so `resolvedToken || binding.token` would advertise reachability
-    // `fetchPRMetadata` refuses to act on (it returns null before constructing
-    // a client). Phases 2-5 gate on this flag, so the lie would propagate.
-    const hasAssociationCredential = Boolean(resolveFetchCredential(associationBinding, resolvedToken));
-    const hasToken = association ? hasAssociationCredential : Boolean(resolvedToken);
+    const { binding: associationBinding, hasToken } = resolveReviewCredential({
+      association,
+      repositoryName,
+      config: localConfig,
+      localPath: review.local_path,
+      resolvedToken
+    });
 
     // Phase 1: read PR metadata from cache only. Never block this response on
     // a GitHub round-trip — it is the page-load path.
@@ -1025,7 +1070,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
       localMode: review.local_mode || 'uncommitted',
       scopeStart,
       scopeEnd,
+      scopeIncludesBranch,
       baseBranch,
+      mergeBaseSha,
       branchInfo,
       branchAvailable,
       stackData,
@@ -1057,7 +1104,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // so guarding only here would leave the backoff unenforced. No clearing on
     // success is needed: once metadata is cached the `!prMetadata` guard
     // short-circuits before the negative check is consulted.
-    if (association && hasAssociationCredential && !prMetadata
+    // `hasToken` IS the association's credential here — the guard's own
+    // `association &&` is what makes that equivalence hold.
+    if (association && hasToken && !prMetadata
         && !isPRMetadataRecentlyNegative(association)) {
       (async () => {
         try {
@@ -1110,47 +1159,32 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // Race guard: associatePR() updates only WHERE associated_pr_number IS
     // NULL, so a concurrent write won't be clobbered. If the row was deleted
     // between res.json and the background write, the UPDATE matches 0 rows.
-    if (!review.associated_pr_number
-        && review.local_path
-        && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
-        && repositoryName && repositoryName.includes('/')
-        && !isPRDetectionRecentlyNegative(repositoryName, branchName)) {
-      // Resolved INSIDE the guard, never above it: resolution may shell out to
-      // a `token_command` (execSync, 5s timeout) and config.js caches only
-      // SUCCESSFUL output, so hoisting it made an already-associated review —
-      // which can never enter this block — pay that cost on every metadata GET.
-      // `resolveRepositoryBinding`'s 30s negative memo bounds what remains.
-      const detectionBinding = resolveRepositoryBinding(repositoryName, localConfig);
-      const detectionToken = detectionBinding?.token || resolvedToken;
-      if (detectionToken) {
-        const bgConfig = req.app.get('config') || {};
-        (async () => {
-          try {
-            const detection = await detectPRForBranch(review.local_path, branchName, {
-              repository: repositoryName,
-              githubToken: detectionToken,
-              hostBinding: detectionBinding,
-              enableGraphite: bgConfig.enable_graphite === true,
-              reviewRepo,
-              reviewId
-            });
-            if (!detection || !detection.prNumber) {
-              recordPRDetectionNegative(repositoryName, branchName);
-            }
-          } catch (err) {
-            logger.warn(`Background PR association detection failed for review #${reviewId}: ${err.message}`);
-          }
-        })();
-      }
-    }
+    //
+    // Fire-and-forget, NOT awaited: the response is already flushed. The
+    // awaited twin — where a client that rendered with `hasAssociatedPR: false`
+    // gets it back — is in `/pr-metadata`; see `runPRAssociationDetection`.
+    runPRAssociationDetection({
+      review,
+      reviewId,
+      repositoryName,
+      branchName,
+      config: req.app.get('config') || {},
+      resolvedToken,
+      reviewRepo
+    }).catch(err => {
+      logger.warn(`Background PR association detection failed for review #${reviewId}: ${err.message}`);
+    });
 
     // Background: pre-cache base branch detection so set-scope is fast later
     if (!includesBranch(scopeStart) && !review.local_base_branch
         && branchName && branchName !== 'HEAD' && branchName !== 'unknown'
         && repositoryName && repositoryName.includes('/')) {
       const bgConfig = req.app.get('config') || {};
-      const bgBinding = resolveHostBinding(repositoryName, bgConfig);
-      const bgToken = bgBinding.token;
+      // Shared resolver: base-branch detection reaches GitHub too
+      // (`tryGitHubPR`), so it must bind the same host as the rest of the
+      // review. May be null — the `_deps` block below is already token-gated.
+      const bgBinding = resolveRepositoryBinding(repositoryName, bgConfig, { localPath: review.local_path });
+      const bgToken = bgBinding?.token;
       const bgT0 = Date.now();
       const { detectBaseBranch } = require('../git/base-branch');
       detectBaseBranch(review.local_path, branchName, {
@@ -1239,18 +1273,36 @@ router.get('/api/local/:reviewId', async (req, res) => {
 });
 
 /**
- * GET /api/local/:reviewId/pr-metadata
+ * GET /api/local/:reviewId/pr-metadata[?refresh=1]
  *
- * Blocking counterpart to the cache-only read in `GET /api/local/:reviewId`.
- * That handler must never block on a GitHub round-trip — it is the page-load
- * path — so on a cold cache it returns `canShowPRMetadata: false` and warms
- * the cache in the background. Nothing re-renders the header afterwards
- * (there is no poll, and `refreshDiff` only touches diff/stats), so without
- * this endpoint the pill would not appear until a full page reload.
+ * The capability-recovery endpoint. Blocking counterpart to the cache-only
+ * read in `GET /api/local/:reviewId`, which must never block on a GitHub
+ * round-trip — it is the page-load path — so on a cold cache it returns
+ * `canShowPRMetadata: false` and warms the cache in the background. Nothing
+ * re-renders the header afterwards (there is no poll, and `refreshDiff` only
+ * touches diff/stats), so without this endpoint the pill would not appear
+ * until a full page reload.
  *
- * The frontend calls this exactly once, only when
- * `hasAssociatedPR && hasGitHubToken && !canShowPRMetadata` — i.e. the pill is
- * hidden solely because the cache is cold — and re-renders the header alone.
+ * It recovers TWO kinds of not-yet-known:
+ *
+ * 1. ASSOCIATION (the dirty-tree case). Neither entry point populates
+ *    `associated_pr_*` in the common case — `detectAndBuildBranchInfo` returns
+ *    null the moment there is a diff, and the CLI's `detectPRForBranch`
+ *    fallback only fires for a branch-inclusive scope, so the default
+ *    `unstaged..untracked` scope on a dirty tree gets neither. The main GET's
+ *    background backfill runs AFTER `res.json`, so the client has already
+ *    rendered with `hasAssociatedPR: false`. Detection therefore runs HERE,
+ *    awaited, and the row is re-read before capabilities are built.
+ *    Deliberately NOT done in the main GET: that would put a GitHub round
+ *    trip on the first render of every local review.
+ *
+ * 2. METADATA, including a STALE row. `pr_metadata` has no TTL (by design —
+ *    see `fetchPRMetadata`), so after the local HEAD moves the cached PR head
+ *    can be out of date and the frontend's anchor-trust check fails closed
+ *    permanently. `?refresh=1` forces a re-fetch.
+ *
+ * `?refresh=1` bypasses BOTH negative backoffs (see `canDetectPRAssociation`),
+ * but no refusal: the `hostAmbiguous` gate in `fetchPRMetadata` still stands.
  *
  * Returns the same `capabilities` + `associatedPR` shapes as the main GET so
  * the client can merge them into its existing state — including when the
@@ -1267,25 +1319,54 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config') || {};
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
+    let review = await reviewRepo.getLocalReviewById(reviewId);
 
     if (!review) {
       return res.status(404).json({ error: `Local review #${reviewId} not found` });
     }
 
-    const association = (review.associated_pr_number && review.associated_pr_repository)
-      ? { prNumber: review.associated_pr_number, repository: review.associated_pr_repository }
-      : null;
-
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
     const resolvedToken = req.app.get('githubToken') || '';
-    // Same PR-identity → binding-key → binding order as the main GET; see
-    // resolveAssociationBinding.
-    const binding = resolveAssociationBinding(association, config);
-    // Same credential rule as the main GET and as fetchPRMetadata below —
-    // see resolveFetchCredential.
-    const hasToken = association
-      ? Boolean(resolveFetchCredential(binding, resolvedToken))
-      : Boolean(resolvedToken);
+    let association = associationFromReview(review);
+
+    // Recovery leg 1 — see the header. Awaited on purpose; the negative cache
+    // inside bounds the cost, and `force` carries `?refresh=1` all the way
+    // into detection rather than stopping at the metadata backoff below.
+    let reviewRepositoryName = review.repository || null;
+    if (!association) {
+      const { repositoryName, branchName } = await resolveReviewRepoAndBranch(review);
+      reviewRepositoryName = repositoryName;
+      await runPRAssociationDetection({
+        review,
+        reviewId,
+        repositoryName,
+        branchName,
+        config,
+        resolvedToken,
+        reviewRepo,
+        force: forceRefresh
+      });
+      // Re-read rather than trusting the detection's return value: the write
+      // is guarded (`WHERE associated_pr_number IS NULL`), so the row is the
+      // only authority on what actually landed — and a concurrent backfill may
+      // have won the race with a perfectly good association.
+      const refreshed = await reviewRepo.getLocalReviewById(reviewId);
+      if (refreshed) {
+        review = refreshed;
+        association = associationFromReview(review);
+      }
+    }
+
+    // Resolved AFTER the recovery above: both are functions of the association
+    // it may have just created. Same helper as the main GET, so the capability
+    // cannot disagree between the two endpoints.
+    const { binding, hasToken } = resolveReviewCredential({
+      association,
+      repositoryName: reviewRepositoryName,
+      config,
+      localPath: review.local_path,
+      resolvedToken
+    });
 
     if (!association) {
       return res.json({
@@ -1305,8 +1386,11 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
     // path's backoff — while it is hot, answer from the cache (which may have
     // been filled by some other path since) and never call GitHub. Still a
     // well-formed 200: the contract is "the pill simply stays hidden".
+    //
+    // An EXPLICIT refresh overrides both: the cached row is the suspect, so it
+    // skips the cache-first short-circuit and bypasses the backoff.
     let prMetadata;
-    if (isPRMetadataRecentlyNegative(association)) {
+    if (!forceRefresh && isPRMetadataRecentlyNegative(association)) {
       prMetadata = await getCachedPRMetadata({
         prNumber: association.prNumber,
         repository: association.repository,
@@ -1318,6 +1402,7 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
         repository: association.repository,
         githubToken: resolvedToken,
         hostBinding: binding,
+        forceRefresh,
         db
       });
       if (!prMetadata) recordPRMetadataNegative(association);
@@ -2395,11 +2480,18 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
         branchAvailable,
         previousHeadSha: originalHeadSha,
         currentHeadSha: currentHeadSha || null,
+        // LEFT-side anchor inputs (see the main GET). `!hasBranch` by
+        // construction here, so null/false rather than stale carried-over
+        // values.
+        scopeIncludesBranch: false,
+        mergeBaseSha: null,
         stats: {}
       });
     }
 
-    const scopedResult = await generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
+    // Module-namespace call so `vi.spyOn(localReview, ...)` is observed — same
+    // reason as the diff route above.
+    const scopedResult = await localReview.generateScopedDiff(localPath, scopeStart, scopeEnd, review.local_base_branch);
     const diff = scopedResult.diff;
     const stats = scopedResult.stats;
     const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
@@ -2420,6 +2512,10 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
       branchAvailable,
       previousHeadSha: originalHeadSha,
       currentHeadSha: currentHeadSha || null,
+      // LEFT-side anchor inputs (see the main GET), kept current so they do
+      // not go stale after a commit/rebase moves the merge-base.
+      scopeIncludesBranch: hasBranch,
+      mergeBaseSha: scopedResult.mergeBaseSha ?? null,
       stats: {
         trackedChanges: stats.trackedChanges || 0,
         untrackedFiles: stats.untrackedFiles || 0,
@@ -2638,8 +2734,10 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
         } else {
           const { detectBaseBranch } = require('../git/base-branch');
           const config = req.app.get('config') || {};
-          const localBinding = resolveHostBinding(review.repository, config);
-          const token = localBinding.token;
+          // Shared resolver, like every other GitHub-reaching lookup in local
+          // mode — `review.repository` is an IDENTITY, not a config key.
+          const localBinding = resolveRepositoryBinding(review.repository, config, { localPath });
+          const token = localBinding?.token;
           const detection = await detectBaseBranch(localPath, currentBranch, {
             repository: review.repository,
             enableGraphite: config.enable_graphite === true,
@@ -2696,6 +2794,8 @@ router.post('/api/local/:reviewId/set-scope', async (req, res) => {
       success: true,
       scopeStart,
       scopeEnd,
+      // Reported alongside mergeBaseSha on every response that carries it.
+      scopeIncludesBranch: includesBranch(scopeStart),
       localMode: includesBranch(scopeStart) ? 'branch' : 'uncommitted',
       baseBranch,
       mergeBaseSha,
@@ -3133,16 +3233,29 @@ router._prDetectionCache = {
   ttlMs: PR_DETECTION_NEGATIVE_CACHE_TTL_MS
 };
 
-// Same idea for the association host-binding negative memo: module-level
-// state, so tests that mount several configs must be able to reset it.
-// `resolveAssociationBinding` / `resolveRepositoryBinding` are exposed so the
-// memo and the ambiguity marking can be exercised directly, without standing
-// up a route.
+// Same idea for the host-binding negative memo, which now lives in
+// providers/pr-context. Re-exposed here unchanged so the existing test surface
+// keeps working.
 router._hostBindingCache = {
   resolveAssociationBinding,
   resolveRepositoryBinding,
-  clear: _clearHostBindingFailureCache,
-  ttlMs: HOST_BINDING_FAILURE_TTL_MS
+  clear: _hostBindingInternals.clearHostBindingFailureCache,
+  ttlMs: _hostBindingInternals.hostBindingFailureTtlMs
+};
+
+// The git-remote hostname memo. Exposed so tests can clear it between cases
+// (it never expires) and seed it without shelling out to git.
+router._remoteHostnameCache = {
+  clear: _hostBindingInternals.clearRemoteHostnameCache,
+  set: _hostBindingInternals.setRemoteHostname,
+  get: _hostBindingInternals.getRemoteHostname,
+};
+
+// The in-flight PR-detection map. Exposed so a test can assert it drains, and
+// so a leaked entry from one test cannot suppress detection in the next.
+router._prDetectionInFlight = {
+  clear: () => inFlightPRDetections.clear(),
+  size: () => inFlightPRDetections.size,
 };
 
 module.exports = router;

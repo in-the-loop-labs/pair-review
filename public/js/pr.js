@@ -311,6 +311,19 @@ class PRManager {
     this._tourCleanupPending = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
+    // ---- External review comments -------------------------------------
+    /**
+     * Optional async hook a mode can install to refresh state that anchor
+     * trust depends on, run just before the refresh button's sync.
+     *
+     * `_externalAnchorContext` compares page-load snapshots, so after a push
+     * the cached PR head is stale and every thread renders degraded until
+     * something re-reads it. This is the seam: local mode installs a forced
+     * PR-metadata refresh; PR mode leaves it null. A throwing hook is logged
+     * and ignored — it must never block the sync.
+     * @type {?function(): (Promise<void>|void)}
+     */
+    this._onBeforeExternalCommentsRefresh = null;
     // Unique client ID for self-echo suppression on WebSocket review events.
     // Sent as X-Client-Id header on mutation requests; the server echoes
     // it back in the WebSocket broadcast so this tab can skip its own events.
@@ -1079,6 +1092,10 @@ class PRManager {
       // Fire-and-forget staleness check — shows badge or auto-refreshes
       this._stalenessPromise = this._checkStalenessOnLoad(owner, repo, number);
 
+      // After the AI panel exists and capabilities are known. Local mode calls
+      // the same method from LocalManager.
+      this._updateExternalCommentsAffordances();
+
       // Fire-and-forget external review-comment sync + render.
       // Runs after the diff and user comments have been rendered so the
       // external-comment manager has DOM anchors to attach blue rows to.
@@ -1128,15 +1145,14 @@ class PRManager {
     const includeDismissed = window.aiPanel?.showDismissedComments || false;
     await this.loadUserComments(includeDismissed);
     await this.loadAISuggestions(null, analysisRunId);
-    // Skip external-comment re-rendering entirely when the feature is off.
-    // The manager is never populated with rows in that case, so there's
-    // nothing to re-anchor.
+    // Skip external-comment re-rendering entirely when the feature is off or
+    // this review has no PR target. The manager is never populated with rows
+    // in either case, so there's nothing to re-anchor.
     if (!this._externalCommentsEnabled()) return;
+    if (!this.hasCapability('canViewPRComments')) return;
     try {
       if (typeof window !== 'undefined' && window.externalCommentManager) {
-        if (this.currentPR && this.currentPR.id) {
-          window.externalCommentManager.reviewId = this.currentPR.id;
-        }
+        this._prepareExternalCommentManager();
         if (syncExternal) {
           // refreshPR path: full sync+load through the canonical entry
           // point. `_loadExternalComments` already owns the toast + error
@@ -1162,6 +1178,9 @@ class PRManager {
    * the canonical attach point — pass it in for tests that build their
    * own button.
    *
+   * Before syncing, this awaits the optional `_onBeforeExternalCommentsRefresh`
+   * hook — see its declaration in the constructor.
+   *
    * @param {Object} [options]
    * @param {HTMLElement} [options.button] - The button element to toggle. Defaults to `#refresh-external-comments-btn-panel`.
    * @returns {Promise<void>}
@@ -1170,6 +1189,11 @@ class PRManager {
     // Defensive guard: even if a stale caller invokes this with the
     // feature disabled, swallow it. UI wiring already skips this path.
     if (!this._externalCommentsEnabled()) return;
+    // Paired capability guard, matching `_rerenderAllOverlays` and
+    // `_loadExternalComments`. Without it this handler is more permissive than
+    // `_updateExternalCommentsAffordances`, so a button that slipped past its
+    // `hidden` attribute could drive a subsystem with no PR target.
+    if (!this.hasCapability('canViewPRComments')) return;
     const btn = button
       || (typeof document !== 'undefined' ? document.getElementById('refresh-external-comments-btn-panel') : null);
     if (!btn || btn.disabled) return;
@@ -1178,6 +1202,20 @@ class PRManager {
     btn.setAttribute('aria-busy', 'true');
     btn.removeAttribute('data-state');
     try {
+      // Inside the spinner so the button stays busy for the whole operation.
+      // Cannot abort the sync: a stale head only degrades placement, while
+      // skipping the sync loses the new comments entirely.
+      //
+      // The `typeof` guard is not just null-safety: `await undefined` still
+      // costs a microtask, and PR mode (which never installs a hook) must
+      // reach `_loadExternalComments` on exactly the tick it always has.
+      if (typeof this._onBeforeExternalCommentsRefresh === 'function') {
+        try {
+          await this._onBeforeExternalCommentsRefresh();
+        } catch (err) {
+          console.warn('[external-comments] pre-refresh hook failed; syncing anyway', err);
+        }
+      }
       await this._loadExternalComments();
     } finally {
       btn.disabled = false;
@@ -1200,13 +1238,117 @@ class PRManager {
     return window.PAIR_REVIEW_RUNTIME_CONFIG?.external_comments_enabled !== false;
   }
 
+  /**
+   * Compute the inputs to the three anchor-trust gates. What each gate DOES
+   * and why it exists is documented once, in the ANCHOR TRUST section of
+   * public/js/modules/external-comment-manager.js; this only decides their
+   * values. PR mode has no `associatedPR`, so all three come out
+   * trusting/disarmed by construction and behaviour is unchanged.
+   *
+   * Two computation details that are not obvious from the gate descriptions:
+   *   - A cold metadata cache means no `head_sha`, which degrades rather than
+   *     assuming a match — the honest answer rather than a guess.
+   *   - `trustLeftAnchors` additionally requires `scopeIncludesBranch`: on the
+   *     default `unstaged..untracked` scope the left side is HEAD/index, not a
+   *     merge-base at all, so equal head shas must not buy left-side trust.
+   *
+   * Residual, accepted for v1 (plans/bridge-local-and-pr-modes.md decision 8):
+   * uncommitted working-tree edits at the SAME head_sha still shift lines.
+   * Content-based re-anchoring is the real fix and is deferred.
+   *
+   * @returns {{trustPreciseAnchors: boolean, trustLeftAnchors: boolean, prNumber: ?number, commitSha: ?string}}
+   * @private
+   */
+  _externalAnchorContext() {
+    const pr = this.currentPR || {};
+    const association = pr.associatedPR || null;
+    if (!association) {
+      // PR mode: both coordinate systems are the PR's own, by construction.
+      return {
+        trustPreciseAnchors: true,
+        trustLeftAnchors: true,
+        prNumber: pr.number ?? null,
+        commitSha: null
+      };
+    }
+    const localHead = pr.head_sha || null;
+    const prHead = association.head_sha || null;
+    const trustPreciseAnchors = Boolean(localHead && prHead && localHead === prHead);
+    // `localBaseSha` / `scopeIncludesBranch` come from the local API payload
+    // via LocalManager; both are absent in PR mode, which never reaches here.
+    const localBaseSha = pr.localBaseSha || null;
+    const prBaseSha = association.base_sha || null;
+    const scopeIncludesBranch = pr.scopeIncludesBranch === true;
+    const trustLeftAnchors = Boolean(
+      trustPreciseAnchors
+      && scopeIncludesBranch
+      && localBaseSha && prBaseSha && localBaseSha === prBaseSha
+    );
+    return {
+      trustPreciseAnchors,
+      trustLeftAnchors,
+      prNumber: association.prNumber ?? null,
+      commitSha: localHead
+    };
+  }
+
+  /**
+   * Point the shared external-comment manager at this review and tell it how
+   * much to trust precise anchors. Every entry into a render must go through
+   * here — the sync path and the GET-only re-render path both — or one of
+   * them renders with a stale reviewId or the wrong anchor policy.
+   * @returns {Object|null} the manager, or null when it isn't loaded
+   * @private
+   */
+  _prepareExternalCommentManager() {
+    const manager = (typeof window !== 'undefined') ? window.externalCommentManager : null;
+    if (!manager) return null;
+    if (this.currentPR && this.currentPR.id) {
+      manager.reviewId = this.currentPR.id;
+    }
+    if (typeof manager.setAnchorContext === 'function') {
+      manager.setAnchorContext(this._externalAnchorContext());
+    }
+    return manager;
+  }
+
+  /**
+   * Show or hide the external-comment affordances — the AI panel's "External"
+   * segment and the panel refresh button — from `canViewPRComments`.
+   *
+   * THE canonical policy site. It lives here rather than in AIPanel because
+   * the panel is built on DOMContentLoaded, before `window.prManager` exists
+   * in either mode, so it cannot read a capability at construction time. Call
+   * this once the flags are known: PR mode from `loadPR`, local mode from
+   * LocalManager after `GET /api/local/:reviewId` lands.
+   */
+  _updateExternalCommentsAffordances() {
+    const visible = this.hasCapability('canViewPRComments') && this._externalCommentsEnabled();
+
+    if (typeof document !== 'undefined') {
+      const btn = document.getElementById('refresh-external-comments-btn-panel');
+      if (btn) {
+        if (visible) btn.removeAttribute('hidden');
+        else btn.setAttribute('hidden', '');
+      }
+    }
+
+    const panel = (typeof window !== 'undefined') ? window.aiPanel : null;
+    if (panel && typeof panel.setExternalSegmentVisible === 'function') {
+      panel.setExternalSegmentVisible(visible);
+    }
+  }
+
   async _loadExternalComments() {
-    if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) return;
+    // Capability, not mode. PR mode hard-codes this true; local mode gets it
+    // from the backend, where it means "this review has an associated PR AND
+    // a credential that can actually fetch it".
+    if (!this.hasCapability('canViewPRComments')) return;
     if (!this._externalCommentsEnabled()) return;
     if (!this.currentPR || !this.currentPR.id) return;
     if (typeof window === 'undefined' || !window.externalCommentManager) return;
 
-    window.externalCommentManager.reviewId = this.currentPR.id;
+    this._prepareExternalCommentManager();
 
     // Route through the manager's `syncAndRender`. That method owns the
     // in-flight guard for the FULL sync+load sequence, so a GET-only
