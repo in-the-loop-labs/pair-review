@@ -12,6 +12,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  *
  * Fix: Both refreshPR() and refreshDiff() now call loadUserComments()
  * and loadAISuggestions() after re-rendering the diff.
+ *
+ * Since then each mode has extracted that sequence into a single shared
+ * helper — `_rerenderAllOverlays` (PR mode) and `_rerenderLocalOverlays`
+ * (local mode) — because a third overlay layer (external GitHub comments)
+ * arrived and the hand-rolled copies drifted: the local base-branch switch
+ * restored only external comments, silently dropping draft comments and AI
+ * suggestions from the diff. The source-text assertions below pin every
+ * rebuild path to its helper so a fourth overlay only has to be added once.
  */
 
 // Import the actual PRManager class from production code
@@ -224,8 +232,12 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
    * for both normal refreshes and HEAD-change updates.
    */
 
-  it('should verify local.js _applyRefreshedDiff calls loadUserComments and loadAISuggestions after loadLocalDiff', async () => {
-    // Read the source to confirm the fix is present
+  it('should verify local.js _applyRefreshedDiff re-renders all overlays after loadLocalDiff', async () => {
+    // Local mode now delegates to _rerenderLocalOverlays, mirroring the
+    // PR-mode _rerenderAllOverlays extraction asserted below. The sequence
+    // used to be hand-rolled at four separate diff-rebuild sites, and one of
+    // them (the base-branch switch) restored only external comments — the
+    // exact drift this extraction exists to prevent.
     const fs = require('fs');
     const path = require('path');
     const localSource = fs.readFileSync(
@@ -245,14 +257,12 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     // Verify loadLocalDiff is called
     expect(applyBody).toContain('await this.loadLocalDiff()');
 
-    // Verify loadUserComments is called AFTER loadLocalDiff
+    // Verify the overlays are restored AFTER the diff is rebuilt
     const loadDiffIdx = applyBody.indexOf('await this.loadLocalDiff()');
-    const loadCommentsIdx = applyBody.indexOf('await manager.loadUserComments(');
-    const loadSuggestionsIdx = applyBody.indexOf('await manager.loadAISuggestions(null, manager.selectedRunId)');
+    const overlaysIdx = applyBody.indexOf('_rerenderLocalOverlays');
 
-    expect(loadCommentsIdx).toBeGreaterThan(loadDiffIdx);
-    expect(loadSuggestionsIdx).toBeGreaterThan(loadDiffIdx);
-    expect(loadSuggestionsIdx).toBeGreaterThan(loadCommentsIdx);
+    expect(overlaysIdx).toBeGreaterThan(-1);
+    expect(overlaysIdx).toBeGreaterThan(loadDiffIdx);
 
     // Verify refreshDiff() calls _applyRefreshedDiff
     const refreshDiffMatch = localSource.match(
@@ -262,7 +272,7 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     expect(refreshDiffMatch[0]).toContain('this._applyRefreshedDiff(');
   });
 
-  it('should verify local.js _applyRefreshedDiff passes includeDismissed from aiPanel', async () => {
+  it('should verify local.js _rerenderLocalOverlays touches all three overlay renderers', async () => {
     const fs = require('fs');
     const path = require('path');
     const localSource = fs.readFileSync(
@@ -270,16 +280,20 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
       'utf-8'
     );
 
-    // Find the _applyRefreshedDiff method body
-    const applyMatch = localSource.match(
-      /async _applyRefreshedDiff\([^)]*\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\()/
+    // The shared local-mode overlay helper, matching the PR-mode assertion
+    // on _rerenderAllOverlays: adding a fourth overlay must only require
+    // updating this one helper.
+    const overlaysMatch = localSource.match(
+      /async _rerenderLocalOverlays\([\s\S]*?\)\s*\{[\s\S]*?(?=\n  (?:async\s)?\w+\s*\(|\n\})/
     );
-    expect(applyMatch).toBeTruthy();
-    const applyBody = applyMatch[0];
+    expect(overlaysMatch).toBeTruthy();
+    const overlaysBody = overlaysMatch[0];
 
     // Verify the dismissed filter flag is derived from aiPanel
-    expect(applyBody).toContain('window.aiPanel?.showDismissedComments');
-    expect(applyBody).toContain('await manager.loadUserComments(includeDismissed)');
+    expect(overlaysBody).toContain('window.aiPanel?.showDismissedComments');
+    expect(overlaysBody).toContain('loadUserComments(includeDismissed)');
+    expect(overlaysBody).toMatch(/loadAISuggestions/);
+    expect(overlaysBody).toMatch(/_renderExternalComments/);
   });
 });
 

@@ -9081,8 +9081,10 @@ describe('GET /api/local/:reviewId capabilities', () => {
     return result.lastID;
   }
 
-  // Phase 0 action contracts are hard-coded false in providers/pr-context.js.
-  // Each phase flips its own when the implementation ships.
+  // Baseline: every action contract false. Each phase flips its own when the
+  // implementation ships, so cases that expect a shipped flag spread this and
+  // override only that key (e.g. `{ ...ALL_ACTIONS_FALSE, canViewPRComments: true }`)
+  // — keeping the still-unshipped flags pinned by exact match.
   const ALL_ACTIONS_FALSE = {
     canShowPRMetadata: false,
     canViewPRComments: false,
@@ -9148,7 +9150,7 @@ describe('GET /api/local/:reviewId capabilities', () => {
     await waitForBackgroundFetch();
   });
 
-  it('reports both prerequisites true when PR is associated and token is present (action flags still Phase-0 false)', async () => {
+  it('reports both prerequisites true when PR is associated and token is present (Phase 2 flips canViewPRComments)', async () => {
     // Default test app already has githubToken: 'test-token'
     const reviewId = await insertLocal({ associatedPrNumber: 456, associatedPrRepository: 'owner/repo' });
 
@@ -9159,6 +9161,13 @@ describe('GET /api/local/:reviewId capabilities', () => {
       hasAssociatedPR: true,
       hasGitHubToken: true,
       ...ALL_ACTIONS_FALSE,
+      // Association + usable credential is exactly the Phase 2 contract —
+      // and this row has NO pr_metadata, so `canShowPRMetadata` is false in
+      // the same breath. That independence is deliberate: external comments
+      // and PR metadata are separate fetches, and gating the threads on an
+      // unrelated cache miss would hide a working feature. The frontend
+      // degrades anchoring to file level when head_sha is unknown instead.
+      canViewPRComments: true,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
     // Association + token + cold cache fires the background fetch; settle it
@@ -9196,6 +9205,8 @@ describe('GET /api/local/:reviewId capabilities', () => {
       hasGitHubToken: true,
       ...ALL_ACTIONS_FALSE,
       canShowPRMetadata: true,
+      // Phase 2: association + token, independent of the metadata cache.
+      canViewPRComments: true,
     });
     expect(response.body.associatedPR).toEqual({
       prNumber,
@@ -9206,6 +9217,10 @@ describe('GET /api/local/:reviewId capabilities', () => {
       state: 'open',
       merged: false,
       head_sha: 'bbb222',
+      // Phase 2 companion to head_sha: LEFT-side (removed-line) anchors carry
+      // line numbers from the PR's BASE commit, so the frontend needs it to
+      // decide whether the local diff's left side describes the same text.
+      base_sha: 'aaa111',
     });
     // Warm cache short-circuits before any GitHub call.
     expect(fetchPullRequestSpy).not.toHaveBeenCalled();
@@ -9407,6 +9422,7 @@ describe('GET /api/local/:reviewId/pr-metadata', () => {
       state: 'open',
       merged: false,
       head_sha: 'bbb222',
+      base_sha: 'aaa111',
     });
   });
 
@@ -9436,5 +9452,678 @@ describe('GET /api/local/:reviewId/pr-metadata', () => {
     expect(response.status).toBe(200);
     expect(response.body.capabilities.canShowPRMetadata).toBe(false);
     expect(response.body.associatedPR).toEqual({ prNumber: 79, repository: 'owner/repo' });
+  });
+});
+
+
+// ============================================================================
+// Local mode: LEFT-side anchor facts, capability recovery, forced refresh
+// ============================================================================
+
+describe('Local mode anchor facts and capability recovery', () => {
+  const localReviewModule = require('../../src/local-review');
+  const baseBranchModule = require('../../src/git/base-branch');
+  // The remote-hostname read behind dual-host binding lives here now (the
+  // resolver in providers/pr-context calls it through this namespace), so this
+  // is the seam that keeps the tests off real git.
+  const hostResolutionModule = require('../../src/utils/host-resolution');
+
+  let db;
+  let app;
+  let server;
+  let savedToken;
+  let fetchPullRequestSpy;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+    server = await listenOnLoopback(app);
+    savedToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+
+    // No real network, ever (tests/CONVENTIONS.md). Two entry points:
+    // `fetchPullRequest` for metadata, and `findPRByBranch` for detection's
+    // Graphite-enrichment lookup (`tryGitHubPR`), which fires whenever
+    // detectBaseBranch returns no prNumber.
+    fetchPullRequestSpy = vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(null);
+    vi.spyOn(GitHubClient.prototype, 'findPRByBranch').mockResolvedValue(null);
+
+    // No real git, either. Every helper the local routes reach is called
+    // through the local-review module NAMESPACE, so these spies are observed
+    // even though routes/local.js was required at the top of this file.
+    vi.spyOn(localReviewModule, 'getCurrentBranch').mockResolvedValue('feature-x');
+    vi.spyOn(localReviewModule, 'getRepositoryName').mockResolvedValue('owner/repo');
+    vi.spyOn(hostResolutionModule, 'getRemoteHostname').mockReturnValue('github.com');
+
+    localRoutes._prDetectionCache.clear();
+    localRoutes._hostBindingCache.clear();
+    localRoutes._remoteHostnameCache.clear();
+  });
+
+  afterEach(async () => {
+    if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
+    localRoutes._prDetectionCache.clear();
+    localRoutes._hostBindingCache.clear();
+    localRoutes._remoteHostnameCache.clear();
+    vi.restoreAllMocks();
+    applyDefaultMocks();
+    await closeServer(server);
+    if (db) await closeTestDatabase(db);
+  });
+
+  async function insertLocal({
+    scopeStart = 'unstaged',
+    scopeEnd = 'untracked',
+    baseBranch = null,
+    associatedPrNumber = null,
+    associatedPrRepository = 'owner/repo',
+    localPath = '/mock/anchor-repo',
+    headSha = 'localhead'
+  } = {}) {
+    const result = await run(db, `
+      INSERT INTO reviews (
+        repository, status, review_type, local_path, local_head_sha,
+        local_scope_start, local_scope_end, local_base_branch,
+        associated_pr_number, associated_pr_repository
+      )
+      VALUES ('owner/repo', 'draft', 'local', ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      localPath, headSha, scopeStart, scopeEnd, baseBranch,
+      associatedPrNumber, associatedPrNumber ? associatedPrRepository : null
+    ]);
+    return result.lastID;
+  }
+
+  // --------------------------------------------------------------------
+  // Finding D: mergeBaseSha + scopeIncludesBranch + associatedPR.base_sha
+  // --------------------------------------------------------------------
+
+  describe('GET /api/local/:reviewId carries the LEFT-side anchor facts', () => {
+    it('reports mergeBaseSha and scopeIncludesBranch=true on a branch-inclusive scope', async () => {
+      const mergeBaseSpy = vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue('mb-abc123');
+      const reviewId = await insertLocal({ scopeStart: 'branch', baseBranch: 'main' });
+
+      const response = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.scopeIncludesBranch).toBe(true);
+      expect(response.body.mergeBaseSha).toBe('mb-abc123');
+      expect(mergeBaseSpy).toHaveBeenCalledWith('/mock/anchor-repo', 'main');
+    });
+
+    it('reports mergeBaseSha=null and scopeIncludesBranch=false on the default scope, without shelling out', async () => {
+      // On `unstaged..untracked` the rendered left side is HEAD/index, not a
+      // merge-base at all — so there is nothing to compute and nothing a
+      // coincidentally-equal base sha should be allowed to buy.
+      const mergeBaseSpy = vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue('should-not-be-used');
+      const reviewId = await insertLocal({ baseBranch: 'main' });
+
+      const response = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.scopeIncludesBranch).toBe(false);
+      expect(response.body.mergeBaseSha).toBeNull();
+      expect(mergeBaseSpy).not.toHaveBeenCalled();
+    });
+
+    it('degrades mergeBaseSha to null (never 500s) when git cannot answer', async () => {
+      vi.spyOn(localReviewModule, 'findMergeBase').mockRejectedValue(new Error('not a git repository'));
+      const reviewId = await insertLocal({ scopeStart: 'branch', baseBranch: 'main' });
+
+      const response = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.mergeBaseSha).toBeNull();
+      expect(response.body.scopeIncludesBranch).toBe(true);
+    });
+
+  });
+
+  describe('POST /api/local/:reviewId/refresh carries them too', () => {
+    it('returns the freshly computed mergeBaseSha and scopeIncludesBranch', async () => {
+      // The refresh handler already had the sha in hand from generateScopedDiff
+      // and discarded it; without it, the anchor facts go stale the moment a
+      // commit moves the merge-base.
+      vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('localhead');
+      vi.spyOn(localReviewModule, 'computeScopedDigest').mockResolvedValue('digest-1');
+      vi.spyOn(localReviewModule, 'generateScopedDiff').mockResolvedValue({
+        diff: 'diff --git a/x.js b/x.js',
+        stats: { trackedChanges: 1, untrackedFiles: 0, stagedChanges: 0, unstagedChanges: 1 },
+        mergeBaseSha: 'mb-after-refresh'
+      });
+      const reviewId = await insertLocal({ scopeStart: 'branch', baseBranch: 'main' });
+
+      const response = await request(server).post(`/api/local/${reviewId}/refresh`).send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.mergeBaseSha).toBe('mb-after-refresh');
+      expect(response.body.scopeIncludesBranch).toBe(true);
+    });
+
+    it('reports the same keys on the deferred HEAD-change path (null / false)', async () => {
+      // Non-branch scope + moved HEAD returns before any diff is computed. The
+      // client must still get a well-formed shape rather than a missing key.
+      vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('moved-head');
+      const reviewId = await insertLocal({ headSha: 'localhead' });
+
+      const response = await request(server).post(`/api/local/${reviewId}/refresh`).send({});
+
+      expect(response.status).toBe(200);
+      expect(response.body.headShaChanged).toBe(true);
+      expect(response.body.mergeBaseSha).toBeNull();
+      expect(response.body.scopeIncludesBranch).toBe(false);
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // Finding A: /pr-metadata is the capability-recovery endpoint
+  // --------------------------------------------------------------------
+
+  describe('GET /api/local/:reviewId/pr-metadata recovers a missing association', () => {
+    /**
+     * Drive the REAL `detectPRForBranch`: it reaches `detectBaseBranch`
+     * through the base-branch module object, so a module spy is observed even
+     * though routes/local.js destructured `detectPRForBranch` at load time.
+     */
+    function stubDetection(prNumber) {
+      return vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue({
+        baseBranch: 'main',
+        source: 'github',
+        prNumber
+      });
+    }
+
+    it('detects inline, persists the association, and returns recovered capabilities', async () => {
+      // THE CRITICAL REGRESSION. On a dirty tree nothing populates
+      // associated_pr_* before the first render: detectAndBuildBranchInfo
+      // bails on any diff, and the CLI fallback only fires for a
+      // branch-inclusive scope. The main GET's backfill runs after res.json,
+      // so the client renders with hasAssociatedPR:false and its one
+      // capability-refreshing call is this endpoint — which was itself gated
+      // on that flag. Recovery has to happen here or not at all.
+      const detectSpy = stubDetection(9090);
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+      expect(response.status).toBe(200);
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+      expect(response.body.capabilities.hasAssociatedPR).toBe(true);
+      expect(response.body.capabilities.canViewPRComments).toBe(true);
+      expect(response.body.associatedPR).toMatchObject({ prNumber: 9090, repository: 'owner/repo' });
+
+      // Real SQL: the association is persisted, so the next page load starts
+      // with it rather than repeating the recovery.
+      const row = await queryOne(db, 'SELECT associated_pr_number, associated_pr_repository FROM reviews WHERE id = ?', [reviewId]);
+      expect(row.associated_pr_number).toBe(9090);
+      expect(row.associated_pr_repository).toBe('owner/repo');
+    });
+
+    it('honours the shared negative cache so a PR-less branch is probed once', async () => {
+      // Detection that finds nothing must not re-hit GitHub on every call to
+      // an endpoint the frontend may poll on refresh.
+      const detectSpy = stubDetection(null);
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const first = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+      expect(first.status).toBe(200);
+      expect(first.body.capabilities.hasAssociatedPR).toBe(false);
+      expect(first.body.associatedPR).toBeNull();
+
+      const second = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+      expect(second.status).toBe(200);
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays a well-formed 200 when detection throws', async () => {
+      vi.spyOn(baseBranchModule, 'detectBaseBranch').mockRejectedValue(new Error('github exploded'));
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const response = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.associatedPR).toBeNull();
+      expect(response.body.capabilities.hasAssociatedPR).toBe(false);
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // Finding C: ?refresh=1 forces a re-fetch past the cache
+  // --------------------------------------------------------------------
+
+  describe('GET /api/local/:reviewId/pr-metadata?refresh=1', () => {
+    async function seedWarmRow(prNumber, headSha) {
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [prNumber, 'owner/repo', 'Stale title', 'octocat', 'main', 'feature-x', JSON.stringify({
+        state: 'open', merged: false,
+        html_url: `https://github.com/owner/repo/pull/${prNumber}`,
+        base_sha: 'stale-base', head_sha: headSha
+      })]);
+    }
+
+    it('re-fetches and rewrites the row where the unforced call served the cache', async () => {
+      // The staleness this exists for: review uncommitted work at PR head,
+      // commit, refresh. Local HEAD moves, the TTL-less cached PR head does
+      // not, and every thread renders degraded with a note that is no longer
+      // true. Nothing but this rewrites the row.
+      const prNumber = 6001;
+      const reviewId = await insertLocal({ associatedPrNumber: prNumber });
+      await seedWarmRow(prNumber, 'old-head');
+
+      // Unforced: cache-first, no GitHub call, stale head.
+      const unforced = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+      expect(unforced.status).toBe(200);
+      expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+      expect(unforced.body.associatedPR.head_sha).toBe('old-head');
+      expect(unforced.body.associatedPR.title).toBe('Stale title');
+
+      fetchPullRequestSpy.mockResolvedValue({
+        number: prNumber,
+        node_id: 'PR_node6001',
+        title: 'Fresh title',
+        body: 'desc',
+        author: 'octocat',
+        state: 'open',
+        merged: false,
+        base_branch: 'main',
+        head_branch: 'feature-x',
+        base_sha: 'fresh-base',
+        head_sha: 'new-head',
+        html_url: `https://github.com/owner/repo/pull/${prNumber}`
+      });
+
+      const forced = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(forced.status).toBe(200);
+      expect(fetchPullRequestSpy).toHaveBeenCalledTimes(1);
+      expect(forced.body.associatedPR.head_sha).toBe('new-head');
+      expect(forced.body.associatedPR.base_sha).toBe('fresh-base');
+      expect(forced.body.associatedPR.title).toBe('Fresh title');
+      expect(forced.body.capabilities.canShowPRMetadata).toBe(true);
+
+      // Real SQL: the cached row itself is rewritten, so a later unforced
+      // read is fresh too.
+      const row = await queryOne(db, 'SELECT title FROM pr_metadata WHERE pr_number = ? AND repository = ?', [prNumber, 'owner/repo']);
+      expect(row.title).toBe('Fresh title');
+    });
+
+    it('bypasses the negative backoff, because the user asked for this one by hand', async () => {
+      const prNumber = 6002;
+      const reviewId = await insertLocal({ associatedPrNumber: prNumber });
+      // Arm the shared backoff exactly as a failed fetch would.
+      localRoutes._prDetectionCache.recordPRDetectionNegative('owner/repo', `pr#${prNumber}`);
+
+      // Unforced while the backoff is hot: cache-only, no GitHub call.
+      await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+      expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+
+      fetchPullRequestSpy.mockResolvedValue({
+        number: prNumber, node_id: 'PR_node6002', title: 'Forced past the backoff',
+        body: '', author: 'octocat', state: 'open', merged: false,
+        base_branch: 'main', head_branch: 'feature-x',
+        base_sha: 'b', head_sha: 'h',
+        html_url: `https://github.com/owner/repo/pull/${prNumber}`
+      });
+
+      const forced = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(forced.status).toBe(200);
+      expect(fetchPullRequestSpy).toHaveBeenCalledTimes(1);
+      expect(forced.body.associatedPR.title).toBe('Forced past the backoff');
+    });
+
+  });
+});
+
+// ============================================================================
+// Local mode: ONE host resolver for the write and read sides, detection
+// backoff/dedup, and repo-scoped credential capability
+// ============================================================================
+
+/**
+ * FINDING 1 (web write entry point) + FINDINGS 3, 4, 5.
+ *
+ * The association row is host-blind (a PR number + an owner/repo), so on a
+ * DUAL repo (`api_host` + `exclusive: false`) the WRITE side (`POST
+ * /api/local/start`, detection) and the READ side (metadata fetch) must resolve
+ * the host through the SAME function. Otherwise github.com PR #77 gets
+ * associated and the alt host's unrelated PR #77 gets read, cached, and synced
+ * onto the reviewer's code.
+ */
+describe('Local mode host resolution, detection backoff and credentials', () => {
+  const localReviewModule = require('../../src/local-review');
+  const baseBranchModule = require('../../src/git/base-branch');
+  const configModule = require('../../src/config');
+  const prContext = require('../../src/providers/pr-context');
+  const fsp = require('fs').promises;
+  const { execSync: childExecSync } = require('child_process');
+
+  const ALT_HOST = 'https://alt.example.com/api/v3';
+  const REPO = 'owner/repo';
+
+  let db;
+  let app;
+  let server;
+  let savedToken;
+  let fetchPullRequestSpy;
+  let tmpDir;
+
+  /** DUAL repo: PRs may live on github.com OR the alt host. */
+  const dualConfig = () => ({
+    port: 7247,
+    github_token: 'GH_TOKEN',
+    external_comments: false,
+    repos: { [REPO]: { api_host: ALT_HOST, exclusive: false, token: 'ALT_TOKEN' } }
+  });
+
+  async function mount(config, globalToken = 'GH_TOKEN') {
+    app = createTestApp(db);
+    app.set('config', config);
+    app.set('githubToken', globalToken);
+    server = await listenOnLoopback(app);
+  }
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    savedToken = process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+
+    // No real network (tests/CONVENTIONS.md).
+    fetchPullRequestSpy = vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(null);
+    vi.spyOn(GitHubClient.prototype, 'findPRByBranch').mockResolvedValue(null);
+
+    // No real git for the helpers the routes reach through the module namespace
+    // (or an inline require, which resolves off the same object).
+    vi.spyOn(localReviewModule, 'getCurrentBranch').mockResolvedValue('feature-x');
+    vi.spyOn(localReviewModule, 'getRepositoryName').mockResolvedValue(REPO);
+    vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('abc123');
+    vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue(null);
+    vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue(null);
+
+    localRoutes._prDetectionCache.clear();
+    localRoutes._hostBindingCache.clear();
+    localRoutes._remoteHostnameCache.clear();
+    localRoutes._prDetectionInFlight.clear();
+  });
+
+  afterEach(async () => {
+    if (savedToken !== undefined) process.env.GITHUB_TOKEN = savedToken;
+    localRoutes._prDetectionCache.clear();
+    localRoutes._hostBindingCache.clear();
+    localRoutes._remoteHostnameCache.clear();
+    localRoutes._prDetectionInFlight.clear();
+    vi.restoreAllMocks();
+    applyDefaultMocks();
+    if (server) await closeServer(server);
+    server = undefined;
+    if (tmpDir) { await fsp.rm(tmpDir, { recursive: true, force: true }); tmpDir = undefined; }
+    if (db) await closeTestDatabase(db);
+  });
+
+  /**
+   * A REAL (empty) git checkout. `POST /api/local/start` reaches
+   * `generateScopedDiff`, which routes/local.js destructured at module load —
+   * so unlike the helpers above it cannot be stubbed from here and needs a
+   * working tree to diff. Per-test mkdtemp (tests/CONVENTIONS.md).
+   */
+  async function makeGitRepo(prefix) {
+    const dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), prefix));
+    const opts = { cwd: dir, stdio: 'pipe' };
+    childExecSync('git init', opts);
+    childExecSync('git config user.email "test@test.com"', opts);
+    childExecSync('git config user.name "Test User"', opts);
+    childExecSync('git commit --allow-empty -m "init"', opts);
+    return dir;
+  }
+
+  async function insertLocal({ associatedPrNumber = null, localPath = '/mock/dual-checkout' } = {}) {
+    const result = await run(db, `
+      INSERT INTO reviews (
+        repository, status, review_type, local_path, local_head_sha,
+        local_scope_start, local_scope_end, associated_pr_number, associated_pr_repository
+      )
+      VALUES (?, 'draft', 'local', ?, 'localhead', 'unstaged', 'untracked', ?, ?)
+    `, [REPO, localPath, associatedPrNumber, associatedPrNumber ? REPO : null]);
+    return result.lastID;
+  }
+
+  // ------------------------------------------------------------------
+  // FINDING 1 — POST /api/local/start (the web UI write entry point)
+  // ------------------------------------------------------------------
+
+  describe('POST /api/local/start binds the host the checkout names', () => {
+    it('resolves the ALT host from the git remote instead of the github.com guess', async () => {
+      tmpDir = await makeGitRepo('pr-local-dual-start-');
+      vi.spyOn(localReviewModule, 'findGitRoot').mockResolvedValue(tmpDir);
+      vi.spyOn(localReviewModule, 'findMainGitRoot').mockResolvedValue(tmpDir);
+      // Seed the checkout's remote so nothing shells out to git.
+      localRoutes._remoteHostnameCache.set(tmpDir, 'alt.example.com');
+
+      const config = dualConfig();
+      await mount(config);
+      // pr-context calls config.resolveHostBinding through the module
+      // namespace, so this spy sees exactly what the route bound.
+      const bindingSpy = vi.spyOn(configModule, 'resolveHostBinding');
+
+      const res = await request(server).post('/api/local/start').send({ path: tmpDir });
+      expect(res.status).toBe(200);
+
+      // Every resolve for this repo named the alt host. The two-argument
+      // ambiguity form (options undefined) would be the github.com GUESS.
+      const calls = bindingSpy.mock.calls.filter(c => c[0] === REPO);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call[2]).toEqual({ host: ALT_HOST });
+      }
+
+      // ...and the READ side for the same checkout agrees. This equality is
+      // the invariant: detection and metadata-fetch cannot disagree.
+      const readBinding = prContext.resolveAssociationBinding(
+        { prNumber: 77, repository: REPO }, config, { localPath: tmpDir }
+      );
+      expect(readBinding).toMatchObject({ host: ALT_HOST, token: 'ALT_TOKEN' });
+      expect(readBinding.hostAmbiguous).toBeUndefined();
+    });
+
+  });
+
+  // ------------------------------------------------------------------
+  // FINDING 1 — the READ side stamps the SAME host the write side bound
+  // ------------------------------------------------------------------
+
+  it('caches pr_metadata under the alt host the checkout named, never github.com', async () => {
+    const localPath = '/mock/alt-checkout';
+    localRoutes._remoteHostnameCache.set(localPath, 'alt.example.com');
+    await mount(dualConfig());
+    const reviewId = await insertLocal({ associatedPrNumber: 77, localPath });
+
+    const seenCredentials = [];
+    const OriginalClient = GitHubClient;
+    fetchPullRequestSpy.mockImplementation(async function () {
+      seenCredentials.push(this.binding || this.token || null);
+      return {
+        number: 77, node_id: 'PR_alt77', title: 'Alt host PR', body: '',
+        author: 'octocat', state: 'open', merged: false,
+        base_branch: 'main', head_branch: 'feature-x',
+        base_sha: 'aaa', head_sha: 'bbb',
+        html_url: 'https://alt.example.com/owner/repo/pull/77'
+      };
+    });
+    expect(OriginalClient).toBeTruthy();
+
+    const res = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+    expect(res.status).toBe(200);
+    expect(res.body.associatedPR.title).toBe('Alt host PR');
+
+    // The row records the alt host — the same one detection would have used.
+    const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE pr_number = ? AND repository = ?', [77, REPO]);
+    expect(row.host).toBe(ALT_HOST);
+  });
+
+  it('writes NO pr_metadata row when the host is ambiguous (refusal still stands)', async () => {
+    const localPath = '/mock/mirror-checkout';
+    localRoutes._remoteHostnameCache.set(localPath, 'mirror.internal');
+    await mount(dualConfig());
+    const reviewId = await insertLocal({ associatedPrNumber: 77, localPath });
+
+    const res = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.capabilities.canShowPRMetadata).toBe(false);
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+    const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE pr_number = ? AND repository = ?', [77, REPO]);
+    expect(row).toBeFalsy();
+  });
+
+  // ------------------------------------------------------------------
+  // FINDING 3 — ?refresh=1 bypasses the DETECTION negative cache too
+  // ------------------------------------------------------------------
+
+  describe('GET /api/local/:reviewId/pr-metadata?refresh=1 and the detection backoff', () => {
+    it('skips detection while the negative is hot on an UNFORCED call', async () => {
+      await mount({ port: 7247, github_token: 'GH_TOKEN', external_comments: false });
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+      const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch')
+        .mockResolvedValue({ baseBranch: 'main', source: 'github', prNumber: 4242 });
+      // Arm the backoff exactly as a rate-limited probe would have.
+      localRoutes._prDetectionCache.recordPRDetectionNegative(REPO, 'feature-x');
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+      expect(res.status).toBe(200);
+      expect(detectSpy).not.toHaveBeenCalled();
+      expect(res.body.capabilities.hasAssociatedPR).toBe(false);
+    });
+
+    it('runs detection anyway on a FORCED refresh, so the user can recover in-page', async () => {
+      await mount({ port: 7247, github_token: 'GH_TOKEN', external_comments: false });
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+      const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch')
+        .mockResolvedValue({ baseBranch: 'main', source: 'github', prNumber: 4242 });
+      localRoutes._prDetectionCache.recordPRDetectionNegative(REPO, 'feature-x');
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(res.status).toBe(200);
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+      expect(res.body.capabilities.hasAssociatedPR).toBe(true);
+      const row = await queryOne(db, 'SELECT associated_pr_number FROM reviews WHERE id = ?', [reviewId]);
+      expect(row.associated_pr_number).toBe(4242);
+    });
+
+    it('still honours the STRUCTURAL guards on a forced refresh (already associated → no probe)', async () => {
+      await mount({ port: 7247, github_token: 'GH_TOKEN', external_comments: false });
+      const reviewId = await insertLocal({ associatedPrNumber: 4242 });
+      const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch')
+        .mockResolvedValue({ baseBranch: 'main', source: 'github', prNumber: 1 });
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(res.status).toBe(200);
+      expect(detectSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // FINDING 4 — repo-scoped credentials count for hasGitHubToken
+  // ------------------------------------------------------------------
+
+  describe('hasGitHubToken for a review with no association', () => {
+    it('is TRUE when the only credential is repo-scoped (no global token)', async () => {
+      // The deadlock this unblocks: the frontend gates its /pr-metadata warm-up
+      // on this flag, and /pr-metadata is the only thing that can CREATE the
+      // association on a dirty tree. `app.get('githubToken')` knows nothing
+      // about repos[...].token, so these users were told "no GitHub" forever.
+      await mount({
+        port: 7247,
+        external_comments: false,
+        repos: { [REPO]: { token: 'REPO_SCOPED_TOKEN' } }
+      }, ''); // no global token at all
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const res = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities.hasGitHubToken).toBe(true);
+    });
+
+    it('is TRUE on the /pr-metadata endpoint too (one rule, both endpoints)', async () => {
+      await mount({
+        port: 7247,
+        external_comments: false,
+        repos: { [REPO]: { token: 'REPO_SCOPED_TOKEN' } }
+      }, '');
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities.hasGitHubToken).toBe(true);
+    });
+
+    it('is FALSE for an alt-host repo whose binding has no token (never borrows the github.com one)', async () => {
+      await mount({
+        port: 7247,
+        github_token: 'GH_TOKEN',
+        external_comments: false,
+        repos: { [REPO]: { api_host: ALT_HOST } } // exclusive alt host, no credential
+      }, 'GH_TOKEN');
+      const reviewId = await insertLocal({ associatedPrNumber: null });
+
+      const res = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities.hasGitHubToken).toBe(false);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // FINDING 5 — concurrent first-load requests share ONE probe
+  // ------------------------------------------------------------------
+
+  it('de-duplicates concurrent PR detection: two overlapping requests, one GitHub probe', async () => {
+    await mount({ port: 7247, github_token: 'GH_TOKEN', external_comments: false });
+    const reviewId = await insertLocal({ associatedPrNumber: null });
+
+    // Gate the probe so the second request provably overlaps the first.
+    let releaseProbe;
+    const gate = new Promise(resolve => { releaseProbe = resolve; });
+    const detectSpy = vi.spyOn(baseBranchModule, 'detectBaseBranch').mockImplementation(async () => {
+      await gate;
+      return { baseBranch: 'main', source: 'github', prNumber: 5150 };
+    });
+
+    // Every /pr-metadata request reads the review row before it can reach
+    // detection, so this counter is the deterministic "request N has arrived"
+    // signal (tests/CONVENTIONS.md: never wait a fixed duration).
+    const getByIdSpy = vi.spyOn(ReviewRepository.prototype, 'getLocalReviewById');
+
+    // `.then()` is what dispatches a supertest Test — holding the object
+    // without it sends nothing.
+    const first = request(server).get(`/api/local/${reviewId}/pr-metadata`).then(r => r);
+    // The first probe is now parked inside detectBaseBranch.
+    await vi.waitFor(() => expect(detectSpy).toHaveBeenCalledTimes(1));
+
+    const second = request(server).get(`/api/local/${reviewId}/pr-metadata`).then(r => r);
+    // Wait until the SECOND request has read the row; from there to the
+    // in-flight join it only awaits already-resolved promises, so draining the
+    // microtask queue is enough (and is deterministic, unlike a sleep).
+    await vi.waitFor(() => expect(getByIdSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await new Promise(setImmediate);
+    await new Promise(setImmediate);
+
+    releaseProbe();
+    const [resA, resB] = await Promise.all([first, second]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+    // ONE probe for the (repo, branch) pair, not one per request.
+    expect(detectSpy).toHaveBeenCalledTimes(1);
+    expect(resA.body.capabilities.hasAssociatedPR).toBe(true);
+    expect(resB.body.capabilities.hasAssociatedPR).toBe(true);
+    // And the map drains, so the next load is free to probe again.
+    expect(localRoutes._prDetectionInFlight.size()).toBe(0);
   });
 });

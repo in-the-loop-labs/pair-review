@@ -44,10 +44,12 @@ class LocalManager {
       canSubmitToGitHub: false    // Phase 5
     };
     // Cold-cache PR metadata warm-up state; see _maybeWarmPRMetadata().
-    // `_prMetadataWarmAttempted` is an in-flight latch (held across the
-    // request, released again when the attempt failed recoverably);
+    // `_prMetadataWarmHolder` is an in-flight HOLD: null when free, otherwise
+    // the token of the path holding it. A token rather than a boolean because
+    // TWO paths take this hold and can overlap, so a release must not clear a
+    // hold somebody else is still relying on.
     // `_prMetadataWarmAttempts` is the hard per-page-load retry budget.
-    this._prMetadataWarmAttempted = false;
+    this._prMetadataWarmHolder = null;
     this._prMetadataWarmAttempts = 0;
 
     // Wait for PRManager to be ready, then initialize local mode
@@ -185,6 +187,21 @@ class LocalManager {
     // Store reference to this for closures
     const self = this;
 
+    // THE capability contract for local mode. Two halves:
+    //
+    // FLOOR — push the all-false capabilities onto PRManager at patch time,
+    // the point where this page stops being a PR page. PRManager's constructor
+    // defaults every flag TRUE (correct for PR mode) and loadLocalReview only
+    // overwrites them once its fetch succeeds, so a failed or slow load would
+    // otherwise leave shared components told canSubmitToGitHub is available.
+    //
+    // LATE FLIP — some flags (`hasAssociatedPR`, `canViewPRComments`) only
+    // become true after `/pr-metadata` resolves an association the page-load
+    // GET could not see. So every consumer must RE-READ `hasCapability` on
+    // each call and never latch a false answer: guards, affordance toggles and
+    // overlay re-renders are all written that way on purpose.
+    manager.capabilities = { ...this.capabilities };
+
     // Initialize collapse and viewed state Sets (ensure they exist)
     if (!manager.collapsedFiles) {
       manager.collapsedFiles = new Set();
@@ -193,14 +210,37 @@ class LocalManager {
       manager.viewedFiles = new Set();
     }
 
-    // Override saveViewedState to use localStorage with scoped key
-    manager.saveViewedState = function() {
-      if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;
+    // Viewed-state storage keys.
+    //
+    // Scoped to the LOCAL SESSION (review id), NOT to the commit. The key used
+    // to end in `head_sha`, so every refresh that moved HEAD produced a key
+    // MISS — and a miss does not leave the in-memory set alone, it hard-resets
+    // `viewedFiles` to empty, silently wiping every viewed checkmark. That
+    // could fire with zero user interaction (`_checkLocalStalenessOnLoad` calls
+    // `refreshDiff({silent:true})`) and on the "Continue This Session — keep
+    // comments and suggestions" branch, where the user was just promised the
+    // opposite.
+    //
+    // `localPath` stays in the key: review ids are unique within one database
+    // and there is one database per working directory, so the path segment is
+    // what keeps two directories' id 42 apart.
+    const viewedKeyPrefix = () => {
+      const localPath = manager.currentPR?.localPath;
+      if (!localPath) return null;
+      // encodeURIComponent + unescape gives proper UTF-8 to Base64 conversion
+      // (handles non-Latin1 paths).
+      return `pair-review-local-viewed:${btoa(unescape(encodeURIComponent(localPath)))}`;
+    };
+    const viewedKey = () => {
+      const prefix = viewedKeyPrefix();
+      return prefix ? `${prefix}:review-${reviewId}` : null;
+    };
 
-      const localPath = manager.currentPR.localPath;
-      const headSha = manager.currentPR.head_sha;
-      // Use encodeURIComponent + unescape for proper UTF-8 to Base64 conversion (handles non-Latin1 paths)
-      const key = `pair-review-local-viewed:${btoa(unescape(encodeURIComponent(localPath)))}:${headSha}`;
+    // Override saveViewedState to use localStorage with a session-scoped key
+    manager.saveViewedState = function() {
+      const key = viewedKey();
+      if (!key) return;
+
       const viewedArray = Array.from(manager.viewedFiles);
 
       try {
@@ -210,17 +250,24 @@ class LocalManager {
       }
     };
 
-    // Override loadViewedState to use localStorage with scoped key
+    // Override loadViewedState to use localStorage with a session-scoped key
     manager.loadViewedState = async function() {
-      if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;
-
-      const localPath = manager.currentPR.localPath;
-      const headSha = manager.currentPR.head_sha;
-      // Use encodeURIComponent + unescape for proper UTF-8 to Base64 conversion (handles non-Latin1 paths)
-      const key = `pair-review-local-viewed:${btoa(unescape(encodeURIComponent(localPath)))}:${headSha}`;
+      const key = viewedKey();
+      if (!key) return;
 
       try {
-        const stored = localStorage.getItem(key);
+        let stored = localStorage.getItem(key);
+        if (!stored) {
+          // One-time read-through for sessions that started before the key was
+          // session-scoped: adopt the legacy commit-scoped value for the
+          // CURRENT head. The next save writes the session key, so this costs
+          // one extra miss-path read and needs no migration step.
+          const headSha = manager.currentPR?.head_sha;
+          const prefix = headSha ? viewedKeyPrefix() : null;
+          if (prefix) {
+            stored = localStorage.getItem(`${prefix}:${headSha}`);
+          }
+        }
         if (stored) {
           manager.viewedFiles = new Set(JSON.parse(stored));
         } else {
@@ -231,6 +278,11 @@ class LocalManager {
         manager.viewedFiles = new Set();
       }
     };
+
+    // Pre-refresh hook for the External-segment refresh button; see the
+    // `_onBeforeExternalCommentsRefresh` declaration in pr.js. Local mode
+    // uses it to re-read the TTL-less PR head anchor trust is derived from.
+    manager._onBeforeExternalCommentsRefresh = () => self._refreshPRMetadata({ force: true });
 
     // Override init to prevent default PR loading
     manager.init = async function() {
@@ -578,10 +630,7 @@ class LocalManager {
       // Re-fetch and re-render the diff (loadLocalDiff reads hideWhitespace)
       await self.loadLocalDiff();
 
-      // Re-anchor comments and suggestions on the fresh DOM
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await manager.loadUserComments(includeDismissed);
-      await manager.loadAISuggestions(null, manager.selectedRunId);
+      await self._rerenderLocalOverlays();
 
       // Restore scroll position after the DOM settles
       requestAnimationFrame(() => {
@@ -638,7 +687,12 @@ class LocalManager {
           if (sel.value === manager.currentPR.base_branch) {
             manager.currentBaseOverride = null;
           }
+          // Changes the diff's LEFT column; must precede the re-render.
+          self._applyBaseOverrideLeftAnchor(manager);
           await self.loadLocalDiff();
+          // ALL layers: this path used to restore only the external rows, so
+          // switching base branch dropped draft comments and AI suggestions.
+          await self._rerenderLocalOverlays();
         });
       }
     };
@@ -848,8 +902,7 @@ class LocalManager {
         // Branch scope: backend already updated SHA and persisted diff — fall through
       }
 
-      // Reload the diff display
-      await this._applyRefreshedDiff(manager, result);
+      await this._applyRefreshedDiff(manager, result, { userInitiated: !opts.silent });
 
     } catch (error) {
       console.error('Error refreshing diff:', error);
@@ -949,8 +1002,16 @@ class LocalManager {
   /**
    * Reload the diff display, re-anchor comments, notify chat, clear stale state.
    * Shared by refreshDiff() for both normal refreshes and HEAD-change updates.
+   *
+   * @param {Object} manager - window.prManager
+   * @param {Object} result - response body from POST /api/local/:reviewId/refresh
+   *   (possibly merged with the resolve-head-change response)
+   * @param {Object} [options]
+   * @param {boolean} [options.userInitiated=false] - False for the silent
+   *   on-load staleness refresh. Its only effect is the forced PR-metadata
+   *   re-read below (the PUSH trigger).
    */
-  async _applyRefreshedDiff(manager, result) {
+  async _applyRefreshedDiff(manager, result, { userInitiated = false } = {}) {
     // Notify chat agent about diff refresh
     if (window.chatPanel) {
       if (result.headShaChanged) {
@@ -965,6 +1026,25 @@ class LocalManager {
       );
     }
 
+    // Needed by the "did local HEAD move?" trigger below, which cannot be
+    // asked once the field is overwritten.
+    const previousHeadSha = manager.currentPR?.head_sha || null;
+
+    // `currentPR.head_sha` was set once at page load and is read as "the commit
+    // this diff is" — `_externalAnchorContext` decides whether GitHub's line
+    // numbers may be trusted from it. Leaving it stale after a refresh that
+    // moved HEAD is how a mismatch starts looking like a match.
+    if (result.currentHeadSha && manager.currentPR) {
+      manager.currentPR.head_sha = result.currentHeadSha;
+    }
+    if (result.currentHeadSha && this.localData) {
+      this.localData.localHeadSha = result.currentHeadSha;
+    }
+
+    // LEFT-side anchor inputs move with the diff too (a refresh can change the
+    // merge base without changing scope).
+    this._applyLeftAnchorInputs(result);
+
     // Reset base branch override before reloading diff so the fetch uses the default base
     manager.currentBaseOverride = null;
     const baseSel = document.getElementById('base-branch-select');
@@ -972,17 +1052,53 @@ class LocalManager {
       baseSel.value = manager.currentPR.base_branch;
     }
 
+    // Re-read the PR metadata when the anchor-trust comparison could have gone
+    // stale. Two triggers, because the two sides move independently:
+    //   - local HEAD moved (the PULL case: we committed or pulled), and
+    //   - the user asked for this refresh (the PUSH case: a push leaves local
+    //     HEAD untouched while the PR head advances, so a HEAD-change trigger
+    //     alone could never fire for it).
+    // The silent on-load refresh with an unchanged HEAD is deliberately left
+    // out: nothing has moved, and it runs without the user asking.
+    const headMoved = Boolean(
+      result.currentHeadSha && previousHeadSha && result.currentHeadSha !== previousHeadSha
+    );
+    const forceMetadataRead = headMoved || userInitiated;
+
+    // Hold the warm-up across BOTH the forced read AND the header re-render
+    // below. `updateLocalHeader` -> `renderAssociatedPRPill` calls back into
+    // `_maybeWarmPRMetadata` whenever the pill is still hidden, so releasing
+    // before the header re-rendered started a second, unforced fetch on the
+    // very next statement and burned one of the three per-page-load attempts.
+    //
+    // Concurrency: the on-load staleness check can enter this method while a
+    // warm-up from the initial render is STILL in flight. Acquire returns null
+    // then, and release is a no-op for a null token, so this path can neither
+    // steal nor clear the other's hold — which a bare boolean did. The forced
+    // read runs regardless; it does not depend on owning the hold.
+    const warmHold = forceMetadataRead ? this._acquirePRMetadataWarmHold() : null;
+    try {
+      if (forceMetadataRead) {
+        await this._refreshPRMetadata({ force: true });
+      }
+
+      // `updateLocalHeader` is the only thing that writes `#pr-commit-sha`
+      // (and its `dataset.fullSha`); without this the SHA adopted above and
+      // the SHA on screen diverge. Safe to re-run mid-refresh: every listener
+      // it attaches is guarded, and both things it re-renders are idempotent.
+      if (this.localData) {
+        this.updateLocalHeader(this.localData);
+      }
+    } finally {
+      this._releasePRMetadataWarmHold(warmHold);
+    }
+
     // Reload the diff display
     await this.loadLocalDiff();
 
-    // Re-render comments and AI suggestions on the fresh DOM
-    // (renderDiff clears the diff container, so we must re-populate)
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await manager.loadUserComments(includeDismissed);
-    // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
-    // (because the manager triggers loadAISuggestions via onSelectionChange on init),
-    // refresh must call unconditionally since the manager won't re-fire its callback.
-    await manager.loadAISuggestions(null, manager.selectedRunId);
+    // Refresh re-fetched the diff from disk, so upstream may have moved too:
+    // sync before re-anchoring, matching PR mode's refreshPR path.
+    await this._rerenderLocalOverlays({ sync: true });
 
     // Update branchAvailable on the scope selector if the backend sent an updated value
     if (result.branchAvailable !== undefined && manager.diffOptionsDropdown) {
@@ -1142,8 +1258,14 @@ class LocalManager {
         shaAbbrevLength: reviewData.shaAbbrevLength || 7,
         reviewType: 'local',
         localPath: reviewData.localPath,
-        stack_data: reviewData.stackData || null
+        stack_data: reviewData.stackData || null,
+        // Mirror the association, not just the capability flags, so shared
+        // code can answer PR-shaped questions without knowing which manager it
+        // is attached to — `_externalAnchorContext` reads it.
+        associatedPR: reviewData.associatedPR || null
       };
+
+      this._applyLeftAnchorInputs(reviewData);
 
       // Re-initialize DiffOptionsDropdown with scope options
       const branchAvailable = Boolean(reviewData.branchAvailable);
@@ -1213,6 +1335,10 @@ class LocalManager {
       }
       window.panelGroup?.setPR(`local/${reviewData.repository}#${this.reviewId}`);
 
+      // Must run AFTER the AI panel exists (above) — it is what gets toggled.
+      // PR mode calls the same PRManager method from loadPR.
+      manager._updateExternalCommentsAffordances();
+
       // Load saved comments using the restored filter state from AI Panel
       const includeDismissed = window.aiPanel?.showDismissedComments || false;
       await manager.loadUserComments(includeDismissed);
@@ -1249,6 +1375,10 @@ class LocalManager {
 
       // Fire-and-forget staleness check — shows badge or auto-refreshes
       manager._stalenessPromise = this._checkLocalStalenessOnLoad();
+
+      // Fire-and-forget, last, so the diff and user comments already own their
+      // DOM anchors — same contract as PR mode's tail call in loadPR.
+      void this._renderExternalComments({ sync: true });
 
     } catch (error) {
       console.error('Error loading local review:', error);
@@ -1572,7 +1702,7 @@ class LocalManager {
    *
    * Retry policy — two guards, doing different jobs:
    *
-   *   `_prMetadataWarmAttempted` is an IN-FLIGHT latch, not a one-shot. It was
+   *   `_prMetadataWarmHolder` is an IN-FLIGHT hold, not a one-shot. It was
    *   one-shot, which meant a single failed warm (network blip, or the loser of
    *   a concurrent-write race answering `canShowPRMetadata: false`) cost the
    *   pill for the entire page session — precisely the guarantee this endpoint
@@ -1586,32 +1716,105 @@ class LocalManager {
    *   the header re-renders. The server's five-minute negative cache makes
    *   those few retries cheap (it answers from cache without calling GitHub).
    *
+   * The hold is released on `metadataReady` ALONE — never on the broader
+   * `progressed`; see `_refreshPRMetadata` for what went wrong when it did.
+   *
    * The release happens in `finally`, AFTER the re-render below. That ordering
    * is load-bearing: `renderAssociatedPRPill` calls back into this method when
-   * the pill stays hidden, so releasing the latch first would recurse straight
+   * the pill stays hidden, so releasing the hold first would recurse straight
    * into another fetch.
    *
    * @returns {Promise<void>}
    */
   async _maybeWarmPRMetadata() {
-    if (this._prMetadataWarmAttempted) return;
-    // Only the cold-cache shape qualifies. No association, or no credential,
-    // means the pill is correctly hidden and the endpoint has nothing to add.
-    if (!this.hasCapability('hasAssociatedPR') || !this.hasCapability('hasGitHubToken')) return;
+    if (this._prMetadataWarmHolder) return;
+    // No credential means the endpoint genuinely has nothing to add.
+    //
+    // A missing ASSOCIATION deliberately does NOT disqualify the call. On a
+    // dirty tree the backend writes the association from a backfill that fires
+    // AFTER the GET responded, so the client renders with
+    // `hasAssociatedPR: false` — and guarding this call on that very flag was
+    // a self-sustaining deadlock the user could only escape by reloading.
+    // `/pr-metadata` now runs detection server-side, so this call breaks it.
+    if (!this.hasCapability('hasGitHubToken')) return;
     if (this.hasCapability('canShowPRMetadata')) return;
     const attempts = this._prMetadataWarmAttempts || 0;
     if (attempts >= LocalManager.MAX_PR_METADATA_WARM_ATTEMPTS) return;
-    this._prMetadataWarmAttempted = true;
+    const hold = this._acquirePRMetadataWarmHold();
+    // Lost the race against another warm-up between the guard above and here.
+    if (!hold) return;
     this._prMetadataWarmAttempts = attempts + 1;
 
-    // Only a response that actually turned the pill on counts as success; a
-    // 200 that still reports `canShowPRMetadata: false` is a failed warm.
-    let warmed = false;
+    let metadataReady = false;
     try {
-      const response = await fetch(`/api/local/${this.reviewId}/pr-metadata`);
-      if (!response.ok) return;
+      const outcome = await this._refreshPRMetadata();
+      metadataReady = Boolean(outcome && outcome.metadataReady);
+    } finally {
+      // Released whenever the pill still cannot render, so a later legitimate
+      // trigger can retry within the budget above. Ordering is load-bearing —
+      // see the docblock.
+      if (!metadataReady) this._releasePRMetadataWarmHold(hold);
+    }
+  }
+
+  /**
+   * @returns {Object|null} Hold token for `_releasePRMetadataWarmHold`, or
+   *   null when another path holds it — then the caller owes no release.
+   */
+  _acquirePRMetadataWarmHold() {
+    if (this._prMetadataWarmHolder) return null;
+    this._prMetadataWarmHolder = { held: true };
+    return this._prMetadataWarmHolder;
+  }
+
+  /** No-op unless `token` is the hold in effect — see `_acquirePRMetadataWarmHold`. */
+  _releasePRMetadataWarmHold(token) {
+    if (token && this._prMetadataWarmHolder === token) {
+      this._prMetadataWarmHolder = null;
+    }
+  }
+
+  /**
+   * Fetch `/api/local/:reviewId/pr-metadata` and apply the response to every
+   * mirror that depends on it.
+   *
+   * Two callers, one apply block on purpose — `_maybeWarmPRMetadata` (cold
+   * cache / association backfill) and the forced re-read that
+   * `_applyRefreshedDiff` and the External-segment refresh button drive.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.force=false] - Ask the backend to skip its
+   *   metadata cache (`?refresh=1`) and re-fetch from GitHub. The cache has no
+   *   TTL, so this is the only way a PR head that advanced upstream (a push)
+   *   ever reaches `_externalAnchorContext`.
+   * @returns {Promise<{metadataReady: boolean, progressed: boolean}>} Two
+   *   deliberately separate answers:
+   *   - `metadataReady`: the header pill can render. The ONLY input to the
+   *     warm-up hold in `_maybeWarmPRMetadata`. Overloading it with
+   *     `progressed` cost the pill its retry budget — `canViewPRComments` is
+   *     true even when GitHub 5xx'd and metadata is null, so the warm-up
+   *     latched on a call that fetched nothing.
+   *   - `progressed`: the call moved *something* forward (metadata, comment
+   *     viewing, or a newly-resolved association). Never latches the pill.
+   *   Both false on any failure and on a 200 that changed nothing.
+   */
+  async _refreshPRMetadata({ force = false } = {}) {
+    // A fresh object per return: callers must never share (or be able to
+    // mutate) another caller's outcome.
+    const noProgress = () => ({ metadataReady: false, progressed: false });
+
+    // Both captured before the merge below, because the TRANSITIONS matter: a
+    // newly-resolved association counts as progress even with no metadata, and
+    // a false -> true on canViewPRComments decides GET vs SYNC.
+    const hadAssociation = this.hasCapability('hasAssociatedPR');
+    const hadViewPRComments = this.hasCapability('canViewPRComments');
+
+    try {
+      const url = `/api/local/${this.reviewId}/pr-metadata${force ? '?refresh=1' : ''}`;
+      const response = await fetch(url);
+      if (!response.ok) return noProgress();
       const data = await response.json();
-      if (!data || !data.capabilities) return;
+      if (!data || !data.capabilities) return noProgress();
 
       // MERGE, never overwrite. _applyScopeResult mutates this.localData in
       // place, so a scope change made while this request was in flight would
@@ -1619,23 +1822,190 @@ class LocalManager {
       this.capabilities = { ...(this.capabilities || {}), ...data.capabilities };
       if (this.localData) {
         this.localData.capabilities = this.capabilities;
-        this.localData.associatedPR = data.associatedPR;
+        // A null association in the response means "could not resolve one",
+        // not "there is none" — keep whatever we already had.
+        this.localData.associatedPR = data.associatedPR || this.localData.associatedPR || null;
       }
       const manager = window.prManager;
       if (manager) {
         manager.capabilities = this.capabilities;
+        // The one path that changes the anchor-trust answer mid-session: it
+        // brings the PR's `head_sha` back (and moves it forward after a push),
+        // and `_externalAnchorContext` degrades every thread to file level
+        // while that is unknown.
+        if (manager.currentPR) {
+          manager.currentPR.associatedPR = data.associatedPR || manager.currentPR.associatedPR || null;
+        }
+        manager._updateExternalCommentsAffordances?.();
       }
-      warmed = Boolean(this.capabilities.canShowPRMetadata);
+
+      // The External segment just switched on: this call is the ONLY thing
+      // that can flip `canViewPRComments` mid-session.
+      const gainedPRComments = !hadViewPRComments && Boolean(this.capabilities.canViewPRComments);
 
       // Header only — this.localData may have moved on, so render from it
       // rather than from the response body.
       this.renderAssociatedPRPill(this.localData || data);
+
+      // Fire-and-forget: never let an external-comment re-render delay or fail
+      // the metadata read it is piggy-backing on.
+      //
+      // SYNC vs GET turns on that transition, and only on it. A GET renders
+      // the `external_comments` mirror table, which on a first-ever load has
+      // never been populated — so a late capability flip (dirty tree, PR
+      // resolved by the post-response backfill, the tail sync in
+      // `loadLocalReview` already bailed) would reveal the External segment
+      // and draw it EMPTY. Syncing unconditionally instead would POST on every
+      // ordinary warm metadata refresh.
+      //
+      // Overlap is safe: the manager's `syncAndRender` in-flight guard makes a
+      // concurrent sync join the same promise.
+      void this._renderExternalComments({ sync: gainedPRComments });
+
+      return {
+        metadataReady: Boolean(this.capabilities.canShowPRMetadata),
+        progressed: Boolean(
+          this.capabilities.canShowPRMetadata
+          || gainedPRComments
+          || (!hadAssociation && this.capabilities.hasAssociatedPR)
+        )
+      };
     } catch (error) {
-      console.warn('PR metadata warm-up failed:', error);
-    } finally {
-      // Released only on failure; a warmed pill needs no further calls (and
-      // the `canShowPRMetadata` guard above would stop them anyway).
-      if (!warmed) this._prMetadataWarmAttempted = false;
+      console.warn('PR metadata refresh failed:', error);
+      return noProgress();
+    }
+  }
+
+  /**
+   * Restore all three overlay layers onto a freshly-rebuilt diff DOM.
+   *
+   * `PRManager.renderDiff` empties `#diff-container` and restores nothing, so
+   * every path that rebuilds the diff owes the user their draft comments, AI
+   * suggestion rows and the PR's comment rows back. Local mode's counterpart
+   * to `PRManager._rerenderAllOverlays`, and it exists for the same reason:
+   * the sequence had been hand-copied at four call sites and drifted.
+   *
+   * `loadLocalReview`'s initial load is deliberately NOT routed through here —
+   * it is a different sequence with setup interleaved between the steps.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.sync=false] - Fire the external-comments sync
+   *   POST before re-rendering (the refresh path, where upstream may have
+   *   moved too) rather than re-anchoring the existing local mirror.
+   * @returns {Promise<void>}
+   */
+  async _rerenderLocalOverlays({ sync = false } = {}) {
+    const manager = window.prManager;
+    if (!manager) return;
+
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await manager.loadUserComments(includeDismissed);
+    // Note: Unlike loadLocalReview(), which skips this when
+    // analysisHistoryManager exists (that manager fires loadAISuggestions from
+    // onSelectionChange on init), a rebuild must call unconditionally — the
+    // history manager will not re-fire its callback.
+    await manager.loadAISuggestions(null, manager.selectedRunId);
+    // Kept as a separate leg rather than inlined: `_renderExternalComments`
+    // owns the capability + kill-switch guards for the ECM singleton.
+    await this._renderExternalComments({ sync });
+  }
+
+  /**
+   * Mirror the LEFT-side anchor inputs from a local API payload onto
+   * `PRManager.currentPR`.
+   *
+   * `_externalAnchorContext` (pr.js) decides LEFT-side anchor trust from
+   * `currentPR.localBaseSha` + `currentPR.scopeIncludesBranch` +
+   * `associatedPR.base_sha`, so both fields must be refreshed at EVERY point
+   * they can change — initial load, refresh, and scope change — and BEFORE the
+   * overlay re-render, or the re-anchor runs against a stale policy.
+   *
+   * Both are normalised to null when absent: PR mode never sends them, and the
+   * backend sends null when the scope excludes the branch. Leaving a stale
+   * value behind would keep trusting a merge base the diff no longer shows.
+   *
+   * A FOURTH site writes `currentPR.localBaseSha` without going through here:
+   * `_applyBaseOverrideLeftAnchor`. Any change to the normalisation here
+   * belongs there too.
+   *
+   * @param {Object} [source] - A payload carrying `mergeBaseSha` /
+   *   `scopeIncludesBranch` (GET /api/local/:reviewId, POST .../refresh, or
+   *   POST .../set-scope).
+   */
+  _applyLeftAnchorInputs(source = {}) {
+    const localBaseSha = source?.mergeBaseSha ?? null;
+    const scopeIncludesBranch = source?.scopeIncludesBranch ?? null;
+
+    if (this.localData) {
+      this.localData.mergeBaseSha = localBaseSha;
+      this.localData.scopeIncludesBranch = scopeIncludesBranch;
+    }
+
+    const manager = window.prManager;
+    if (manager?.currentPR) {
+      manager.currentPR.localBaseSha = localBaseSha;
+      manager.currentPR.scopeIncludesBranch = scopeIncludesBranch;
+    }
+  }
+
+  /**
+   * Re-derive the LEFT-side merge-base anchor input after the base-branch
+   * selector changed `currentBaseOverride`.
+   *
+   * An override rebuilds the diff against a DIFFERENT base, and
+   * `GET /api/local/:reviewId/diff?base=` returns no `mergeBaseSha` for it, so
+   * the left column's sha genuinely becomes unknown. Keeping the load-time
+   * merge base would leave `trustLeftAnchors` true for what is now another
+   * coordinate system — the "line found, wrong content" case that gate exists
+   * to prevent. Unknown degrades those threads to the file zone: fail safe.
+   *
+   * Clearing the override restores from `localData.mergeBaseSha`, which IS the
+   * default diff's merge base — hence this writes only the PRManager mirror
+   * and leaves `localData` alone. `scopeIncludesBranch` is untouched: an
+   * override changes which base the branch is diffed against, not whether the
+   * scope includes the branch.
+   *
+   * @param {Object} manager - window.prManager (already resolved by the caller)
+   */
+  _applyBaseOverrideLeftAnchor(manager) {
+    if (!manager?.currentPR) return;
+    manager.currentPR.localBaseSha = manager.currentBaseOverride
+      ? null
+      : (this.localData?.mergeBaseSha ?? null);
+  }
+
+  /**
+   * Render the associated PR's existing review comments into the local diff.
+   *
+   * Local mode's counterpart to `PRManager._rerenderAllOverlays`'s external
+   * leg. Re-reads the capability on EVERY call and never latches — the LATE
+   * FLIP half of the contract in `patchPRManager`.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.sync=false] - Sync from GitHub first (initial
+   *   load, explicit refresh, and the late-flip call from
+   *   `_refreshPRMetadata` — see there for why that one must sync). False for
+   *   diff rebuilds, where only the anchors moved.
+   * @returns {Promise<void>}
+   */
+  async _renderExternalComments({ sync = false } = {}) {
+    const manager = window.prManager;
+    if (!manager || typeof manager.hasCapability !== 'function') return;
+    if (!manager.hasCapability('canViewPRComments')) return;
+    if (!manager._externalCommentsEnabled?.()) return;
+    if (typeof window === 'undefined' || !window.externalCommentManager) return;
+
+    try {
+      if (sync) {
+        // Canonical entry point — owns the in-flight guard, the anchor
+        // context, and the sync-result / error toasts.
+        await manager._loadExternalComments();
+      } else {
+        manager._prepareExternalCommentManager?.();
+        await window.externalCommentManager.loadAndRender();
+      }
+    } catch (err) {
+      console.warn('[external-comments] local re-render failed', err);
     }
   }
 
@@ -1896,14 +2266,14 @@ class LocalManager {
       manager.currentBaseOverride = null;
     }
 
+    // A scope change flips the LEFT-trust answer; must precede the re-render.
+    this._applyLeftAnchorInputs(result);
+
     // Update header and reload diff
     this.updateLocalHeader(this.localData);
     await this.loadLocalDiff();
 
-    // Re-anchor comments and suggestions
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await manager.loadUserComments(includeDismissed);
-    await manager.loadAISuggestions(null, manager.selectedRunId);
+    await this._rerenderLocalOverlays();
 
     // Only update dropdown if user hasn't clicked again since this request started
     if (manager?.diffOptionsDropdown) {

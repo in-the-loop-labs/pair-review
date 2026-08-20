@@ -32,7 +32,51 @@
  * path mounted them.
  *
  * Read-only: no draft / submit / edit / dismiss flows. Only chat-about
- * actions, which delegate to the global chat panel.
+ * actions, which delegate to the global chat panel. That property is what
+ * makes this subsystem safe to surface in LOCAL mode, where there is no
+ * write path back to GitHub at all.
+ *
+ * ANCHOR TRUST (local mode)
+ * -------------------------
+ * THE canonical description of the three gates. The caller computes their
+ * values in `PRManager._externalAnchorContext`; `_anchorDegradeReason`
+ * implements them.
+ *
+ * Every comment's `(file, line, side)` was resolved against the PR's HEAD
+ * commit. In PR mode the rendered diff IS that commit, so the numbers agree
+ * by construction, all three gates pass, and behaviour is byte-identical to
+ * before this feature.
+ *
+ * In local mode the rendered diff is the working tree against a base, and
+ * `--scope` can make it a different diff entirely. A line number from PR head
+ * can then resolve to a DIFFERENT line locally — and `_findDiffLineRow`
+ * matches on the number alone, so it would anchor confidently to the wrong
+ * content. The existing file-level fallback only catches "line not found",
+ * never "line found, wrong content". Hence:
+ *
+ *   1. `trustPreciseAnchors` — false whenever local HEAD does not equal the
+ *      PR's `head_sha`. Every line thread then degrades to the file-level
+ *      zone carrying a provenance note. Being visibly approximate beats being
+ *      invisibly wrong (plans/bridge-local-and-pr-modes.md, decision 8).
+ *
+ *   2. `anchorCommitSha` — a PER-COMMENT gate, needed because both operands
+ *      of gate 1 are page-load snapshots (local HEAD cached on `currentPR`,
+ *      the PR head from the TTL-less `pr_metadata` cache), so a PR that
+ *      advances mid-session still looks like a match. Each stored comment
+ *      carries the commit it was anchored to and those arrive with the
+ *      freshly-synced rows, no cache in the path. Armed only in local mode.
+ *
+ *   3. `trustLeftAnchors` — both gates above are HEAD-side, and a diff has two
+ *      sides. LEFT line numbers (comments on lines the PR removed) come from
+ *      the PR's BASE commit, while our left column is whatever base the scope
+ *      picked — a merge-base, a `--base` override, or on the default
+ *      `unstaged..untracked` scope the index/HEAD, which is not a merge-base
+ *      at all. Matching HEADS say nothing about that, so without this gate a
+ *      LEFT thread sails through and anchors into a different coordinate
+ *      system. Only ever fires for `side === 'LEFT'`.
+ *
+ * The gates degrade for different reasons, so `_anchorDegradeReason` reports
+ * WHICH one fired rather than a boolean — see `_provenanceNoteText`.
  *
  * Ordering rule (shared diff-row surface — see plans/fetch-external-review-comments.md
  * "Hazards"): three independent renderers append rows after the same diff
@@ -51,23 +95,131 @@ class ExternalCommentManager {
    * @param {string|number} opts.reviewId - Review id used to build the API URL
    * @param {string[]} [opts.sources=['github']] - External sources to load
    * @param {Object} [opts.chatPanel=window.chatPanel] - Chat panel reference
+   * @param {boolean} [opts.trustPreciseAnchors=true] - Seed values for the
+   *   anchor context; `setAnchorContext` documents them and is how they are
+   *   normally supplied. The defaults are the PR-mode answer (trust
+   *   everything, per-comment gate disarmed), so PR mode is unchanged.
+   * @param {number|null} [opts.anchorPRNumber=null]
+   * @param {string|null} [opts.anchorCommitSha=null]
+   * @param {boolean} [opts.trustLeftAnchors=true]
    */
-  constructor({ reviewId, sources = ['github'], chatPanel } = {}) {
+  constructor({
+    reviewId,
+    sources = ['github'],
+    chatPanel,
+    trustPreciseAnchors = true,
+    anchorPRNumber = null,
+    anchorCommitSha = null,
+    trustLeftAnchors = true
+  } = {}) {
     this.reviewId = reviewId;
     this.sources = sources;
     // Bind lazily so tests / late-loaded chat panel both work
     this.chatPanel = chatPanel || (typeof window !== 'undefined' ? window.chatPanel : null);
+    // See `setAnchorContext` / the module header's ANCHOR TRUST section.
+    this.trustPreciseAnchors = trustPreciseAnchors !== false;
+    this.trustLeftAnchors = trustLeftAnchors !== false;
+    this.anchorPRNumber = anchorPRNumber;
+    this.anchorCommitSha = anchorCommitSha;
     // source -> threads[]
     this.threadsBySource = new Map();
     // Track whether we've already warned about a missing anchor for a given thread
     this._anchorWarnings = new Set();
     // Per-manager in-flight promise. Coalesces concurrent loadAndRender calls
     // (page-load + manual refresh + post-AI re-render) into one round-trip.
+    // `_inflightIsSync` records whether it includes the sync POST, so a
+    // `syncAndRender` never mistakes a GET-only load for its own work —
+    // see `syncAndRender`.
     this._inflight = null;
+    this._inflightIsSync = false;
     // One-time guard: the 'external-comment' custom annotation renderer is
     // registered on the shared PierreBridge exactly once (it persists on the
     // bridge across re-renders). See `_ensurePierreRendererRegistered`.
     this._pierreRendererRegistered = false;
+  }
+
+  /**
+   * Declare how far the currently-rendered diff can be trusted to agree with
+   * the PR head the comments were anchored against. Callers set this BEFORE
+   * `render()` / `loadAndRender()` / `syncAndRender()`; the flags are read at
+   * render time, never cached per thread, so a later re-render with a
+   * different context re-decides cleanly.
+   *
+   * Omitted fields are left untouched. See ANCHOR TRUST in the module header
+   * for what each flag guards against.
+   *
+   * @param {Object} [ctx]
+   * @param {boolean} [ctx.trustPreciseAnchors] - false routes every LINE
+   *   thread through the file-level zone with a provenance note. Genuine
+   *   file-level threads are unaffected — they had no line anchor to lose.
+   * @param {number|null} [ctx.prNumber] - named in the provenance note.
+   * @param {string|null} [ctx.commitSha] - the commit the rendered diff IS.
+   *   Arms the per-comment gate; pass null to disarm it (PR mode).
+   * @param {boolean} [ctx.trustLeftAnchors] - false routes every LEFT-side
+   *   thread through the file-level zone. RIGHT-side threads are unaffected.
+   */
+  setAnchorContext({ trustPreciseAnchors, prNumber, commitSha, trustLeftAnchors } = {}) {
+    if (trustPreciseAnchors !== undefined) {
+      this.trustPreciseAnchors = trustPreciseAnchors !== false;
+    }
+    if (trustLeftAnchors !== undefined) {
+      this.trustLeftAnchors = trustLeftAnchors !== false;
+    }
+    if (prNumber !== undefined) {
+      this.anchorPRNumber = prNumber;
+    }
+    if (commitSha !== undefined) {
+      this.anchorCommitSha = commitSha || null;
+    }
+  }
+
+  /**
+   * Why this comment's precise (file, line, side) anchor cannot be trusted.
+   *
+   * The single source of truth behind BOTH the placement (`_resolveAnchor`)
+   * and the explanation (`_buildProvenanceNote`, the chat hooks). A card that
+   * says "approximate" while its chat button ships exact line numbers is worse
+   * than either alone, so they must not be able to drift apart.
+   *
+   * Three fail-safe gates — see ANCHOR TRUST in the module header. The two
+   * head-side ones answer `'head'`; the base-side one answers `'base'`.
+   *
+   * @param {Object} comment
+   * @param {boolean} outdated - the `is_outdated` reading `_resolveAnchor`
+   *   already computed, so the commit we check is the one belonging to the
+   *   line it picked.
+   * @returns {null|'head'|'base'} null when the anchor is trustworthy.
+   * @private
+   */
+  _anchorDegradeReason(comment, outdated) {
+    // Gate 1 — session level: local HEAD vs the PR's head_sha.
+    if (!this.trustPreciseAnchors) return 'head';
+    // Gate 2 — per comment, and only when the caller told us what commit the
+    // rendered diff is. Disarmed in PR mode, where the diff IS the PR head.
+    if (this.anchorCommitSha) {
+      const live = comment?.commit_sha || null;
+      const orig = comment?.original_commit_sha || null;
+      // Mirror `_resolveAnchor`'s line preference so the commit we compare is
+      // the one that owns the line we are about to anchor to. For an OUTDATED
+      // row that is `original_commit_sha`, an older commit by definition — so
+      // with this gate armed such rows ALWAYS degrade to file level. Intended:
+      // their line numbers describe a commit we are demonstrably not
+      // rendering. PR mode keeps its outdated-badge behaviour (gate disarmed).
+      const sha = outdated ? (orig ?? live) : (live ?? orig);
+      // A missing sha means upstream didn't record a commit for this row —
+      // nothing to contradict gate 1, so let its answer stand rather than
+      // degrading on missing data.
+      if (sha && sha !== this.anchorCommitSha) return 'head';
+    }
+    // Gate 3 — the OTHER side of the diff. Only fires for LEFT, so RIGHT
+    // threads are untouched by it.
+    if ((comment?.side || 'RIGHT') === 'LEFT' && !this.trustLeftAnchors) return 'base';
+    return null;
+  }
+
+  /** Boolean form of `_anchorDegradeReason`. @private */
+  _anchorTrusted(comment, outdated) {
+    return this._anchorDegradeReason(comment, outdated) === null;
   }
 
   // ------------------------------------------------------------------
@@ -120,9 +272,15 @@ class ExternalCommentManager {
       const result = await this._fetchAllAndRender();
       return result;
     })().finally(() => {
-      this._inflight = null;
+      // Guarded: a `syncAndRender` that chained onto this one has already
+      // taken ownership of `_inflight`, and must not be cleared by us.
+      if (this._inflight === inflight) {
+        this._inflight = null;
+        this._inflightIsSync = false;
+      }
     });
     this._inflight = inflight;
+    this._inflightIsSync = false;
     return this._inflight;
   }
 
@@ -136,6 +294,13 @@ class ExternalCommentManager {
    * with a stale GET. The POST happens BEFORE the GET so the GET sees the
    * latest mirror.
    *
+   * The reverse direction is NOT symmetric, and joining there would be a bug:
+   * a sync that arrived while a GET-only load was in flight would return that
+   * load's result — no `syncResult`, no `syncError`, and crucially no POST —
+   * so the caller fires no toast and the mirror is never synced at all. It
+   * instead CHAINS: wait for the in-flight load, then do the full sync+load.
+   * `_inflightIsSync` is what tells the two cases apart.
+   *
    * @param {Object} options
    * @param {() => Promise<{count: number, lostAnchors: number, deleted: number, syncedAt: string}>} options.syncFn -
    *   Async function that performs the POST /external-comments/sync. Injected so the manager
@@ -143,8 +308,20 @@ class ExternalCommentManager {
    * @returns {Promise<{errors: Array, syncResult: Object|null, syncError: Error|null}>}
    */
   syncAndRender({ syncFn } = {}) {
-    if (this._inflight) return this._inflight;
+    // Another sync is already doing exactly this work — join it.
+    if (this._inflight && this._inflightIsSync) return this._inflight;
+    // A GET-only load is in flight: let it finish (so our GET isn't racing
+    // its render), then run the real sync. Its failure is its own caller's
+    // to report, so swallow it here rather than aborting the sync.
+    const pendingLoad = this._inflight;
     const inflight = (async () => {
+      if (pendingLoad) {
+        try {
+          await pendingLoad;
+        } catch {
+          /* owned by the loadAndRender caller */
+        }
+      }
       let syncResult = null;
       let syncError = null;
       if (typeof syncFn === 'function') {
@@ -160,9 +337,13 @@ class ExternalCommentManager {
       const renderResult = await this._fetchAllAndRender();
       return { ...renderResult, syncResult, syncError };
     })().finally(() => {
-      this._inflight = null;
+      if (this._inflight === inflight) {
+        this._inflight = null;
+        this._inflightIsSync = false;
+      }
     });
     this._inflight = inflight;
+    this._inflightIsSync = true;
     return this._inflight;
   }
 
@@ -400,6 +581,15 @@ class ExternalCommentManager {
     const orig = Number.isFinite(comment.original_line_end) ? comment.original_line_end : null;
     const line = outdated ? (orig ?? live) : (live ?? orig);
     if (line == null) return null;
+
+    // The line number is real, but resolved against a commit we may not be
+    // rendering — matching it here would anchor to whatever occupies that
+    // number now. Degrade to the file zone, flagged so the render path can
+    // tell it from a genuine file-level comment.
+    if (!this._anchorTrusted(comment, outdated)) {
+      return { file: comment.file, fileLevel: true, degraded: true };
+    }
+
     return { file: comment.file, line, side };
   }
 
@@ -433,8 +623,10 @@ class ExternalCommentManager {
 
     // File-level comments render in the per-file comments zone above the diff
     // (light DOM, shared by both diff engines) — no line anchor, no bridge.
+    // Anchor-degraded line threads arrive here too (see ANCHOR TRUST); they
+    // take the same zone but carry a different class and a provenance note.
     if (anchor.fileLevel) {
-      this._renderThreadFileLevel(thread, anchor.file);
+      this._renderThreadFileLevel(thread, anchor.file, { degraded: Boolean(anchor.degraded) });
       return;
     }
 
@@ -666,15 +858,22 @@ class ExternalCommentManager {
   }
 
   /**
-   * Render a genuine file-level thread (root + replies) into the file's
-   * comments zone above the diff. Carries `external-comment-row--file-level`.
+   * Render a file-scoped thread (root + replies) into the file's comments
+   * zone above the diff.
+   *
+   * Two callers, two classes: a GENUINE file-level GitHub comment, and an
+   * anchor-degraded line thread, which additionally gets the provenance note
+   * from `_buildThreadElement` explaining why it isn't on its line.
    * @private
    */
-  _renderThreadFileLevel(thread, file) {
-    if (this._appendThreadToZone(thread, file, 'external-comment-row--file-level')) return;
+  _renderThreadFileLevel(thread, file, { degraded = false } = {}) {
+    const extraClass = degraded
+      ? 'external-comment-row--anchor-degraded'
+      : 'external-comment-row--file-level';
+    if (this._appendThreadToZone(thread, file, extraClass)) return;
     // Zone missing (rare — created per file in renderFileDiff). Fall back to a
     // bare wrapper append so the discussion stays discoverable.
-    if (!this._appendThreadToWrapper(thread, file, 'external-comment-row--file-level')
+    if (!this._appendThreadToWrapper(thread, file, extraClass)
         && typeof console !== 'undefined') {
       console.warn(`[ExternalCommentManager] Could not anchor file-level thread ${thread?.id} in ${file}`);
     }
@@ -790,6 +989,12 @@ class ExternalCommentManager {
     const threadEl = document.createElement('div');
     threadEl.className = 'external-comment-thread';
 
+    // Derived from manager state rather than passed in as a per-thread flag:
+    // both wrapper builders and the pierre annotation renderer funnel through
+    // here, so one check covers all three.
+    const note = this._buildProvenanceNote(thread);
+    if (note) threadEl.appendChild(note);
+
     // Root comment
     const rootEl = this._buildCommentElement(thread, { isReply: false });
     threadEl.appendChild(rootEl);
@@ -802,6 +1007,52 @@ class ExternalCommentManager {
     }
 
     return threadEl;
+  }
+
+  /**
+   * The "why isn't this on its line?" sentence for an anchor-degraded thread,
+   * or null when the thread is anchored normally.
+   *
+   * Returns null for genuine file-level comments even while degraded — they
+   * never had a line anchor, so nothing about them is approximate.
+   *
+   * The wording follows the REASON the anchor was rejected — claiming a head
+   * mismatch on a base-side degrade would be a statement we know to be false.
+   * Shared by the rendered card and the chat hooks, so the agent is told
+   * exactly what the reviewer is looking at.
+   * @private
+   */
+  _provenanceNoteText(thread) {
+    if (!thread) return null;
+    if (thread.is_file_level === 1 || thread.is_file_level === true) return null;
+    // Re-asked rather than remembered: the same predicate that placed the
+    // thread, so the note cannot drift out of step with the placement.
+    const outdated = thread.is_outdated === 1 || thread.is_outdated === true;
+    const reason = this._anchorDegradeReason(thread, outdated);
+    if (reason === null) return null;
+
+    const pr = this.anchorPRNumber != null && Number.isFinite(Number(this.anchorPRNumber))
+      ? `PR #${this.anchorPRNumber}`
+      : 'the associated PR';
+    if (reason === 'base') {
+      return `From ${pr} — this comment is on a line the PR removed. Its line numbers `
+        + "come from the PR's base commit, which is not what the left side of this diff "
+        + 'shows, so the thread appears at file level rather than on its original line.';
+    }
+    return `From ${pr} — these comments were written against a different commit than the code `
+      + 'shown here, so this thread appears at file level rather than on its original line.';
+  }
+
+  /** `_provenanceNoteText` as an element, or null. @private */
+  _buildProvenanceNote(thread) {
+    const text = this._provenanceNoteText(thread);
+    if (!text) return null;
+    if (typeof document === 'undefined') return null;
+
+    const note = document.createElement('div');
+    note.className = 'external-comment-provenance';
+    note.textContent = text;
+    return note;
   }
 
   /**
@@ -995,6 +1246,13 @@ class ExternalCommentManager {
    * Dispatch chat-about-comment to the chat panel using the canonical
    * `commentContext` shape (see plans/fetch-external-review-comments.md
    * § 10 and Phase 4 task spec).
+   *
+   * The surface where a bad anchor costs the most: ChatPanel takes
+   * `line_start`/`line_end` as fact — it quotes the LOCAL patch at those
+   * numbers (`DiffContext.extractHunkForLines`) and asserts `file.js:123-125`
+   * in the prompt header. So the lines go only when the SAME gate that placed
+   * the card says they are exact; otherwise they are nulled and `isFileLevel`
+   * routes ChatPanel down its file-scoped branch. `anchorNote` carries why.
    * @private
    */
   _openCommentChat(comment) {
@@ -1007,26 +1265,58 @@ class ExternalCommentManager {
       return;
     }
     const outdated = comment.is_outdated === 1 || comment.is_outdated === true;
-    panel.open({
-      commentContext: {
-        commentId: comment.id,
-        body: comment.body,
-        file: comment.file,
-        side: comment.side || 'RIGHT',
-        line_start: outdated ? comment.original_line_start : comment.line_start,
-        line_end: outdated ? comment.original_line_end : comment.line_end,
-        source: 'external',
-        externalSource: comment.source,
-        author: comment.author,
-        externalUrl: comment.external_url,
-        isOutdated: !!outdated,
-      },
-    });
+    const fileLevel = comment.is_file_level === 1 || comment.is_file_level === true;
+    // A genuine file-level comment has no line anchor to send in the first
+    // place, so it takes the same file-scoped shape.
+    const trusted = !fileLevel && this._anchorTrusted(comment, outdated);
+    const ctx = {
+      commentId: comment.id,
+      body: comment.body,
+      file: comment.file,
+      side: comment.side || 'RIGHT',
+      line_start: trusted ? (outdated ? comment.original_line_start : comment.line_start) : null,
+      line_end: trusted ? (outdated ? comment.original_line_end : comment.line_end) : null,
+      source: 'external',
+      externalSource: comment.source,
+      author: comment.author,
+      externalUrl: comment.external_url,
+      isOutdated: !!outdated,
+    };
+    // Set for a degraded anchor AND for a comment GitHub itself marked
+    // file-level. The second case also fires in PR mode, where the flag was
+    // previously never sent — so a genuinely file-level PR comment's prompt
+    // gains a "Scope: File-level comment" line. A correction, not a regression
+    // (line_start is already null, so hunk extraction is unaffected), but it
+    // means the trusted payload is NOT byte-identical to before.
+    if (!trusted) ctx.isFileLevel = true;
+    const note = this._provenanceNoteText(comment);
+    if (note) ctx.anchorNote = note;
+    panel.open({ commentContext: ctx });
+  }
+
+  /**
+   * Public entry point for chat-about-thread, used by AIPanel's Review-panel
+   * quick action. A thin delegate so EVERY thread-chat entry point — the
+   * inline card button and the Review panel alike — goes through the same
+   * anchor-trust gate in `_openThreadChat`; a caller that builds its own
+   * `threadContext` would ship untrusted coordinates ChatPanel asserts as
+   * fact.
+   * @param {Object} thread - Thread root row (with `replies`), as returned
+   *   by `getAllThreads`.
+   */
+  openThreadChat(thread) {
+    this._openThreadChat(thread);
   }
 
   /**
    * Dispatch chat-about-thread to the chat panel using the canonical
    * `threadContext` shape.
+   *
+   * Same anchor-trust gate as `_openCommentChat`, but NOT the same escape
+   * hatch: `_sendThreadContextMessage` has no `isFileLevel` guard at all —
+   * it keys its hunk extraction (and its `file:line` prompt header) purely on
+   * `line_start`. So here the lines must actually be null for the context to
+   * degrade to file scope.
    * @private
    */
   _openThreadChat(root) {
@@ -1036,34 +1326,38 @@ class ExternalCommentManager {
       return;
     }
     const outdated = root.is_outdated === 1 || root.is_outdated === true;
+    const fileLevel = root.is_file_level === 1 || root.is_file_level === true;
+    const trusted = !fileLevel && this._anchorTrusted(root, outdated);
     const replies = Array.isArray(root.replies) ? root.replies : [];
-    panel.open({
-      threadContext: {
-        rootId: root.id,
-        source: 'external',
-        externalSource: root.source,
-        file: root.file,
-        side: root.side || 'RIGHT',
-        line_start: outdated ? root.original_line_start : root.line_start,
-        line_end: outdated ? root.original_line_end : root.line_end,
-        comments: [
-          {
-            author: root.author,
-            body: root.body,
-            isOutdated: !!outdated,
-            externalUrl: root.external_url,
-            externalCreatedAt: root.external_created_at,
-          },
-          ...replies.map((r) => ({
-            author: r.author,
-            body: r.body,
-            isOutdated: !!(r.is_outdated === 1 || r.is_outdated === true),
-            externalUrl: r.external_url,
-            externalCreatedAt: r.external_created_at,
-          })),
-        ],
-      },
-    });
+    const note = this._provenanceNoteText(root);
+    const ctx = {
+      rootId: root.id,
+      source: 'external',
+      externalSource: root.source,
+      file: root.file,
+      side: root.side || 'RIGHT',
+      line_start: trusted ? (outdated ? root.original_line_start : root.line_start) : null,
+      line_end: trusted ? (outdated ? root.original_line_end : root.line_end) : null,
+      comments: [
+        {
+          author: root.author,
+          body: root.body,
+          isOutdated: !!outdated,
+          externalUrl: root.external_url,
+          externalCreatedAt: root.external_created_at,
+        },
+        ...replies.map((r) => ({
+          author: r.author,
+          body: r.body,
+          isOutdated: !!(r.is_outdated === 1 || r.is_outdated === true),
+          externalUrl: r.external_url,
+          externalCreatedAt: r.external_created_at,
+        })),
+      ],
+    };
+    // Omitted when the anchor is exact — trusted payload unchanged.
+    if (note) ctx.anchorNote = note;
+    panel.open({ threadContext: ctx });
   }
 
   /**

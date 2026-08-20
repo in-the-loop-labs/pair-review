@@ -1146,6 +1146,35 @@ describe('ChatPanel', () => {
       const prompt = chatPanel._getActiveTab().pendingContext[0];
       expect(prompt.toLowerCase()).toContain('outdated');
     });
+
+    // ExternalCommentManager nulls the line numbers and sets `anchorNote`
+    // when it could not trust a comment's anchor against the rendered diff
+    // (local mode: the working tree is not the commit the comment was
+    // written against). Without this the agent sees a file-scoped context
+    // with no explanation and would infer the comment had no line info.
+    it('should surface anchorNote in the AI-facing prompt when the anchor is untrusted', () => {
+      const ctx = {
+        commentId: 'g-103',
+        body: 'Check this',
+        file: 'src/app.js',
+        line_start: null,
+        line_end: null,
+        source: 'external',
+        externalSource: 'github',
+        externalUrl: null,
+        author: 'octocat',
+        isOutdated: false,
+        isFileLevel: true,
+        anchorNote: 'From PR #7 — these comments were written against a different commit.',
+      };
+
+      chatPanel._sendCommentContextMessage(ctx);
+
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).toContain('From PR #7');
+      expect(prompt).toContain('- Anchor:');
+    });
+
   });
 
   // -----------------------------------------------------------------------
@@ -1202,6 +1231,49 @@ describe('ChatPanel', () => {
       // The visible row carries a "GITHUB THREAD" label and a count badge.
       expect(card.innerHTML).toContain('GITHUB THREAD');
       expect(card.innerHTML).toContain('3 comment');
+    });
+
+    // The thread path has no isFileLevel flag at all, so nulled line numbers
+    // plus this note are the only signals that the context is file-scoped
+    // because the anchor could not be trusted.
+    it('should surface anchorNote in the AI-facing prompt when the anchor is untrusted', () => {
+      const threadContext = {
+        rootId: 21,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: null,
+        line_end: null,
+        anchorNote: 'From PR #7 — this comment is on a line the PR removed.',
+        comments: [
+          { author: 'alice', body: 'Look here', isOutdated: false, externalUrl: null, externalCreatedAt: null },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).toContain('- Anchor:');
+      expect(prompt).toContain('a line the PR removed');
+    });
+
+    it('should omit the Anchor line for a thread with a trusted anchor', () => {
+      const threadContext = {
+        rootId: 22,
+        source: 'external',
+        externalSource: 'github',
+        file: 'src/app.js',
+        line_start: 10,
+        line_end: 10,
+        comments: [
+          { author: 'alice', body: 'Look here', isOutdated: false, externalUrl: null, externalCreatedAt: null },
+        ],
+      };
+
+      chatPanel._sendThreadContextMessage(threadContext);
+
+      const prompt = chatPanel._getActiveTab().pendingContext[0];
+      expect(prompt).not.toContain('- Anchor:');
     });
 
     it('should not crash when comments is empty or missing (defensive)', () => {

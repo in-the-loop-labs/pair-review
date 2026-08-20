@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest, detectAndBuildBranchInfo, detectPRForBranch } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest, detectAndBuildBranchInfo, detectPRForBranch, parseRemoteUrl, getRemoteHostname, getRepositoryName } = require('../../src/local-review');
 const baseBranchModule = require('../../src/git/base-branch');
 
 describe('computeLocalDiffDigest', () => {
@@ -1140,5 +1140,314 @@ describe('detectPRForBranch - guard-free PR detection', () => {
     });
 
     expect(result?.prNumber).toBe(21);
+  });
+});
+
+describe('parseRemoteUrl', () => {
+  describe('hostname', () => {
+    it('parses SCP-style SSH remotes', () => {
+      expect(parseRemoteUrl('git@github.com:owner/repo.git').hostname).toBe('github.com');
+      expect(parseRemoteUrl('git@github.com:owner/repo').hostname).toBe('github.com');
+      expect(parseRemoteUrl('git@git.corp:owner/repo.git').hostname).toBe('git.corp');
+      // No user part is still valid SCP syntax.
+      expect(parseRemoteUrl('git.corp:owner/repo.git').hostname).toBe('git.corp');
+    });
+
+    it('parses HTTPS remotes', () => {
+      expect(parseRemoteUrl('https://github.com/owner/repo.git').hostname).toBe('github.com');
+      expect(parseRemoteUrl('https://github.com/owner/repo').hostname).toBe('github.com');
+      expect(parseRemoteUrl('http://git.corp/owner/repo.git').hostname).toBe('git.corp');
+    });
+
+    it('parses ssh:// remotes, including with a user and a port', () => {
+      expect(parseRemoteUrl('ssh://github.com/owner/repo.git').hostname).toBe('github.com');
+      expect(parseRemoteUrl('ssh://git@github.com/owner/repo.git').hostname).toBe('github.com');
+      expect(parseRemoteUrl('ssh://git@git.corp:22/owner/repo.git').hostname).toBe('git.corp');
+    });
+
+    it('lowercases the hostname', () => {
+      expect(parseRemoteUrl('https://GitHub.COM/owner/repo.git').hostname).toBe('github.com');
+      expect(parseRemoteUrl('git@GIT.Corp:owner/repo.git').hostname).toBe('git.corp');
+    });
+
+    it('returns null for remotes with no host', () => {
+      expect(parseRemoteUrl('not-a-url').hostname).toBe(null);
+      expect(parseRemoteUrl('/path/to/repo.git').hostname).toBe(null);
+      expect(parseRemoteUrl('file:///path/to/repo.git').hostname).toBe(null);
+      expect(parseRemoteUrl('../sibling-repo').hostname).toBe(null);
+    });
+
+  });
+
+  describe('repoName (must match the historical getRepositoryName parser exactly)', () => {
+    it('parses SCP-style SSH remotes with and without .git', () => {
+      expect(parseRemoteUrl('git@github.com:owner/repo.git').repoName).toBe('owner/repo');
+      expect(parseRemoteUrl('git@github.com:owner/repo').repoName).toBe('owner/repo');
+    });
+
+    it('parses HTTPS remotes with and without .git', () => {
+      expect(parseRemoteUrl('https://github.com/owner/repo.git').repoName).toBe('owner/repo');
+      expect(parseRemoteUrl('https://github.com/owner/repo').repoName).toBe('owner/repo');
+    });
+
+    it('preserves the legacy quirks for user-bearing ssh:// remotes', () => {
+      // These outputs are wrong-looking but are exactly what getRepositoryName
+      // has always returned: the `://` URL contains both ':' and '@', so the
+      // SCP branch wins and splits on the LAST colon. Locked in deliberately —
+      // changing it would rename existing local reviews.
+      expect(parseRemoteUrl('ssh://git@github.com/owner/repo.git').repoName)
+        .toBe('/git@github.com/owner/repo');
+      expect(parseRemoteUrl('ssh://git@github.com:22/owner/repo.git').repoName)
+        .toBe('22/owner/repo');
+    });
+
+    it('returns a bare name when the remote has no owner segment', () => {
+      expect(parseRemoteUrl('git@github.com:repo.git').repoName).toBe('repo');
+      expect(parseRemoteUrl('not-a-url').repoName).toBe('not-a-url');
+    });
+
+    it('returns null when nothing usable remains', () => {
+      expect(parseRemoteUrl('https://github.com/').repoName).toBe(null);
+      expect(parseRemoteUrl('').repoName).toBe(null);
+      expect(parseRemoteUrl('   ').repoName).toBe(null);
+      expect(parseRemoteUrl(null).repoName).toBe(null);
+    });
+  });
+});
+
+describe('getRemoteHostname', () => {
+  const GIT_REMOTE_COMMAND = 'git config --get remote.origin.url';
+  // The implementation moved to utils/host-resolution (local-review re-exports
+  // it); the timeout constant comes from there.
+  const { GIT_REMOTE_TIMEOUT_MS } = require('../../src/utils/host-resolution');
+
+  it('returns the hostname of remote.origin.url', () => {
+    const execSyncMock = vi.fn(() => 'git@git.corp:owner/repo.git\n');
+
+    expect(getRemoteHostname('/some/repo', { execSync: execSyncMock })).toBe('git.corp');
+    // The timeout is load-bearing: this runs on the blocking page-load path,
+    // and a checkout on a hung network mount would otherwise stall execSync
+    // forever.
+    expect(execSyncMock).toHaveBeenCalledWith(GIT_REMOTE_COMMAND, {
+      cwd: '/some/repo',
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: GIT_REMOTE_TIMEOUT_MS
+    });
+    expect(GIT_REMOTE_TIMEOUT_MS).toBe(5000);
+  });
+
+  it('returns null (does not throw) when the git call TIMES OUT', () => {
+    // execSync signals a timeout by throwing an ETIMEDOUT error, exactly like
+    // any other failure — the contract is "null, never throw".
+    const timeoutError = Object.assign(new Error('spawnSync git ETIMEDOUT'), {
+      code: 'ETIMEDOUT',
+      killed: true,
+      signal: 'SIGTERM'
+    });
+    const execSyncMock = vi.fn(() => { throw timeoutError; });
+
+    expect(getRemoteHostname('/hung/mount', { execSync: execSyncMock })).toBe(null);
+    expect(execSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when the remote URL is empty', () => {
+    const execSyncMock = vi.fn(() => '\n');
+    expect(getRemoteHostname('/some/repo', { execSync: execSyncMock })).toBe(null);
+  });
+
+  it('reads a real checkout with a configured origin', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-remote-host-'));
+    try {
+      execSync('git init', { cwd: repoDir, stdio: 'pipe' });
+      execSync('git remote add origin git@git.corp:owner/repo.git', { cwd: repoDir, stdio: 'pipe' });
+
+      expect(getRemoteHostname(repoDir)).toBe('git.corp');
+      // getRepositoryName keeps working off the same remote.
+      await expect(getRepositoryName(repoDir)).resolves.toBe('owner/repo');
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a real checkout with no origin remote (and the name falls back)', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-no-remote-'));
+    try {
+      execSync('git init', { cwd: repoDir, stdio: 'pipe' });
+
+      expect(getRemoteHostname(repoDir)).toBe(null);
+      // Unchanged legacy behaviour: no remote → directory basename.
+      await expect(getRepositoryName(repoDir)).resolves.toBe(path.basename(repoDir));
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * FINDING 1 (CLI write entry point): the association WRITE side must resolve
+ * the host through the SAME function as the metadata READ side.
+ *
+ * The association row is host-blind — it stores a PR number and an owner/repo,
+ * nothing about which host that PR lives on. So on a DUAL repo (`api_host` +
+ * `exclusive: false`), a write side that binds the github.com GUESS while the
+ * read side binds the host the checkout's remote names associates github.com
+ * PR #77 and then reads the alt host's unrelated PR #77 — caching its metadata
+ * and letting the external-comments sync anchor a stranger's comments to the
+ * reviewer's code.
+ *
+ * `setupLocalReviewSession` is the CLI seam (CLAUDE.md "CLI vs Web UI entry
+ * points"); `POST /api/local/start` is covered in tests/integration/routes.test.js.
+ */
+describe('setupLocalReviewSession binds the same host the metadata read side resolves', () => {
+  const { createTestDatabase, closeTestDatabase } = require('../utils/schema');
+  const localReviewModule = require('../../src/local-review');
+  const summaryGenerator = require('../../src/ai/summary-generator');
+  const tourGenerator = require('../../src/ai/tour-generator');
+  const prContext = require('../../src/providers/pr-context');
+  const { localReviewDiffs } = require('../../src/routes/shared');
+
+  const ALT_HOST = 'https://alt.example.com/api/v3';
+  const REPO = 'owner/repo';
+  const repoPath = '/mock/dual-checkout';
+
+  /** DUAL: api_host present, exclusive:false, with an alt-host credential. */
+  const dualConfig = () => ({
+    port: 7247,
+    github_token: 'GH_TOKEN',
+    repos: { [REPO]: { api_host: ALT_HOST, exclusive: false, token: 'ALT_TOKEN' } }
+  });
+
+  let db;
+
+  beforeEach(() => {
+    db = createTestDatabase();
+    // resolveHostBinding consults GITHUB_TOKEN for github.com bindings; the
+    // developer's real env must not decide the outcome.
+    vi.stubEnv('GITHUB_TOKEN', '');
+    prContext._hostBindingInternals.clearHostBindingFailureCache();
+    prContext._hostBindingInternals.clearRemoteHostnameCache();
+
+    vi.spyOn(localReviewModule, 'getHeadSha').mockResolvedValue('abc123def456');
+    vi.spyOn(localReviewModule, 'getRepositoryName').mockResolvedValue(REPO);
+    vi.spyOn(localReviewModule, 'getCurrentBranch').mockResolvedValue('feature/x');
+    vi.spyOn(localReviewModule, 'findMainGitRoot').mockResolvedValue(repoPath);
+    vi.spyOn(localReviewModule, 'generateScopedDiff').mockResolvedValue({
+      diff: '', stats: { trackedChanges: 0, untrackedFiles: 0, stagedChanges: 0, unstagedChanges: 0 }, mergeBaseSha: null
+    });
+    vi.spyOn(localReviewModule, 'computeScopedDigest').mockResolvedValue('digest123');
+    vi.spyOn(localReviewModule, 'findMergeBase').mockResolvedValue(null);
+    vi.spyOn(localReviewModule, 'getFirstCommitSubject').mockResolvedValue(null);
+    vi.spyOn(baseBranchModule, 'detectBaseBranch').mockResolvedValue(null);
+    vi.spyOn(summaryGenerator, 'kickOffSummaryJob').mockReturnValue(null);
+    vi.spyOn(tourGenerator, 'kickOffTourJob').mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    prContext._hostBindingInternals.clearHostBindingFailureCache();
+    prContext._hostBindingInternals.clearRemoteHostnameCache();
+    localReviewDiffs.clear();
+    vi.restoreAllMocks();
+    closeTestDatabase(db);
+  });
+
+  /** Capture the binding the CLI feeds into branch → PR detection. */
+  function captureDetectionBinding() {
+    const captured = {};
+    vi.spyOn(localReviewModule, 'detectAndBuildBranchInfo').mockImplementation(async (p, branch, options = {}) => {
+      captured.hostBinding = options.hostBinding;
+      captured.githubToken = options.githubToken;
+      return null;
+    });
+    return captured;
+  }
+
+  /** What the READ side (GET /api/local/:id → fetchPRMetadata) would bind. */
+  function readSideBinding(config) {
+    return prContext.resolveAssociationBinding(
+      { prNumber: 77, repository: REPO },
+      config,
+      { localPath: repoPath }
+    );
+  }
+
+  it('binds the ALT host on both sides when the checkout remote names it', async () => {
+    prContext._hostBindingInternals.setRemoteHostname(repoPath, 'alt.example.com');
+    const config = dualConfig();
+    const captured = captureDetectionBinding();
+
+    const session = await localReviewModule.setupLocalReviewSession({
+      db, config, repoPath, flags: {}, startBackgroundJobs: false
+    });
+    expect(session.sessionId).toBeDefined();
+
+    // WRITE side: the alt host, from evidence — not the github.com guess.
+    expect(captured.hostBinding).toMatchObject({ host: ALT_HOST, apiHost: ALT_HOST, token: 'ALT_TOKEN' });
+    expect(captured.hostBinding.hostAmbiguous).toBeUndefined();
+    expect(captured.githubToken).toBe('ALT_TOKEN');
+
+    // READ side: the same host. This equality IS the invariant.
+    const read = readSideBinding(config);
+    expect(read.host).toBe(captured.hostBinding.host);
+    expect(read.apiHost).toBe(captured.hostBinding.apiHost);
+    expect(read.hostAmbiguous).toBeUndefined();
+  });
+
+  it('binds GITHUB.COM on both sides when the checkout remote names github', async () => {
+    prContext._hostBindingInternals.setRemoteHostname(repoPath, 'github.com');
+    const config = dualConfig();
+    const captured = captureDetectionBinding();
+
+    await localReviewModule.setupLocalReviewSession({
+      db, config, repoPath, flags: {}, startBackgroundJobs: false
+    });
+
+    expect(captured.hostBinding).toMatchObject({ host: null, token: 'GH_TOKEN' });
+    expect(captured.hostBinding.hostAmbiguous).toBeUndefined();
+    expect(readSideBinding(config).host).toBe(captured.hostBinding.host);
+  });
+
+  it('stays AMBIGUOUS on both sides when the remote matches neither host', async () => {
+    // The safe pre-existing behaviour: detection still runs on the
+    // conservative guess, but the marker travels with it so the read side
+    // refuses to persist a guessed host (see fetchPRMetadata).
+    prContext._hostBindingInternals.setRemoteHostname(repoPath, 'mirror.internal');
+    const config = dualConfig();
+    const captured = captureDetectionBinding();
+
+    await localReviewModule.setupLocalReviewSession({
+      db, config, repoPath, flags: {}, startBackgroundJobs: false
+    });
+
+    expect(captured.hostBinding.hostAmbiguous).toBe(true);
+    expect(readSideBinding(config).hostAmbiguous).toBe(true);
+  });
+
+  it('resolves the repos[...] key through the identity translation (url_pattern monorepo)', async () => {
+    // A raw resolveHostBinding on the IDENTITY misses a url_pattern-keyed
+    // entry and silently degrades to github.com + the global token — the
+    // second half of the regression this write site had.
+    prContext._hostBindingInternals.setRemoteHostname(repoPath, 'alt.example.com');
+    const config = {
+      port: 7247,
+      github_token: 'GH_TOKEN',
+      repos: {
+        'alt-owner/monorepo': {
+          api_host: ALT_HOST,
+          exclusive: false,
+          token: 'ALT_TOKEN',
+          url_pattern: '^https://alt\\.example\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)$'
+        }
+      }
+    };
+    const captured = captureDetectionBinding();
+
+    await localReviewModule.setupLocalReviewSession({
+      db, config, repoPath, flags: {}, startBackgroundJobs: false
+    });
+
+    expect(captured.hostBinding).toMatchObject({ host: ALT_HOST, token: 'ALT_TOKEN' });
+    expect(readSideBinding(config)).toMatchObject({ host: ALT_HOST, token: 'ALT_TOKEN' });
   });
 });

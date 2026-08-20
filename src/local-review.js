@@ -4,7 +4,13 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken, resolveHostBinding } = require('./config');
+const { loadConfig, showWelcomeMessage, resolveDbName, getGitHubToken } = require('./config');
+// Hostname parsing lives in utils/host-resolution to avoid a require cycle
+// back into this module — see the note on `extractRemoteHostname` there.
+const { extractRemoteHostname, getRemoteHostname } = require('./utils/host-resolution');
+// The ONE resolver the write side (PR-association detection) and the read side
+// (`fetchPRMetadata`) must share — see its docblock in providers/pr-context.js.
+const { resolveRepositoryBinding } = require('./providers/pr-context');
 const logger = require('./utils/logger');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { fireHooks, hasHooks } = require('./hooks/hook-runner');
@@ -156,6 +162,86 @@ async function getHeadSha(repoPath) {
 }
 
 /**
+ * Extract the `owner/repo` path from a git remote URL.
+ *
+ * NOTE: this is the historical parser lifted verbatim out of
+ * `getRepositoryName` — quirks included (e.g. an `ssh://user@host/...` URL
+ * takes the SCP branch because it contains both ':' and '@'). Changing it
+ * would change what every local review is named, so it is preserved exactly;
+ * hostname extraction is handled separately by `extractRemoteHostname`.
+ *
+ * @param {string} trimmedUrl - A non-empty, already-trimmed remote URL
+ * @returns {string|null} The parsed path, or null when nothing usable remains
+ */
+function extractRemoteRepoPath(trimmedUrl) {
+  // Supports formats:
+  // - https://github.com/owner/repo.git
+  // - https://github.com/owner/repo
+  // - git@github.com:owner/repo.git
+  // - git@github.com:owner/repo
+  // - ssh://git@github.com/owner/repo.git
+
+  let repoName = trimmedUrl;
+
+  // Remove .git suffix if present
+  if (repoName.endsWith('.git')) {
+    repoName = repoName.slice(0, -4);
+  }
+
+  // Handle SSH format (git@github.com:owner/repo)
+  if (repoName.includes(':') && repoName.includes('@')) {
+    const colonIndex = repoName.lastIndexOf(':');
+    repoName = repoName.substring(colonIndex + 1);
+  } else {
+    // Handle HTTPS or SSH URL format
+    // Extract the path after the domain
+    try {
+      const url = new URL(repoName);
+      repoName = url.pathname;
+    } catch {
+      // If URL parsing fails, try to extract path manually
+      const match = repoName.match(/[/:]([\w.-]+\/[\w.-]+)$/);
+      if (match) {
+        repoName = match[1];
+      }
+    }
+  }
+
+  // Remove leading slash if present
+  if (repoName.startsWith('/')) {
+    repoName = repoName.substring(1);
+  }
+
+  return repoName && repoName.length > 0 ? repoName : null;
+}
+
+/**
+ * Parse a git remote URL into its hostname and `owner/repo` path.
+ *
+ * Pure — no filesystem or process access.
+ *
+ * @param {string} remoteUrl - A git remote URL
+ * @returns {{ hostname: string|null, repoName: string|null }} hostname is
+ *   lowercased and has no port; repoName has no `.git` suffix and no leading
+ *   `/`. Either field is null when the URL yields nothing usable.
+ */
+function parseRemoteUrl(remoteUrl) {
+  if (typeof remoteUrl !== 'string') {
+    return { hostname: null, repoName: null };
+  }
+
+  const trimmed = remoteUrl.trim();
+  if (!trimmed) {
+    return { hostname: null, repoName: null };
+  }
+
+  return {
+    hostname: extractRemoteHostname(trimmed),
+    repoName: extractRemoteRepoPath(trimmed)
+  };
+}
+
+/**
  * Get the repository name from git remote or fall back to directory name
  * @param {string} repoPath - Path to the git repository
  * @returns {Promise<string>} Repository name (owner/repo format if available, or just repo name)
@@ -170,52 +256,10 @@ async function getRepositoryName(repoPath) {
     }).trim();
 
     if (remoteUrl) {
-      // Parse the repository name from the URL
-      // Supports formats:
-      // - https://github.com/owner/repo.git
-      // - https://github.com/owner/repo
-      // - git@github.com:owner/repo.git
-      // - git@github.com:owner/repo
-      // - ssh://git@github.com/owner/repo.git
-
-      let repoName = remoteUrl;
-
-      // Remove .git suffix if present
-      if (repoName.endsWith('.git')) {
-        repoName = repoName.slice(0, -4);
-      }
-
-      // Handle SSH format (git@github.com:owner/repo)
-      if (repoName.includes(':') && repoName.includes('@')) {
-        const colonIndex = repoName.lastIndexOf(':');
-        repoName = repoName.substring(colonIndex + 1);
-      } else {
-        // Handle HTTPS or SSH URL format
-        // Extract the path after the domain
-        try {
-          const url = new URL(repoName);
-          repoName = url.pathname;
-        } catch {
-          // If URL parsing fails, try to extract path manually
-          const match = repoName.match(/[/:]([\w.-]+\/[\w.-]+)$/);
-          if (match) {
-            repoName = match[1];
-          }
-        }
-      }
-
-      // Remove leading slash if present
-      if (repoName.startsWith('/')) {
-        repoName = repoName.substring(1);
-      }
-
-      // Validate we got something reasonable (should have owner/repo format)
-      if (repoName && repoName.includes('/')) {
-        return repoName;
-      }
-
-      // If we only got the repo part, return it
-      if (repoName && repoName.length > 0) {
+      // Parse the repository name from the URL (owner/repo when the remote has
+      // one, otherwise whatever bare name the parser recovered)
+      const { repoName } = parseRemoteUrl(remoteUrl);
+      if (repoName) {
         return repoName;
       }
     }
@@ -740,7 +784,12 @@ async function resolveScopeAndBase({ existingReview, flags = {}, repoPath, branc
     if (flags.base) {
       baseBranch = flags.base;
     } else if (!baseBranch) {
-      const branchBinding = repository ? resolveHostBinding(repository, config) : null;
+      // Shared resolver: base-branch detection reaches GitHub too
+      // (`tryGitHubPR`), so it must bind the same host as the rest of the
+      // review.
+      const branchBinding = repository
+        ? resolveRepositoryBinding(repository, config, { localPath: repoPath })
+        : null;
       const token = branchBinding?.token || getGitHubToken(config);
       const detection = await baseBranchModule.detectBaseBranch(repoPath, branch, {
         repository,
@@ -920,7 +969,13 @@ async function setupLocalReviewSession({ db, config, repoPath, flags = {}, start
 
   let branchInfo = null;
   // Resolve binding so alt-host repos look up PRs on the right host.
-  const branchBinding = repository ? resolveHostBinding(repository, config) : null;
+  //
+  // A WRITE side (it persists `associated_pr_number`): must resolve the host
+  // through `resolveRepositoryBinding`, never a raw `resolveHostBinding` — see
+  // "THE ONE RESOLVER FOR BOTH SIDES" on that function (providers/pr-context.js).
+  const branchBinding = repository
+    ? resolveRepositoryBinding(repository, config, { localPath: repoPath })
+    : null;
   const branchToken = branchBinding?.token || getGitHubToken(config);
   if (!includesBranch(scopeStart)) {
     const untrackedFiles = await getUntrackedFiles(repoPath);
@@ -1370,6 +1425,8 @@ module.exports = {
   findMainGitRoot,
   getHeadSha,
   getRepositoryName,
+  parseRemoteUrl,
+  getRemoteHostname,
   getCurrentBranch,
   generateLocalDiff,
   generateBranchDiff,

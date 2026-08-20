@@ -11,9 +11,14 @@
  *   --- SYNC ROUTES --- : POST /api/reviews/:reviewId/external-comments/sync
  *   --- FETCH ROUTES --- : GET /api/reviews/:reviewId/external-comments
  *
- * Canonical PR-mode predicate: `isPRMode(review)`. Use it from EVERY route
- * in this file — sync and fetch must agree on what counts as a PR review,
- * otherwise the two endpoints diverge on local-mode handling.
+ * Canonical target resolver: `resolveCommentTarget(review)`. Use it from
+ * EVERY route in this file — sync and fetch must agree on which PR (if any)
+ * a review's comments belong to, otherwise the two endpoints diverge and we
+ * write mirror rows that are never read back.
+ *
+ * These endpoints are review-scoped, not PR-route-scoped: a local review
+ * whose branch has an associated GitHub PR resolves to that PR and gets the
+ * same read-only mirror. See plans/bridge-local-and-pr-modes.md, Phase 2.
  */
 
 const express = require('express');
@@ -25,6 +30,11 @@ const {
 } = require('../database');
 const { getAdapter } = require('../external');
 const { GitHubApiError } = require('../github/client');
+// THE shared repository-binding resolver (identity → binding key → binding,
+// dual-host repos resolved from the checkout's git remote). Detection and
+// metadata fetches already resolve through it; the sync's cold-cache path
+// below must too, or the three sides disagree on which host a PR lives on.
+const { resolveRepositoryBinding } = require('../providers/pr-context');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -40,7 +50,8 @@ const router = express.Router();
  * and threads the repo through so per-repo alt-host bindings apply.
  */
 const defaults = {
-  getAdapter
+  getAdapter,
+  resolveRepositoryBinding
 };
 
 /**
@@ -89,22 +100,77 @@ class BadRequestError extends Error {
 }
 
 /**
- * Canonical PR-mode predicate. Both routes in this file (sync + fetch) must
- * use this same check so the two endpoints agree on what a "PR review" is.
- *
- * A row is PR-mode iff:
- *   - it has a numeric `pr_number`
- *   - it has a non-empty `repository`
- *   - its `review_type` is not 'local' (default is 'pr')
- *   - it has no `local_path` (which would identify a local-mode review)
+ * Typed 409 error. Extends BadRequestError so the route's existing
+ * `instanceof BadRequestError` catch handles it — the response status comes
+ * from `error.status`, not the class, so this maps to 409 with no ladder
+ * change. Used for state-conflict refusals the client cannot fix by changing
+ * the request (e.g. a dual-host repository whose PR host cannot be
+ * determined), as opposed to malformed inputs (400).
  */
-function isPRMode(review) {
-  if (!review) return false;
-  if (review.review_type && review.review_type !== 'pr') return false;
-  if (review.local_path) return false;
-  if (!Number.isInteger(review.pr_number)) return false;
-  if (!review.repository) return false;
-  return true;
+class ConflictError extends BadRequestError {
+  constructor(message) {
+    super(message);
+    this.name = 'ConflictError';
+    this.status = 409;
+  }
+}
+
+/**
+ * Build a comment target from a (prNumber, repository) pair, or null when the
+ * pair cannot identify a PR at all.
+ *
+ * `owner`/`repo` are BEST EFFORT: a malformed repository still yields a
+ * target (with null owner/repo) so `executeSync` can raise its specific
+ * "Invalid review.repository" 400 rather than collapsing into the generic
+ * "no PR target" 400. The two-element split is deliberate — `a/b/c` resolves
+ * to owner `a`, repo `b`, exactly as the original destructure did.
+ *
+ * @private
+ */
+function buildCommentTarget(prNumber, repository) {
+  if (!Number.isInteger(prNumber)) return null;
+  if (!repository || typeof repository !== 'string') return null;
+  const parts = repository.split('/');
+  return {
+    owner: parts[0] || null,
+    repo: parts[1] || null,
+    prNumber,
+    repository
+  };
+}
+
+/**
+ * Canonical comment-target resolver. Both routes in this file (sync + fetch)
+ * must use this so the two endpoints agree on which PR a review's external
+ * comments belong to.
+ *
+ * Two shapes resolve:
+ *
+ *   1. LOCAL row carrying a persisted association (migration 56's
+ *      `associated_pr_*`) → the associated PR. Local rows never use the PR
+ *      natural key; that key stays exclusive to review_type='pr' so
+ *      `getReviewByPR` can never surface a local row.
+ *   2. PR-mode row → its own natural key. Unchanged from the earlier
+ *      `isPRMode` truth table.
+ *
+ * Anything else resolves to null, INCLUDING a local review with no
+ * association. Callers keep their existing — and deliberately DIFFERENT —
+ * null contracts: sync 400s, fetch returns `{ threads: [] }` so the frontend
+ * can call it unconditionally in either mode.
+ *
+ * @param {Object|null} review - Row from `ReviewRepository.getReview`
+ * @returns {{owner: string|null, repo: string|null, prNumber: number, repository: string}|null}
+ */
+function resolveCommentTarget(review) {
+  if (!review) return null;
+
+  if (review.review_type === 'local' && review.local_path) {
+    return buildCommentTarget(review.associated_pr_number, review.associated_pr_repository);
+  }
+
+  if (review.review_type && review.review_type !== 'pr') return null;
+  if (review.local_path) return null;
+  return buildCommentTarget(review.pr_number, review.repository);
 }
 
 /**
@@ -117,7 +183,7 @@ function isPRMode(review) {
  * @param {Object} params.config - Server config (for token lookup)
  * @param {Object} params.review - Validated review row
  * @param {string} params.source - Adapter source name (e.g. 'github')
- * @param {Object} [params._deps] - Test overrides for { GitHubClient, getGitHubToken, getAdapter, resolveHostBinding, resolveBindingRepositoryFromPR }
+ * @param {Object} [params._deps] - Test overrides for { GitHubClient, getGitHubToken, getAdapter, resolveRepositoryBinding, resolveHostBinding, resolveBindingRepositoryFromPR }
  * @returns {Promise<{count: number, lostAnchors: number, syncedAt: string}>}
  */
 async function executeSync({ db, config, review, source, _deps }) {
@@ -126,30 +192,79 @@ async function executeSync({ db, config, review, source, _deps }) {
   // Look up adapter — throws on unknown sources, caught by the route.
   const adapter = deps.getAdapter(source);
 
-  // Parse owner/repo BEFORE resolving credentials: the repository drives
-  // binding-aware credential resolution (per-repo api_host/token for
-  // alt-host repos), so it must be validated first.
-  const [owner, repo] = String(review.repository).split('/');
-  if (!owner || !repo) {
+  // ONE resolver, three read sites below. A local review carries its PR
+  // identity in different columns than a PR-mode row, so a read site that
+  // skipped `target` would silently sync `undefined/undefined`.
+  const target = resolveCommentTarget(review);
+  if (!target) {
     throw new BadRequestError(
-      `Invalid review.repository "${review.repository}"; expected "owner/repo"`
+      'External comment sync requires a PR mode review or a local review with an associated pull request'
     );
   }
 
-  // Look up the PR's stored host so a DUAL repo's alt-hosted PR binds to the
-  // alt host (and its line-based anchoring path) rather than api.github.com.
-  // Pass the raw stored value through to the adapter, which applies the
-  // legacy-NULL convention against its resolved binding key. `undefined`
-  // (no row / unknown) preserves the two-arg ambiguity behaviour.
-  let storedHost;
-  if (Number.isInteger(review.pr_number)) {
-    const prMetadataRepo = new PRMetadataRepository(db);
-    storedHost = await prMetadataRepo.getPRHost(review.repository, review.pr_number);
+  // Parse owner/repo BEFORE resolving credentials: the repository drives
+  // binding-aware credential resolution (per-repo api_host/token for
+  // alt-host repos), so it must be validated first.
+  const { owner, repo } = target;
+  if (!owner || !repo) {
+    throw new BadRequestError(
+      `Invalid review.repository "${target.repository}"; expected "owner/repo"`
+    );
+  }
+
+  // Two-tier host resolution so a DUAL repo's alt-hosted PR binds to the alt
+  // host (and its line-based anchoring path) rather than api.github.com:
+  //
+  //   Tier 1 — `pr_metadata.host`, the stored stamp. `getPRHost` distinguishes
+  //   "no row" (`undefined`) from "row with NULL host" (an explicit github.com
+  //   stamp), so ANY stored value — including null — wins and is passed
+  //   through raw to the adapter, which applies the legacy-NULL convention
+  //   against its resolved binding key. Keeping this fast path first also
+  //   keeps the resolver's potential `token_command` shell-out off the
+  //   PR-mode hot path: a warm cache never invokes the resolver at all.
+  //
+  //   Tier 2 — cold cache (`undefined`): resolve through the SHARED
+  //   `resolveRepositoryBinding` — the same resolver PR detection and
+  //   metadata fetches use — threading the review's checkout path so a dual
+  //   repo resolves to whichever host its git remote names. Without this the
+  //   adapter fell back to the two-arg ambiguity rule, guessing github.com
+  //   and syncing a same-numbered stranger PR's comments into the review
+  //   (or 401ing with alt-host-only credentials). And the cache could stay
+  //   cold FOREVER: `fetchPRMetadata` refuses to stamp a `pr_metadata` row
+  //   from an ambiguous binding, so an ambiguous checkout re-guessed on
+  //   every sync. An ambiguous binding is therefore a hard refusal here,
+  //   BEFORE any network access.
+  //
+  // Keyed on the TARGET, not the review row: a local review's `pr_number` is
+  // NULL, so reading the row directly here would skip the lookup entirely and
+  // silently degrade dual-host disambiguation for associated PRs.
+  const prMetadataRepo = new PRMetadataRepository(db);
+  let storedHost = await prMetadataRepo.getPRHost(target.repository, target.prNumber);
+  if (storedHost === undefined) {
+    const binding = deps.resolveRepositoryBinding(target.repository, config || {}, {
+      localPath: review.local_path || null
+    });
+    if (binding && binding.hostAmbiguous) {
+      throw new ConflictError(
+        `Cannot determine which host PR #${target.prNumber} of dual-host repository ` +
+        `"${target.repository}" lives on; refusing to sync external comments against a guessed host`
+      );
+    }
+    if (binding) {
+      // `binding.host` is the resolved api_host URL, or null meaning
+      // github.com — exactly the storedHost contract the adapter expects.
+      storedHost = binding.host;
+    }
+    // A null binding is only reachable for config-shape surprises on a
+    // NON-dual repository (`owner`/`repo` were validated above, and the
+    // two-arg `resolveHostBinding` form cannot throw). Fall through with
+    // `undefined` — the previous ambiguity-rule behaviour — rather than
+    // refusing, so plain repositories are not regressed.
   }
 
   // Delegate credential resolution to the adapter so the route stays
   // source-agnostic and each adapter can name its own env var in errors.
-  // Thread `review.repository` through so the adapter resolves the
+  // Thread `target.repository` through so the adapter resolves the
   // repo-scoped host binding (alt-host api_host + repo token) instead of
   // always targeting api.github.com with the top-level github.com token.
   // The adapter throws (e.g. GitHubApiError 401) when credentials are
@@ -157,13 +272,13 @@ async function executeSync({ db, config, review, source, _deps }) {
   // `isAltHost` reflects whether the resolved binding targets an alternate
   // Git host. Alt-hosts don't implement GitHub's deprecated `position`
   // field, so it drives line-based anchoring in `mapComment` below.
-  const { client, isAltHost } = adapter.resolveCredentials(config || {}, review.repository, _deps, { storedHost });
+  const { client, isAltHost } = adapter.resolveCredentials(config || {}, target.repository, _deps, { storedHost });
 
   const apiRows = await adapter.fetchComments({
     client,
     owner,
     repo,
-    pull_number: review.pr_number
+    pull_number: target.prNumber
   });
 
   // Map raw API rows and filter out "lost anchors" (BOTH current AND original
@@ -288,8 +403,12 @@ router.post('/api/reviews/:reviewId/external-comments/sync', validateReviewId, a
   const source = (req.query.source || 'github').toString();
   const review = req.review;
 
-  if (!isPRMode(review)) {
-    return res.status(400).json({ error: 'External comment sync requires a PR mode review' });
+  // Sync 400s where fetch returns an empty list; that asymmetry is deliberate
+  // (see `resolveCommentTarget`).
+  if (!resolveCommentTarget(review)) {
+    return res.status(400).json({
+      error: 'External comment sync requires a PR mode review or a local review with an associated pull request'
+    });
   }
 
   const db = req.app.get('db');
@@ -370,8 +489,9 @@ router.post('/api/reviews/:reviewId/external-comments/sync', validateReviewId, a
  *   - 404: review not found
  *   - 500: unexpected
  *
- * Local-mode reviews always return { threads: [] } — external comments
- * are a PR-mode concept, but the endpoint is safe to call from local pages.
+ * Reviews with no resolvable PR target always return { threads: [] } — a
+ * local review with no associated PR has nothing to mirror, but the endpoint
+ * stays safe to call unconditionally from local pages.
  */
 router.get('/api/reviews/:reviewId/external-comments', validateReviewId, async (req, res) => {
   try {
@@ -390,11 +510,10 @@ router.get('/api/reviews/:reviewId/external-comments', validateReviewId, async (
       }
     }
 
-    // Non-PR reviews (local-mode, malformed rows) never have external
-    // comments. Return an empty thread list so the frontend can call this
-    // endpoint unconditionally. We use the canonical `isPRMode` predicate
-    // here so sync and fetch stay in lockstep on what counts as PR mode.
-    if (!isPRMode(review)) {
+    // No resolvable PR target (a local review with no association, malformed
+    // rows) — empty thread list, so the frontend can call this endpoint
+    // unconditionally. Canonical resolver, so sync and fetch stay in lockstep.
+    if (!resolveCommentTarget(review)) {
       return res.json({ threads: [] });
     }
 
@@ -416,5 +535,8 @@ router.get('/api/reviews/:reviewId/external-comments', validateReviewId, async (
 
 module.exports = router;
 module.exports.executeSync = executeSync;
+// The canonical target resolver. Exported so tests can pin the truth table
+// directly; production code inside this file is its only other consumer.
+module.exports.resolveCommentTarget = resolveCommentTarget;
 // Exported for tests only — production code should not reach into this map.
 module.exports._inFlight = inFlight;

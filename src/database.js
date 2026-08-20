@@ -4749,7 +4749,14 @@ class ReviewRepository {
   }
 
   /**
-   * Get a review by its ID
+   * Get a review by its ID, regardless of review_type.
+   *
+   * The association columns (`associated_pr_number` / `associated_pr_repository`,
+   * migration 56) are selected here as well as in `getLocalReviewById`: this is
+   * the mode-agnostic lookup that `routes/external-comments.js` uses to resolve
+   * a review's comment target, and that resolver must be able to see a local
+   * row's associated PR. They are always NULL on review_type='pr' rows.
+   *
    * @param {number} id - Review ID
    * @returns {Promise<Object|null>} Review record or null if not found
    */
@@ -4758,7 +4765,8 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions, summary,
              review_type, local_path, local_head_sha,
-             local_scope_start, local_scope_end, local_base_branch
+             local_scope_start, local_scope_end, local_base_branch,
+             associated_pr_number, associated_pr_repository
       FROM reviews
       WHERE id = ?
     `, [id]);

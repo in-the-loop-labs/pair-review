@@ -2936,6 +2936,12 @@ class ChatPanel {
     if (ctx.isFileLevel) {
       lines.push('- Scope: File-level comment');
     }
+    // Set by ExternalCommentManager when it could not trust the comment's
+    // anchor. Explains WHY the context is file-scoped — without it the agent
+    // would infer the comment simply had no line information.
+    if (ctx.anchorNote) {
+      lines.push(`- Anchor: ${ctx.anchorNote}`);
+    }
     if (ctx.parentId && !isExternal) {
       lines.push('- Origin: adopted from AI suggestion');
     }
@@ -3058,6 +3064,12 @@ class ChatPanel {
     }
     lines.push(`- Source: ${sourceLabel}`);
     lines.push(`- Comment count: ${comments.length}`);
+    // See the matching note in _sendCommentContextMessage. This path has no
+    // isFileLevel flag at all, so the nulled line numbers are the only other
+    // signal the context is file-scoped.
+    if (threadContext.anchorNote) {
+      lines.push(`- Anchor: ${threadContext.anchorNote}`);
+    }
 
     comments.forEach((c, idx) => {
       const author = c.author || 'unknown';

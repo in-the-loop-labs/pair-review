@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-const { storedHostToOption, isDualHostRepo, getConfiguredApiHost, resolvePreflightBinding, hostSetupParamValue } = require('../../src/utils/host-resolution');
+const { storedHostToOption, isDualHostRepo, getConfiguredApiHost, resolvePreflightBinding, hostSetupParamValue, hostnameMatchesApiHost, remoteHostnameToHostOption } = require('../../src/utils/host-resolution');
 
 const ALT = 'https://alt.example/api/v3';
 const dualConfig = { repos: { 'acme/widgets': { api_host: ALT, exclusive: false, token: 't' } } };
@@ -119,4 +119,102 @@ describe('resolvePreflightBinding (FINDING 2/3/4)', () => {
     expect(b.token).toBe('gh-tok');
     expect(b.apiHost).toBe(null);
   });
+});
+
+describe('hostnameMatchesApiHost', () => {
+  it('matches an exact alt host against an api_host with a path', () => {
+    expect(hostnameMatchesApiHost('git.corp', 'https://git.corp/api/v3')).toBe(true);
+  });
+
+  it('matches through an api. prefix on the api_host', () => {
+    expect(hostnameMatchesApiHost('git.corp', 'https://api.git.corp')).toBe(true);
+    expect(hostnameMatchesApiHost('github.com', 'https://api.github.com')).toBe(true);
+  });
+
+  it('matches an api.-prefixed remote against a bare api_host hostname', () => {
+    expect(hostnameMatchesApiHost('api.git.corp', 'https://git.corp/api/v3')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(hostnameMatchesApiHost('GIT.CORP', 'https://Git.Corp/api/v3')).toBe(true);
+  });
+
+  it('does not match a different host', () => {
+    expect(hostnameMatchesApiHost('github.com', 'https://git.corp/api/v3')).toBe(false);
+    expect(hostnameMatchesApiHost('git.corp', 'https://other.corp/api/v3')).toBe(false);
+    // Suffix-only overlap must NOT match (never a raw string comparison).
+    expect(hostnameMatchesApiHost('evil-git.corp', 'https://git.corp/api/v3')).toBe(false);
+    expect(hostnameMatchesApiHost('git.corp.evil.test', 'https://git.corp/api/v3')).toBe(false);
+  });
+
+  it('tolerates an api_host that is a bare hostname, not a URL', () => {
+    expect(hostnameMatchesApiHost('git.corp', 'git.corp')).toBe(true);
+    expect(hostnameMatchesApiHost('git.corp', 'api.git.corp')).toBe(true);
+    expect(hostnameMatchesApiHost('github.com', 'git.corp')).toBe(false);
+  });
+
+  it('tolerates an api_host carrying a port', () => {
+    expect(hostnameMatchesApiHost('git.corp', 'https://git.corp:8443/api/v3')).toBe(true);
+    expect(hostnameMatchesApiHost('git.corp', 'git.corp:8443')).toBe(true);
+  });
+
+  it('returns false for a missing or empty remote hostname', () => {
+    expect(hostnameMatchesApiHost(null, 'https://git.corp/api/v3')).toBe(false);
+    expect(hostnameMatchesApiHost(undefined, 'https://git.corp/api/v3')).toBe(false);
+    expect(hostnameMatchesApiHost('', 'https://git.corp/api/v3')).toBe(false);
+    expect(hostnameMatchesApiHost('   ', 'https://git.corp/api/v3')).toBe(false);
+  });
+
+  it('returns false for a missing, empty, or unusable api_host', () => {
+    expect(hostnameMatchesApiHost('git.corp', null)).toBe(false);
+    expect(hostnameMatchesApiHost('git.corp', undefined)).toBe(false);
+    expect(hostnameMatchesApiHost('git.corp', '')).toBe(false);
+    expect(hostnameMatchesApiHost('git.corp', '   ')).toBe(false);
+  });
+
+});
+
+describe('remoteHostnameToHostOption', () => {
+  it('github.com → { host: null }', () => {
+    expect(remoteHostnameToHostOption('github.com', null)).toEqual({ host: null });
+    // ...even on a dual repo, where an api_host is configured.
+    expect(remoteHostnameToHostOption('github.com', ALT)).toEqual({ host: null });
+  });
+
+  it('www.github.com → { host: null }', () => {
+    expect(remoteHostnameToHostOption('www.github.com', ALT)).toEqual({ host: null });
+  });
+
+  it('an exact alt-host remote → { host: <api_host url> }', () => {
+    expect(remoteHostnameToHostOption('alt.example', ALT)).toEqual({ host: ALT });
+  });
+
+  // Whatever form the api_host takes, the option carries it back VERBATIM —
+  // never a hostname re-derived from it, which would drop a port or a path
+  // the client needs. The matching itself is covered above.
+  it('a matching remote yields the api_host string verbatim, in every api_host form', () => {
+    expect(remoteHostnameToHostOption('git.corp', 'https://api.git.corp'))
+      .toEqual({ host: 'https://api.git.corp' });
+    expect(remoteHostnameToHostOption('git.corp', 'git.corp')).toEqual({ host: 'git.corp' });
+    expect(remoteHostnameToHostOption('git.corp', 'https://git.corp:8443/api/v3'))
+      .toEqual({ host: 'https://git.corp:8443/api/v3' });
+  });
+
+  it('a host matching neither → null (still ambiguous, do not guess)', () => {
+    expect(remoteHostnameToHostOption('gitlab.example', ALT)).toBe(null);
+  });
+
+  it('a non-github remote with no api_host configured → null', () => {
+    expect(remoteHostnameToHostOption('git.corp', null)).toBe(null);
+    expect(remoteHostnameToHostOption('git.corp', undefined)).toBe(null);
+    expect(remoteHostnameToHostOption('git.corp', '')).toBe(null);
+  });
+
+  it('a missing or empty remote hostname → null, even with an api_host', () => {
+    expect(remoteHostnameToHostOption(null, ALT)).toBe(null);
+    expect(remoteHostnameToHostOption(undefined, ALT)).toBe(null);
+    expect(remoteHostnameToHostOption('', ALT)).toBe(null);
+    expect(remoteHostnameToHostOption('   ', ALT)).toBe(null);
+  });
+
 });

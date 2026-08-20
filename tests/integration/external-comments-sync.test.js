@@ -7,6 +7,11 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 const externalCommentsRoutes = require('../../src/routes/external-comments');
 const { GitHubApiError } = require('../../src/github/client');
+const { ExternalCommentRepository } = require('../../src/database');
+// The registry in src/external/index.js holds this exact module object, so
+// spying a method here is observed by the route's `adapter.resolveCredentials`
+// property lookup — no vi.mock, and the real implementation still runs.
+const githubAdapter = require('../../src/external/github-adapter');
 
 /**
  * Helpers
@@ -53,6 +58,55 @@ function makeApiRow({
     html_url: html_url || `https://github.com/owner/repo/pull/1#discussion_r${id}`,
     subject_type,
     created_at
+  };
+}
+
+/**
+ * Insert a LOCAL review row, optionally carrying a persisted PR association
+ * (migration 56's `associated_pr_*` columns).
+ *
+ * `repository` / `pr_number` on the row itself are deliberately NOT the
+ * association: the PR natural key stays exclusive to review_type='pr' rows, so
+ * a local review's PR identity lives only in the association columns.
+ */
+function insertLocalReview(db, {
+  repository = 'placeholder',
+  localPath = '/checkout/local',
+  associatedPrNumber = null,
+  associatedPrRepository = null
+} = {}) {
+  const result = db.prepare(
+    `INSERT INTO reviews (repository, status, review_type, local_path,
+                          associated_pr_number, associated_pr_repository)
+     VALUES (?, 'draft', 'local', ?, ?, ?)`
+  ).run(repository, localPath, associatedPrNumber, associatedPrRepository);
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Build a mapped `external_comments` row for direct repository seeding
+ * (bypassing a sync). Mirrors the helper in external-comments-fetch.test.js.
+ */
+function makeMirrorRow(overrides = {}) {
+  return {
+    external_id: '1',
+    in_reply_to_id: null,
+    external_url: 'https://github.com/owner/repo/pull/42#discussion_r1',
+    author: 'octocat',
+    author_url: 'https://github.com/octocat',
+    file: 'src/app.js',
+    side: 'RIGHT',
+    line_start: 10,
+    line_end: 10,
+    diff_position: 5,
+    commit_sha: 'abc1234',
+    is_outdated: false,
+    original_line_start: 10,
+    original_line_end: 10,
+    original_commit_sha: 'abc1234',
+    body: 'mirrored',
+    external_created_at: '2026-01-01T00:00:00Z',
+    ...overrides
   };
 }
 
@@ -517,7 +571,7 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
     expect(res.body.error).toMatch(/owner\/repo/);
   });
 
-  it('local-mode review: returns 400 with a clear message', async () => {
+  it('local-mode review WITHOUT an association: returns 400 with a clear message', async () => {
     const localReviewId = Number(db.prepare(
       `INSERT INTO reviews (repository, status, review_type, local_path)
        VALUES ('owner/repo', 'draft', 'local', '/tmp/local')`
@@ -533,6 +587,340 @@ describe('POST /api/reviews/:reviewId/external-comments/sync', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/PR mode/i);
+  });
+
+  // --- Local reviews with an associated PR (Phase 2) ---
+
+  it('local-mode review WITH an association: syncs against the ASSOCIATED PR', async () => {
+    // The row's own repository is a placeholder and its pr_number is NULL —
+    // every read site in executeSync must come from the association instead.
+    const localReviewId = insertLocalReview(db, {
+      repository: 'placeholder',
+      associatedPrNumber: 7,
+      associatedPrRepository: 'assoc-owner/assoc-repo'
+    });
+
+    const { FakeGitHubClient, calls } = makeFakeClient([
+      makeApiRow({ id: 1101, body: 'from the associated PR' }),
+      makeApiRow({ id: 1102, body: 'reply', in_reply_to_id: 1101 })
+    ]);
+    const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
+
+    const res = await request(server)
+      .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(2);
+
+    // The GitHub call targets the ASSOCIATED owner/repo/pull_number, not the
+    // placeholder repository or a NULL pr_number.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      owner: 'assoc-owner',
+      repo: 'assoc-repo',
+      pull_number: 7
+    });
+
+    // Rows land under the LOCAL review id — the mirror is review-scoped.
+    const stored = db.prepare(
+      'SELECT external_id, parent_id, id FROM external_comments WHERE review_id = ? ORDER BY external_id'
+    ).all(localReviewId);
+    expect(stored.map(r => r.external_id)).toEqual(['1101', '1102']);
+    const parent = stored.find(r => r.external_id === '1101');
+    const reply = stored.find(r => r.external_id === '1102');
+    expect(reply.parent_id).toBe(parent.id);
+  });
+
+  it('local-mode review WITH an association: getPRHost is keyed on the association', async () => {
+    // A local review's own pr_number is NULL, so a host lookup keyed on the
+    // review row would silently skip — degrading dual-host disambiguation to
+    // "assume github.com" for every associated PR. Pin the key AND the
+    // downstream behaviour (alt-host binding → line-based anchoring).
+    const localReviewId = insertLocalReview(db, {
+      associatedPrNumber: 7,
+      associatedPrRepository: 'assoc-owner/assoc-repo'
+    });
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, host) VALUES (?, ?, ?)')
+      .run(7, 'assoc-owner/assoc-repo', 'https://alt.example/api/v3');
+
+    const { FakeGitHubClient } = makeFakeClient([
+      makeApiRow({ id: 1201, position: null, line: 10, original_line: 10 })
+    ]);
+
+    const app = express();
+    app.use(express.json());
+    app.set('db', db);
+    // DUAL repo (api_host + exclusive:false): which binding wins depends
+    // entirely on the stored host threaded through as `storedHost`.
+    app.set('config', {
+      github_token: 'gh-tok',
+      repos: {
+        'assoc-owner/assoc-repo': {
+          api_host: 'https://alt.example/api/v3',
+          exclusive: false,
+          token: 'alt-tok'
+        }
+      }
+    });
+    app.set('externalCommentsDeps', { GitHubClient: FakeGitHubClient });
+    app.use('/', externalCommentsRoutes);
+    const server = await startServer(app);
+
+    const credentialSpy = vi.spyOn(githubAdapter, 'resolveCredentials');
+    let res;
+    try {
+      res = await request(server)
+        .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+        .query({ source: 'github' });
+
+      expect(res.status).toBe(200);
+      expect(credentialSpy).toHaveBeenCalledTimes(1);
+      const [, repositoryArg, , optionsArg] = credentialSpy.mock.calls[0];
+      // Repository AND stored host both come from the association.
+      expect(repositoryArg).toBe('assoc-owner/assoc-repo');
+      expect(optionsArg).toEqual({ storedHost: 'https://alt.example/api/v3' });
+    } finally {
+      credentialSpy.mockRestore();
+    }
+
+    // Behavioural proof that the alt binding actually won: the alt-host path
+    // keeps a valid `line` despite position:null, where github.com would null
+    // it and mark the row outdated.
+    const row = db.prepare(
+      'SELECT * FROM external_comments WHERE review_id = ? AND external_id = ?'
+    ).get(localReviewId, '1201');
+    expect(row.is_outdated).toBe(0);
+    expect(row.line_end).toBe(10);
+  });
+
+  // --- Cold-cache host resolution (two-tier, dual-host security fix) ---
+
+  it('cold pr_metadata cache on a dual repo: resolves the host through resolveRepositoryBinding and binds the alt host', async () => {
+    // Regression (merge blocker): with NO pr_metadata row, executeSync used to
+    // hand the adapter `storedHost: undefined`, letting the two-arg ambiguity
+    // rule guess github.com for a DUAL repo — fetching a same-numbered
+    // stranger PR from the wrong host (or 401ing with alt-host-only
+    // credentials). A cold cache must now resolve through the SHARED
+    // `resolveRepositoryBinding` (checkout-remote evidence), overridden here
+    // via `_deps` per the route's DI pattern.
+    const localReviewId = insertLocalReview(db, {
+      localPath: '/checkout/dual',
+      associatedPrNumber: 7,
+      associatedPrRepository: 'assoc-owner/assoc-repo'
+    });
+    // Deliberately NO pr_metadata row — the cache is cold.
+
+    const { FakeGitHubClient, calls } = makeFakeClient([
+      makeApiRow({ id: 1301, position: null, line: 10, original_line: 10 })
+    ]);
+
+    // The checkout remote names the ALT host: binding without hostAmbiguous.
+    const resolveBinding = vi.fn(() => ({
+      apiHost: 'https://alt.example/api/v3',
+      host: 'https://alt.example/api/v3',
+      token: 'alt-tok',
+      features: {},
+      source: 'repo',
+      refresh: null
+    }));
+
+    const app = express();
+    app.use(express.json());
+    app.set('db', db);
+    // DUAL repo (api_host + exclusive:false): which binding wins depends
+    // entirely on the host threaded through as `storedHost`.
+    app.set('config', {
+      github_token: 'gh-tok',
+      repos: {
+        'assoc-owner/assoc-repo': {
+          api_host: 'https://alt.example/api/v3',
+          exclusive: false,
+          token: 'alt-tok'
+        }
+      }
+    });
+    app.set('externalCommentsDeps', {
+      GitHubClient: FakeGitHubClient,
+      resolveRepositoryBinding: resolveBinding
+    });
+    app.use('/', externalCommentsRoutes);
+    const server = await startServer(app);
+
+    const credentialSpy = vi.spyOn(githubAdapter, 'resolveCredentials');
+    try {
+      const res = await request(server)
+        .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+        .query({ source: 'github' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBe(1);
+
+      // The resolver was consulted with the ASSOCIATION repository and the
+      // review's checkout path (dual-host evidence lives in that remote).
+      expect(resolveBinding).toHaveBeenCalledTimes(1);
+      expect(resolveBinding).toHaveBeenCalledWith(
+        'assoc-owner/assoc-repo',
+        expect.objectContaining({ github_token: 'gh-tok' }),
+        { localPath: '/checkout/dual' }
+      );
+
+      // The resolved host reaches the adapter as `storedHost` — the alt URL,
+      // not undefined (which would re-apply the ambiguity-rule guess).
+      expect(credentialSpy).toHaveBeenCalledTimes(1);
+      const [, repositoryArg, , optionsArg] = credentialSpy.mock.calls[0];
+      expect(repositoryArg).toBe('assoc-owner/assoc-repo');
+      expect(optionsArg).toEqual({ storedHost: 'https://alt.example/api/v3' });
+    } finally {
+      credentialSpy.mockRestore();
+    }
+
+    expect(calls).toHaveLength(1);
+    // Behavioural proof the ALT binding won: alt-host line-based anchoring
+    // keeps a valid `line` despite position:null, where github.com would null
+    // it and mark the row outdated.
+    const row = db.prepare(
+      'SELECT * FROM external_comments WHERE review_id = ? AND external_id = ?'
+    ).get(localReviewId, '1301');
+    expect(row.is_outdated).toBe(0);
+    expect(row.line_end).toBe(10);
+  });
+
+  it('cold cache + ambiguous dual-host binding: refuses with 409 BEFORE any GitHub call', async () => {
+    const localReviewId = insertLocalReview(db, {
+      localPath: '/checkout/dual-noremote',
+      associatedPrNumber: 7,
+      associatedPrRepository: 'assoc-owner/assoc-repo'
+    });
+    // NO pr_metadata row, and the resolver could only produce the
+    // ambiguity-rule GUESS (hostAmbiguous marker set).
+
+    const { FakeGitHubClient, calls } = makeFakeClient([makeApiRow({ id: 1401 })]);
+    const resolveBinding = vi.fn(() => ({
+      apiHost: null,
+      host: null,
+      token: 'gh-tok',
+      features: {},
+      source: 'config',
+      refresh: null,
+      hostAmbiguous: true
+    }));
+
+    const app = createTestApp(db, {
+      GitHubClient: FakeGitHubClient,
+      resolveRepositoryBinding: resolveBinding
+    });
+    const server = await startServer(app);
+
+    const credentialSpy = vi.spyOn(githubAdapter, 'resolveCredentials');
+    let res;
+    try {
+      res = await request(server)
+        .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+        .query({ source: 'github' });
+    } finally {
+      credentialSpy.mockRestore();
+    }
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/dual-host/i);
+    expect(res.body.error).toMatch(/assoc-owner\/assoc-repo/);
+    // The refusal precedes ALL network access: neither credential resolution
+    // nor the comment fetch ran, and nothing landed in the mirror.
+    expect(credentialSpy).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(db.prepare(
+      'SELECT COUNT(*) AS c FROM external_comments WHERE review_id = ?'
+    ).get(localReviewId).c).toBe(0);
+  });
+
+  it('warm pr_metadata cache: the stored host wins and resolveRepositoryBinding is never called', async () => {
+    // The stored-host fast path keeps the resolver's potential token_command
+    // shell-out off the PR-mode hot path — pin it. A row with an explicit
+    // NULL host is still a STORED value (github.com), not a cold cache.
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, host) VALUES (?, ?, ?)')
+      .run(42, 'owner/repo', null);
+
+    const { FakeGitHubClient, calls } = makeFakeClient([makeApiRow({ id: 1501 })]);
+    const resolveBinding = vi.fn(() => {
+      throw new Error('resolveRepositoryBinding must not run on a warm cache');
+    });
+
+    const app = createTestApp(db, {
+      GitHubClient: FakeGitHubClient,
+      resolveRepositoryBinding: resolveBinding
+    });
+    const server = await startServer(app);
+
+    const res = await request(server)
+      .post(`/api/reviews/${reviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(resolveBinding).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('local-mode review with a MALFORMED associated repository: returns 400', async () => {
+    // A malformed association still resolves to a (non-null) target so the
+    // route can raise the specific "Invalid review.repository" error rather
+    // than the generic "no PR target" one.
+    const localReviewId = insertLocalReview(db, {
+      associatedPrNumber: 7,
+      associatedPrRepository: 'norepo'
+    });
+
+    const { FakeGitHubClient, calls } = makeFakeClient([]);
+    const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
+
+    const res = await request(server)
+      .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid review\.repository/);
+    expect(res.body.error).toMatch(/norepo/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('prune is review-scoped: syncing a local review never touches a PR review on the SAME PR', async () => {
+    // Hazard from the plan: `deleteMissing` is scoped (review_id, source). A
+    // local review associated with PR #42 owner/repo and the PR-mode review
+    // of that same PR are distinct rows, so pruning one must leave the other
+    // alone. Prove it rather than reading it.
+    const localReviewId = insertLocalReview(db, {
+      associatedPrNumber: 42,
+      associatedPrRepository: 'owner/repo'
+    });
+
+    const mirror = new ExternalCommentRepository(db);
+    for (const id of ['2001', '2002']) {
+      await mirror.upsert(reviewId, 'github', makeMirrorRow({ external_id: id }));
+      await mirror.upsert(localReviewId, 'github', makeMirrorRow({ external_id: id }));
+    }
+    const idsFor = (id) => db.prepare(
+      'SELECT external_id FROM external_comments WHERE review_id = ? ORDER BY external_id'
+    ).all(id).map(r => r.external_id);
+    expect(idsFor(reviewId)).toEqual(['2001', '2002']);
+    expect(idsFor(localReviewId)).toEqual(['2001', '2002']);
+
+    // Snapshot omits 2002 → it is pruned from the SYNCED review only.
+    const { FakeGitHubClient } = makeFakeClient([makeApiRow({ id: 2001 })]);
+    const app = createTestApp(db, { GitHubClient: FakeGitHubClient });
+    const server = await startServer(app);
+
+    const res = await request(server)
+      .post(`/api/reviews/${localReviewId}/external-comments/sync`)
+      .query({ source: 'github' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+    expect(idsFor(localReviewId)).toEqual(['2001']);
+    // The PR-mode review's mirror is untouched.
+    expect(idsFor(reviewId)).toEqual(['2001', '2002']);
   });
 
   it('unknown source: returns 400 echoing the source name', async () => {

@@ -489,7 +489,7 @@ checking the exit code first (as above) covers every outcome.
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
-- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state.
+- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
 - **PR review mode**: Requires a GitHub Personal Access Token to fetch PR data and submit reviews
 
 Configuration is stored in `~/.pair-review/config.json`:
@@ -514,7 +514,7 @@ For advanced configuration with custom providers and models, see [AI Provider Co
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `external_comments` | `false` | Opt-in: set to `true` to fetch and display GitHub PR review comments inline. Enables the **External** segment, the refresh button, and `/api/reviews/*/external-comments*` routes. |
+| `external_comments` | `false` | Opt-in: set to `true` to fetch and display GitHub PR review comments inline — in PR mode, and in local mode when the branch has an associated PR. Enables the **External** segment, the refresh button, and `/api/reviews/*/external-comments*` routes. |
 | `enable_chat` | `true` | Enables the chat panel feature (uses `chat_provider`). |
 | `enable_graphite` | `false` | Show Graphite links alongside GitHub links, and name Graphite in the PR URL prompts and errors. Graphite PR URLs are accepted either way. |
 | `skip_update_notifier` | `false` | Suppress the "update available" notification on exit. |
@@ -886,13 +886,24 @@ When reviewing a PR, pair-review fetches existing inline review comments from Gi
 
 Sync runs automatically when the PR page loads (non-blocking) and on demand via a refresh button — there's no need to reload the page to pick up new comments.
 
+**In local mode**, the same comments appear when the branch you're reviewing has an associated GitHub PR and a token that can read it — see [Local Mode](#local-mode). The **External** segment and the refresh button appear only for those reviews; a local review with no associated PR is unchanged.
+
+One caveat is specific to local mode. Every GitHub comment is anchored to a line of a particular commit, but a local review renders your *working tree*, which can have moved on. pair-review trusts those line numbers when your local `HEAD` is the PR's head commit. When the two differ, the thread is shown in the file's comment zone instead of on a line, with a note explaining why — being visibly approximate beats being invisibly wrong. Pull or push so the two agree, then hit refresh, and the comments snap back to their exact lines.
+
+Two related limits are worth knowing:
+
+- **Uncommitted edits are not detected.** The check compares commits, not file contents, so edits sitting on top of a matching `HEAD` can still shift lines and a thread may end up a few lines off. Content-based re-anchoring is the real fix and isn't built yet.
+- **Comments on removed lines need a matching base too.** Those line numbers come from the PR's *base* commit, not its head, so pair-review places them precisely only when your diff is a branch-scoped review whose merge-base is that same base commit. Otherwise they go to the comment zone with a note of their own.
+
+Comments GitHub has marked outdated always render in the comment zone in local mode, since their line numbers describe an older commit by definition. And when a thread lands on a file your current scope doesn't show, clicking it in the **External** segment pulls that file in as a context file so the comment can anchor where it belongs.
+
 **Current scope:**
 
 - **Read-only.** No reply, resolve, or adopt actions in this iteration — pair-review surfaces the conversation but doesn't write back to GitHub from these bubbles. Use your usual GitHub workflow to reply or resolve.
 - **Inline (line-anchored) comments only.** The PR conversation tab (general issue comments) is not included.
 - **Outdated comments are kept.** If later commits removed the anchor line, the comment renders at its original location with an "outdated" badge so historical context isn't lost.
 - **No dedup of your own comments yet.** If you submitted a review from pair-review and later replied via the GitHub web UI, those replies may appear in the list under your GitHub username. Deduplication of pair-review-originated comments is on the roadmap.
-- **GitHub only, PR mode only.** The fetcher is built on an adapter pattern in `src/external/` so additional sources (GitLab, Linear, etc.) can be added later, but GitHub is the only supported source today. Local mode reviews don't fetch external comments.
+- **GitHub only.** The fetcher is built on an adapter pattern in `src/external/` so additional sources (GitLab, Linear, etc.) can be added later, but GitHub is the only supported source today.
 
 ### Comment Format
 
@@ -971,6 +982,16 @@ Perfect for:
 - Iterating with a coding agent on local changes
 - Reviewing only the unstaged files that are still changing
 - Staging the files you've already reviewed and viewing the next round of changes
+
+**When the branch already has a pull request**, pair-review detects it and layers
+PR context onto the local session — no need to switch to PR mode to see it:
+
+- a clickable PR pill in the header with title, author, and state
+- (with `external_comments` enabled) that PR's existing review comments inline
+  in the diff, read-only — see [GitHub Review Comments](#github-review-comments)
+
+Both need a configured GitHub token that can read the repository. Detection runs
+at session start; if you open the PR mid-session, reload the page to pick it up.
 
 ## Claude Code Plugins
 
