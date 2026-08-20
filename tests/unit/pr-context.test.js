@@ -5,6 +5,7 @@ const {
   getAssociatedPR,
   getPRContext,
   buildCapabilities,
+  isUsablePRTarget,
   splitRepository,
   fetchPRMetadata,
   getCachedPRMetadata,
@@ -44,7 +45,10 @@ describe('splitRepository', () => {
 });
 
 describe('buildCapabilities', () => {
-  it('keeps every action flag false in Phase 0 regardless of inputs', () => {
+  it('keeps the UNSHIPPED action flags (Phases 3-5) false regardless of inputs', () => {
+    // These three are hard-coded false until the phase that implements them
+    // lands. canShowPRMetadata (Phase 1) and canViewPRComments (Phase 2) are
+    // real now and have their own truth tables below.
     const cases = [
       { association: null, hasToken: false },
       { association: null, hasToken: true },
@@ -54,8 +58,6 @@ describe('buildCapabilities', () => {
 
     for (const params of cases) {
       const caps = buildCapabilities(params);
-      expect(caps.canShowPRMetadata).toBe(false);
-      expect(caps.canViewPRComments).toBe(false);
       expect(caps.canCheckStaleVsPR).toBe(false);
       expect(caps.canSyncDrafts).toBe(false);
       expect(caps.canSubmitToGitHub).toBe(false);
@@ -67,6 +69,48 @@ describe('buildCapabilities', () => {
     expect(buildCapabilities({ association: { prNumber: null, repository: 'a/b' }, hasToken: true }).hasAssociatedPR).toBe(false);
     expect(buildCapabilities({ association: { prNumber: 1, repository: '' }, hasToken: true }).hasAssociatedPR).toBe(false);
     expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: true }).hasAssociatedPR).toBe(true);
+  });
+
+  /**
+   * `hasAssociatedPR` gates the controls whose ONE action is the
+   * external-comments sync. That sync applies a stricter test than "both
+   * fields are truthy": `buildCommentTarget` rejects a non-integer PR number
+   * outright (→ generic "no PR target" 400) and `executeSync` rejects a
+   * repository that does not split into owner AND repo (→ "Invalid
+   * review.repository" 400). A looser flag here surfaces to the user as a
+   * refresh that fails with no explanation.
+   */
+  describe('hasAssociatedPR agrees with the sync target rule', () => {
+    it('rejects a non-integer PR number (string, float, NaN)', () => {
+      // A string is truthy — this is precisely what the old test missed.
+      expect(buildCapabilities({ association: { prNumber: '123', repository: 'a/b' }, hasToken: true }).hasAssociatedPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 12.5, repository: 'a/b' }, hasToken: true }).hasAssociatedPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: NaN, repository: 'a/b' }, hasToken: true }).hasAssociatedPR).toBe(false);
+    });
+
+    it('rejects a repository that is not owner/repo', () => {
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'norepo' }, hasToken: true }).hasAssociatedPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: '/repo' }, hasToken: true }).hasAssociatedPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'owner/' }, hasToken: true }).hasAssociatedPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 42 }, hasToken: true }).hasAssociatedPR).toBe(false);
+    });
+
+    it('ACCEPTS a/b/c — the sync accepts it too, so the flag must not be stricter', () => {
+      // splitRepository yields owner 'a', repo 'b/c'; buildCommentTarget's
+      // two-element split yields owner 'a', repo 'b'. They disagree about what
+      // `repo` CONTAINS but agree the target is usable, and this flag is only
+      // the boolean. Pinning it here keeps a future "tidy-up" from making the
+      // capability stricter than the endpoint it advertises.
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b/c' }, hasToken: true }).hasAssociatedPR).toBe(true);
+    });
+
+    it('drags canViewPRComments down with it — the flag it actually gates', () => {
+      const caps = buildCapabilities({ association: { prNumber: '123', repository: 'a/b' }, hasToken: true });
+      expect(caps.hasAssociatedPR).toBe(false);
+      expect(caps.canViewPRComments).toBe(false);
+      expect(caps.canShowPRMetadata).toBe(false);
+    });
+
   });
 
   it('flips hasGitHubToken from hasToken boolean', () => {
@@ -86,6 +130,36 @@ describe('buildCapabilities', () => {
     expect(buildCapabilities({ association: assoc, hasToken: true, prMetadataAvailable: false }).canShowPRMetadata).toBe(false);
     // Token absence does NOT block the cap (metadata can be served from cache).
     expect(buildCapabilities({ association: assoc, hasToken: false, prMetadataAvailable: true }).canShowPRMetadata).toBe(true);
+  });
+
+  describe('Phase 2: canViewPRComments', () => {
+    const assoc = { prNumber: 1, repository: 'a/b' };
+
+    it('is true only when an association AND a usable credential exist', () => {
+      expect(buildCapabilities({ association: assoc, hasToken: true }).canViewPRComments).toBe(true);
+      expect(buildCapabilities({ association: assoc, hasToken: false }).canViewPRComments).toBe(false);
+      expect(buildCapabilities({ association: null, hasToken: true }).canViewPRComments).toBe(false);
+      expect(buildCapabilities({ association: null, hasToken: false }).canViewPRComments).toBe(false);
+    });
+
+    it('does NOT depend on prMetadataAvailable — deliberate design decision', () => {
+      // Comments and metadata are independent fetches. Withholding the
+      // comments because the metadata cache happens to be cold would hide a
+      // working feature; the anchor-trust check degrades to file-level
+      // rendering instead. If someone "tidies" this into the
+      // canShowPRMetadata gate, this test is the alarm.
+      const cold = buildCapabilities({ association: assoc, hasToken: true, prMetadataAvailable: false });
+      expect(cold.canViewPRComments).toBe(true);
+      expect(cold.canShowPRMetadata).toBe(false);
+
+      const warm = buildCapabilities({ association: assoc, hasToken: true, prMetadataAvailable: true });
+      expect(warm.canViewPRComments).toBe(true);
+      expect(warm.canShowPRMetadata).toBe(true);
+
+      // Omitted entirely (Phase 0 callers) behaves like false.
+      expect(buildCapabilities({ association: assoc, hasToken: true }).canViewPRComments).toBe(true);
+    });
+
   });
 });
 
@@ -214,7 +288,8 @@ describe('fetchPRMetadata', () => {
       url: 'https://x',
       state: 'open',
       merged: false,
-      head_sha: 'h'
+      head_sha: 'h',
+      base_sha: null
     });
   });
 
@@ -294,6 +369,145 @@ describe('fetchPRMetadata', () => {
     });
     expect(result).toBeNull();
     expect(repo.upsertCalls).toBe(0);
+  });
+
+  /**
+   * `pr_metadata` has no TTL on purpose. The staleness that matters has a
+   * known trigger instead — the local HEAD moving, or the user pressing
+   * refresh — and `forceRefresh` is that path. Without it the ordinary
+   * workflow (review uncommitted work at PR head, commit, refresh) leaves the
+   * cached PR head behind forever, and every external thread renders in the
+   * file zone claiming it was written against a different commit.
+   */
+  describe('forceRefresh', () => {
+    /** Stub that starts warm and records every upsert. */
+    class WarmRepo {
+      constructor(row) { this.row = row; this.upserts = []; this.getCalls = 0; }
+      async getByPR() { this.getCalls++; return this.row; }
+      async upsertPRMetadata(args) {
+        this.upserts.push(args);
+        this.row = {
+          title: args.prData.title,
+          author: args.prData.author,
+          head_sha: args.prData.head_sha,
+          base_sha: args.prData.base_sha,
+          pr_data_parsed: { state: args.prData.state, merged: args.prData.merged, html_url: args.prData.html_url }
+        };
+        return { id: 1, created: false };
+      }
+    }
+
+    const staleRow = {
+      title: 'Stale title', author: 'octocat',
+      head_sha: 'old-head', base_sha: 'old-base',
+      pr_data_parsed: { state: 'open', merged: false, html_url: 'https://x' }
+    };
+
+    const freshPR = {
+      title: 'Fresh title', body: '', author: 'octocat',
+      state: 'open', merged: false,
+      base_branch: 'main', head_branch: 'feat',
+      base_sha: 'new-base', head_sha: 'new-head',
+      html_url: 'https://x', node_id: 'PR_x'
+    };
+
+    function deps(repo, calls) {
+      return {
+        PRMetadataRepository: function () { return repo; },
+        GitHubClient: class {
+          constructor(cred) { calls.push(cred); }
+          async fetchPullRequest() { return freshPR; }
+        },
+        logger: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() }
+      };
+    }
+
+    it('serves the stale row and never calls GitHub when NOT forced', async () => {
+      const repo = new WarmRepo({ ...staleRow });
+      const calls = [];
+
+      const result = await fetchPRMetadata({
+        prNumber: 1, repository: 'a/b', githubToken: 'tok', db: {}, _deps: deps(repo, calls)
+      });
+
+      expect(result.head_sha).toBe('old-head');
+      expect(calls).toHaveLength(0);
+      expect(repo.upserts).toHaveLength(0);
+    });
+
+    it('skips the cache, re-fetches, and upserts when forced', async () => {
+      const repo = new WarmRepo({ ...staleRow });
+      const calls = [];
+
+      const result = await fetchPRMetadata({
+        prNumber: 1, repository: 'a/b', githubToken: 'tok', forceRefresh: true, db: {}, _deps: deps(repo, calls)
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(repo.upserts).toHaveLength(1);
+      expect(result.title).toBe('Fresh title');
+      expect(result.head_sha).toBe('new-head');
+      expect(result.base_sha).toBe('new-base');
+    });
+
+    /**
+     * The one that matters most: a forced refresh must not become a way to
+     * persist a guessed host. `hostAmbiguous` means the caller never resolved
+     * which host this dual repo's PR lives on; being asked a second time does
+     * not resolve it, and writing the row is the irreversible harm (PR-mode
+     * setup reads NULL `host` back as authoritative and stops probing).
+     */
+    it('STILL refuses when the binding host is ambiguous, even forced', async () => {
+      const repo = new WarmRepo({ ...staleRow });
+      const calls = [];
+
+      const result = await fetchPRMetadata({
+        prNumber: 1, repository: 'a/b',
+        githubToken: 'tok',
+        hostBinding: { token: 'tok', host: null, apiHost: null, hostAmbiguous: true },
+        forceRefresh: true,
+        db: {}, _deps: deps(repo, calls)
+      });
+
+      expect(calls).toHaveLength(0);        // no GitHubClient constructed
+      expect(repo.upserts).toHaveLength(0); // and nothing stamped
+      // Falls back to the row that already exists rather than to null — the
+      // cached value is honest, it was stamped by whoever resolved the host.
+      expect(result).toMatchObject({ title: 'Stale title', head_sha: 'old-head' });
+    });
+
+    it('keeps the cached row when a forced re-fetch throws', async () => {
+      const repo = new WarmRepo({ ...staleRow });
+      const result = await fetchPRMetadata({
+        prNumber: 1, repository: 'a/b', githubToken: 'tok', forceRefresh: true, db: {},
+        _deps: {
+          PRMetadataRepository: function () { return repo; },
+          GitHubClient: class { async fetchPullRequest() { throw new Error('403 rate limited'); } },
+          logger: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() }
+        }
+      });
+
+      // Returning null here would flip canShowPRMetadata off over a transient
+      // failure, hiding a pill that was rendering fine a second ago.
+      expect(result).toMatchObject({ title: 'Stale title' });
+      expect(repo.upserts).toHaveLength(0);
+    });
+
+    it('keeps the cached row when a forced refresh has no usable credential', async () => {
+      const repo = new WarmRepo({ ...staleRow });
+      const calls = [];
+
+      const result = await fetchPRMetadata({
+        prNumber: 1, repository: 'a/b',
+        hostBinding: { token: '', host: 'https://ghe.acme.com/api/v3' },
+        githubToken: 'ghp_dotcom',   // never borrowed for an alt host
+        forceRefresh: true,
+        db: {}, _deps: deps(repo, calls)
+      });
+
+      expect(calls).toHaveLength(0);
+      expect(result).toMatchObject({ title: 'Stale title' });
+    });
   });
 
   // Host binding: the seam has to enforce the invariant rather than trusting
@@ -657,6 +871,57 @@ describe('normalizePRMetadata (via getCachedPRMetadata)', () => {
 
     expect(result.merged).toBe(false);
   });
+
+  /**
+   * `base_sha` is what lets the frontend gate LEFT-side (removed-line)
+   * anchors: those line numbers were resolved against the PR's BASE commit,
+   * while the local diff's left side is the merge-base / base override /
+   * scope. `head_sha` alone only answers the RIGHT-side question.
+   */
+  describe('base_sha', () => {
+    it('surfaces base_sha from the column the repository merges out of pr_data', async () => {
+      const Repo = class {
+        async getByPR() {
+          return {
+            title: 't', author: 'a',
+            head_sha: 'head-1', base_sha: 'base-1',
+            pr_data_parsed: { state: 'open', html_url: 'u' }
+          };
+        }
+      };
+      const result = await getCachedPRMetadata({
+        prNumber: 1, repository: 'a/b', db: {}, _deps: { PRMetadataRepository: Repo }
+      });
+
+      expect(result.base_sha).toBe('base-1');
+      expect(result.head_sha).toBe('head-1');
+    });
+
+    it('falls back to pr_data when the merged column is absent', async () => {
+      const result = await getCachedPRMetadata({
+        prNumber: 1, repository: 'a/b', db: {},
+        _deps: { PRMetadataRepository: class {
+          async getByPR() {
+            return { title: 't', author: 'a', pr_data_parsed: { state: 'open', html_url: 'u', base_sha: 'from-blob', head_sha: 'h' } };
+          }
+        } }
+      });
+
+      expect(result.base_sha).toBe('from-blob');
+    });
+
+    it('is null (never undefined) for a legacy row carrying neither', async () => {
+      const result = await getCachedPRMetadata({
+        prNumber: 1, repository: 'a/b', db: {},
+        _deps: { PRMetadataRepository: cachedRow({ state: 'open', html_url: 'u' }) }
+      });
+
+      // Explicit null matters: the frontend distinguishes "no base sha known"
+      // from "key missing" when merging this into existing state.
+      expect(result.base_sha).toBeNull();
+      expect('base_sha' in result).toBe(true);
+    });
+  });
 });
 
 describe('getCachedPRMetadata', () => {
@@ -685,7 +950,8 @@ describe('getCachedPRMetadata', () => {
       url: 'u',
       state: 'open',
       merged: false,
-      head_sha: 'h'
+      head_sha: 'h',
+      base_sha: null
     });
   });
 
@@ -799,5 +1065,184 @@ describe('getPRContext', () => {
     });
     const ctx = await getPRContext(1, { db: {}, _deps: { ReviewRepository: FakeRepo } });
     expect(ctx).toBeNull();
+  });
+});
+
+/**
+ * FINDING 1 + FINDING 2: `resolveRepositoryBinding` is the ONE resolver, and
+ * it asks the checkout's remote BEFORE it asks the ambiguity rule.
+ *
+ * These drive the resolver directly (no Express app, no CLI) and then feed its
+ * output into `fetchPRMetadata`, which is the whole point: the binding the
+ * WRITE side detects with is byte-for-byte the binding the READ side fetches
+ * and stamps with.
+ */
+describe('resolveRepositoryBinding: one resolver for detection and metadata-fetch', () => {
+  const prContext = require('../../src/providers/pr-context');
+  const configModule = require('../../src/config');
+  const hostResolution = require('../../src/utils/host-resolution');
+  const { resolveRepositoryBinding, resolveAssociationBinding, _hostBindingInternals } = prContext;
+
+  const ALT_HOST = 'https://alt.example.com/api/v3';
+  const REPO = 'acme/widgets';
+  const CHECKOUT = '/checkout/widgets';
+
+  /** DUAL: api_host + exclusive:false — PRs may live on either host. */
+  const dualConfig = () => ({
+    github_token: 'GH_TOKEN',
+    repos: { [REPO]: { api_host: ALT_HOST, exclusive: false, token: 'ALT_TOKEN' } }
+  });
+
+  beforeEach(() => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    _hostBindingInternals.clearHostBindingFailureCache();
+    _hostBindingInternals.clearRemoteHostnameCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _hostBindingInternals.clearHostBindingFailureCache();
+    _hostBindingInternals.clearRemoteHostnameCache();
+    vi.restoreAllMocks();
+  });
+
+  /** Repo stub that records what fetchPRMetadata persists. */
+  class RecordingRepo {
+    constructor() { this.row = null; this.upserts = []; }
+    async getByPR() { return this.row; }
+    async upsertPRMetadata(args) {
+      this.upserts.push(args);
+      this.row = {
+        title: args.prData.title, author: args.prData.author, head_sha: args.prData.head_sha,
+        pr_data_parsed: { state: args.prData.state, merged: false, html_url: args.prData.html_url }
+      };
+      return { id: 1, created: true };
+    }
+  }
+
+  function fetchDeps(repo, seen) {
+    return {
+      PRMetadataRepository: function () { return repo; },
+      GitHubClient: class {
+        constructor(arg) { seen.push(arg); }
+        async fetchPullRequest() {
+          return { title: 'remote', author: 'octocat', state: 'open', merged: false, head_sha: 'bbb', html_url: 'https://x' };
+        }
+      }
+    };
+  }
+
+  it('feeds the alt-host binding straight into fetchPRMetadata, which stamps that host', async () => {
+    _hostBindingInternals.setRemoteHostname(CHECKOUT, 'alt.example.com');
+    const config = dualConfig();
+
+    // WRITE side: what branch → PR detection would use.
+    const detectionBinding = resolveRepositoryBinding(REPO, config, { localPath: CHECKOUT });
+    // READ side: what the metadata fetch would use for the association it wrote.
+    const readBinding = resolveAssociationBinding({ prNumber: 77, repository: REPO }, config, { localPath: CHECKOUT });
+
+    expect(detectionBinding).toMatchObject({ host: ALT_HOST, apiHost: ALT_HOST, token: 'ALT_TOKEN' });
+    expect(readBinding.host).toBe(detectionBinding.host);
+    expect(readBinding.token).toBe(detectionBinding.token);
+
+    const repo = new RecordingRepo();
+    const seen = [];
+    const result = await fetchPRMetadata({
+      prNumber: 77, repository: REPO, githubToken: 'GH_TOKEN',
+      hostBinding: readBinding, db: {}, _deps: fetchDeps(repo, seen)
+    });
+
+    expect(result).toBeTruthy();
+    expect(seen).toEqual([readBinding]);          // the alt binding, not the bare github token
+    expect(repo.upserts[0].host).toBe(ALT_HOST);  // and the row is stamped with that host
+  });
+
+  it('stays ambiguous on BOTH sides when the remote matches neither host, and the fetch refuses', async () => {
+    _hostBindingInternals.setRemoteHostname(CHECKOUT, 'mirror.internal');
+    const config = dualConfig();
+
+    const detectionBinding = resolveRepositoryBinding(REPO, config, { localPath: CHECKOUT });
+    const readBinding = resolveAssociationBinding({ prNumber: 77, repository: REPO }, config, { localPath: CHECKOUT });
+
+    expect(detectionBinding.hostAmbiguous).toBe(true);
+    expect(readBinding.hostAmbiguous).toBe(true);
+
+    const repo = new RecordingRepo();
+    const seen = [];
+    const result = await fetchPRMetadata({
+      prNumber: 77, repository: REPO, githubToken: 'GH_TOKEN',
+      hostBinding: readBinding, db: {}, _deps: fetchDeps(repo, seen)
+    });
+
+    // No GitHub call, no row: the ONLY honest encoding of "host unknown".
+    expect(result).toBeNull();
+    expect(seen).toEqual([]);
+    expect(repo.upserts).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // FINDING 2: the discarded ambiguity-rule resolve
+  // ------------------------------------------------------------------
+
+  it('does NOT run the ambiguity-rule resolve when the remote answers', () => {
+    // The ambiguity-rule resolve can execSync `github_token_command` (5s), and
+    // its result was thrown away whenever the remote answered. Because the
+    // binding actually RETURNED carries a token, the token-less failure memo
+    // never recorded it either — so the shell-out recurred on every request to
+    // the blocking page-load endpoints.
+    _hostBindingInternals.setRemoteHostname(CHECKOUT, 'alt.example.com');
+    const spy = vi.spyOn(configModule, 'resolveHostBinding');
+
+    const binding = resolveRepositoryBinding(REPO, dualConfig(), { localPath: CHECKOUT });
+
+    expect(binding.host).toBe(ALT_HOST);
+    // Exactly one resolve, and it named a host — never the two-argument
+    // ambiguity form whose answer would have been discarded.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][2]).toEqual({ host: ALT_HOST });
+  });
+
+  it('proves it with a token_command: the github chain is never consulted when the remote answers', () => {
+    // The concrete cost the discarded resolve paid. `github_token_command` is
+    // consulted ONLY by the github.com flavour of the binding — the one the
+    // ambiguity rule produces — so a remote-derived alt binding must never
+    // reach it. No top-level `github_token` here, or step 4 of the token chain
+    // would short-circuit before the command and make this vacuous.
+    _hostBindingInternals.setRemoteHostname(CHECKOUT, 'alt.example.com');
+    let githubChainReads = 0;
+    const config = {
+      repos: { [REPO]: { api_host: ALT_HOST, exclusive: false, token: 'ALT_TOKEN' } }
+    };
+    Object.defineProperty(config, 'github_token_command', {
+      enumerable: true,
+      get() { githubChainReads++; return 'exit 1'; }
+    });
+
+    const binding = resolveRepositoryBinding(REPO, config, { localPath: CHECKOUT });
+
+    expect(binding).toMatchObject({ host: ALT_HOST, token: 'ALT_TOKEN' });
+    expect(githubChainReads).toBe(0);
+  });
+
+  it('still falls back to the ambiguity rule (once) when the remote cannot answer', () => {
+    _hostBindingInternals.setRemoteHostname(CHECKOUT, null);
+    const spy = vi.spyOn(configModule, 'resolveHostBinding');
+
+    const binding = resolveRepositoryBinding(REPO, dualConfig(), { localPath: CHECKOUT });
+
+    expect(binding.hostAmbiguous).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    // The two-argument form: no host option.
+    expect(spy.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it('never reads the git remote for a NON-dual repo (nothing to disambiguate)', () => {
+    const spy = vi.spyOn(hostResolution, 'getRemoteHostname');
+
+    const plain = resolveRepositoryBinding(REPO, { github_token: 'GH_TOKEN', repos: {} }, { localPath: CHECKOUT });
+
+    expect(plain.host).toBeNull();
+    expect(plain.hostAmbiguous).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
   });
 });
