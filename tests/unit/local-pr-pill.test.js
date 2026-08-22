@@ -396,7 +396,14 @@ describe('LocalManager cold-cache PR metadata warm-up', () => {
 
     await renderUntilQuiet(lm, 10);
 
-    expect(mockFetch).toHaveBeenCalledTimes(LocalManager.MAX_PR_METADATA_WARM_ATTEMPTS);
+    // Count the METADATA calls only. A response that newly resolves the
+    // association also fires exactly one `prHeadOnly` check-stale — the
+    // recovery path for a late association — which is not a warm-up attempt
+    // and must not consume the budget it is unrelated to.
+    const urls = mockFetch.mock.calls.map(([url]) => String(url));
+    expect(urls.filter((u) => u.includes('/pr-metadata')))
+      .toHaveLength(LocalManager.MAX_PR_METADATA_WARM_ATTEMPTS);
+    expect(urls.filter((u) => u.includes('check-stale'))).toHaveLength(1);
     expect(els['local-pr-info'].hasAttribute('hidden')).toBe(true);
   });
 
@@ -1032,6 +1039,17 @@ describe('LocalManager forced PR-metadata re-reads', () => {
               capabilities: { ...lm.capabilities },
               associatedPR: null,
             }),
+          });
+        }
+        // `_applyRefreshedDiff` also re-checks PR-head state after hiding the
+        // stale badge (PR drift survives a refresh that cannot fix it). Answer
+        // it explicitly: falling through would overwrite `releaseWarm` with
+        // THIS request's resolver, and the parked warm-up below could then
+        // never be released.
+        if (String(url).includes('check-stale')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ isStale: false, reasons: [], prHead: null }),
           });
         }
         // The page-load warm-up: still in flight for the whole test.

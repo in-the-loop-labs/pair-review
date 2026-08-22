@@ -502,13 +502,24 @@ function getConfigDir() {
  * @param {string} command - Shell command to execute
  * @param {string|null|undefined} repository - Owner/repo for cache key (null for no-repo / top-level)
  * @param {string} logContext - Short label for log messages (e.g. "github_token_command", "repo:token_command")
+ * @param {Object} [options]
+ * @param {boolean} [options.cachedOnly=false] - Answer from the cache or not
+ *   at all. `execSync` blocks the event loop for up to the 5s timeout below,
+ *   and a Promise deadline cannot preempt a SYNCHRONOUS block — so advisory
+ *   request paths that must stay inside a client budget (see
+ *   `startPRHeadCheck` in src/routes/local.js) ask for the token only if
+ *   somebody already paid for it. A miss returns '' and the caller degrades.
  * @returns {string} - Token or empty string
  */
-function _runTokenCommand(command, repository, logContext) {
+function _runTokenCommand(command, repository, logContext, { cachedOnly = false } = {}) {
   const cacheKey = `${repository ?? ''}|${command}`;
   if (_cachedRepoTokens.has(cacheKey)) {
     logger.debug(`Using token from ${logContext} (cached)`);
     return _cachedRepoTokens.get(cacheKey);
+  }
+  if (cachedOnly) {
+    logger.debug(`Skipping ${logContext} (cache-only resolution, command not run)`);
+    return '';
   }
   logger.debug(`Attempting token from ${logContext}: ${command}`);
   try {
@@ -635,13 +646,26 @@ function isExclusiveAltHost(repoConfig) {
  * `config:github_token`, `none`) `refresh` is `null` — re-running would not
  * change a literal token or env var.
  *
+ * `options.cachedTokensOnly` makes the two `token_command` steps answer from
+ * config.js's process-lifetime token cache or not at all — they never shell
+ * out. For advisory request paths that must stay inside a client timeout; a
+ * command that has not been run yet simply yields no token, and the caller
+ * skips whatever it needed the token for. See `_runTokenCommand`.
+ *
  * @param {string|null|undefined} repository - "owner/repo" identifier, or null/undefined for no-repo fallback
  * @param {Object} config - Configuration object from loadConfig()
- * @param {{ host?: string|null }} [options] - Per-PR host override (see above)
+ * @param {{ host?: string|null, cachedTokensOnly?: boolean }} [options] - Per-PR host override (see above)
  * @returns {{ apiHost: string|null, host: string|null, token: string, features: Object, source: string, refresh: (function(): string)|null }}
  */
 function resolveHostBinding(repository, config, options = {}) {
   const safeConfig = config || {};
+  const cachedTokensOnly = Boolean(options && options.cachedTokensOnly);
+  // The refresh closure exists to RE-RUN the command, so it must never
+  // inherit `cachedTokensOnly` — that would make `refresh()` bust the cache
+  // and then decline to repopulate it, i.e. a guaranteed empty token. `host`
+  // still travels, because re-resolving must keep the same binding flavor.
+  const refreshOptions = { ...(options || {}) };
+  delete refreshOptions.cachedTokensOnly;
   const repoConfig = repository ? getRepoConfig(safeConfig, repository) : null;
   const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
     ? repoConfig.api_host
@@ -711,7 +735,7 @@ function resolveHostBinding(repository, config, options = {}) {
 
   // 3. Repo-level token_command
   if (useRepoScopedToken && repoConfig && typeof repoConfig.token_command === 'string' && repoConfig.token_command) {
-    const result = _runTokenCommand(repoConfig.token_command, repository, 'repo:token_command');
+    const result = _runTokenCommand(repoConfig.token_command, repository, 'repo:token_command', { cachedOnly: cachedTokensOnly });
     if (result) {
       return {
         apiHost,
@@ -719,7 +743,7 @@ function resolveHostBinding(repository, config, options = {}) {
         token: result,
         features,
         source: 'repo:token_command',
-        refresh: _makeRefresh(repository, safeConfig, 'repo:token_command', options)
+        refresh: _makeRefresh(repository, safeConfig, 'repo:token_command', refreshOptions)
       };
     }
   }
@@ -740,7 +764,7 @@ function resolveHostBinding(repository, config, options = {}) {
   // slow) command per repo per session. Repo-level `token_command`
   // above keeps its per-(repo, command) cache key.
   if (useGithubChain && typeof safeConfig.github_token_command === 'string' && safeConfig.github_token_command) {
-    const result = _runTokenCommand(safeConfig.github_token_command, null, 'config:github_token_command');
+    const result = _runTokenCommand(safeConfig.github_token_command, null, 'config:github_token_command', { cachedOnly: cachedTokensOnly });
     if (result) {
       return {
         apiHost,
@@ -748,7 +772,7 @@ function resolveHostBinding(repository, config, options = {}) {
         token: result,
         features,
         source: 'config:github_token_command',
-        refresh: _makeRefresh(repository, safeConfig, 'config:github_token_command', options)
+        refresh: _makeRefresh(repository, safeConfig, 'config:github_token_command', refreshOptions)
       };
     }
   }

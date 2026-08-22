@@ -225,16 +225,23 @@ class GitHubClient {
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @param {number} pullNumber - Pull request number
+   * @param {Object} [options]
+   * @param {AbortSignal} [options.signal] - Cancels the request (and any
+   *   retry Octokit is performing internally). Callers on a deadline —
+   *   `checkPRHeadState` in src/providers/stale-check.js — pass one so giving
+   *   up on the ANSWER also gives up the socket. Omitted by every other
+   *   caller, which keeps today's behaviour exactly.
    * @returns {Promise<Object>} Pull request data
    */
-  async fetchPullRequest(owner, repo, pullNumber) {
+  async fetchPullRequest(owner, repo, pullNumber, { signal } = {}) {
     try {
       console.log(`Fetching pull request #${pullNumber} from ${owner}/${repo}`);
 
       const { data } = await this.octokit.rest.pulls.get({
         owner,
         repo,
-        pull_number: pullNumber
+        pull_number: pullNumber,
+        ...(signal ? { request: { signal } } : {})
       });
 
       return {
