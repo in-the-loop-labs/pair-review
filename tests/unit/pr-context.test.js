@@ -45,10 +45,11 @@ describe('splitRepository', () => {
 });
 
 describe('buildCapabilities', () => {
-  it('keeps the UNSHIPPED action flags (Phases 3-5) false regardless of inputs', () => {
-    // These three are hard-coded false until the phase that implements them
-    // lands. canShowPRMetadata (Phase 1) and canViewPRComments (Phase 2) are
-    // real now and have their own truth tables below.
+  it('keeps the UNSHIPPED action flags (Phases 4-5) false regardless of inputs', () => {
+    // These two are hard-coded false until the phase that implements them
+    // lands. canShowPRMetadata (Phase 1), canViewPRComments (Phase 2) and
+    // canCheckStaleVsPR (Phase 3) are real now and have their own truth
+    // tables below.
     const cases = [
       { association: null, hasToken: false },
       { association: null, hasToken: true },
@@ -57,11 +58,40 @@ describe('buildCapabilities', () => {
     ];
 
     for (const params of cases) {
-      const caps = buildCapabilities(params);
-      expect(caps.canCheckStaleVsPR).toBe(false);
-      expect(caps.canSyncDrafts).toBe(false);
-      expect(caps.canSubmitToGitHub).toBe(false);
+      expect(buildCapabilities(params).canSyncDrafts).toBe(false);
+      expect(buildCapabilities(params).canSubmitToGitHub).toBe(false);
     }
+  });
+
+  /**
+   * Phase 3. Same truth table as canViewPRComments on purpose: both perform a
+   * LIVE fetch and neither needs a warm `pr_metadata` cache, so neither is
+   * gated on `prMetadataAvailable`. Pinning the independence here is what
+   * stops a future "tidy-up" from folding the cache back into the gate and
+   * silently hiding the feature on a cold cache.
+   */
+  describe('canCheckStaleVsPR (Phase 3)', () => {
+    it('is true only with BOTH a usable association and a token', () => {
+      expect(buildCapabilities({ association: null, hasToken: true }).canCheckStaleVsPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: false }).canCheckStaleVsPR).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: true }).canCheckStaleVsPR).toBe(true);
+    });
+
+    it('is NOT gated on prMetadataAvailable — a cold cache still allows the check', () => {
+      const caps = buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' },
+        hasToken: true,
+        prMetadataAvailable: false,
+      });
+      expect(caps.canShowPRMetadata).toBe(false);
+      expect(caps.canCheckStaleVsPR).toBe(true);
+    });
+
+    it('falls with hasAssociatedPR when the association is not a usable target', () => {
+      const caps = buildCapabilities({ association: { prNumber: '123', repository: 'a/b' }, hasToken: true });
+      expect(caps.hasAssociatedPR).toBe(false);
+      expect(caps.canCheckStaleVsPR).toBe(false);
+    });
   });
 
   it('flips hasAssociatedPR only when both prNumber and repository present', () => {
