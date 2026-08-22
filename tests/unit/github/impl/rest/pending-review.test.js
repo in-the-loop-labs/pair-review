@@ -255,14 +255,16 @@ describe('impl/rest/pending-review', () => {
       expect(result.id).toBe('PRR_z');
     });
 
-    it('returns null when given a GraphQL node id with no resolvable numeric id', async () => {
+    it('rejects when given a GraphQL node id with no resolvable numeric id', async () => {
+      // NO LOOKUP HAPPENED, so this cannot answer "not found". Returning null
+      // here let `reconcileOldPendingRecords` dismiss a live draft on the
+      // strength of a query never made.
       const octokit = makeOctokit();
-      const result = await restImpl.getReviewById(
+      await expect(restImpl.getReviewById(
         octokit,
         'PRR_abc',
         { owner: 'o', repo: 'r', prNumber: 1 }
-      );
-      expect(result).toBeNull();
+      )).rejects.toThrow(/cannot build a review lookup/);
       expect(octokit.rest.pulls.getReview).not.toHaveBeenCalled();
     });
 
@@ -278,6 +280,45 @@ describe('impl/rest/pending-review', () => {
         octokit, 99, { owner: 'o', repo: 'r', prNumber: 1, reviewId: 99 }
       );
       expect(result).toBeNull();
+    });
+
+    it('rejects on a rate limit rather than reporting not-found', async () => {
+      const octokit = makeOctokit({
+        getReview: async () => {
+          const err = new Error('API rate limit exceeded');
+          err.status = 403;
+          throw err;
+        }
+      });
+      await expect(restImpl.getReviewById(
+        octokit, 99, { owner: 'o', repo: 'r', prNumber: 1, reviewId: 99 }
+      )).rejects.toThrow('API rate limit exceeded');
+    });
+
+    it('rejects on a 5xx rather than reporting not-found', async () => {
+      const octokit = makeOctokit({
+        getReview: async () => {
+          const err = new Error('502 Bad Gateway');
+          err.status = 502;
+          throw err;
+        }
+      });
+      await expect(restImpl.getReviewById(
+        octokit, 99, { owner: 'o', repo: 'r', prNumber: 1, reviewId: 99 }
+      )).rejects.toThrow('502 Bad Gateway');
+    });
+
+    it('rejects on a connection error rather than reporting not-found', async () => {
+      const octokit = makeOctokit({
+        getReview: async () => {
+          const err = new Error('connect ECONNREFUSED');
+          err.code = 'ECONNREFUSED';
+          throw err;
+        }
+      });
+      await expect(restImpl.getReviewById(
+        octokit, 99, { owner: 'o', repo: 'r', prNumber: 1, reviewId: 99 }
+      )).rejects.toThrow('ECONNREFUSED');
     });
   });
 });

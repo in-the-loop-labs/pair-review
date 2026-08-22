@@ -306,23 +306,197 @@ Eight findings, all fixed. Six of the eight are the same shape as round 2's less
 
 Changeset: `.changeset/local-stale-check-pr-head-drift.md` (`minor` — this phase ships user-facing badges, a new public contract field, and flips `canCheckStaleVsPR`; the original `patch` predates that scope, and both sibling phases shipped `minor`).
 
-### Phase 4: Pending draft sync
+### Phase 4: Pending draft sync — SHIPPED
 
 **Goal:** Pull drafts started in GitHub UI into the local session.
 
-Files:
-- `src/providers/draft-sync.js` (NEW) — extract `syncPendingDraftFromGitHub` (`src/routes/pr.js:76-151`) into provider.
-- `src/routes/pr.js` — refactor existing call site to use provider.
-- `src/routes/local.js` — new endpoint `POST /api/local/:reviewId/sync-drafts` gated on `hasAssociatedPR`. Flip `canSyncDrafts` to `true`.
-- `public/js/local.js` — sync button visible when `hasCapability('canSyncDrafts')`; refreshes comment list on success.
+**What shipped:**
+- `src/providers/draft-sync.js` (NEW). Three exports:
+  - `syncPendingDraftFromGitHub(...)` — verbatim extraction from
+    `src/routes/pr.js`, same signature, still re-exported through that file's
+    `_internals` because its regression suite addresses it there.
+  - `syncPendingDraft({ db, reviewId, owner, repo, prNumber, credential }, _deps)`
+    — the whole flow (fetch → reconcile → report every mirror row), so the two
+    endpoints that need `pendingDraft` AND `allGithubReviews` cannot diverge.
+    **Asymmetric error contract, documented on the function:** building the
+    client THROWS (an unusable credential is a caller bug — every caller
+    resolves one through `resolveFetchCredential` first), the GitHub round-trip
+    does NOT (draft state is supplementary; the failure is logged and the local
+    mirror is returned unchanged, exactly as both PR-mode call sites behaved
+    before the extraction).
+  - `serializePendingDraft(row)` — one definition of the wire shape, so PR
+    mode's `github-drafts` body and local mode's `sync-drafts` body are
+    byte-identical. `PRManager.updatePendingDraftIndicator` reads both.
+- `src/routes/pr.js`: `GET /api/pr/:owner/:repo/:number` keeps calling
+  `syncPendingDraftFromGitHub` directly (it already holds a client and never
+  reports the full list); `GET .../github-drafts` now goes through
+  `syncPendingDraft` + `serializePendingDraft`. Response shape unchanged.
+- `src/routes/local.js`: `POST /api/local/:reviewId/sync-drafts`. POST because
+  it writes (mirror reconciliation can transition an old pending row to
+  submitted/dismissed) and always reaches GitHub. Deliberately NOT called from
+  `GET /api/local/:reviewId` — that is the page-load path and must never block
+  on a round-trip; the client asks for itself. Status ladder: 400 malformed id,
+  404 no review, 403 no *usable* association (`isUsablePRTarget`, the same
+  predicate `buildCapabilities` uses, so gate and capability cannot disagree),
+  409 unresolvable dual-host, 401 no credential, 200 otherwise.
+- `buildCapabilities`: `canSyncDrafts: hasAssociatedPR && hasToken && hostResolved`.
+  Deliberately NOT gated on `prMetadataAvailable` — same reasoning as
+  `canViewPRComments` / `canCheckStaleVsPR`: the sync asks GitHub directly, so
+  a cold cache is not an input, and gating on it would hide the control on
+  exactly the first load where a GitHub-UI draft is most likely to be waiting.
+  It IS gated on the host (review round; see below).
+- `public/local.html`: `#local-sync-drafts-btn` in `#toolbar-meta`, right after
+  `#pr-commit` (where `updatePendingDraftIndicator` inserts). Hidden with an
+  inline `display`, NOT `hidden` — `.btn` sets an author-origin `display` that
+  beats the UA `[hidden]` rule (same collision the PR pill's container
+  documents).
+- `public/js/local.js`: `_updateDraftSyncAffordance` (re-reads the capability
+  every call, never latches, retracts when it goes false), `_syncGitHubDrafts`
+  (in-flight JOIN, not a latch — button and auto-sync can fire milliseconds
+  apart and two concurrent POSTs race the reconciliation), and
+  `_maybeAutoSyncGitHubDrafts` (one automatic sync per page load, spent by
+  whichever of `loadLocalReview`'s tail or `_refreshPRMetadata`'s late flip
+  gets there first). Manual syncs toast and additionally re-sync external
+  comments; automatic ones are silent.
+- `public/js/pr.js`: `updatePendingDraftIndicator(pendingDraft)`.
+  **Two-sided contract:** PR mode prefers the `url_template`-built URL because
+  some alt-hosts return a wrong-host `github_url`, and that is safe only
+  because the RepoLinks substitution context carries `{number}`. Local mode
+  shipped with a `preferConfiguredUrl: false` opt-out because its context
+  omitted the number; the review round removed the opt-out by giving local mode
+  the association's number instead (see below).
 
-Tests:
-- Unit: provider merges remote drafts into DB without dup.
-- Integration: endpoint 403 when no PR; success when associated.
-- E2E: sync button shows and works in local-with-PR.
-- Regression: pure PR-mode draft sync unchanged.
+**Tests added:**
+- `tests/unit/draft-sync.test.js` (NEW) — provider: mirror creation, no-draft,
+  swallowed GitHub failure, propagated construction failure, credential
+  pass-through, `serializePendingDraft` wire shape.
+- `tests/integration/local-sync-drafts.test.js` (NEW) — the full status ladder
+  plus idempotency (a second sync updates the one row rather than creating a
+  second) and the association-targeted call (`owner`, `repo`, 77 — never the
+  local row's null natural key).
+- `tests/unit/local-draft-sync.test.js` (NEW, jsdom) — affordance show/hide/
+  retract, listener-attached-once, in-flight join, release-after-failure,
+  manual-vs-auto toasting and external re-sync, auto-sync budget, and draft-URL
+  resolution.
+- `tests/e2e/local-draft-sync.spec.js` (NEW) — computed-style visibility of the
+  button (an attribute assertion passes against the `hidden` bug), the
+  indicator rendering into local.html's toolbar at all, the button picking up a
+  draft started after page load, and a server refusal leaving the page usable.
+- `tests/unit/pr-context.test.js`, `tests/integration/routes.test.js` — the
+  Phase-4 flag moved out of the "unshipped, pinned false" set into its own
+  truth table.
 
-Changeset: `minor` — "Sync GitHub pending drafts into local reviews."
+Changeset: `.changeset/local-mode-github-draft-sync.md` (`minor`).
+
+#### Review round (same branch, before merge)
+
+Ten findings, all addressed. What changed materially:
+
+- **A transient lookup no longer rewrites history.** `getReviewById` throwing
+  established nothing, yet the old-record loop wrote `dismissed` — so a rate
+  limit could durably record a SUBMITTED review as thrown away. The loop moved
+  into `reconcileOldPendingRecords`; an indeterminate lookup now leaves the row
+  at its last known state and a later sync reconciles it. `dismissed` is
+  reserved for an authoritative answer (state DISMISSED, or a not-found for an
+  id GitHub would know) plus the one row we cannot look up at all.
+- **Scenario 3 is implemented, not just documented.** The docblock claimed the
+  caller handled "no draft on GitHub but pending rows here"; neither caller
+  did, so those rows stayed `state='pending'` forever and kept shipping in
+  `allGithubReviews` next to `pendingDraft: null`. `syncPendingDraft` now runs
+  the same reconciliation for that case — on the SUCCESS path ONLY, because
+  doing it on the swallowed-error path is how a rate limit mass-dismisses live
+  drafts.
+- **"No draft" and "could not ask" are now distinguishable.** The response
+  carries `syncSucceeded`. Local mode leaves the indicator, `currentPR.pendingDraft`
+  and its return value untouched on a failure (manual syncs warn instead of
+  reporting "No draft review on GitHub"). The GitHub catch narrowed to the
+  fetch: reconciliation and the mirror read run outside it, so a DATABASE
+  failure reaches the route's 500 instead of being reported as an outage.
+- **One mirror row per GitHub review, enforced.** Migration 57 adds partial
+  unique indexes on `(review_id, github_node_id)` and
+  `(review_id, github_review_id)`, collapsing existing duplicates first.
+  `GitHubReviewRepository.upsertFromGitHub` is now the ONE writer for a row
+  with a GitHub identity — used by the draft sync AND by both submit paths
+  (`routes/pr.js`, `main.js`), because submitting a draft keeps the same review
+  id and node id and must update that row rather than insert a second one.
+  The provider also single-flights per (db, reviewId).
+- **`canSyncDrafts` no longer advertises a button that always 409s.**
+  `resolveAssociationHost` (routes/local.js) answers "is the PR's host known?"
+  in two tiers — the resolved binding, then the stored `pr_metadata.host`
+  stamp — and BOTH the capability and the endpoint gate read it, so they cannot
+  disagree. A stamped host also settles the sync itself: `resolveRepositoryBinding`
+  accepts a `host` option that replaces the dual-host guess, so a dual repo
+  already opened in PR mode syncs instead of refusing.
+- **The draft link is host-correct in both modes.** `RepoLinks.draftUrl` is the
+  one resolver (indicator + ReviewModal notice). `LocalManager._applyRepoLinks`
+  resolves the link set against the ASSOCIATED PR (owner/repo/number, and the
+  association's repository wins over the checkout's), re-applied on a late
+  association and awaited before the indicator renders — which is what let the
+  `preferConfiguredUrl: false` opt-out go away.
+- **A retracted capability clears the indicator too.** `_updateDraftSyncAffordance`
+  hid the button but left a live "Draft on GitHub" link to a draft on a PR the
+  session was no longer tied to, with no affordance left that could refresh it.
+- **`GET /api/pr/:owner/:repo/:number` uses `serializePendingDraft`.** It was
+  still hand-rolling the same six fields — and it is the endpoint the UI
+  actually reads `pendingDraft` from, so "one definition" was not true.
+- Tests: late-flip auto-sync and its retraction mirror asserted through
+  `_refreshPRMetadata` (not by calling `_maybeAutoSyncGitHubDrafts` directly);
+  state-mapping and indeterminate-lookup cases; scenario 3; concurrent syncs;
+  `upsertFromGitHub` against a real database; migration 57 dedupe; the E2E
+  manual-resync test waits for the automatic request to land instead of racing
+  it through the single-flight join.
+
+#### Review round 2 (2026-08-22) — feedback applied
+
+Four findings, all addressed.
+
+- **The transports made round 1's "indeterminate lookups do not mutate" rule
+  unreachable (critical).** `reconcileOldPendingRecords` treats `null` from
+  `getReviewById` as authoritative and writes `dismissed` — but BOTH production
+  transports answered `null` for every failure, so the protective catch never
+  saw the rate limits and 5xx it exists for. The REST impl also answered `null`
+  when it could not even BUILD a lookup (a node id with no numeric id), i.e.
+  for a query never made. Fixed at the contract, not the caller:
+  `src/github/impl/graphql/pending-review.js` returns `null` only for a
+  NOT_FOUND error or a missing node (and raises when the node is not a review
+  at all), `src/github/impl/rest/pending-review.js` only for a 404 — everything
+  else rejects. Only then does the provider's catch mean anything. The unit
+  tests modelled failures as rejections, which is exactly why they missed it;
+  the transports now carry their own 404-vs-rate-limit-vs-5xx cases.
+- **A legacy split identity broke `upsertFromGitHub` (medium).** Migration 57
+  deduplicated node ids and numeric ids INDEPENDENTLY, so a pair can survive it
+  as two rows — one holding the node id, one the numeric id, for the same
+  GitHub review. The old code took the first lookup that hit and then wrote the
+  other identifier into it, violating the sibling's unique index; only the
+  INSERT path handled uniqueness, so sync surfaced a raw constraint failure.
+  Now both identifiers are resolved, a split pair is merged (higher id wins,
+  matching migration 57's `MAX(id)`; the loser's non-NULL columns are folded in
+  first) inside a SAVEPOINT — not a transaction, because `src/main.js`'s submit
+  path already holds one — and the unique-conflict retry covers the UPDATE as
+  well as the INSERT. Absent identifiers are normalised to SQL NULL at the
+  repository boundary: `String(databaseId)` on a missing id stored the literal
+  `"null"`, a shared identity two unrelated reviews then matched each other on.
+  The draft sync omits the column entirely when GitHub sends no `databaseId`,
+  so a response without one cannot blank an id already recorded.
+- **The capability and the endpoint used different credentials (medium).** Both
+  capability endpoints resolved the binding with the ambiguity rule, THEN asked
+  `resolveAssociationHost` which host the PR is on, and shipped the flag
+  computed from the pre-stamp guess — while `POST /sync-drafts` re-resolved
+  against the stamp. On a dual repo that got both asymmetric configurations
+  backwards: a global github.com token advertised a button whose requests 401,
+  and an alt-host repo token hid a working feature. One helper now settles the
+  host FIRST and re-resolves the binding for it —
+  `resolveAssociationCredential` (routes/local.js) — and all three sites use
+  it, including `/pr-metadata`'s fetch.
+- **Explicit-host re-resolution failed open (critical).** `tryResolveHostBinding`
+  swallows the deliberate stale-host/config mismatch throw and answers `null`,
+  which `resolveFetchCredential(null, token)` reads as an ordinary github.com
+  binding — so a stored host that config no longer describes sent the sync to
+  api.github.com for a PR the route had just proved lives elsewhere, and a
+  same-named github.com repo's PR #N would be reconciled into these rows. The
+  new helper distinguishes "no binding needed" from "explicit resolution
+  FAILED" (`hostBindingFailed`) and every consumer fails closed: 409 from
+  sync-drafts, no fetch and no credential from either capability endpoint.
 
 ### Phase 5: Submit review to GitHub (highest risk — writes to GitHub)
 
@@ -356,7 +530,10 @@ Changeset: `minor` — "Submit local reviews to GitHub when PR is associated."
 - `executeSync` (`src/routes/external-comments.js:123`) — reads `review.repository` / `review.pr_number` at `:132`, `:147`, `:166`. Phase 2 routes all three through the resolver; miss one and an associated-PR sync silently targets `undefined/undefined`.
 - `_loadExternalComments` (`public/js/pr.js:1203`) — callers: PR init wiring, `refreshPR`, and the post-diff-rebuild re-render at `:1131`. Phase 2 swaps its local-mode bail for a capability check; all three callers inherit the change.
 - `check-stale` endpoints in BOTH `src/routes/local.js` AND `src/routes/pr.js`. Phase 3 refactor must produce identical outputs for the existing inputs.
-- `syncPendingDraftFromGitHub` (`src/routes/pr.js:76-151`) — currently called from PR refresh path. Phase 4 extraction must preserve refresh-time behavior.
+- `syncPendingDraftFromGitHub` — extracted to `src/providers/draft-sync.js` in Phase 4, signature unchanged, still re-exported from `routes/pr.js` `_internals`. Callers: (1) `GET /api/pr/:owner/:repo/:number` (direct), (2) `GET .../github-drafts` (now via `syncPendingDraft`), (3) `POST /api/local/:reviewId/sync-drafts` (via `syncPendingDraft`). Any signature change must touch all three.
+- `updatePendingDraftIndicator` (`public/js/pr.js`) — shared with local mode since Phase 4. Callers: `renderPRHeader` x2 (PR), `ReviewModal.submitReview` x2 (PR), `LocalManager._syncGitHubDrafts` (local), `LocalManager._updateDraftSyncAffordance` (local, the null/clear call). The URL comes from `RepoLinks.draftUrl`, shared with `ReviewModal.updatePendingDraftNotice`; it is only host-correct because local mode feeds RepoLinks the association's `{number}` (`_applyRepoLinks`). Changing one of those three without the others reintroduces a repository-level link for a draft.
+- `GitHubReviewRepository.upsertFromGitHub` (`src/database.js`) — the ONE writer for a mirror row with a GitHub identity, because migration 57 makes a duplicate a hard error. Callers: draft sync (`src/providers/draft-sync.js`), `POST /api/pr/.../submit-review` (`src/routes/pr.js`), headless submit (`src/main.js`). Any new `github_reviews` insert carrying a node id or numeric id must go through it — a bare `create` will throw the moment the same review is seen twice (draft, then submit).
+- `resolveAssociationHost` (`src/routes/local.js`) — the two-tier host answer. Callers: `GET /api/local/:reviewId` and `/pr-metadata` (both feed `buildCapabilities.hostResolved`) and `POST /api/local/:reviewId/sync-drafts` (the 409 gate, which also re-resolves the binding for a stamped host). A capability looser than the gate advertises a button that only errors; a gate looser than the capability contacts a guessed host.
 - `submit-review` (`src/routes/pr.js:1067-1356`) — large handler with side effects (GitHub API write, DB updates, comment status transitions). Phase 5a/5b split required.
 - `buildCapabilities` (`src/providers/pr-context.js`) — every phase flips one action flag. Forgetting to flip silently disables the feature with no error. Verify flag flips in each phase's integration test.
 

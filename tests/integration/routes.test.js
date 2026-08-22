@@ -9970,6 +9970,9 @@ describe('GET /api/local/:reviewId capabilities', () => {
       // Phase 3 shares that reasoning exactly: the stale check does a LIVE
       // read-only head fetch, so it needs no warm metadata cache either.
       canCheckStaleVsPR: true,
+      // Phase 4, same again: the draft sync asks GitHub for the pending
+      // review directly, so the metadata cache is not an input.
+      canSyncDrafts: true,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
     // Association + token + cold cache fires the background fetch; settle it
@@ -10011,6 +10014,8 @@ describe('GET /api/local/:reviewId capabilities', () => {
       canViewPRComments: true,
       // Phase 3: same independence — a live head fetch, not a cache read.
       canCheckStaleVsPR: true,
+      // Phase 4: same independence — a live pending-review fetch.
+      canSyncDrafts: true,
     });
     expect(response.body.associatedPR).toEqual({
       prNumber,
