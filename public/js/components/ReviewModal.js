@@ -316,15 +316,18 @@ class ReviewModal {
         countElement.textContent = String(pendingDraft.comments_count || 0);
       }
 
-      // Update the link. Prefer the URL built from the repo's configured
-      // url_template (host-correct) over the server-reported github_url,
-      // which some alt-hosts return as a wrong-host github.com/issues URL.
+      // Update the link through `RepoLinks.draftUrl` — the same resolver the
+      // toolbar indicator uses, so the notice and the indicator can never
+      // point at different places. It prefers the URL built from the repo's
+      // configured url_template (host-correct) over the server-reported
+      // github_url, which some alt-hosts return as a wrong-host
+      // github.com/issues URL.
       const linkElement = notice.querySelector('#pending-draft-link');
       if (linkElement) {
-        const templatedUrl = (typeof window !== 'undefined' && window.RepoLinks
-          && typeof window.RepoLinks.externalUrl === 'function')
-          ? window.RepoLinks.externalUrl() : null;
-        const manageUrl = templatedUrl || pendingDraft.github_url;
+        const manageUrl = (typeof window !== 'undefined' && window.RepoLinks
+          && typeof window.RepoLinks.draftUrl === 'function')
+          ? window.RepoLinks.draftUrl(pendingDraft)
+          : pendingDraft.github_url;
         if (manageUrl) {
           linkElement.href = manageUrl;
           linkElement.style.display = 'inline';

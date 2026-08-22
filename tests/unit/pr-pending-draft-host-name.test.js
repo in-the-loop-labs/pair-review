@@ -96,6 +96,9 @@ describe('PRManager pending-draft indicator — configurable host name', () => {
       fetchAndApplyRepoLinks: vi.fn(() => fetchPromise),
       hostName: () => (resolved ? 'Meteorite' : 'GitHub'),
       externalUrl: () => (resolved ? templateUrl : null),
+      // Same precedence as the real module: the configured template first,
+      // the draft's own URL as the fallback.
+      draftUrl: (draft) => (resolved ? templateUrl : null) || (draft && draft.github_url) || null,
     };
 
     makeManager().renderPRHeader(pr);
@@ -127,6 +130,7 @@ describe('PRManager pending-draft indicator — configurable host name', () => {
       fetchAndApplyRepoLinks: vi.fn(() => fetchPromise),
       hostName: () => 'GitHub',
       externalUrl: () => null,
+      draftUrl: (draft) => (draft && draft.github_url) || null,
     };
 
     makeManager().renderPRHeader(pr);

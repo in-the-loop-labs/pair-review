@@ -349,6 +349,29 @@
   }
 
   /**
+   * The URL to open for a pending draft review — ONE resolver, shared by the
+   * toolbar indicator (`updatePendingDraftIndicator` in public/js/pr.js) and
+   * the review modal's draft notice, in both PR and Local mode.
+   *
+   * Precedence is the same everywhere: the URL built from the repo's
+   * configured `url_template` first, because some alt-hosts report the
+   * draft's `github_url` as a wrong-host github.com URL; the server-reported
+   * `github_url` only as a fallback.
+   *
+   * The substitution context has to carry `{number}` for a template that
+   * names it to resolve to THIS pull request — Local mode supplies the
+   * ASSOCIATED PR's owner/repo/number for exactly that reason (see
+   * `_applyRepoLinks` in public/js/local.js). Without one, substitution fails
+   * and this falls back, which is the safe direction.
+   *
+   * @param {{github_url?: string}|null|undefined} pendingDraft
+   * @returns {string|null}
+   */
+  function draftUrl(pendingDraft) {
+    return externalUrl() || (pendingDraft && pendingDraft.github_url) || null;
+  }
+
+  /**
    * The configured (server-sanitised) external host icon SVG string for the
    * current review, or null when none is configured.
    *
@@ -369,6 +392,7 @@
     fetchAndApplyRepoLinks,
     hostName,
     externalUrl,
+    draftUrl,
     externalIcon,
   };
 

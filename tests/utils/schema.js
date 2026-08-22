@@ -380,6 +380,9 @@ const INDEX_SQL = [
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // One mirror row per (review, GitHub review) — migration 57.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_node_unique ON github_reviews(review_id, github_node_id) WHERE github_node_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_id_unique ON github_reviews(review_id, github_review_id) WHERE github_review_id IS NOT NULL',
   // Local sessions listing performance
   'CREATE INDEX IF NOT EXISTS idx_reviews_type_updated ON reviews(review_type, updated_at DESC)',
   // Council indexes

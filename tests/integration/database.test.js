@@ -4483,3 +4483,303 @@ describe('PRMetadataRepository.upsertPRMetadata', () => {
     });
   });
 });
+
+describe('Migration 57 - one github_reviews row per GitHub review', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  /** Pre-57 baseline: github_reviews with no uniqueness at all. */
+  function createPreMigration57Database() {
+    const testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE github_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id INTEGER NOT NULL,
+        github_review_id TEXT,
+        github_node_id TEXT,
+        state TEXT NOT NULL DEFAULT 'local',
+        event TEXT,
+        body TEXT,
+        submitted_at DATETIME,
+        github_url TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    return testDb;
+  }
+
+  const insert = (testDb, row) => testDb.prepare(`
+    INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body)
+    VALUES (@review_id, @github_review_id, @github_node_id, @state, @body)
+  `).run({ github_review_id: null, github_node_id: null, state: 'pending', body: null, ...row });
+
+  afterEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+  });
+
+  it('collapses duplicate rows for one draft, keeping the row updates land on', () => {
+    // The duplicates this cleans up are exactly what concurrent syncs used to
+    // create: two rows for one GitHub draft, only one of which a later sync
+    // ever updates — the other stays 'pending' forever.
+    db = createPreMigration57Database();
+    insert(db, { review_id: 1, github_node_id: 'PRR_a', github_review_id: '1', body: 'older' });
+    insert(db, { review_id: 1, github_node_id: 'PRR_a', github_review_id: '1', body: 'newer' });
+    // Same node id, DIFFERENT review — not a duplicate.
+    insert(db, { review_id: 2, github_node_id: 'PRR_a', github_review_id: '1', body: 'other review' });
+    // Local-only rows carry neither identifier and must survive untouched.
+    insert(db, { review_id: 1, state: 'local' });
+    insert(db, { review_id: 1, state: 'local' });
+
+    MIGRATIONS[57](db);
+
+    const rows = db.prepare('SELECT * FROM github_reviews ORDER BY id').all();
+    expect(rows).toHaveLength(4);
+    // `findPendingByReviewId` orders created_at DESC, so the highest id is the
+    // one the updater has been writing to — that is the survivor.
+    expect(rows.find(r => r.review_id === 1 && r.github_node_id === 'PRR_a').body).toBe('newer');
+    expect(rows.filter(r => r.state === 'local')).toHaveLength(2);
+  });
+
+  it('rejects a second row for the same draft afterwards', () => {
+    db = createPreMigration57Database();
+    MIGRATIONS[57](db);
+    insert(db, { review_id: 1, github_node_id: 'PRR_a', github_review_id: '9' });
+
+    expect(() => insert(db, { review_id: 1, github_node_id: 'PRR_a', github_review_id: '9' }))
+      .toThrow(/UNIQUE constraint failed/);
+    // The numeric id alone is enough to conflict too — an alt-host REST
+    // response may never surface a node id.
+    expect(() => insert(db, { review_id: 1, github_review_id: '9' }))
+      .toThrow(/UNIQUE constraint failed/);
+  });
+
+  it('is idempotent and safe on a database with no github_reviews table', () => {
+    db = createPreMigration57Database();
+    insert(db, { review_id: 1, github_node_id: 'PRR_a' });
+    MIGRATIONS[57](db);
+    expect(() => MIGRATIONS[57](db)).not.toThrow();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM github_reviews').get().n).toBe(1);
+
+    const empty = new Database(':memory:');
+    try {
+      expect(() => MIGRATIONS[57](empty)).not.toThrow();
+    } finally {
+      empty.close();
+    }
+  });
+});
+
+
+/**
+ * `GitHubReviewRepository.upsertFromGitHub` against a real SQLite database
+ * carrying migration 57's partial unique indexes — the ONE writer for every
+ * mirror row that has a GitHub identity.
+ */
+describe('GitHubReviewRepository.upsertFromGitHub', () => {
+  let db;
+  let repo;
+  let reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    repo = new database.GitHubReviewRepository(db);
+    reviewId = seedTestReview(db, { prNumber: 42 });
+  });
+
+  afterEach(async () => {
+    if (db) await closeTestDatabase(db);
+  });
+
+  it('inserts when nothing mirrors this review yet', async () => {
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'pending', body: 'draft'
+    });
+
+    expect(row).toMatchObject({ github_review_id: '555', github_node_id: 'PRR_a', state: 'pending' });
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(1);
+  });
+
+  it('updates the draft row in place when the draft is SUBMITTED', async () => {
+    // GitHub keeps the same review id and node id when a pending review is
+    // submitted, so this is the same row — inserting a second one both
+    // duplicates the history and violates the unique index.
+    await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'pending'
+    });
+
+    const submitted = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555',
+      github_node_id: 'PRR_a',
+      state: 'submitted',
+      event: 'APPROVE',
+      submitted_at: '2026-02-02T00:00:00Z'
+    });
+
+    const rows = await repo.findByReviewId(reviewId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(submitted.id);
+    expect(rows[0]).toMatchObject({ state: 'submitted', event: 'APPROVE', submitted_at: '2026-02-02T00:00:00Z' });
+  });
+
+  it('matches on the numeric id alone when no node id was ever recorded', async () => {
+    // An alt-host REST response may never surface a node id.
+    await repo.upsertFromGitHub(reviewId, { github_review_id: '555', state: 'pending' });
+
+    await repo.upsertFromGitHub(reviewId, { github_review_id: '555', state: 'submitted' });
+
+    const rows = await repo.findByReviewId(reviewId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe('submitted');
+  });
+
+  it('keeps rows for DIFFERENT reviews of the same GitHub identity apart', async () => {
+    const otherReviewId = seedTestReview(db, { prNumber: 43 });
+
+    await repo.upsertFromGitHub(reviewId, { github_review_id: '555', github_node_id: 'PRR_a' });
+    await repo.upsertFromGitHub(otherReviewId, { github_review_id: '555', github_node_id: 'PRR_a' });
+
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(1);
+    expect(await repo.findByReviewId(otherReviewId)).toHaveLength(1);
+  });
+
+  it('adopts a row inserted between the lookup and the insert', async () => {
+    // The concurrent-sync race: our lookup answered "nothing", and by the time
+    // we insert, the other writer's row is there and the unique index rejects
+    // us. Resolving that into an update is what keeps one draft to one row.
+    let inserted = false;
+    const realCreate = repo.create.bind(repo);
+    repo.create = async (id, data) => {
+      if (!inserted) {
+        inserted = true;
+        await realCreate(id, { github_review_id: '555', github_node_id: 'PRR_a', state: 'pending', body: 'other tab' });
+      }
+      return realCreate(id, data);
+    };
+
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'pending', body: 'ours'
+    });
+
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(1);
+    expect(row.body).toBe('ours');
+  });
+
+  it('merges a legacy pair split across two rows instead of failing the sync', async () => {
+    // Migration 57 deduplicated node ids and numeric ids INDEPENDENTLY, so a
+    // legacy pair survives it: one row carrying only the node id, another only
+    // the numeric id, for the SAME GitHub review. Selecting the node row and
+    // writing the numeric id into it violates the sibling's unique index, and
+    // the sync returned a raw constraint failure.
+    const nodeOnly = await repo.create(reviewId, {
+      github_node_id: 'PRR_a', state: 'pending', body: 'from the node path'
+    });
+    const numericOnly = await repo.create(reviewId, {
+      github_review_id: '555', state: 'pending', event: 'COMMENT', github_url: 'https://gh/1'
+    });
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(2);
+
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'submitted',
+      submitted_at: '2026-02-02T00:00:00Z'
+    });
+
+    const rows = await repo.findByReviewId(reviewId);
+    expect(rows).toHaveLength(1);
+    // Survivor is the higher id — migration 57's own `MAX(id)` rule.
+    expect(row.id).toBe(Math.max(nodeOnly.id, numericOnly.id));
+    expect(rows[0]).toMatchObject({
+      github_node_id: 'PRR_a',
+      github_review_id: '555',
+      state: 'submitted',
+      submitted_at: '2026-02-02T00:00:00Z'
+    });
+    // …and the loser's own columns came along rather than being dropped.
+    expect(rows[0].event).toBe('COMMENT');
+    expect(rows[0].github_url).toBe('https://gh/1');
+  });
+
+  it('merges a split pair the same way when the second row is the older one', async () => {
+    // Same case with the insertion order reversed, so the merge cannot be
+    // passing by accident of which lookup answered first.
+    const numericOnly = await repo.create(reviewId, {
+      github_review_id: '555', state: 'pending'
+    });
+    const nodeOnly = await repo.create(reviewId, {
+      github_node_id: 'PRR_a', state: 'pending', body: 'newer'
+    });
+
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'submitted'
+    });
+
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(1);
+    expect(row.id).toBe(Math.max(nodeOnly.id, numericOnly.id));
+    expect(row).toMatchObject({ github_node_id: 'PRR_a', github_review_id: '555', state: 'submitted' });
+  });
+
+  it('merges inside an OPEN transaction (the submit path holds one)', async () => {
+    // src/main.js wraps submission in an explicit BEGIN, so the merge nests —
+    // a bare BEGIN here would throw "cannot start a transaction within a
+    // transaction" and take the submission down with it.
+    await repo.create(reviewId, { github_node_id: 'PRR_a', state: 'pending' });
+    await repo.create(reviewId, { github_review_id: '555', state: 'pending' });
+
+    await database.run(db, 'BEGIN TRANSACTION');
+    try {
+      await repo.upsertFromGitHub(reviewId, {
+        github_review_id: '555', github_node_id: 'PRR_a', state: 'submitted'
+      });
+      await database.run(db, 'COMMIT');
+    } catch (error) {
+      await database.run(db, 'ROLLBACK');
+      throw error;
+    }
+
+    expect(await repo.findByReviewId(reviewId)).toHaveLength(1);
+  });
+
+  it('stores an absent numeric id as SQL NULL, never the string "null"', async () => {
+    // `String(githubPendingReview.databaseId)` on a missing id minted the
+    // literal "null" — a VALUE, so two unrelated reviews shared one identity
+    // and collided under the unique index as if they were the same review.
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: null, github_node_id: 'PRR_a', state: 'pending'
+    });
+    expect(row.github_review_id).toBeNull();
+
+    const stringified = await repo.upsertFromGitHub(reviewId, {
+      github_review_id: String(undefined), github_node_id: 'PRR_b', state: 'pending'
+    });
+    expect(stringified.github_review_id).toBeNull();
+
+    // Two id-less rows for two different reviews coexist — the partial index
+    // leaves NULL unconstrained, which is the whole point.
+    const rows = await repo.findByReviewId(reviewId);
+    expect(rows).toHaveLength(2);
+    expect(rows.every(r => r.github_review_id === null)).toBe(true);
+  });
+
+  it('does not blank an identifier the caller left out', async () => {
+    // `undefined` means "leave this column alone", which is a different
+    // instruction from "clear it".
+    await repo.upsertFromGitHub(reviewId, {
+      github_review_id: '555', github_node_id: 'PRR_a', state: 'pending'
+    });
+
+    const row = await repo.upsertFromGitHub(reviewId, {
+      github_node_id: 'PRR_a', state: 'submitted'
+    });
+
+    expect(row.github_review_id).toBe('555');
+  });
+
+  it('re-throws a constraint failure it cannot resolve', async () => {
+    // A foreign-key violation is not a duplicate mirror row; swallowing it
+    // would hide a real bug behind a silent no-op.
+    await expect(repo.upsertFromGitHub(999999, { github_review_id: '555' }))
+      .rejects.toThrow();
+  });
+});

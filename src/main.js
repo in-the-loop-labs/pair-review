@@ -1812,7 +1812,9 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
     const githubNodeId = String(githubReview.id); // GraphQL methods return node IDs
     const githubDatabaseId = githubReview.databaseId
       ? String(githubReview.databaseId)
-      : existingDraft ? String(existingDraft.databaseId) : null;
+      : (existingDraft && existingDraft.databaseId != null)
+        ? String(existingDraft.databaseId)
+        : null;   // absent means SQL NULL, never the string "null"
 
     const githubReviewState = options.reviewEvent === 'DRAFT' ? 'pending' : 'submitted';
 
@@ -1837,9 +1839,11 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
         reviewData: reviewData
       });
 
-      // Create a github_reviews record to track this submission (matches pr.js)
+      // Record this submission in the github_reviews mirror (matches pr.js) —
+      // UPSERT because submitting a draft reuses the draft's GitHub review
+      // identity, so this may be the row the draft sync already mirrored.
       const githubReviewRepo = new GitHubReviewRepository(db);
-      await githubReviewRepo.create(review.id, {
+      await githubReviewRepo.upsertFromGitHub(review.id, {
         github_review_id: githubDatabaseId,
         github_node_id: githubNodeId,
         state: githubReviewState,

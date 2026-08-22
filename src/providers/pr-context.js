@@ -281,9 +281,12 @@ function _clearHostBindingFailureCache() {
  *
  * @param {string|null|undefined} repository - owner/repo identity
  * @param {Object} config - Application config
- * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean}|number} [options] - Options.
+ * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean, host?: string|null}|number} [options] - Options.
  *   `localPath` is the review's checkout, used to resolve a dual repo's host
- *   from its git remote. `now` is an injectable clock for the negative memo
+ *   from its git remote. `host` is an api_host the caller already KNOWS (read
+ *   off a `pr_metadata.host` stamp — `null` means github.com): it replaces the
+ *   dual-host guess entirely, so the answer is never `hostAmbiguous`. Omit it
+ *   (`undefined`) to keep the guessing behaviour. `now` is an injectable clock for the negative memo
  *   (tests only; never wait a TTL out in real time — tests/CONVENTIONS.md).
  *   `cachedTokensOnly` forbids shelling out for a `token_command` (see
  *   `resolveHostBinding`), for advisory request paths on a client deadline;
@@ -296,16 +299,18 @@ function _clearHostBindingFailureCache() {
  *   unresolvable
  */
 function normalizeBindingOptions(options) {
-  if (typeof options === 'number') return { now: options, localPath: null, cachedTokensOnly: false };
-  const { now = Date.now(), localPath = null, cachedTokensOnly = false } = options || {};
-  return { now, localPath, cachedTokensOnly: Boolean(cachedTokensOnly) };
+  if (typeof options === 'number') {
+    return { now: options, localPath: null, cachedTokensOnly: false, host: undefined };
+  }
+  const { now = Date.now(), localPath = null, cachedTokensOnly = false, host = undefined } = options || {};
+  return { now, localPath, cachedTokensOnly: Boolean(cachedTokensOnly), host };
 }
 
 function resolveRepositoryBinding(repository, config, options = {}) {
   if (!repository) return null;
   const parts = splitRepository(repository);
   if (!parts) return null;
-  const { now, localPath, cachedTokensOnly } = normalizeBindingOptions(options);
+  const { now, localPath, cachedTokensOnly, host } = normalizeBindingOptions(options);
   const safeConfig = config || {};
   const bindingRepository = configModule.resolveBindingRepositoryFromPR(parts.owner, parts.repo, safeConfig);
 
@@ -316,7 +321,11 @@ function resolveRepositoryBinding(repository, config, options = {}) {
   // repo resolves to whichever host its checkout's remote names), so two local
   // reviews of the same repo in different checkouts must not answer for each
   // other. The NUL separator keeps a path containing the key from colliding.
-  const cacheKey = `${String(bindingRepository ?? '')}\u0000${localPath || ''}`;
+  // `host` joins the key for the same reason `localPath` does: it changes the
+  // ANSWER. A caller that KNOWS the host (a stored `pr_metadata.host` stamp)
+  // must not read — or write — the memo the ambiguous guess left behind.
+  const hostKey = host === undefined ? '' : String(host);
+  const cacheKey = `${String(bindingRepository ?? '')}\u0000${localPath || ''}\u0000${hostKey}`;
   let perConfig = hostBindingFailureCache.get(safeConfig);
   const cached = perConfig && perConfig.get(cacheKey);
   if (cached) {
@@ -330,7 +339,15 @@ function resolveRepositoryBinding(repository, config, options = {}) {
   // memoized answer carry it (and the memo's object identity is stable for
   // callers).
   let binding;
-  if (hostResolution.isDualHostRepo(safeConfig, bindingRepository)) {
+  if (host !== undefined) {
+    // The host is KNOWN — the caller read it off the `pr_metadata` stamp, the
+    // authoritative record of which system a PR was actually fetched from.
+    // There is nothing to guess at, so this never carries `hostAmbiguous`,
+    // and a dual-host repo whose checkout names neither host still binds
+    // correctly. Same tier-1 rule `executeSync` applies in
+    // src/routes/external-comments.js.
+    binding = tryResolveHostBinding(bindingRepository, safeConfig, { host }, { cachedTokensOnly });
+  } else if (hostResolution.isDualHostRepo(safeConfig, bindingRepository)) {
     binding = resolveDualHostFromRemote(bindingRepository, safeConfig, localPath, { cachedTokensOnly });
     if (!binding) {
       const guess = tryResolveHostBinding(bindingRepository, safeConfig, undefined, { cachedTokensOnly });
@@ -361,9 +378,10 @@ function resolveRepositoryBinding(repository, config, options = {}) {
  *
  * @param {{prNumber: number, repository: string}|null} association
  * @param {Object} config - Application config
- * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean}|number} [options] - See
+ * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean, host?: string|null}|number} [options] - See
  *   `resolveRepositoryBinding`. Pass the REVIEW's `local_path` here: the
- *   association's PR lives on whichever host that checkout points at.
+ *   association's PR lives on whichever host that checkout points at — or
+ *   `host`, when the PR's stamped host is already known.
  * @returns {Object|null} binding, or null when unresolvable
  */
 function resolveAssociationBinding(association, config, options = {}) {
@@ -484,8 +502,19 @@ function isUsablePRTarget(association) {
  *       no warm cache — a cold cache only means the `prAdvanced` comparison
  *       (remote vs cached head) has nothing to compare against, while the
  *       drift comparison (local HEAD vs remote head) still answers.
- *     - canSyncDrafts:     false   // Phase 4 flips this true
- *     - canSubmitToGitHub: false   // Phase 5 flips this true
+ *     - canSyncDrafts: Phase 4 — true when hasAssociatedPR AND hasToken AND
+ *       `hostResolved`. Deliberately NOT gated on `prMetadataAvailable` (same
+ *       reasoning as the two above: the `pr_metadata` cache is not an input to
+ *       "do I have a pending review", and gating on it would hide the control
+ *       on exactly the cold-cache first load where a draft started in the
+ *       GitHub UI is most likely to be waiting) — but it IS gated on the host,
+ *       because `POST /api/local/:reviewId/sync-drafts` refuses an unresolved
+ *       dual-host binding with 409 before it contacts GitHub. `hasGitHubToken`
+ *       keeps its documented exception (a credential genuinely exists); an
+ *       ACTION contract may not, or it advertises a button whose every click
+ *       is a deterministic error.
+ *     - canSubmitToGitHub: false   // Phase 5 flips this true — and when it
+ *       does, it inherits the same `hostResolved` requirement.
  *
  * Token is passed in (do not re-resolve config). Caller is responsible for
  * computing the boolean via `getGitHubToken(config)`.
@@ -497,9 +526,14 @@ function isUsablePRTarget(association) {
  *   with a bare `binding?.token || globalToken` check.
  * @param {boolean} [params.prMetadataAvailable] - Cached PR metadata exists
  *   for the association. Drives `canShowPRMetadata`.
+ * @param {boolean} [params.hostResolved=true] - The host the association's PR
+ *   lives on is KNOWN, rather than a dual-host guess. Compute it with
+ *   `resolveAssociationHost` in src/routes/local.js, which applies the same
+ *   two tiers the endpoints do. Defaults true so a caller with no dual-host
+ *   question (and every existing test) is unaffected.
  * @returns {Object} capabilities object
  */
-function buildCapabilities({ association, hasToken, prMetadataAvailable } = {}) {
+function buildCapabilities({ association, hasToken, prMetadataAvailable, hostResolved = true } = {}) {
   const hasAssociatedPR = isUsablePRTarget(association);
   return {
     // Prerequisite state
@@ -511,7 +545,7 @@ function buildCapabilities({ association, hasToken, prMetadataAvailable } = {}) 
     canShowPRMetadata: Boolean(hasAssociatedPR && prMetadataAvailable),
     canViewPRComments: Boolean(hasAssociatedPR && hasToken),
     canCheckStaleVsPR: Boolean(hasAssociatedPR && hasToken),
-    canSyncDrafts: false,       // Phase 4 flips true
+    canSyncDrafts: Boolean(hasAssociatedPR && hasToken && hostResolved),
     canSubmitToGitHub: false,   // Phase 5 flips true
   };
 }

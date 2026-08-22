@@ -45,11 +45,11 @@ describe('splitRepository', () => {
 });
 
 describe('buildCapabilities', () => {
-  it('keeps the UNSHIPPED action flags (Phases 4-5) false regardless of inputs', () => {
-    // These two are hard-coded false until the phase that implements them
-    // lands. canShowPRMetadata (Phase 1), canViewPRComments (Phase 2) and
-    // canCheckStaleVsPR (Phase 3) are real now and have their own truth
-    // tables below.
+  it('keeps the UNSHIPPED action flag (Phase 5) false regardless of inputs', () => {
+    // Hard-coded false until the phase that implements it lands.
+    // canShowPRMetadata (Phase 1), canViewPRComments (Phase 2),
+    // canCheckStaleVsPR (Phase 3) and canSyncDrafts (Phase 4) are real now and
+    // have their own truth tables below.
     const cases = [
       { association: null, hasToken: false },
       { association: null, hasToken: true },
@@ -58,9 +58,61 @@ describe('buildCapabilities', () => {
     ];
 
     for (const params of cases) {
-      expect(buildCapabilities(params).canSyncDrafts).toBe(false);
       expect(buildCapabilities(params).canSubmitToGitHub).toBe(false);
     }
+  });
+
+  /**
+   * Phase 4. Same truth table as canViewPRComments / canCheckStaleVsPR, and
+   * for the same reason: `POST /api/local/:reviewId/sync-drafts` asks GitHub
+   * directly for the authenticated user's pending review, so a cold
+   * `pr_metadata` cache is not an input. Gating on it would hide the control
+   * on exactly the first load where a draft started in the GitHub UI is most
+   * likely to be waiting.
+   */
+  describe('canSyncDrafts (Phase 4)', () => {
+    it('is true only with BOTH a usable association and a token', () => {
+      expect(buildCapabilities({ association: null, hasToken: true }).canSyncDrafts).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: false }).canSyncDrafts).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: true }).canSyncDrafts).toBe(true);
+    });
+
+    it('is NOT gated on prMetadataAvailable — a cold cache still allows the sync', () => {
+      const caps = buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' },
+        hasToken: true,
+        prMetadataAvailable: false,
+      });
+      expect(caps.canShowPRMetadata).toBe(false);
+      expect(caps.canSyncDrafts).toBe(true);
+    });
+
+    it('falls with hasAssociatedPR when the association is not a usable target', () => {
+      const caps = buildCapabilities({ association: { prNumber: '123', repository: 'a/b' }, hasToken: true });
+      expect(caps.hasAssociatedPR).toBe(false);
+      expect(caps.canSyncDrafts).toBe(false);
+    });
+
+    it('is false when the PR\'s host is an unresolved dual-host guess', () => {
+      // The endpoint refuses that case with 409 before it contacts GitHub, so
+      // advertising the button would mean an error toast on every click and a
+      // silent console warning on every page-load auto-sync. `hasGitHubToken`
+      // keeps its documented exception — it answers "a credential exists",
+      // which is still true — but an ACTION contract may not.
+      const caps = buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' },
+        hasToken: true,
+        hostResolved: false,
+      });
+      expect(caps.hasGitHubToken).toBe(true);
+      expect(caps.canSyncDrafts).toBe(false);
+    });
+
+    it('defaults hostResolved to true for callers with no dual-host question', () => {
+      expect(buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' }, hasToken: true
+      }).canSyncDrafts).toBe(true);
+    });
   });
 
   /**

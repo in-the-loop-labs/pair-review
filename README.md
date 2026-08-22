@@ -489,7 +489,7 @@ checking the exit code first (as above) covers every outcome.
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
-- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, header badges for the PR's state (**MERGED** / **CLOSED**) and for local `HEAD` having moved off the PR's head commit (**PR DRIFT**), and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
+- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, header badges for the PR's state (**MERGED** / **CLOSED**) and for local `HEAD` having moved off the PR's head commit (**PR DRIFT**), an indicator for any pending draft review you started in the GitHub UI, and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
 - **PR review mode**: Requires a GitHub Personal Access Token to fetch PR data and submit reviews
 
 Configuration is stored in `~/.pair-review/config.json`:
@@ -992,10 +992,23 @@ PR context onto the local session — no need to switch to PR mode to see it:
 - a **PR DRIFT** badge in the header when your local `HEAD` is no longer the
   pull request's head commit — plus **MERGED** / **CLOSED** if the PR is no
   longer open
+- a **Draft on GitHub** indicator in the toolbar when you have a draft review
+  in progress on that PR, showing how many comments it holds and linking
+  straight to it. The draft's individual comments stay on GitHub until you
+  submit it — only its existence and count are pulled in here; once submitted,
+  they arrive with the ordinary review-comment sync above. The indicator
+  refreshes when the page loads, and the circular-arrow button beside it
+  re-asks GitHub — for when you started or added to the draft after opening
+  pair-review. That button also refreshes the PR's inline review comments in
+  the same click, so a draft submitted since page load shows up as comments
+  right away
 
-All of these need a configured GitHub token that can read the repository.
-Detection runs at session start; if you open the PR mid-session, reload the page
-to pick it up.
+All of these need a configured GitHub token that can read the repository. On a
+**dual-host** repository the token that counts is the one for the host that pull
+request actually lives on, so a repo-scoped alt-host token is enough even with
+no `github.com` token configured — and a `github.com` token alone will not
+enable them for a PR on the alt host. Detection runs at session start; if you
+open the PR mid-session, reload the page to pick it up.
 
 These are three independent facts, so the header shows a **badge group** and
 every applicable badge appears at the same time. **MERGED** / **CLOSED** report

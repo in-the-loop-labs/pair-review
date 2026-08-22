@@ -28,8 +28,25 @@ function makeRepo(initialRecords = []) {
     const id = r.id ?? (i + 1);
     records.set(id, { ...r, id });
   });
+  const findBy = (field, value) => (
+    value ? (Array.from(records.values()).find(r => r[field] === value) || null) : null
+  );
   return {
     findPendingByReviewId: vi.fn(async () => Array.from(records.values())),
+    findByGitHubNodeId: vi.fn(async (_reviewId, nodeId) => findBy('github_node_id', nodeId)),
+    findByGitHubReviewId: vi.fn(async (_reviewId, ghId) => findBy('github_review_id', ghId)),
+    // The one writer for a row with a GitHub identity (see
+    // GitHubReviewRepository.upsertFromGitHub): a draft that is later
+    // submitted keeps the same identity and must update, not duplicate.
+    upsertFromGitHub: vi.fn(async function (reviewId, data) {
+      const existing = findBy('github_node_id', data.github_node_id)
+        || findBy('github_review_id', data.github_review_id);
+      if (existing) {
+        await this.update(existing.id, data);
+        return this.getById(existing.id);
+      }
+      return this.create(reviewId, data);
+    }),
     update: vi.fn(async (id, data) => {
       updates.push({ id, data });
       const existing = records.get(id);
