@@ -16,7 +16,7 @@ const express = require('express');
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository, PRMetadataRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -46,6 +46,9 @@ const {
 // Phase 3: the PR-head half of the staleness check, shared with routes/pr.js.
 // READ-ONLY — never writes `pr_metadata`; see that module's docblock.
 const { buildStaleReasons, checkPRHeadState } = require('../providers/stale-check');
+// Phase 4: the pending-draft reconciliation shared with PR mode's
+// `GET /api/pr/:owner/:repo/:number/github-drafts`.
+const { syncPendingDraft, serializePendingDraft } = require('../providers/draft-sync');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -854,6 +857,10 @@ async function runPRAssociationDetection({ review, reviewId, repositoryName, bra
  * @param {Object} params - `association`, `repositoryName` (the review's own),
  *   `config` (already resolved), `localPath` (the review's checkout), and
  *   `resolvedToken` (the GLOBAL token from `app.get('githubToken')`).
+ * @param {string|null} [params.host] - An api_host the caller already KNOWS
+ *   (`null` = github.com), read off the `pr_metadata` stamp via
+ *   `resolveAssociationHost`. Replaces the dual-host guess, so the binding
+ *   comes back definite instead of `hostAmbiguous`.
  * @param {boolean} [params.cachedTokensOnly=false] - Never shell out for a
  *   `token_command`; answer from config.js's process-lifetime token cache or
  *   report no credential. For request paths that must stay inside a client
@@ -865,13 +872,117 @@ async function runPRAssociationDetection({ review, reviewId, repositoryName, bra
  * @returns {{binding: Object|null, hasToken: boolean}}
  */
 function resolveReviewCredential({
-  association, repositoryName, config, localPath, resolvedToken, cachedTokensOnly = false
+  association, repositoryName, config, localPath, resolvedToken, cachedTokensOnly = false, host = undefined
 }) {
-  const options = { localPath, cachedTokensOnly };
+  const options = { localPath, cachedTokensOnly, host };
   const binding = association
     ? resolveAssociationBinding(association, config, options)
     : resolveRepositoryBinding(repositoryName, config, options);
   return { binding, hasToken: Boolean(resolveFetchCredential(binding, resolvedToken)) };
+}
+
+/**
+ * Answer "which host does the association's PR live on, and do we KNOW?".
+ *
+ * Two tiers, the same pair `executeSync` uses in
+ * src/routes/external-comments.js — asking the wrong host for "PR #N" answers
+ * about a DIFFERENT pull request that merely shares a number, so a guess is a
+ * hard refusal everywhere:
+ *
+ *   Tier 1 — the resolved binding. Anything that is not an explicit
+ *   `hostAmbiguous` guess (including a null binding: a plain github.com repo
+ *   with no `repos` entry) is definite, and costs no query.
+ *
+ *   Tier 2 — `pr_metadata.host`, the stamp written by whoever last fetched
+ *   this PR. `getPRHost` distinguishes "no row" (`undefined`) from "row with
+ *   NULL host" (an explicit github.com stamp), so ANY stored value settles the
+ *   question. Routine once the same PR has been opened in PR mode.
+ *
+ * ONE definition because the capability the client reads (`canSyncDrafts`)
+ * and the endpoint gate that can 409 must never disagree: a looser capability
+ * advertises a button whose every click errors, and a looser gate contacts a
+ * guessed host.
+ *
+ * @param {Object} params
+ * @param {{prNumber: number, repository: string}|null} params.association
+ * @param {Object|null} params.binding - Already-resolved host binding
+ * @param {Object} params.db
+ * @returns {Promise<{known: boolean, host: string|null|undefined}>} `host` is
+ *   the stamped api_host when tier 2 answered (`null` = github.com), and
+ *   `undefined` when the binding alone settled it — pass it straight back to
+ *   `resolveReviewCredential`.
+ */
+async function resolveAssociationHost({ association, binding, db }) {
+  if (!association) return { known: false, host: undefined };
+  if (!binding || !binding.hostAmbiguous) return { known: true, host: undefined };
+
+  try {
+    const storedHost = await new PRMetadataRepository(db).getPRHost(
+      association.repository, association.prNumber
+    );
+    if (storedHost === undefined) return { known: false, host: undefined };
+    return { known: true, host: storedHost };
+  } catch (err) {
+    logger.warn(`Stored-host lookup failed for ${association.repository}#${association.prNumber}: ${err.message}`);
+    return { known: false, host: undefined };
+  }
+}
+
+/**
+ * THE credential a GitHub call for this review's association is actually made
+ * with — resolved AFTER the host question is settled, not before it.
+ *
+ * `resolveReviewCredential` and `resolveAssociationHost` were called in that
+ * order at three sites, and each site then used the PRE-stamp binding: the
+ * capability the client reads, the metadata fetch, and the draft sync could
+ * all disagree about which host (and therefore which token) is in play. On a
+ * dual-host repo that is not cosmetic:
+ *
+ *   - a global github.com token plus a token-less alt-host binding advertised
+ *     a `canSyncDrafts` button whose every request 401s;
+ *   - an alt-host repo token with no global token HID working functionality;
+ *   - and a `pr_metadata` stamp naming a host that config no longer describes
+ *     (renamed `api_host`, deleted `repos` entry) resolved to `null` through
+ *     `tryResolveHostBinding`'s swallowing catch, which `resolveFetchCredential`
+ *     then read as "no binding, use the global token" — i.e. api.github.com,
+ *     for a PR the route had just proved lives somewhere else. A same-named
+ *     github.com repo answers about a DIFFERENT PR #N, and the draft sync
+ *     mutates local rows on the strength of it. Explicit-host resolution must
+ *     FAIL CLOSED, exactly as the sibling PR and external-comment paths do.
+ *
+ * @param {Object} params - As `resolveReviewCredential`, plus `db` for the
+ *   `pr_metadata` host stamp.
+ * @returns {Promise<{binding: Object|null, hasToken: boolean, hostResolved: boolean, host: string|null|undefined, hostBindingFailed: boolean}>}
+ *   `hostBindingFailed` is the fail-closed signal: a host we KNOW could not be
+ *   bound to a configuration, so no GitHub call may be made for this review —
+ *   `binding` is null and `hasToken` false to keep every capability honest.
+ */
+async function resolveAssociationCredential({
+  association, repositoryName, config, localPath, resolvedToken, db, cachedTokensOnly = false
+}) {
+  const guess = resolveReviewCredential({
+    association, repositoryName, config, localPath, resolvedToken, cachedTokensOnly
+  });
+  const { known, host } = await resolveAssociationHost({ association, binding: guess.binding, db });
+
+  // `host === undefined` means the binding itself settled the question (tier
+  // 1, or no association at all) — there is nothing to re-resolve against.
+  if (host === undefined) {
+    return { ...guess, hostResolved: known, host, hostBindingFailed: false };
+  }
+
+  const stamped = resolveReviewCredential({
+    association, repositoryName, config, localPath, resolvedToken, cachedTokensOnly, host
+  });
+  if (!stamped.binding) {
+    logger.warn(
+      `Stored host "${host === null ? 'github.com' : host}" for `
+      + `${association.repository}#${association.prNumber} no longer resolves against config; `
+      + 'refusing to fall back to github.com'
+    );
+    return { binding: null, hasToken: false, hostResolved: known, host, hostBindingFailed: true };
+  }
+  return { ...stamped, hostResolved: known, host, hostBindingFailed: false };
 }
 
 /** Read the persisted PR association off a review row, or null. */
@@ -1036,12 +1147,23 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // credential has to count even when no global token is configured.
     // Otherwise exactly the alt-host users this binding fix targets would
     // never trigger the fetch that makes their pill appear.
-    const { binding: associationBinding, hasToken } = resolveReviewCredential({
+    //
+    // Resolved through `resolveAssociationCredential`, which settles the HOST
+    // first and re-resolves the binding for it: the capability shipped below
+    // and the background metadata fetch further down must both be the
+    // credential a real call would use, not the pre-stamp guess.
+    const {
+      binding: associationBinding,
+      hasToken,
+      hostResolved,
+      hostBindingFailed
+    } = await resolveAssociationCredential({
       association,
       repositoryName,
       config: localConfig,
       localPath: review.local_path,
-      resolvedToken
+      resolvedToken,
+      db
     });
 
     // Phase 1: read PR metadata from cache only. Never block this response on
@@ -1063,10 +1185,15 @@ router.get('/api/local/:reviewId', async (req, res) => {
         logger.warn(`getCachedPRMetadata failed for review #${reviewId}: ${err.message}`);
       }
     }
+    // `hostResolved` came back with the credential above: one indexed
+    // `pr_metadata` read, and only when the binding was an ambiguous guess —
+    // see `resolveAssociationHost`. `canSyncDrafts` gates on it because the
+    // sync endpoint refuses a guessed host with 409.
     const capabilities = buildCapabilities({
       association,
       hasToken,
-      prMetadataAvailable: Boolean(prMetadata)
+      prMetadataAvailable: Boolean(prMetadata),
+      hostResolved
     });
 
     const metadataElapsed = Date.now() - tEndpoint;
@@ -1122,7 +1249,10 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // short-circuits before the negative check is consulted.
     // `hasToken` IS the association's credential here — the guard's own
     // `association &&` is what makes that equivalence hold.
-    if (association && hasToken && !prMetadata
+    // `hostBindingFailed` is redundant with `hasToken` today (the resolver
+    // zeroes both) and named anyway: this is the call that would otherwise be
+    // made against api.github.com for a PR proven to live elsewhere.
+    if (association && hasToken && !hostBindingFailed && !prMetadata
         && !isPRMetadataRecentlyNegative(association)) {
       (async () => {
         try {
@@ -1376,12 +1506,13 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
     // Resolved AFTER the recovery above: both are functions of the association
     // it may have just created. Same helper as the main GET, so the capability
     // cannot disagree between the two endpoints.
-    const { binding, hasToken } = resolveReviewCredential({
+    const { binding, hasToken, hostResolved, hostBindingFailed } = await resolveAssociationCredential({
       association,
       repositoryName: reviewRepositoryName,
       config,
       localPath: review.local_path,
-      resolvedToken
+      resolvedToken,
+      db
     });
 
     if (!association) {
@@ -1405,8 +1536,13 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
     //
     // An EXPLICIT refresh overrides both: the cached row is the suspect, so it
     // skips the cache-first short-circuit and bypasses the backoff.
+    //
+    // `hostBindingFailed` is the third way out: the PR's stored host no longer
+    // resolves, so `binding` is null and fetching would target api.github.com
+    // with the global token — a same-named github.com repo would cache a
+    // DIFFERENT PR's title/author/url under this row. Answer from the cache.
     let prMetadata;
-    if (!forceRefresh && isPRMetadataRecentlyNegative(association)) {
+    if (hostBindingFailed || (!forceRefresh && isPRMetadataRecentlyNegative(association))) {
       prMetadata = await getCachedPRMetadata({
         prNumber: association.prNumber,
         repository: association.repository,
@@ -1424,11 +1560,15 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
       if (!prMetadata) recordPRMetadataNegative(association);
     }
 
+    // `hostResolved` came back with the credential above — the same two-tier
+    // host answer as the page-load GET, so the capability cannot disagree
+    // between the two endpoints that ship it.
     res.json({
       capabilities: buildCapabilities({
         association,
         hasToken,
-        prMetadataAvailable: Boolean(prMetadata)
+        prMetadataAvailable: Boolean(prMetadata),
+        hostResolved
       }),
       associatedPR: {
         prNumber: association.prNumber,
@@ -1439,6 +1579,137 @@ router.get('/api/local/:reviewId/pr-metadata', async (req, res) => {
   } catch (error) {
     logger.error('Error fetching local PR metadata:', error.stack || error.message);
     res.status(500).json({ error: 'Failed to fetch PR metadata' });
+  }
+});
+
+/**
+ * Phase 4 — pull the pending draft review the user started in the GitHub UI
+ * into this local session's `github_reviews` mirror.
+ *
+ * POST, not GET: this endpoint WRITES (it reconciles mirror rows and can
+ * transition an old pending row to submitted/dismissed) and it always hits
+ * GitHub. PR mode's twin (`GET .../github-drafts`) is a GET for historical
+ * reasons; both share `syncPendingDraft`, so their bodies cannot drift.
+ *
+ * Deliberately NOT called from `GET /api/local/:reviewId`. That handler is the
+ * page-load path and must never block on a GitHub round-trip — the client
+ * drives this one itself once `canSyncDrafts` says the backend can answer.
+ *
+ * Status ladder, in the order the checks run:
+ *   400 malformed review id
+ *   404 no such local review
+ *   403 no usable PR association — `canSyncDrafts` requires one, so a 403 here
+ *       means the association was cleared (or never resolved) since the page
+ *       loaded
+ *   409 dual-host repository whose PR host is genuinely UNKNOWN — neither the
+ *       checkout's remote nor a stored `pr_metadata.host` stamp settles it.
+ *       Same two-tier answer the external-comment sync uses (a stamped host
+ *       short-circuits the ambiguity check), routed through
+ *       `resolveAssociationHost` so the 409 and the `canSyncDrafts` capability
+ *       that gates the client's button cannot disagree. Asking the wrong host
+ *       for "my pending review on PR #N" would answer about a DIFFERENT PR
+ *       that merely shares a number — and, the second 409, a stored host that
+ *       config no longer describes (renamed `api_host`, deleted `repos`
+ *       entry). Explicit-host resolution fails CLOSED: silently binding
+ *       github.com there is the same wrong-PR bug with a stale stamp instead
+ *       of a guess
+ *   401 no credential for this repository
+ *   200 `{ pendingDraft, allGithubReviews, syncSucceeded }` — a GitHub failure
+ *       inside the provider still lands here, with the local mirror unchanged
+ *       and `syncSucceeded: false` saying so. A DATABASE failure does not: it
+ *       reaches the 500 below rather than being reported as a GitHub outage
+ */
+router.post('/api/local/:reviewId/sync-drafts', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const association = associationFromReview(review);
+    // `isUsablePRTarget`, not a truthiness test — it is the same predicate
+    // `buildCapabilities` uses for `hasAssociatedPR`, so the gate here and the
+    // capability the client read cannot disagree.
+    if (!isUsablePRTarget(association)) {
+      return res.status(403).json({
+        error: 'This local review has no associated pull request'
+      });
+    }
+    const parts = splitRepository(association.repository);
+
+    const resolvedToken = req.app.get('githubToken') || '';
+    // Same resolver as every other GitHub call this review makes — see
+    // "THE ONE RESOLVER FOR BOTH SIDES" in providers/pr-context.js. NOT
+    // `cachedTokensOnly`: this is a user-initiated action with no client
+    // deadline, so a `token_command` may legitimately be run.
+    // Settles the host FIRST and re-resolves the binding for it, so the
+    // credential below is the one a real call uses — the same resolver the two
+    // capability endpoints go through, which is what keeps the button the
+    // client rendered and the gate here from disagreeing.
+    const { binding: hostBinding, hostResolved: hostKnown, host: storedHost, hostBindingFailed } =
+      await resolveAssociationCredential({
+        association,
+        repositoryName: review.repository,
+        config,
+        localPath: review.local_path,
+        resolvedToken,
+        db
+      });
+    if (!hostKnown) {
+      return res.status(409).json({
+        error: `Cannot determine which host PR #${association.prNumber} of dual-host repository `
+          + `"${association.repository}" lives on; refusing to sync drafts against a guessed host`
+      });
+    }
+    if (hostBindingFailed) {
+      // The stored host is KNOWN and no longer resolves against config — a
+      // renamed `api_host`, a deleted `repos` entry. Falling back to the
+      // global token would ask api.github.com about a PR proven to live
+      // elsewhere, and a same-named github.com repo answers about a DIFFERENT
+      // PR #N whose drafts would then be reconciled into these rows.
+      return res.status(409).json({
+        error: `The stored host for PR #${association.prNumber} of `
+          + `"${association.repository}" (${storedHost === null ? 'github.com' : storedHost}) `
+          + 'no longer matches your configuration; refusing to sync drafts against github.com'
+      });
+    }
+
+    const credential = resolveFetchCredential(hostBinding, resolvedToken);
+    if (!credential) {
+      return res.status(401).json({
+        error: `No GitHub credential configured for ${association.repository}`
+      });
+    }
+
+    const { pendingDraft, allGithubReviews, syncSucceeded } = await syncPendingDraft({
+      db,
+      reviewId: review.id,
+      owner: parts.owner,
+      repo: parts.repo,
+      prNumber: association.prNumber,
+      credential
+    });
+
+    res.json({
+      pendingDraft: serializePendingDraft(pendingDraft),
+      allGithubReviews,
+      // "GitHub says you have no draft" and "we could not ask GitHub" are both
+      // `pendingDraft: null`. Only the first may clear a rendered indicator —
+      // see `_syncGitHubDrafts` in public/js/local.js.
+      syncSucceeded
+    });
+  } catch (error) {
+    logger.error('Error syncing GitHub drafts for local review:', error.stack || error.message);
+    res.status(500).json({ error: 'Failed to sync GitHub drafts' });
   }
 });
 

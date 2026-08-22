@@ -184,10 +184,18 @@ async function getPendingReviewForUser(octokit, owner, repo, prNumber) {
  * `prContext.reviewId` (numeric) field is consulted first, then we fall
  * back to the `nodeId` argument when it is a numeric string.
  *
+ * NULL MEANS "GITHUB SAYS THIS REVIEW DOES NOT EXIST", NOTHING ELSE — a 404
+ * and nothing more. `reconcileOldPendingRecords` (src/providers/draft-sync.js)
+ * treats null as authoritative and durably writes `state: 'dismissed'`, so a
+ * transient failure, or an id this transport cannot even query with, must
+ * REJECT and leave the row at its last known value. Same contract as the
+ * GraphQL twin.
+ *
  * @param {Object} octokit
  * @param {string|number} nodeId - GraphQL node id OR numeric review id
  * @param {Object} prContext - { owner, repo, prNumber, reviewId? }
- * @returns {Promise<Object|null>}
+ * @returns {Promise<Object|null>} Review data, or null on an authoritative 404
+ * @throws when the lookup could not be completed or could not be built
  */
 async function getReviewById(octokit, nodeId, prContext) {
   if (!prContext || !prContext.owner || !prContext.repo || !prContext.prNumber) {
@@ -208,10 +216,15 @@ async function getReviewById(octokit, nodeId, prContext) {
     } else if (typeof nodeId === 'string' && /^\d+$/.test(nodeId)) {
       reviewId = Number(nodeId);
     } else {
-      // No usable numeric id — surface a clear error rather than calling
-      // the REST API with a GraphQL node id (which would 404).
+      // No usable numeric id, so NO LOOKUP HAPPENED. Returning null here read
+      // as "GitHub says this review is gone" to `reconcileOldPendingRecords`,
+      // which dismissed the row on the strength of a query never made.
       logger.warn(`REST getReviewById called with non-numeric id "${nodeId}" and no prContext.reviewId`);
-      return null;
+      throw new Error(
+        `REST getReviewById cannot build a review lookup for "${nodeId}": ` +
+        'the REST API identifies a review by its numeric id, and neither the ' +
+        'id argument nor prContext.reviewId supplied one.'
+      );
     }
   }
 
@@ -233,11 +246,14 @@ async function getReviewById(octokit, nodeId, prContext) {
     };
   } catch (error) {
     if (error.status === 404) {
+      // Authoritative: this PR has no review with that id.
       logger.debug(`Review ${reviewId} not found via REST`);
       return null;
     }
+    // Anything else — rate limit, 5xx, a dropped connection — establishes
+    // nothing about the review. See the null contract in the docblock.
     logger.warn(`Error fetching review ${reviewId} via REST: ${error.message}`);
-    return null;
+    throw error;
   }
 }
 

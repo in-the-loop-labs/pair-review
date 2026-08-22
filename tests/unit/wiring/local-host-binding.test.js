@@ -956,6 +956,27 @@ describe('local-mode host binding (ambiguity rule)', () => {
       expect(plain.hostAmbiguous).toBeUndefined();
     });
 
+    it('binds a KNOWN host directly, with no ambiguity left to flag', () => {
+      // The stamped `pr_metadata.host` is authoritative evidence, so a caller
+      // that has it must not be forced through the guess — that is what let a
+      // dual-host repo 409 on draft sync with the correct host sitting in the
+      // database. Same tier-1 rule the external-comment sync applies.
+      const router = getLocalRouter();
+      const config = dualRepoAssociationConfig();
+
+      const alt = router._hostBindingCache.resolveRepositoryBinding(PR_REPOSITORY, config, { host: ALT_HOST });
+      expect(alt).toMatchObject({ apiHost: ALT_HOST, token: 'ALT_TOKEN' });
+      expect(alt.hostAmbiguous).toBeUndefined();
+
+      // `null` is the github.com stamp, and is equally definite.
+      const dotcom = router._hostBindingCache.resolveRepositoryBinding(PR_REPOSITORY, config, { host: null });
+      expect(dotcom).toMatchObject({ apiHost: null, token: 'GH_TOKEN' });
+      expect(dotcom.hostAmbiguous).toBeUndefined();
+
+      // …and the guess is still a guess when no host is supplied.
+      expect(router._hostBindingCache.resolveRepositoryBinding(PR_REPOSITORY, config).hostAmbiguous).toBe(true);
+    });
+
     it('GET /api/local/:reviewId/pr-metadata writes no pr_metadata row for a dual repo', async () => {
       await mountRouter(dualRepoAssociationConfig());
       const reviewId = seedAssociatedReview(401);
@@ -1013,4 +1034,194 @@ describe('local-mode host binding (ambiguity rule)', () => {
       expect(res.body.associatedPR).toMatchObject({ prNumber: 403, title: 'Real title' });
     });
   });
+
+  /**
+   * FINDING: the capability and the endpoint that honours it were computed
+   * from DIFFERENT credentials.
+   *
+   * Both capability endpoints resolved the binding with the two-argument
+   * ambiguity rule, then asked `resolveAssociationHost` which host the PR is
+   * really on — and shipped the flag computed from the PRE-stamp guess. On a
+   * dual-host repo the guess is the github.com flavour whatever the answer, so
+   * the two asymmetric credential configurations below each got the flag
+   * exactly backwards. `POST /sync-drafts` re-resolves against the stamp, so
+   * the button and the request it makes disagreed.
+   */
+  describe('capabilities follow the STAMPED host, not the pre-stamp guess', () => {
+    let app;
+    let server;
+    let ghCalls;
+
+    const PR_REPOSITORY = 'owner/repo';
+
+    /** Dual repo whose ONLY credential is the global github.com token. */
+    function globalTokenOnlyConfig() {
+      return {
+        port: 7247,
+        github_token: 'GH_TOKEN',
+        repos: {
+          [PR_REPOSITORY]: { path: '/mock/repo', api_host: ALT_HOST, exclusive: false }
+        }
+      };
+    }
+
+    /** Dual repo whose ONLY credential is the alt host's repo-scoped token. */
+    function repoTokenOnlyConfig() {
+      return {
+        port: 7247,
+        repos: {
+          [PR_REPOSITORY]: {
+            path: '/mock/repo', api_host: ALT_HOST, exclusive: false, token: 'ALT_TOKEN'
+          }
+        }
+      };
+    }
+
+    /** Dual repo whose alt host has since been renamed in config. */
+    function renamedAltHostConfig() {
+      return {
+        port: 7247,
+        github_token: 'GH_TOKEN',
+        repos: {
+          [PR_REPOSITORY]: {
+            path: '/mock/repo',
+            api_host: 'https://new-alt.example.com/api/v3',
+            exclusive: false,
+            token: 'ALT_TOKEN'
+          }
+        }
+      };
+    }
+
+    async function mountRouter(config, { globalToken = 'GH_TOKEN' } = {}) {
+      app = express();
+      app.use(express.json());
+      app.set('db', db);
+      app.set('config', config);
+      app.set('githubToken', globalToken);
+      app.use(getLocalRouter());
+      server = await listenOnLoopback(app);
+    }
+
+    /**
+     * A local review with an association whose PR is STAMPED on `host` — the
+     * authoritative record of where it was fetched from.
+     */
+    function seedStampedReview(prNumber, host) {
+      const info = db.prepare(`
+        INSERT INTO reviews (repository, status, review_type, local_path,
+                             associated_pr_number, associated_pr_repository)
+        VALUES (?, 'draft', 'local', NULL, ?, ?)
+      `).run(PR_REPOSITORY, prNumber, PR_REPOSITORY);
+      db.prepare(`
+        INSERT INTO pr_metadata (pr_number, repository, title, author, pr_data, host)
+        VALUES (?, ?, 'Stamped', 'octocat', ?, ?)
+      `).run(prNumber, PR_REPOSITORY, JSON.stringify({
+        html_url: 'https://alt.example.com/owner/repo/pull/' + prNumber, state: 'open'
+      }), host);
+      return Number(info.lastInsertRowid);
+    }
+
+    beforeEach(() => {
+      getLocalRouter()._prDetectionCache.clear();
+      getLocalRouter()._hostBindingCache.clear();
+      resolveHostBindingCalls.length = 0;
+      ghCalls = [];
+      vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockImplementation(async function (owner, repo, number) {
+        ghCalls.push({ owner, repo, number, apiHost: this.apiHost, token: this.token });
+        return {
+          title: 'Fetched', body: '', author: 'octocat', state: 'open', merged: false,
+          base_branch: 'main', head_branch: 'feature', base_sha: 'a', head_sha: 'b',
+          html_url: 'https://alt.example.com/owner/repo/pull/1', node_id: 'PR_x'
+        };
+      });
+    });
+
+    afterEach(async () => {
+      if (server) await closeServer(server);
+      server = undefined;
+      getLocalRouter()._prDetectionCache.clear();
+      getLocalRouter()._hostBindingCache.clear();
+    });
+
+    it('hides draft sync when only a github.com token exists and the PR lives on the alt host', async () => {
+      // The guess binds github.com and finds GH_TOKEN, so the flag said
+      // "reachable" — and every click of the button it advertised 401s,
+      // because the POST binds the stamped alt host, which has no credential.
+      await mountRouter(globalTokenOnlyConfig());
+      const reviewId = seedStampedReview(501, ALT_HOST);
+
+      const res = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities).toMatchObject({
+        hasAssociatedPR: true,
+        hasGitHubToken: false,
+        canSyncDrafts: false
+      });
+      expect(ghCalls).toHaveLength(0);
+    });
+
+    it('hides it on /pr-metadata too, from the same resolver', async () => {
+      await mountRouter(globalTokenOnlyConfig());
+      const reviewId = seedStampedReview(502, ALT_HOST);
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities).toMatchObject({
+        hasGitHubToken: false,
+        canSyncDrafts: false
+      });
+    });
+
+    it('exposes draft sync when the alt host has a repo token and there is no global token', async () => {
+      // The mirror image: the guess binds github.com, finds no top-level
+      // credential (a dual repo's github binding may not borrow the repo's
+      // alt-host token) and hid a feature that works perfectly.
+      await mountRouter(repoTokenOnlyConfig(), { globalToken: '' });
+      const reviewId = seedStampedReview(503, ALT_HOST);
+
+      const res = await request(server).get(`/api/local/${reviewId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.capabilities).toMatchObject({
+        hasAssociatedPR: true,
+        hasGitHubToken: true,
+        canSyncDrafts: true
+      });
+    });
+
+    it('fetches metadata with the stamped host binding, not the guess', async () => {
+      // `?refresh=1` is the only way past the cache-first short-circuit, and
+      // the stamp and the cached row are the same row.
+      await mountRouter(repoTokenOnlyConfig(), { globalToken: '' });
+      const reviewId = seedStampedReview(504, ALT_HOST);
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(res.status).toBe(200);
+      expect(ghCalls).toHaveLength(1);
+      expect(ghCalls[0]).toMatchObject({ apiHost: ALT_HOST, token: 'ALT_TOKEN' });
+    });
+
+    it('makes no GitHub call when the stamped host no longer matches config', async () => {
+      // `resolveHostBinding` throws on the mismatch and the local resolver
+      // swallows it — which read as "no binding", i.e. the global token
+      // against api.github.com, for a PR proven to live elsewhere. A
+      // same-named github.com repo answers about a DIFFERENT PR #505.
+      await mountRouter(renamedAltHostConfig());
+      const reviewId = seedStampedReview(505, ALT_HOST);
+
+      const res = await request(server).get(`/api/local/${reviewId}/pr-metadata?refresh=1`);
+
+      expect(res.status).toBe(200);
+      expect(ghCalls).toHaveLength(0);
+      expect(res.body.capabilities).toMatchObject({
+        hasGitHubToken: false,
+        canSyncDrafts: false
+      });
+    });
+  });
+
 });

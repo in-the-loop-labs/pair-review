@@ -73,6 +73,24 @@ class LocalManager {
     this._prMetadataWarmHolder = null;
     this._prMetadataWarmAttempts = 0;
 
+    // Phase 4 draft sync. `_draftSyncPromise` is an in-flight join point, not
+    // a latch: the button and the automatic load-time sync can fire within
+    // milliseconds of each other (the capability can flip late), and two
+    // concurrent POSTs would race each other's `github_reviews` reconciliation
+    // — the loser can create a SECOND pending row for one GitHub draft.
+    // Cleared in a `finally` so a failure never blocks a retry.
+    this._draftSyncPromise = null;
+    // One automatic sync per page load. The button is the only way to ask
+    // again; see `_syncGitHubDrafts`.
+    this._draftSyncAutoDone = false;
+
+    // Per-repo header links, and the substitution context every link reader
+    // (including the pending-draft URL) resolves against. The promise is
+    // awaited before rendering the draft indicator; the signature keeps a
+    // re-apply free when the association has not moved. See `_applyRepoLinks`.
+    this._repoLinksPromise = null;
+    this._repoLinksSignature = null;
+
     // The most recent thing anybody actually learned about the working tree,
     // as the sentence `_applyPRHeadStaleState` composes into its notification.
     // Kept SEPARATELY from PR-head state because the two are answered by
@@ -1835,27 +1853,7 @@ class LocalManager {
       this.updateLocalHeader(reviewData);
 
       // Apply per-repo header link customisation (Phase 7: alt-host support).
-      // Only render the external link when the local review is associated
-      // with a `repos` entry — i.e. the stored repository looks like
-      // `owner/repo`. Local sessions without a remote origin skip this
-      // entirely; built-in GitHub/Graphite links don't appear in Local
-      // mode's header today so suppression has no visible effect there
-      // either, but we still call through so any external link is
-      // inserted into the icon group.
-      if (window.RepoLinks && typeof reviewData.repository === 'string'
-          && reviewData.repository.includes('/')) {
-        const [linkOwner, linkRepo] = reviewData.repository.split('/');
-        window.RepoLinks.fetchAndApplyRepoLinks(linkOwner, linkRepo, {
-          owner: linkOwner,
-          repo: linkRepo,
-          // {number} is intentionally omitted for Local mode — templates
-          // that require it will fail substitution and the link will be
-          // dropped. Local reviews are not associated with a PR number.
-          branch: reviewData.branch,
-          base_branch: reviewData.baseBranch,
-          head_sha: reviewData.localHeadSha,
-        });
-      }
+      this._applyRepoLinks(reviewData);
 
       // Fetch and display diff
       await this.loadLocalDiff();
@@ -1918,6 +1916,12 @@ class LocalManager {
       // Fire-and-forget, last, so the diff and user comments already own their
       // DOM anchors — same contract as PR mode's tail call in loadPR.
       void this._renderExternalComments({ sync: true });
+
+      // Phase 4, also fire-and-forget: PR mode learns about a pending draft
+      // inside its page-load GET, but the local GET must never block on a
+      // GitHub round-trip, so the client asks for itself. No-op when the
+      // capability is off; `_refreshPRMetadata` retries after a late flip.
+      void this._maybeAutoSyncGitHubDrafts();
 
     } catch (error) {
       console.error('Error loading local review:', error);
@@ -2039,6 +2043,11 @@ class LocalManager {
     // associatedPR is populated; on a cold cache the renderer asks the
     // blocking /pr-metadata endpoint once and re-renders itself.
     this.renderAssociatedPRPill(reviewData);
+
+    // Phase 4: the draft-sync button lives in the toolbar, not the pill, but
+    // it is gated on the same association — render both from one place so a
+    // capability change can never move one without the other.
+    this._updateDraftSyncAffordance();
 
     // Wire up header branch copy button
     const branchCopy = document.getElementById('local-branch-copy');
@@ -2357,6 +2366,7 @@ class LocalManager {
     // a false -> true on canViewPRComments decides GET vs SYNC.
     const hadAssociation = this.hasCapability('hasAssociatedPR');
     const hadViewPRComments = this.hasCapability('canViewPRComments');
+    const hadSyncDrafts = this.hasCapability('canSyncDrafts');
 
     try {
       const url = `/api/local/${this.reviewId}/pr-metadata${force ? '?refresh=1' : ''}`;
@@ -2396,10 +2406,23 @@ class LocalManager {
       // that can flip `canViewPRComments` mid-session.
       const gainedPRComments = !hadViewPRComments && Boolean(this.capabilities.canViewPRComments);
       const gainedAssociation = !hadAssociation && Boolean(this.capabilities.hasAssociatedPR);
+      // Tracked separately from `gainedPRComments` even though the two flags
+      // share their inputs today: they are independent contracts, and one of
+      // them changing shape must not silently take the other's affordance
+      // with it.
+      const gainedSyncDrafts = !hadSyncDrafts && Boolean(this.capabilities.canSyncDrafts);
 
       // Header only — this.localData may have moved on, so render from it
       // rather than from the response body.
       this.renderAssociatedPRPill(this.localData || data);
+      // Cheap and idempotent (signature-guarded): a late association changes
+      // the link context from "this checkout" to "this pull request", and the
+      // draft indicator resolves its URL from that context.
+      this._applyRepoLinks(this.localData || data);
+      // Unconditional, and NOT folded into `gainedSyncDrafts`: the capability
+      // can go false as well as true (an association cleared by a force-push
+      // to unrelated history), and the button has to retract for that too.
+      this._updateDraftSyncAffordance();
 
       // Fire-and-forget: never let an external-comment re-render delay or fail
       // the metadata read it is piggy-backing on.
@@ -2425,6 +2448,11 @@ class LocalManager {
       // `prAdvanced` at all, unless the user happens to press Refresh. Routed
       // through the guarded recheck, which never re-enters the refresh path.
       if (gainedAssociation) void this._recheckPRHeadState();
+
+      // A LATE flip is also the only chance the automatic draft sync gets: the
+      // tail call in `loadLocalReview` ran while the capability was still
+      // false and did nothing. Silent, like that one — the user did not ask.
+      if (gainedSyncDrafts) void this._maybeAutoSyncGitHubDrafts();
 
       return {
         metadataReady: Boolean(this.capabilities.canShowPRMetadata),
@@ -2536,6 +2564,247 @@ class LocalManager {
     manager.currentPR.localBaseSha = manager.currentBaseOverride
       ? null
       : (this.localData?.mergeBaseSha ?? null);
+  }
+
+  /**
+   * Fetch and apply this review's per-repo header links, and remember the
+   * substitution context every other link reader resolves against.
+   *
+   * Local mode used to pass the CHECKOUT's `owner/repo` and deliberately no
+   * `{number}` — there was no PR to name. With an associated PR there is, and
+   * three things depend on it:
+   *
+   *   - the server resolves a DUAL-host repo's link set per PR (`?number=`),
+   *     so without it a dual repo answers with the repository-level default
+   *     and `RepoLinks.hostName()` can name the wrong host;
+   *   - a `url_template` that names `{number}` only substitutes when the
+   *     number is present — otherwise it is dropped;
+   *   - `RepoLinks.draftUrl`, shared with PR mode, resolves the pending-draft
+   *     link from that same template. Without `{number}` a template that does
+   *     not name it resolves to the REPOSITORY, which is why local mode used
+   *     to opt out of the configured URL entirely.
+   *
+   * The association's repository wins over the checkout's when both are
+   * known: a fork (or a `url_pattern` monorepo entry) puts the PR somewhere
+   * other than `origin`, and the links belong to wherever the PR lives.
+   *
+   * Called twice at most per page load: once from `loadLocalReview`, and
+   * again from `_refreshPRMetadata` if the association resolved late (dirty
+   * tree). The signature guard makes the second call free when nothing moved.
+   *
+   * @param {Object} [source] - A local review payload (`GET /api/local/:id`)
+   *   or `this.localData` after a metadata refresh.
+   * @returns {Promise<void>|null} resolves once the links have been applied,
+   *   or null when there is nothing to fetch.
+   */
+  _applyRepoLinks(source) {
+    if (!window.RepoLinks || typeof window.RepoLinks.fetchAndApplyRepoLinks !== 'function') return null;
+
+    const data = source || {};
+    const associated = data.associatedPR || null;
+    const looksLikeRepo = (value) => typeof value === 'string' && value.includes('/');
+    const repository = looksLikeRepo(associated?.repository)
+      ? associated.repository
+      : (looksLikeRepo(data.repository) ? data.repository : null);
+    // Local sessions without a remote origin have no `repos` entry to resolve.
+    if (!repository) return null;
+
+    const [linkOwner, linkRepo] = repository.split('/');
+    const context = {
+      owner: linkOwner,
+      repo: linkRepo,
+      branch: data.branch,
+      base_branch: data.baseBranch,
+      head_sha: data.localHeadSha,
+    };
+    // Only when the association is USABLE — a template substituting a
+    // half-known number would resolve to a stranger PR.
+    if (associated && Number.isInteger(associated.prNumber)) context.number = associated.prNumber;
+
+    const signature = `${repository}#${context.number ?? ''}`;
+    if (this._repoLinksSignature === signature && this._repoLinksPromise) return this._repoLinksPromise;
+    this._repoLinksSignature = signature;
+    // Never rejects: a failed links fetch leaves the "GitHub" defaults in
+    // place, and every reader falls back on its own.
+    this._repoLinksPromise = Promise.resolve(
+      window.RepoLinks.fetchAndApplyRepoLinks(linkOwner, linkRepo, context)
+    ).catch((error) => { console.warn('Repo links refresh failed:', error); });
+    return this._repoLinksPromise;
+  }
+
+  /**
+   * Show or hide the "sync draft review from GitHub" button, and wire its
+   * click handler exactly once.
+   *
+   * Re-reads `canSyncDrafts` on EVERY call and never latches a false answer —
+   * the LATE FLIP half of the capability contract in `patchPRManager`. On a
+   * dirty tree the association is written by a backfill that runs AFTER the
+   * page-load GET responded, so the first render legitimately sees false.
+   *
+   * Toggles inline `display` rather than the `hidden` attribute: `.btn` sets
+   * an author-origin `display`, which beats the UA `[hidden] { display: none }`
+   * rule, so `hidden` alone would leave the button visible. Same collision the
+   * PR pill's container documents in public/local.html.
+   */
+  _updateDraftSyncAffordance() {
+    const btn = document.getElementById('local-sync-drafts-btn');
+    if (!btn) return;
+
+    if (!btn.dataset.listenerAttached) {
+      btn.dataset.listenerAttached = 'true';
+      btn.addEventListener('click', () => {
+        void this._syncGitHubDrafts({ manual: true });
+      });
+    }
+
+    const canSync = this.hasCapability('canSyncDrafts');
+    // Retracting the button is not enough. The rendered indicator is removed
+    // by exactly one call — `updatePendingDraftIndicator(null)` — and the sync
+    // path can no longer make it: `_syncGitHubDrafts` bails on the lost
+    // capability. Without this, an association cleared by a force-push leaves
+    // a live "Draft on GitHub (N comments)" link to a draft on a PR this
+    // session is no longer tied to, with the one control that could have
+    // refreshed it just hidden. PR mode already clears both together after a
+    // submission (ReviewModal.js).
+    if (!canSync) {
+      const manager = window.prManager;
+      if (manager) {
+        if (manager.currentPR) manager.currentPR.pendingDraft = null;
+        manager.updatePendingDraftIndicator?.(null);
+      }
+    }
+    btn.style.display = canSync ? '' : 'none';
+  }
+
+  /**
+   * Phase 4 — pull the pending draft review started in the GitHub UI into this
+   * local session and surface it in the toolbar.
+   *
+   * Reuses `PRManager.updatePendingDraftIndicator` rather than growing a
+   * local-mode twin: local.html loads pr.css and has the `#toolbar-meta` /
+   * `#pr-commit` anchors that method inserts against, so the indicator is
+   * genuinely shared. `currentPR.pendingDraft` is written alongside it because
+   * that is where every other reader looks (ReviewModal's draft notice).
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.manual=false] - Driven by the button. Reports
+   *   the outcome with a toast, and re-syncs the external comments: a draft
+   *   that was SUBMITTED on GitHub since the page loaded stops being pending
+   *   and its comments become visible to the ordinary comment sync, so the two
+   *   answers belong to the same click. The automatic load-time call stays
+   *   silent and skips that leg — `loadLocalReview` already syncs external
+   *   comments on its own tail.
+   * @returns {Promise<Object|null>} the pending draft, or null. A response
+   *   carrying `syncSucceeded: false` (GitHub unreachable) changes NOTHING —
+   *   the indicator, `currentPR.pendingDraft` and the return value all stay at
+   *   what was last actually known.
+   */
+  async _syncGitHubDrafts({ manual = false } = {}) {
+    if (!this.hasCapability('canSyncDrafts')) return null;
+
+    // Join an in-flight sync instead of opening a second one — see
+    // `_draftSyncPromise`. The joiner still gets the answer.
+    if (this._draftSyncPromise) return this._draftSyncPromise;
+
+    const run = (async () => {
+      const btn = document.getElementById('local-sync-drafts-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const response = await fetch(`/api/local/${this.reviewId}/sync-drafts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        if (!response.ok) {
+          let message = `Draft sync failed (${response.status})`;
+          try {
+            const errorData = await response.json();
+            if (errorData && errorData.error) message = errorData.error;
+          } catch {
+            // Non-JSON error body — keep the status-derived message.
+          }
+          throw new Error(message);
+        }
+
+        const data = await response.json();
+        const pendingDraft = data.pendingDraft || null;
+        const manager = window.prManager;
+
+        // The endpoint answers 200 with the LOCAL mirror when GitHub could not
+        // be reached — draft state is supplementary and must not fail the
+        // page. `pendingDraft: null` therefore means two different things, and
+        // only one of them may clear a rendered indicator: telling the user
+        // "no draft review on GitHub" because GitHub was unreachable, and
+        // dropping the link to the draft they are in the middle of writing, is
+        // strictly worse than saying nothing.
+        if (data.syncSucceeded === false) {
+          if (manual && window.toast) {
+            window.toast.showWarning('Could not reach GitHub — draft status may be out of date');
+          }
+          return manager?.currentPR?.pendingDraft || null;
+        }
+
+        if (manager) {
+          if (manager.currentPR) manager.currentPR.pendingDraft = pendingDraft;
+          // Host-correct via `RepoLinks.draftUrl`; `_applyRepoLinks` has
+          // already been given the association's `{number}`, so awaiting it
+          // here is what keeps a late-resolved template from being missed.
+          if (this._repoLinksPromise) {
+            try { await this._repoLinksPromise; } catch { /* falls back to github_url */ }
+          }
+          manager.updatePendingDraftIndicator?.(pendingDraft);
+        }
+
+        if (manual) {
+          if (window.toast) {
+            if (pendingDraft) {
+              const count = pendingDraft.comments_count || 0;
+              window.toast.showSuccess(
+                `Draft review synced (${count} comment${count === 1 ? '' : 's'})`
+              );
+            } else {
+              window.toast.showInfo('No draft review on GitHub');
+            }
+          }
+          // See the `manual` docblock: a draft submitted upstream turns into
+          // ordinary review comments, so re-ask for those too.
+          void this._renderExternalComments({ sync: true });
+        }
+
+        return pendingDraft;
+      } catch (error) {
+        console.warn('GitHub draft sync failed:', error);
+        if (manual && window.toast) {
+          window.toast.showError(`Failed to sync draft review: ${error.message}`);
+        }
+        return null;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    })();
+
+    this._draftSyncPromise = run;
+    try {
+      return await run;
+    } finally {
+      this._draftSyncPromise = null;
+    }
+  }
+
+  /**
+   * The one automatic draft sync per page load.
+   *
+   * Two callers with the same job and different timing: `loadLocalReview`'s
+   * tail (warm association) and `_refreshPRMetadata`'s late flip (the
+   * association only just resolved). Whichever gets there first spends the
+   * budget; PR mode does the same fetch once inside its page-load GET.
+   *
+   * @returns {Promise<void>}
+   */
+  async _maybeAutoSyncGitHubDrafts() {
+    if (this._draftSyncAutoDone) return;
+    if (!this.hasCapability('canSyncDrafts')) return;
+    this._draftSyncAutoDone = true;
+    await this._syncGitHubDrafts();
   }
 
   /**
