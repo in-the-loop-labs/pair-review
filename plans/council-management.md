@@ -1032,6 +1032,14 @@ recorded separately, with their measurements, under
 
 ## Phase 4 — CLI `pair-review council <verb>` (PR 4, later)
 
+**Implemented** (uncommitted), then hardened by a 16-finding review round —
+see "Phase 4 review round (2026-08-21)" below, which supersedes several details
+of the spec that follows. Two divergences from the spec are recorded inline as
+**As shipped**: the advanced starter template (the spec's level 2 was invalid),
+and `printCouncilList` moved to `src/councils/print-list.js` to break a require
+cycle. One addition: `show` and `export`-to-stdout silence startup narration so
+their stdout is only the document.
+
 **Prerequisite from the Phase 3 review round** (above): Decision B step 2 — the
 tab-duplication extraction, as its own commit — lands before Phase 4 work
 starts. **Both steps of Decision B are now done** (step 1 in the 2026-08-17
@@ -1084,6 +1092,12 @@ already suggests `--list-councils`; append a hint mentioning
 
 - `list` — call the existing `printCouncilList(db)` (store-backed after
   Phase 2). Exit 0.
+  **As shipped**: `printCouncilList` moved verbatim out of `src/main.js` into
+  `src/councils/print-list.js`, which main.js requires and re-exports (existing
+  callers and `tests/unit/print-council-list.test.js` unchanged). Required:
+  main.js requires `./councils/cli`, so a `require('../main')` from the
+  subcommand would resolve to a half-initialized module — main.js assigns its
+  exports last, so `printCouncilList` would be `undefined` at call time.
 - `show <handle>` — resolve; print
   `JSON.stringify(buildCouncilDocument({name, type: type || 'advanced', config}), null, 2)`
   to stdout. Exit 0 / 1 on resolve error.
@@ -1116,9 +1130,20 @@ already suggests `--list-councils`; append a hint mentioning
 `spawnSync(editor, [tmpfile], { stdio: 'inherit' })`. Then parse with
 `parseCouncilDocument` + the normalize/validate hook (as in Phase 2a). On
 error: print it, prompt `Press Enter to edit again, or "q" to abort:`; loop or
-exit 1.
+exit 1. **As shipped**: a `spawnSync` `error` (no such editor) aborts
+immediately rather than entering the loop — re-editing cannot fix a missing
+editor.
 
-**Templates** (exact starter content for `new`):
+**Stdout purity (added)**: `show`, and `export` with no file target or `-`,
+call `redirectConsoleToStderr({ quiet: true })` before opening the database.
+`initializeDatabase` narrates its schema version on stdout, which would
+otherwise land inside `council show <handle> > file.json`. The command's own
+output writes to `process.stdout`/`process.stderr` directly, so it survives the
+redirect that silences the narration.
+
+**Templates** (exact starter content for `new`) — **superseded by the review
+round: the model ids below are not real Claude catalog ids and are now derived
+from the provider registry instead**:
 
 ```json
 {
@@ -1140,6 +1165,13 @@ Advanced template: same voice/consolidation objects, but
 true, voices: []}, "3": {enabled: false, voices: []} }, consolidation: {...} }`
 (matches `AdvancedConfigTab._defaultConfig`, :322).
 
+**As shipped**: level 2 carries a voice. The spec's shape is invalid —
+`validateAdvancedFormat` rejects an enabled level with an empty voices array
+("levels.2.voices must be a non-empty array when enabled"), which is exactly why
+`_defaultConfig` seeds one voice per ENABLED level. Only the disabled level 3
+has `voices: []`. `tests/unit/council-cli.test.js` pins both templates against
+`normalizeAndValidateCouncilConfig`.
+
 ### 4d. Tests (Phase 4)
 
 - `tests/unit/council-cli.test.js` — mock deps: fake `spawnSync` that mutates
@@ -1149,16 +1181,231 @@ true, voices: []}, "3": {enabled: false, voices: []} }, consolidation: {...} }`
   `--type advanced`, uniqueness collisions, `--yes`, editor-loop retry and
   abort. In-memory/mkdtemp DB via existing repository test helpers
   (`tests/unit/council-repository.test.js` shows the pattern).
+  **As shipped**: 50 tests. `tmpdir` is injected so every temp file lands in the
+  test's own mkdtemp root, and `quietStdout` is injected as a spy — the real one
+  reassigns the worker's `console`.
 - Integration: extend the `tests/integration/cli-council-flags.test.js`
   pattern (child process, seeded temp `HOME` — required because `CONFIG_DIR`
   is fixed at module load; env must include `PAIR_REVIEW_NO_OPEN: '1'`):
-  `council list` and `council show` end-to-end.
+  `council list` and `council show` end-to-end. **As shipped**: also
+  `council show` on a bad handle, `council --help` (proves the dispatch beats
+  the global help), and an unknown-flag rejection. The `show` test parses the
+  whole stdout as JSON — that is the stdout-purity regression test.
 - Help-text tests if `printHelp` is snapshot-tested anywhere.
 
 ### 4e. Checklist
 
 Changeset (minor). Copyright header. README: "Managing councils from the CLI"
 with the verb table.
+
+---
+
+## Phase 4 review round (2026-08-21) — 16 findings, all fixed
+
+Full suite green afterwards: **10404 tests / 305 files**. Every fix was also
+exercised against the real spawned CLI, not only through injected deps.
+
+Bugs the round found in Phase 4 as first written:
+- **stdout was truncated at exactly one pipe buffer.** `process.exit(await
+  runCouncilCommand(...))` terminates before an async pipe write drains, so
+  `council show > f.json` delivered exactly 65536 bytes and exit code 0.
+  Reproduced deliberately before fixing. Now every document-emitting path exits
+  through `exitAfterStdoutFlush` (`src/main.js`), a zero-length write used as a
+  drain barrier — the third instance of this hazard in that file, after the
+  headless `--json` envelope. **Invariant: no CLI path that writes a document to
+  stdout may call bare `process.exit`.**
+- **The `new` templates seeded a model that does not exist.** `sonnet` is
+  neither an id nor an alias in the Claude catalog (verified: ids are
+  `fable-5-*`, `opus-5-*`, `opus-4.8-*`, `opus-4.7-*`, `opus-4.6-*`,
+  `sonnet-5-xhigh`, `sonnet-5-high`, `sonnet-4.6`, `haiku`; the only aliases are
+  `fable`, `opus`, `opus-4.6-low/medium`, `opus-4.5`). An unknown id falls
+  through to `--model <raw string>` and loses the catalog entry's `env` (effort
+  level) and `extra_args`. Templates now derive their ids from the provider
+  registry (`_templateModelForTier`) with verified canonical fallbacks.
+- **Multi-word `$VISUAL`/`$EDITOR` failed with ENOENT.** `code --wait`,
+  `subl -w`, `emacsclient -nw` are ordinary values. The editor now runs through
+  a shell with the path appended via `quoteShellArgs`, matching the
+  checkout-script precedent in `src/git/worktree.js`.
+- **A failed or signalled editor read as success.** Only `result.error` was
+  checked, so `:cq` out of `council new` created the untouched (valid) template.
+  Non-zero `status` and any `signal` are now aborts.
+- **`defaultPrompt` never settled on EOF.** readline emits `close` without
+  calling the question callback on closed/piped stdin, so `delete` could hang —
+  or, worse, hang inside the editor retry loop holding an un-cleaned temp dir.
+  Now resolves `''` once, through a single settle guard.
+- **Repository write results were discarded.** `update()`/`delete()` return
+  false when the row is gone; `edit`, `rename`, and `delete` all claimed
+  success. The `edit` window is wide — the web UI can delete the row while the
+  editor blocks.
+- **Prototype members were dispatchable verbs.** `council toString` found
+  `Object.prototype` on the handler object literal and bypassed the
+  unknown-command guard. The table is now a `Map`.
+- **Extra operands were silently dropped.** `council delete My Dream Team --yes`
+  parsed as handle `My`, which partial matching resolves — and then deletes a
+  real council. Each verb now declares its operand count and extras are rejected
+  before the database is opened.
+- **Document descriptions vanished on save.** Decision: descriptions stay
+  file-only (no schema change), but `new`/`edit`/`duplicate` now WARN on stderr
+  when one is dropped instead of losing it silently.
+- **`edit` could not reach an invalid council file** — the one file most needing
+  a validate-as-you-edit session, since the loader skips it and it never becomes
+  resolvable. `edit` now falls back to locating `<stem>.council.json` /
+  `<stem>.json` under `defaultCouncilsDir()`, and does not offer `council new`
+  for a handle that turned out to name a real broken file.
+
+Design/structure changes:
+- **Name uniqueness now lives in the resolver's normalized space.**
+  `findCouncilNameCollision` (`src/councils/resolve-council.js`) rejects exact
+  name, slugified name, AND a file council's filename stem — because
+  `resolveCouncilHandle` matches all three, so `Dream Team` + `dream-team`
+  made `--council dream-team` ambiguous for both. The two frontend copies keep
+  the narrower name-equality rule ON PURPOSE (widening them is a frontend change
+  with its own E2E surface); the stale comment in `council-crud.js` that claimed
+  otherwise now records the asymmetry.
+- **`--list-councils` is a delegation, not a copy**: it calls
+  `runCouncilCommand(['list'])`. This depends on `defaultOpenDatabase` keeping
+  `applyConfigOverrides` BEFORE `initializeDatabase` — if that ordering moves,
+  config-declared providers' file councils silently vanish from the listing with
+  no error. Verified empirically with an alias-provider council file.
+- `printCouncilList` no longer has a `main.js` re-export; require it from
+  `src/councils/print-list.js`.
+- The temp-document edit lifecycle (seed → editor → `finally` cleanup) is one
+  helper, `_editTempDocument`, shared by `new` and saved-council `edit`.
+
+Test-harness lessons:
+- `seedCouncil` must pass a large council config by FILE, not env var — a ~500KB
+  environment block fails the spawn with E2BIG on macOS. Any CLI test capturing
+  a large stdout must also raise `maxBuffer` past spawnSync's 1MB default.
+- `runCli`/`seedCouncil` now delete `PAIR_REVIEW_DB_NAME` from the child env
+  before applying test overrides: `resolveDbName` checks the env var FIRST, so a
+  developer's or CI's value would point the CLI at a different database than the
+  one the test seeded.
+- An ordering invariant needs an ordering assertion. The "quiet stdout before
+  opening the database" test passed with the call moved below `openDatabase` —
+  the exact regression — until both calls were recorded in one order log.
+
+Reviewer claims that did NOT hold up: `seedCouncil` was said to share the
+`PAIR_REVIEW_DB_NAME` hole — it does not, because it passes a literal to
+`initializeDatabase`, which never consults the env var (only `resolveDbName`
+does). The var is deleted there anyway as insurance against a future seed script
+that starts using `resolveDbName`.
+
+---
+
+## Phase 4 review round 2 (2026-08-21) — 2 findings + 1 found while fixing them
+
+Green afterwards: **10420 tests / 305 files**. All three verified against the
+real spawned CLI, not only through injected deps.
+
+- **`council new` seeds from the resolved global defaults, not hardcoded
+  Claude.** The ladder is `resolveSingleProviderModel({}, null, config)`
+  (`src/review-config.js`) → `resolveDefaultOrchestration`
+  (`public/js/utils/provider-map.js`, the coherence pass both config tabs run)
+  → `ProviderClass.defaultTimeout`. `repoSettings` is `null` on purpose:
+  `council new` has no repository context. `resolveSingleProviderModel`
+  deliberately bypasses both default-COUNCIL tiers, which is what we want — a
+  council cannot seed a voice. `buildTemplateDocument(name, type, orchestration)`
+  stays pure and synchronous; resolution happens at the call site.
+  Verified: `default_provider: codex` seeds `codex/gpt-5.6-sol-high` for voices
+  AND consolidation; a `default_provider: pi` row written the way /settings
+  writes it seeds `pi` with its own 900000 timeout.
+- **The council CLI is a FOURTH global-settings entry point.**
+  `defaultOpenDatabase` now folds `GlobalSettingsService.buildEffectiveConfig()`
+  in after the DB opens and before `applyConfigOverrides` — the ordering
+  contract in `src/settings/global-settings-service.js` names server.js,
+  main.js and mcp-stdio.js; the CLI was missing and an in-app /settings
+  `default_provider` was invisible to it. Safe because `db_name` and `providers`
+  are `editable: false` in `src/settings/registry.js`, so an overlay can never
+  change which DB opens or clobber config-declared providers.
+  **Unit tests inject `openDatabase`, so nothing in vitest covers this** — a
+  mutation deleting the overlay stays green. Only the end-to-end run catches it.
+- **`tier` is the PROMPT tier, and the template now says `'balanced'`
+  everywhere**, matching both tabs' `_defaultConfig()` and the analyzer's own
+  `voice.tier || 'balanced'` fallbacks. The CLI's earlier `tier: 'thorough'`
+  consolidation was inventing a convention. The old test's "a voice's tier must
+  equal its model's catalog tier" invariant was FALSE — `_updateModelDropdown`
+  lists every model of a provider regardless of tier — and is gone.
+- **File-council edits are staged.** `_editCouncilFile` used to hand the REAL
+  path to `$EDITOR`, so an editor that wrote garbage before an abort left the
+  original damaged — worst exactly where it matters, repairing a file the loader
+  already rejected. Now: copy → edit the copy → write back only after
+  validation. **Invariant: no council verb ever hands a real path to `$EDITOR`.**
+  `_editTempFile` is the single mkdtemp/cleanup owner; council files stage RAW
+  BYTES (a broken file cannot become a document first) and write back the user's
+  EXACT bytes, not a re-serialized document — `parseCouncilDocument` returns a
+  normalized subset, so re-serializing would silently drop any other key the
+  file carries and reflow the user's formatting on every validation pass.
+  Write-back is `fs.writeFile` to the original path, never `rename` (the temp
+  dir and the councils dir can be on different mounts — `EXDEV`).
+  Residual, accepted: `fs.writeFile` truncates first, so a failure MID-write
+  (ENOSPC) can still truncate. The airtight fix is write-sibling-then-rename
+  inside the councils dir, with a temp name not ending in `.json`.
+- **Found while fixing the above: EOF at the retry prompt looped, then exited
+  0.** `defaultPrompt` resolved `''` at EOF and the retry prompt reads `''` as
+  "edit again", so a non-interactive `council edit` on a broken file re-opened
+  the editor, then died silently with EXIT CODE 0 — readline never re-emits
+  `close` on an already-ended stream, so the second prompt never settled and
+  nothing kept the event loop alive. CI would read that as a successful repair.
+  **EOF is now `null`, an actual empty line is `''`**, and callers branch
+  explicitly: the retry prompt aborts on `null`, `delete` treats both as "not
+  yes". The regression test TIMES OUT against the old behavior — that timeout
+  is the loop.
+
+## Phase 4 review round 3 (2026-08-22) — 3 merge blockers, all fixed
+
+Green afterwards: **10425 tests / 305 files**. Each fix has a regression test
+that FAILS against the old code (two of them as a 5s vitest timeout — that
+timeout is the hang).
+
+- **A second prompt on a spent stdin never settled — `council edit` exited 0
+  having repaired nothing.** Round 2 only closed half of this. `null`-at-EOF
+  covers EOF at the FIRST prompt; `_editUntilValid` is a `for(;;)` that
+  re-prompts on every bare Enter, so ONE line of piped input reaches prompt #2:
+  `printf '\n' | pair-review council edit broken` retries, re-spawns the editor,
+  and then faces a stream that will never emit `close` again and never deliver a
+  line — **both** settle paths dead. better-sqlite3 holds no libuv handle, so
+  the loop drained and the process EXITED 0 with the council still broken and
+  the scratch dir leaked (`_editTempFile`'s `finally` sits downstream of an
+  await that never returns). `defaultPrompt` now settles as EOF up front when
+  `input.readableEnded || input.destroyed`. Verified empirically, not assumed:
+  after one `PassThrough` line is consumed the stream reports
+  `readableEnded=true, destroyed=true`. The old regression test could not catch
+  this — its already-ended input is consumed by prompt #1, so only prompt #1 ever
+  ran, and `spawnCalls === 1` pinned the single-prompt case as if it were the
+  whole thing. It now drives a stream carrying exactly one line and asserts
+  **two** editor spawns, exit 1, and no leaked scratch dir.
+- **`edit` suppressed ambiguity and wrote to an arbitrarily selected file
+  council.** `_edit` treated EVERY `resolveCouncilHandle` failure as "possibly a
+  broken council file". That is valid only for a NO-MATCH. On an ambiguity —
+  a saved `Dream Team` plus `dream-team.council.json`, both matched by tier 4 —
+  `_findCouncilFile` matched the stem, suppressed the ambiguity error, and wrote
+  the user's edits into the file the user never chose, exiting 0. Every other
+  verb refuses the same handle, and `_findCouncilFile`'s own docstring says
+  write operations must not guess. `resolveCouncilHandle` now stamps
+  `error.code`: **`COUNCIL_NOT_FOUND`** on the no-match throw and
+  **`COUNCIL_AMBIGUOUS`** on `_ambiguityError`; `_edit` falls back to the file
+  ONLY for `COUNCIL_NOT_FOUND` and re-throws everything else (ambiguity,
+  database errors) with no create hint. **Branch on the code, never on message
+  text** — a reworded message would silently re-open the hole. The codes are
+  additive; the other five call sites read only `.message`.
+- **Post-editor validation could delete the user's only copy of their work.**
+  `_editTempFile`'s cleanup ran BEFORE `_new`/`_edit` did their final
+  name-availability check and their `create`/`update`, so a name collision — or
+  a council the web UI deleted while the editor was open, or an unwritable
+  council file — destroyed the document the user had just authored, with no
+  recovery path. The scratch-file lifecycle now spans everything that can still
+  fail, via two hooks on `_editTempFile`:
+  - `validate(document)` runs INSIDE the retry loop, right after
+    `parseCouncilDocument`. Both name checks moved there, so a collision prints
+    the message and **reopens the user's own text** through the existing "edit
+    again or abort" prompt. `store.list()` re-reads the DB per call, so the
+    re-check also catches a name the web UI took mid-session.
+  - `commit({document, text})` runs while the scratch file is still on disk and
+    owns the real write (`create`, `update`, and the council-file write-back).
+    A throw sets `keep` so the `finally` does NOT clean up, and the error gains
+    `Your edits were kept at <path>` — the only copy of the user's work, named.
+  Only a clean commit or a deliberate abort throws the scratch away.
+  **Invariant: the scratch file outlives anything that can still fail.**
 
 ---
 

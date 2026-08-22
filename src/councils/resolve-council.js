@@ -11,6 +11,19 @@ const { createCouncilStore, isFileCouncilId, FILE_ID_PREFIX } = require('./counc
 const { slugifyCouncilName } = require('../../public/js/utils/council-document');
 
 /**
+ * `error.code` values `resolveCouncilHandle` stamps on the two failures a
+ * caller can meaningfully branch on.
+ *
+ * A code, not a message match: `council edit` falls back to editing a council
+ * FILE only when the resolver found NOTHING, and identifying that case by
+ * matching the message text would silently start editing files again the day
+ * the wording changes. Anything without a code is an unexpected failure (a
+ * database error, a missing handle) and must not be treated as either.
+ */
+const COUNCIL_NOT_FOUND = 'COUNCIL_NOT_FOUND';
+const COUNCIL_AMBIGUOUS = 'COUNCIL_AMBIGUOUS';
+
+/**
  * Normalize a string for fuzzy name matching: lowercase, collapse any run of
  * non-alphanumeric characters to a single dash, and strip leading/trailing dashes.
  *
@@ -39,6 +52,43 @@ function shortId(id) {
 }
 
 /**
+ * Find the council a proposed name would collide with, in the SAME normalized
+ * space `resolveCouncilHandle` matches in.
+ *
+ * A plain case-insensitive name comparison is too narrow to keep handles
+ * usable: tier 4 below also matches the slugified name AND a file council's
+ * filename stem, so "Dream Team", "dream-team" and `dream-team.council.json`
+ * are one handle. Saving two of them makes `--council dream-team` ambiguous for
+ * BOTH — an error only the raw uuid can route around. This helper is the one
+ * place that rule lives, deliberately next to the matcher it mirrors; a
+ * creation/rename surface that rolls its own comparison will drift from it.
+ *
+ * The empty slug is NOT special-cased, because tier 4 does not special-case it
+ * either: two names that slugify to '' ("!!!" and "???") really do collide as
+ * handles, and so does a council file named `_.json`.
+ *
+ * @param {Array<Object>} councils - Every council (a CouncilStore `list()`)
+ * @param {string} name - The proposed name
+ * @param {string} [excludeId] - Council allowed to hold the name (a rename's own row)
+ * @returns {Object|null} The clashing council, or null when the name is free
+ */
+function findCouncilNameCollision(councils, name, excludeId) {
+  const wantedName = String(name == null ? '' : name).trim().toLowerCase();
+  const wantedSlug = normalizeForMatch(name);
+
+  const clash = (councils || []).find(c => {
+    if (!c || c.id === excludeId) return false;
+    const councilName = String(c.name || '').trim();
+    if (councilName.toLowerCase() === wantedName) return true;
+    if (normalizeForMatch(councilName) === wantedSlug) return true;
+    return isFileCouncilId(c.id) &&
+      normalizeForMatch(c.id.slice(FILE_ID_PREFIX.length)) === wantedSlug;
+  });
+
+  return clash || null;
+}
+
+/**
  * Build a clear, multi-line ambiguity error for a handle that matched several councils.
  * @param {string} handle - The user-supplied handle
  * @param {Array<Object>} matches - The matching council rows
@@ -61,10 +111,12 @@ function _ambiguityError(handle, matches) {
     ? '\nA council file and a saved council share this name. ' +
       'Delete or rename one to keep the name handle usable.'
     : '';
-  return new Error(
+  const error = new Error(
     `Ambiguous council "${handle}" matches ${matches.length} councils. Disambiguate with the id:\n` +
     lines.join('\n') + hint
   );
+  error.code = COUNCIL_AMBIGUOUS;
+  return error;
 }
 
 /**
@@ -83,7 +135,8 @@ function _ambiguityError(handle, matches) {
  * @param {Database} db - Database instance
  * @param {string} handle - The handle to resolve (id, id-prefix, or name)
  * @returns {Promise<Object>} The matching council row
- * @throws {Error} If the handle is missing, ambiguous, or matches nothing
+ * @throws {Error} If the handle is missing, ambiguous (`code`
+ *   `COUNCIL_AMBIGUOUS`), or matches nothing (`code` `COUNCIL_NOT_FOUND`)
  */
 async function resolveCouncilHandle(db, handle) {
   const all = await (await createCouncilStore(db)).list();
@@ -161,9 +214,11 @@ async function resolveCouncilHandle(db, handle) {
   }
 
   // No match
-  throw new Error(
+  const notFound = new Error(
     `No council matches "${handle}". Run \`pair-review --list-councils\` to see available councils.`
   );
+  notFound.code = COUNCIL_NOT_FOUND;
+  throw notFound;
 }
 
 /**
@@ -203,8 +258,11 @@ async function getCouncilLastUsedRepos(db) {
 }
 
 module.exports = {
+  COUNCIL_NOT_FOUND,
+  COUNCIL_AMBIGUOUS,
   normalizeForMatch,
   shortId,
+  findCouncilNameCollision,
   resolveCouncilHandle,
   getCouncilLastUsedRepos
 };

@@ -31,6 +31,7 @@
   - [Three-Level AI Analysis](#three-level-ai-analysis)
   - [Analysis Configuration](#analysis-configuration)
   - [Managing Councils](#managing-councils)
+  - [Managing Councils from the CLI](#managing-councils-from-the-cli)
   - [Council Files](#council-files)
   - [Chat](#chat)
   - [Customization](#customization)
@@ -205,6 +206,7 @@ pair-review --local [path]
 | `--instructions <text>` | Per-run custom instructions for this analysis. Applies to any mode that runs analysis — `--headless`, `--ai-draft`, `--ai-review` (consumed directly), and `--ai`/`--council` (carried into the browser-triggered analysis). Rejected with a clear error if no analysis mode is selected, so it is never silently dropped. Default: none. |
 | `--instructions-file <path>` | Read per-run custom instructions from a file (5000-character cap). Mutually exclusive with `--instructions`. |
 | `--council <handle>` | Run analysis with a saved multi-voice council. Implies analysis. The handle resolves by council name, name-slug, id (prefix), or a partial name fragment (resolving when it matches a single council, otherwise listing the candidates). When set, `--model` is ignored (council voices use their own per-voice models). Works in headless PR (`--ai-draft`/`--ai-review`/`--headless`), interactive PR (`--ai`), and local (`--local --ai`) modes. |
+| `council <command>` | Manage councils from the command line without opening the web UI — `list`, `show`, `export`, `new`, `edit`, `duplicate`, `rename`, `delete`. See [Managing Councils from the CLI](#managing-councils-from-the-cli). |
 | `--list-councils` | List every council — saved and file-based — with their handles, names, types, `SOURCE` (`db` or `file`), and last-used repo, then exit. Use a printed handle with `--council`. |
 | `--configure` | Show setup instructions and configuration options |
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
@@ -228,6 +230,8 @@ pair-review --local                    # Review uncommitted local changes
 pair-review 123 --ai                   # Auto-run AI analysis
 pair-review 123 --ai --provider codex  # Auto-run analysis in the browser with a specific provider
 pair-review --list-councils            # List saved councils and their handles
+pair-review council list               # Same list, via the council subcommand
+pair-review council new "Security Review"     # Author a new council in $EDITOR
 pair-review 123 --ai-draft --council security-review  # Headless draft with a council
 pair-review 123 --ai-draft --provider codex --model gpt-5.5  # Headless draft with a specific provider + model
 pair-review --local --ai --council security-review    # Local review with a council
@@ -828,6 +832,72 @@ From the Councils section you can:
 
 Councils loaded from files are read-only here, marked with a **File** badge (hover it for the file path), and offer only Duplicate and Export. Duplicate gives you an editable database copy; to change the council itself, edit the file and restart pair-review.
 
+The same councils can be managed from the terminal — see [Managing Councils from the CLI](#managing-councils-from-the-cli).
+
+### Managing Councils from the CLI
+
+`pair-review council <command>` manages councils without opening the web UI. It
+runs against the same local database and the same [council files](#council-files)
+the UI sees.
+
+```bash
+pair-review council list                          # Handles, names, types, sources
+pair-review council show dream-team               # Print the council document
+pair-review council export dream-team team.json   # Write it to a file ('-' = stdout)
+pair-review council new "Security Review"         # Author a new council in $EDITOR
+pair-review council new "Per Level" --type advanced
+pair-review council edit security-review          # Edit an existing council in $EDITOR
+pair-review council duplicate file:dream-team "My Dream Team"
+pair-review council rename security-review "Security Council"
+pair-review council delete security-review --yes  # Skip the confirmation prompt
+```
+
+| Command | Description |
+|---------|-------------|
+| `list` | Same table as `--list-councils`: handle, name, type, source, last used |
+| `show <handle>` | Print the council document to stdout |
+| `export <handle> [file]` | Write the council document to `file`; stdout when omitted or `-` |
+| `new <name> [--type council\|advanced]` | Open a starter document — seeded with your default provider and model — in your editor and save it as a new council. Defaults to `--type council` |
+| `edit <handle>` | Edit a saved council in your editor; for a file council, edits the file's contents and only validates the result |
+| `duplicate <handle> <new-name>` | Copy any council — file councils included — into a new saved council |
+| `rename <handle> <new-name>` | Rename a saved council |
+| `delete <handle> [--yes]` | Delete a saved council, confirming first unless `--yes` |
+
+A `<handle>` is anything `--council` accepts: a council name, name-slug, id
+prefix, or unique name fragment.
+
+The editor is `$VISUAL`, then `$EDITOR`, then `vi`. If the document you save
+does not parse or fails validation, the error is printed and you are offered the
+editor again — answer `q` to abort. Every `new` and `edit` works on a **scratch
+copy**, so aborting always leaves the original untouched: the database for a
+saved council, and the file for a [council file](#council-files). Only a
+document that validates is written back — including to a council file, which
+keeps your exact formatting rather than being re-serialized. Abandon a repair
+half-finished and the file is exactly as it was before you started; re-run
+`pair-review council edit <handle>` to pick it up again.
+
+The scratch copy outlives every check, so nothing you write is thrown away by a
+failure. Give the document a name another council already answers to and you get
+the error plus the editor again, on your own text. If the save itself cannot be
+made — the council was deleted from the settings page while your editor was
+open, or the council file is not writable — the scratch copy is kept and the
+error prints its path.
+
+`show` and `export` to stdout print the document and nothing else, so
+`pair-review council show <handle> > my.council.json` produces a valid council
+document. Rename one of the two copies before installing it in
+`~/.pair-review/councils/`, though: the saved council still answers to the same
+name, and two councils sharing a name make `--council <name>` fail with an
+ambiguity error for both. Either change the `name` field (and the filename stem)
+in the exported document, or `rename`/`delete` the saved copy — the same rule as
+exporting from the UI, see [Council Files](#council-files).
+
+[Council files](#council-files) are read-only: `list`, `show`, `export`, and
+`duplicate` work on them, while `rename` and `delete` refuse and point at the
+file. `edit` writes the file rather than the database — it reports whether the
+result still loads, saves only what validates, and pair-review must be restarted
+to pick up the change.
+
 ### Council Files
 
 Councils normally live in the local database, but you can also define them as files on disk. Drop a council document into `~/.pair-review/councils/` and it appears everywhere a saved council does: the analysis config selector, `--council` handles, `--list-councils`, and repo/global default-council settings.
@@ -848,7 +918,7 @@ A council document is a JSON file. Both `<name>.council.json` and `<name>.json` 
 - `name` — display name (required); the filename stem (`dream-team`) doubles as a `--council` handle
 - `type` — `"council"` (voice-centric Review Council) or `"advanced"` (level-centric) (required)
 - `description` — optional; shown alongside the council where available
-- `config` — exactly what the Export button produces; export a council from the UI to get a valid starting point (required). If you export a saved council and drop it in as a file, delete the database copy afterwards — otherwise both answer to the same name and `--council <name>` fails with an ambiguity error instead of resolving.
+- `config` — exactly what the Export button produces; export a council from the UI, or run `pair-review council show <handle>`, to get a valid starting point (required). If you export a saved council and drop it in as a file, delete the database copy afterwards — otherwise both answer to the same name and `--council <name>` fails with an ambiguity error instead of resolving.
 
 **If a council does not appear:** files missing required fields, or whose `config` fails validation, are skipped with a warning logged to the terminal — check pair-review's output.
 

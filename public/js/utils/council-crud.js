@@ -304,6 +304,16 @@ async function saveCouncilAs(tab, spec) {
     // still would not cover tiers 4 and 5 ("Dream Team" and "dream-team" are
     // distinct under UNIQUE, identical under normalizeForMatch).
     //
+    // NOTE the deliberate asymmetry with the CLI. `pair-review council` runs
+    // every create/rename through `findCouncilNameCollision`
+    // (src/councils/resolve-council.js), which rejects the WIDER slug space the
+    // resolver actually matches in: exact name, slugified name, and a file
+    // council's filename stem. This scan and `CouncilManager._duplicate` still
+    // use the narrower name-equality rule, so the UI accepts a name the CLI
+    // would refuse ("dream-team" alongside "Dream Team"). Widening them is a
+    // frontend change with its own E2E surface; until then, do not read either
+    // client-side scan as the guarantee — the CLI's helper is the stricter one.
+    //
     // `_allCouncils` is the unfiltered response stashed by `loadCouncils`; a tab
     // that never loaded (or a stubbed context) falls back to the filtered list,
     // which is the strictly narrower scan it used to do.

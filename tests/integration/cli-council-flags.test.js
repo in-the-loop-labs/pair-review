@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * Integration tests for the council-related CLI flags (--list-councils and
- * --council), exercising the real CLI as a spawned child process.
+ * Integration tests for the council-related CLI surface — the flags
+ * (--list-councils, --council) and the `pair-review council <verb>`
+ * subcommand — exercising the real CLI as a spawned child process.
  *
  * Unlike the direct-call unit tests (resolve-council, print-council-list),
  * these run `bin/pair-review.js` end-to-end so they cover argv parsing, config
@@ -16,6 +17,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
+import { writeFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs/promises';
 import path from 'path';
@@ -58,26 +60,43 @@ function runCli(args, testHomeDir, extraEnv = {}, unsetEnv = []) {
     ...process.env,
     HOME: testHomeDir,
     GITHUB_TOKEN: '',
-    PAIR_REVIEW_NO_OPEN: '1',
-    ...extraEnv
+    PAIR_REVIEW_NO_OPEN: '1'
   };
+  // resolveDbName() (src/config.js) puts PAIR_REVIEW_DB_NAME ABOVE config.db_name,
+  // so an inherited value repoints the child at a database seedCouncil never
+  // wrote — the test would then seed one file and assert against another. Drop it
+  // for the same reason HOME and cwd are pinned. Deleted BEFORE extraEnv is
+  // applied so a test that deliberately sets it still wins.
+  delete env.PAIR_REVIEW_DB_NAME;
+  Object.assign(env, extraEnv);
   for (const key of unsetEnv) {
     delete env[key];
   }
   return spawnSync(process.execPath, [path.join(REPO_ROOT, 'bin/pair-review.js'), ...args], {
     cwd: testHomeDir,
     env,
-    timeout: 20000
+    timeout: 20000,
+    // `council show` of a large council deliberately exceeds the default 1MB
+    // stdout cap; without this spawnSync reports ENOBUFS instead of the document.
+    maxBuffer: 32 * 1024 * 1024
   });
 }
 
 /**
  * Seed a council into the test HOME's database via a child node process using
- * production code (no schema duplication). Council fields are passed via env
- * vars to avoid inline-script quoting hazards.
+ * production code (no schema duplication). Scalar fields are passed via env vars
+ * to avoid inline-script quoting hazards; the config goes through a file (see
+ * below).
  */
-function seedCouncil(testHomeDir, { id, name, type }) {
+function seedCouncil(testHomeDir, { id, name, type, config = SAMPLE_CONFIG }) {
+  // The config travels by FILE, not by env var: the pipe-buffer regression test
+  // seeds a council whose config is far past the OS limit on an environment
+  // block, which would fail the spawn outright (E2BIG).
+  const configPath = path.join(testHomeDir, `seed-config-${id}.json`);
+  writeFileSync(configPath, JSON.stringify(config), 'utf-8');
+
   const seedScript = `
+    const { readFileSync } = require('fs');
     const { initializeDatabase, CouncilRepository } = require(process.env.SEED_DB_MODULE);
     (async () => {
       const db = await initializeDatabase('database.db');
@@ -85,23 +104,28 @@ function seedCouncil(testHomeDir, { id, name, type }) {
         id: process.env.SEED_COUNCIL_ID,
         name: process.env.SEED_COUNCIL_NAME,
         type: process.env.SEED_COUNCIL_TYPE,
-        config: JSON.parse(process.env.SEED_COUNCIL_CONFIG)
+        config: JSON.parse(readFileSync(process.env.SEED_COUNCIL_CONFIG_FILE, 'utf-8'))
       });
       db.close();
     })().catch((err) => { console.error(err); process.exit(1); });
   `;
+  const env = {
+    ...process.env,
+    HOME: testHomeDir,
+    SEED_DB_MODULE: DB_MODULE,
+    SEED_COUNCIL_ID: id,
+    SEED_COUNCIL_NAME: name,
+    SEED_COUNCIL_TYPE: type,
+    SEED_COUNCIL_CONFIG_FILE: configPath,
+    PAIR_REVIEW_NO_OPEN: '1'
+  };
+  // The seed pins 'database.db' explicitly while the CLI child resolves its name
+  // through resolveDbName(); drop the env override here too so both halves of
+  // every test are stated against the same file and can never drift apart.
+  delete env.PAIR_REVIEW_DB_NAME;
   const result = spawnSync(process.execPath, ['-e', seedScript], {
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      HOME: testHomeDir,
-      SEED_DB_MODULE: DB_MODULE,
-      SEED_COUNCIL_ID: id,
-      SEED_COUNCIL_NAME: name,
-      SEED_COUNCIL_TYPE: type,
-      SEED_COUNCIL_CONFIG: JSON.stringify(SAMPLE_CONFIG),
-      PAIR_REVIEW_NO_OPEN: '1'
-    },
+    env,
     timeout: 20000
   });
   if (result.status !== 0) {
@@ -180,6 +204,102 @@ describe('CLI council flags (integration)', () => {
     expect(stdout).toMatch(/file:dream-team.*\bfile\b/);
     // And it is offered as a --council handle in the closing hint.
     expect(stdout).toContain('--council file:dream-team');
+  });
+
+  it('council list exits 0 and prints the seeded council', () => {
+    const councilId = uuidv4();
+    seedCouncil(testHomeDir, { id: councilId, name: 'Subcommand Council', type: 'council' });
+
+    const result = runCli(['council', 'list'], testHomeDir);
+    const stdout = result.stdout?.toString() || '';
+
+    expect(result.status).toBe(0);
+    expect(stdout).toContain(councilId.slice(0, 8));
+    expect(stdout).toContain('Subcommand Council');
+  });
+
+  it('council show prints a parseable council document on a clean stdout', () => {
+    const councilId = uuidv4();
+    seedCouncil(testHomeDir, { id: councilId, name: 'Shown Council', type: 'advanced' });
+
+    const result = runCli(['council', 'show', 'Shown Council'], testHomeDir);
+    const stdout = result.stdout?.toString() || '';
+
+    expect(result.status).toBe(0);
+    // The whole point of the verb: stdout is the document and nothing else, so
+    // `council show <handle> > file.json` produces a usable file. Database
+    // narration ("Database schema is up to date...") must not leak into it.
+    expect(JSON.parse(stdout)).toEqual({
+      pair_review_council: 1,
+      name: 'Shown Council',
+      type: 'advanced',
+      config: SAMPLE_CONFIG
+    });
+  });
+
+  // Regression: `process.exit(code)` immediately after writing the document
+  // truncated it. Writes to a pipe are asynchronous and a single write(2) to a
+  // pipe can only move as much as the OS buffer holds (64KB on macOS/Linux), so
+  // exiting in the same tick discards everything still queued — and the exit
+  // code stays 0, making the loss silent. Seed a council whose document is
+  // several hundred KB, capture it through a pipe, and require the WHOLE thing
+  // back. This fails (JSON.parse on a severed document) without the drain.
+  it('council show does not truncate a document larger than the stdout pipe buffer', () => {
+    const councilId = uuidv4();
+    const voices = Array.from({ length: 1500 }, (_, i) => ({
+      provider: 'claude',
+      model: 'sonnet',
+      tier: 'balanced',
+      // Filler so the serialized document clears the pipe buffer many times over.
+      note: `voice-${i}-${'x'.repeat(240)}`
+    }));
+    const bigConfig = {
+      levels: {
+        '1': { enabled: true, voices },
+        '2': { enabled: false, voices: [] },
+        '3': { enabled: false, voices: [] }
+      }
+    };
+    seedCouncil(testHomeDir, { id: councilId, name: 'Huge Council', type: 'advanced', config: bigConfig });
+
+    const result = runCli(['council', 'show', 'Huge Council'], testHomeDir);
+    const stdout = result.stdout?.toString() || '';
+
+    expect(result.status).toBe(0);
+    // Well past a 64KB pipe buffer, so a same-tick exit cannot have flushed it.
+    expect(stdout.length).toBeGreaterThan(400 * 1024);
+    // Parses in full, last voice included — the tail is what truncation eats.
+    const doc = JSON.parse(stdout);
+    expect(doc.config.levels['1'].voices).toHaveLength(1500);
+    expect(doc.config.levels['1'].voices[1499].note).toContain('voice-1499-');
+  });
+
+  it('council show exits non-zero with a clear error for an unknown handle', () => {
+    seedCouncil(testHomeDir, { id: uuidv4(), name: 'Subcommand Council', type: 'council' });
+
+    const result = runCli(['council', 'show', 'definitely-not-a-real-handle'], testHomeDir);
+    const stderr = result.stderr?.toString() || '';
+
+    expect(result.status).not.toBe(0);
+    expect(stderr).toMatch(/No council matches/);
+  });
+
+  it('council --help prints council usage, not the global help', () => {
+    const result = runCli(['council', '--help'], testHomeDir);
+    const stdout = result.stdout?.toString() || '';
+
+    expect(result.status).toBe(0);
+    expect(stdout).toContain('pair-review council <command>');
+    // The global help would list --ai-draft; the subcommand help must not.
+    expect(stdout).not.toContain('--ai-draft');
+  });
+
+  it('council rejects an unknown flag instead of running the verb', () => {
+    const result = runCli(['council', 'list', '--not-a-flag'], testHomeDir);
+    const stderr = result.stderr?.toString() || '';
+
+    expect(result.status).toBe(1);
+    expect(stderr).toContain('Unknown flag: --not-a-flag');
   });
 
   it('--ai-draft with a bad --council handle exits non-zero with a clear error', () => {

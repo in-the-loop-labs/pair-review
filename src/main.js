@@ -16,10 +16,10 @@ const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot, setupLocalReviewSession, findGitRoot, findMergeBase, getRepositoryName } = require('./local-review');
 const { resolveCliInstructions, prepareInteractiveAnalysisConfig } = require('./interactive-analysis-config');
-const { resolveCouncilHandle, getCouncilLastUsedRepos, shortId } = require('./councils/resolve-council');
+const { resolveCouncilHandle } = require('./councils/resolve-council');
 const { runHeadlessCouncilAnalysis } = require('./councils/headless-council');
-const { createCouncilStore } = require('./councils/council-store');
 const { normalizeAndValidateCouncilConfig } = require('./councils/council-validation');
+const { runCouncilCommand } = require('./councils/cli');
 const { fileCouncilStalenessWarning } = require('./councils/run-config');
 const { resolveReviewConfig } = require('./review-config');
 const { GlobalSettingsService } = require('./settings/global-settings-service');
@@ -151,10 +151,16 @@ AI-powered GitHub pull request review assistant
 
 USAGE:
     pair-review [OPTIONS] [<PR-number-or-URL>]
+    pair-review council <command> [ARGS]
 
 DESCRIPTION:
     Review GitHub pull requests or local changes with AI-assisted analysis.
     Opens a local web UI with a familiar review interface.
+
+COMMANDS:
+    council <command>       Manage saved councils from the command line: list,
+                            show, export, new, edit, duplicate, rename, delete.
+                            Run 'pair-review council --help' for details.
 
 ARGUMENTS:
     <PR-number>     PR number to review (requires being in a GitHub repository)
@@ -247,7 +253,8 @@ OPTIONS:
                             opencode, cursor-agent, pi, omp, muse
     --council <handle>      Run analysis with a saved council (multi-voice). Handle is a
                             council name, name-slug, or id (prefix). See --list-councils.
-    --list-councils         List saved councils (handles to use with --council) and exit
+    --list-councils         List saved councils (handles to use with --council) and
+                            exit. Alias for 'pair-review council list'.
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)
     --yolo                  Allow AI providers full system access (skip read-only
@@ -271,6 +278,8 @@ EXAMPLES:
     pair-review 123 --headless              # Analyze a PR, print a summary, exit
     pair-review --local --headless --council security  # Headless council analysis
     pair-review --list-councils        # List saved councils and their handles
+    pair-review council list           # Same list, via the council subcommand
+    pair-review council new "Security Review"   # Author a new council in $EDITOR
     pair-review --register                     # Register URL scheme handler
     pair-review --register --command "node bin/pair-review.js"  # Custom command
 
@@ -298,80 +307,6 @@ CONFIGURATION:
 MORE INFO:
     https://github.com/in-the-loop-labs/pair-review
 `);
-}
-
-/**
- * Print the list of saved councils (handles, names, types, and "last used"
- * metadata) as an aligned table, then exit guidance. Used by --list-councils.
- *
- * @param {Object} db - Database instance
- */
-async function printCouncilList(db) {
-  const councils = await (await createCouncilStore(db)).list();
-
-  if (!councils || councils.length === 0) {
-    console.log('No councils found. Create one in the web UI under Analysis settings.');
-    return;
-  }
-
-  const repoMap = await getCouncilLastUsedRepos(db);
-
-  const rows = councils.map(c => {
-    const entry = repoMap.get(c.id);
-    const lastTs = entry?.last_started || c.last_used_at;
-    const lastUsed = lastTs ? String(lastTs).slice(0, 10) : 'never';
-    let lastUsedWith = '—';
-    if (entry) {
-      lastUsedWith = `${entry.repository}${entry.pr_number ? `#${entry.pr_number}` : ''}`;
-    }
-    return {
-      // A file council's printed handle must stay resolvable: `file:` ids are
-      // not UUIDs, so an 8-char slice would resolve to nothing — print the
-      // full id instead.
-      handle: c.source === 'file' ? c.id : shortId(c.id),
-      name: c.name || '',
-      type: c.type || '',
-      source: c.source || 'db',
-      lastUsed,
-      lastUsedWith
-    };
-  });
-
-  const headers = {
-    handle: 'HANDLE',
-    name: 'NAME',
-    type: 'TYPE',
-    source: 'SOURCE',
-    lastUsed: 'LAST USED',
-    lastUsedWith: 'LAST USED WITH'
-  };
-
-  const widths = {};
-  for (const key of Object.keys(headers)) {
-    widths[key] = Math.max(
-      headers[key].length,
-      ...rows.map(r => String(r[key]).length)
-    );
-  }
-
-  const formatRow = r =>
-    [
-      String(r.handle).padEnd(widths.handle),
-      String(r.name).padEnd(widths.name),
-      String(r.type).padEnd(widths.type),
-      String(r.source).padEnd(widths.source),
-      String(r.lastUsed).padEnd(widths.lastUsed),
-      String(r.lastUsedWith).padEnd(widths.lastUsedWith)
-    ].join('  ');
-
-  console.log(formatRow(headers));
-  for (const r of rows) {
-    console.log(formatRow(r));
-  }
-
-  console.log('');
-  console.log('Pass a handle with --council, e.g.:');
-  console.log('  pair-review <pr> --ai-draft --council ' + rows[0].handle);
 }
 
 /**
@@ -613,6 +548,26 @@ function parseArgs(args) {
 }
 
 /**
+ * Exit with `code`, but only once everything queued for stdout has actually
+ * been written.
+ *
+ * Writes to a pipe are asynchronous, so a bare `process.exit()` can terminate
+ * the process while a large document is still buffered — `pair-review council
+ * show <handle> > my.council.json` (or `| jq`) then loses its tail and still
+ * reports success. The zero-length write's callback fires only after every
+ * chunk queued before it has flushed (stream writes complete in order), so it
+ * acts as a drain barrier. Same hazard, same treatment as the headless `--json`
+ * error envelope in `main()`'s catch block.
+ *
+ * @param {number} code - Process exit code
+ * @returns {Promise<void>} Never actually resolves — the process exits first
+ */
+async function exitAfterStdoutFlush(code) {
+  await new Promise(resolve => process.stdout.write('', resolve));
+  process.exit(code);
+}
+
+/**
  * Main application entry point
  */
 async function main() {
@@ -626,6 +581,18 @@ async function main() {
       const { startMCPStdio } = require('./mcp-stdio');
       await startMCPStdio();
       return; // process stays alive via stdin
+    }
+
+    // `pair-review council <verb>` — the council subcommand parses its own
+    // argv. Dispatched BEFORE the global help/version checks so `council
+    // --help` prints council usage, and before parseArgs (which throws on
+    // unknown flags) so the subcommand owns its own flag vocabulary.
+    if (args[0] === 'council') {
+      // `show` / `export -` put a whole council document on stdout, which can
+      // easily outgrow the OS pipe buffer — flush before exiting or the
+      // redirect silently truncates. See exitAfterStdoutFlush.
+      await exitAfterStdoutFlush(await runCouncilCommand(args.slice(1)));
+      return;
     }
 
     // Handle help flag (before any other processing)
@@ -879,14 +846,19 @@ AI PROVIDERS:
 
     // --list-councils: print the saved councils and exit. Needs the database
     // but no server, no PR/local context, and no single-port delegation.
+    //
+    // The flag is a pure alias for `pair-review council list`, so it delegates
+    // rather than repeating the sequence: runCouncilCommand's own
+    // `defaultOpenDatabase` does the same config -> applyConfigOverrides ->
+    // initializeDatabase(resolveDbName(config)) this block used to do inline
+    // (the provider registry MUST be populated before the council store loads
+    // the file overlay, or a user's config-declared providers' councils are
+    // skipped as invalid). `list` cannot fail on its own, so the exit code is
+    // still 0 for every list; a database that will not open exits 1 here just
+    // as it did when the failure propagated to main()'s catch.
     if (flags.listCouncils) {
-      const listDb = await initializeDatabase(resolveDbName(config));
-      try {
-        await printCouncilList(listDb);
-      } finally {
-        try { listDb.close(); } catch { /* ignore */ }
-      }
-      process.exit(0);
+      await exitAfterStdoutFlush(await runCouncilCommand(['list']));
+      return;
     }
 
     // --council requires something to analyze: a PR identifier or --local.
@@ -3046,4 +3018,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };

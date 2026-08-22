@@ -1,6 +1,12 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * Unit tests for printCouncilList (src/main.js, used by --list-councils).
+ * Unit tests for printCouncilList (src/councils/print-list.js, used by both
+ * `--list-councils` and `pair-review council list`).
+ *
+ * Required directly from its own module, NOT through src/main.js: pulling in
+ * main.js would drag the whole CLI — every route/provider it requires plus its
+ * process-level SIGINT/uncaughtException handlers — into a test that only needs
+ * one table renderer.
  *
  * These tests use a real in-memory database (the same createTestDatabase helper
  * the rest of the suite uses) plus the real CouncilRepository /
@@ -17,7 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { createTestDatabase, seedTestReview } from '../utils/schema.js';
 
-const { printCouncilList } = require('../../src/main');
+const { printCouncilList } = require('../../src/councils/print-list.js');
 const { CouncilRepository, AnalysisRunRepository } = require('../../src/database.js');
 const { shortId } = require('../../src/councils/resolve-council.js');
 const { _resetForTests } = require('../../src/councils/council-store.js');
