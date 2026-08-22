@@ -36,11 +36,16 @@ const {
   buildCapabilities,
   getCachedPRMetadata,
   fetchPRMetadata,
+  isUsablePRTarget,
+  splitRepository,
   resolveFetchCredential,
   resolveRepositoryBinding,
   resolveAssociationBinding,
   _hostBindingInternals,
 } = require('../providers/pr-context');
+// Phase 3: the PR-head half of the staleness check, shared with routes/pr.js.
+// READ-ONLY — never writes `pr_metadata`; see that module's docblock.
+const { buildStaleReasons, checkPRHeadState } = require('../providers/stale-check');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -849,12 +854,23 @@ async function runPRAssociationDetection({ review, reviewId, repositoryName, bra
  * @param {Object} params - `association`, `repositoryName` (the review's own),
  *   `config` (already resolved), `localPath` (the review's checkout), and
  *   `resolvedToken` (the GLOBAL token from `app.get('githubToken')`).
+ * @param {boolean} [params.cachedTokensOnly=false] - Never shell out for a
+ *   `token_command`; answer from config.js's process-lifetime token cache or
+ *   report no credential. For request paths that must stay inside a client
+ *   timeout — `execSync` blocks the event loop for up to 5s and no
+ *   `Promise.race` can preempt a synchronous block. The two endpoints that
+ *   OWN the `hasGitHubToken` capability must NOT pass it: they are what warms
+ *   the cache, and a cache-only miss there would report "no GitHub" for a
+ *   credential that resolves fine.
  * @returns {{binding: Object|null, hasToken: boolean}}
  */
-function resolveReviewCredential({ association, repositoryName, config, localPath, resolvedToken }) {
+function resolveReviewCredential({
+  association, repositoryName, config, localPath, resolvedToken, cachedTokensOnly = false
+}) {
+  const options = { localPath, cachedTokensOnly };
   const binding = association
-    ? resolveAssociationBinding(association, config, { localPath })
-    : resolveRepositoryBinding(repositoryName, config, { localPath });
+    ? resolveAssociationBinding(association, config, options)
+    : resolveRepositoryBinding(repositoryName, config, options);
   return { binding, hasToken: Boolean(resolveFetchCredential(binding, resolvedToken)) };
 }
 
@@ -1628,18 +1644,289 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
 });
 
 /**
+ * Kick off the REMOTE half of a local review's staleness check: what commit is
+ * the associated PR's head right now?
+ *
+ * Returns null when no fetch was even ATTEMPTED — no association, no usable
+ * credential, or an unresolved host (see below). That null is what the route
+ * ships as `prHead: null`, which the frontend reads as "not applicable". A
+ * fetch that was attempted and FAILED comes back as an object with
+ * `checked: true` and a non-null `error`, so the two states stay
+ * distinguishable.
+ *
+ * HOST-BINDING INVARIANT (Phase 2's hard-won lesson)
+ * --------------------------------------------------
+ * The credential is resolved through `resolveReviewCredential`, the same
+ * helper `GET /api/local/:reviewId` and `/pr-metadata` use, so this check can
+ * never bind a different host than the one the association was discovered on.
+ * (`cachedTokensOnly` below changes only whether a token COMMAND may run, not
+ * which host is bound, so the invariant is untouched by it.)
+ * When that resolution comes back `hostAmbiguous` — a dual-host repo
+ * (`api_host` + `exclusive: false`) whose real host the checkout's git remote
+ * could not name — we DO NOT FETCH. Probing a guessed host returns a
+ * same-numbered but unrelated PR, and reporting its head as "your PR has new
+ * commits" is exactly the shipped-and-fixed Phase 2 bug in a new costume. See
+ * `resolveRepositoryBinding` / `fetchPRMetadata` in providers/pr-context.js.
+ *
+ * NEVER WRITES `pr_metadata`. The cached head_sha is READ here (it is the
+ * `prAdvanced` baseline); writing the fresh value back would destroy that
+ * comparison on the next call. See src/providers/stale-check.js.
+ *
+ * NOTHING HERE MAY BLOCK THE EVENT LOOP
+ * -------------------------------------
+ * The GitHub round-trip is under `checkPRHeadState`'s 1200ms deadline, but a
+ * deadline is a Promise and a Promise cannot preempt a SYNCHRONOUS block. The
+ * credential resolution above it used to be exactly that: a
+ * `github_token_command` that fails is uncached, so `execSync` re-ran it — up
+ * to a 5 second timeout — on this request, while the browser abandons the
+ * whole response at `STALE_TIMEOUT = 2000ms`. A broken `gh auth token` could
+ * therefore discard the WORKING-TREE answer, which is this endpoint's core
+ * feature, in service of an advisory extra.
+ *
+ * So this path resolves `cachedTokensOnly` (see `resolveReviewCredential`):
+ * it uses a token another request already paid for, and otherwise reports no
+ * credential and skips the PR-head add-on entirely. The page-load
+ * `GET /api/local/:reviewId` is what warms that cache, and it runs before
+ * this on every load, so the normal case is unaffected.
+ *
+ * `cachedTokensOnly` alone does NOT close that hole, because it governs only
+ * whether a command runs to PRODUCE a binding. A binding already in the cache
+ * still carries its `refresh` closure, and `GitHubClient` calls it after a
+ * 401 — at which point the command runs anyway, `execSync` and all, on an
+ * expired cached token. `fetchRemotePRHead` strips the closure for exactly
+ * this reason (see `withoutTokenRefresh` in src/providers/stale-check.js), so
+ * a 401 here fails open through the shared error vocabulary instead of
+ * shelling out.
+ *
+ * One synchronous read remains and is deliberately kept: a DUAL-host repo
+ * resolves its host from `git config --get remote.origin.url`. That is a local
+ * file read bounded at 5s only for a checkout on a hung network mount, it is
+ * memoized per checkout path (nulls included) so it happens at most once per
+ * process, the page-load GET warms it, and skipping it would mean falling back
+ * to the github.com GUESS — which the `hostAmbiguous` refusal above then
+ * declines to act on anyway. Trading a memoized local read for a wrong host is
+ * not a trade worth making.
+ *
+ * @param {Object} req - Express request (for `db`, `config`, `githubToken`)
+ * @param {Object} review - Row from `getLocalReviewById`
+ * @returns {Promise<Object|null>} the remote half of the `prHead` block
+ */
+async function startPRHeadCheck(req, review) {
+  const association = associationFromReview(review);
+  if (!isUsablePRTarget(association)) return null;
+  const parts = splitRepository(association.repository);
+  if (!parts) return null;
+
+  const db = req.app.get('db');
+  const config = req.app.get('config') || {};
+  const resolvedToken = req.app.get('githubToken') || '';
+
+  const { binding } = resolveReviewCredential({
+    association,
+    repositoryName: review.repository,
+    config,
+    localPath: review.local_path,
+    resolvedToken,
+    // Advisory path on a client deadline — never shell out. See the docblock.
+    cachedTokensOnly: true
+  });
+
+  if (binding && binding.hostAmbiguous) {
+    logger.debug(
+      `PR head check skipped for review #${review.id}: host is ambiguous for ` +
+      `${association.repository} — refusing to probe a guessed host`
+    );
+    return null;
+  }
+
+  const credential = resolveFetchCredential(binding, resolvedToken);
+  if (!credential) return null;
+
+  // Cache-only read — one indexed SELECT, no GitHub call. It is the baseline
+  // for `prAdvanced` ("the PR moved since we last recorded it"), which is a
+  // different question from `drifted` ("my checkout and the PR disagree").
+  let cachedHeadSha = null;
+  try {
+    const cached = await getCachedPRMetadata({
+      prNumber: association.prNumber,
+      repository: association.repository,
+      db
+    });
+    cachedHeadSha = cached?.head_sha || null;
+  } catch (err) {
+    logger.debug(`Cached PR metadata read failed for review #${review.id}: ${err.message}`);
+  }
+
+  const state = await checkPRHeadState({
+    owner: parts.owner,
+    repo: parts.repo,
+    prNumber: association.prNumber,
+    knownHeadSha: cachedHeadSha,
+    credential
+  });
+
+  return {
+    prNumber: association.prNumber,
+    repository: association.repository,
+    ...state
+  };
+}
+
+/**
+ * The `reasons[]` codes the LOCAL half of the check owns — the ones derived
+ * from this repository's working tree and HEAD, as opposed to the PR-side codes
+ * `respond` derives from the remote result.
+ *
+ * Listed explicitly rather than by exclusion so that adding a PR-side reason to
+ * `STALE_REASONS` cannot accidentally enrol it here.
+ */
+const LOCAL_REASON_CODES = Object.freeze([
+  'working-tree-changed',
+  'local-head-moved',
+  'no-baseline-digest',
+  'digest-unavailable',
+  'head-sha-unavailable'
+]);
+
+/**
+ * Drop every local staleness flag, for the one path that ships a payload
+ * asserting nothing about the working tree or local HEAD (the handler's catch).
+ *
+ * `reasons[]` travels in the same body as `isStale` / `headShaChanged` /
+ * `currentHeadSha` and is rendered verbatim, so the two must never disagree.
+ *
+ * @param {Object<string, boolean>} flags - Mutated in place.
+ */
+function clearLocalReasonFlags(flags) {
+  for (const code of LOCAL_REASON_CODES) {
+    delete flags[code];
+  }
+}
+
+/**
  * Check if local review diff is stale (working directory has changed since diff was captured)
  * Uses a digest of the diff content for accurate change detection
+ *
+ * `isStale` IS AND STAYS WORKING-TREE-ONLY
+ * ---------------------------------------
+ * `public/js/local.js` auto-refreshes silently (`refreshDiff({ silent: true })`)
+ * whenever `isStale === true` and the session carries no user data. A refresh
+ * re-captures the WORKING TREE; it can do nothing whatsoever about the PR
+ * having advanced on GitHub. Folding PR drift into `isStale` would therefore
+ * mean a silent re-capture on every page load, forever, that never clears the
+ * condition that triggered it. PR-head information goes into the separate
+ * `prHead` block and into `reasons[]` — it must never change `isStale`.
+ *
+ * `?prHeadOnly=1` — THE POST-REFRESH RE-ASK
+ * -----------------------------------------
+ * `_recheckPRHeadState` (public/js/local.js) fires after every refresh and
+ * consumes `prHead` and nothing else. The refresh route it follows has just
+ * regenerated the diff AND its digest, so re-running `computeScopedDigest`
+ * here would repeat the whole working-tree walk — every tracked-file diff plus
+ * the untracked scan — to produce an answer the caller discards. For a review
+ * with no association it repeats it to produce `prHead: null`.
+ *
+ * In this mode the handler still reads local HEAD (one `git rev-parse`, and
+ * `drifted` is meaningless without it) and then answers `isStale: null`,
+ * `prHeadOnly: true` with the `prHead` block and the reasons the remote half
+ * produced. `isStale: null` is the honest value: this response asserts nothing
+ * about the working tree, and the frontend's three-way reading of it already
+ * distinguishes "unknown" from "current" — see `_applyPRHeadStaleState`.
  */
 router.get('/api/local/:reviewId/check-stale', async (req, res) => {
   const tEndpoint = Date.now();
+  const prHeadOnly = req.query.prHeadOnly === '1' || req.query.prHeadOnly === 'true';
+
+  // Declared before the first early return: `respond` closes over both, and a
+  // `let` further down would be in the temporal dead zone on every path that
+  // returns before reaching it.
+  let currentHeadSha = null;
+  let prHeadPromise = Promise.resolve(null);
+  let responded = false;
+  const reasonFlags = {};
+
+  /**
+   * The single exit for this handler. Every `res.json` site used to assemble
+   * its own payload — seven of them, each of which would have to remember the
+   * two new fields. Routing them all through here is what guarantees `prHead`
+   * and `reasons` can never be forgotten on a path.
+   *
+   * `responded` guards the one new hazard the consolidation introduces: this
+   * function awaits, so a throw from inside it lands in the handler's catch,
+   * which responds again. First writer wins.
+   */
+  async function respond(payload, status = 200) {
+    if (responded) return undefined;
+    // Everything before the remote await is the LOCAL half's cost.
+    const localElapsed = Date.now() - tEndpoint;
+    let remote = null;
+    try {
+      remote = await prHeadPromise;
+    } catch (err) {
+      // prHeadPromise is `.catch()`-guarded where it is created; this is
+      // belt-and-braces so the response can never be lost to a rejection.
+      logger.debug(`PR head check settled with an error: ${err.message}`);
+      remote = null;
+    }
+
+    let prHead = null;
+    if (remote) {
+      // TRI-STATE, deliberately. `drifted` compares two SHAs, and either can be
+      // missing — a failed `git rev-parse` (or the catch path below, which
+      // disowns `currentHeadSha`) leaves the local one null, a failed GitHub
+      // fetch leaves the remote one null. `Boolean(a && b && a !== b)` collapses
+      // BOTH unknowns into a confident `false`, and the frontend reads an
+      // explicit false as "the heads agree now" and RETRACTS the PR DRIFT badge
+      // — so a half-answered check erased a badge a fully-answered one put up.
+      // `null` is the third answer: hold whatever is on screen.
+      const drifted = (currentHeadSha && remote.remoteHeadSha)
+        ? currentHeadSha !== remote.remoteHeadSha
+        : null;
+      prHead = {
+        checked: true,
+        prNumber: remote.prNumber,
+        repository: remote.repository,
+        localHeadSha: currentHeadSha || null,
+        remoteHeadSha: remote.remoteHeadSha,
+        cachedHeadSha: remote.cachedHeadSha,
+        drifted,
+        prAdvanced: remote.prAdvanced,
+        prState: remote.prState,
+        merged: remote.merged,
+        error: remote.error
+      };
+      reasonFlags['pr-head-moved'] = prHead.prAdvanced;
+      // Only an explicit `true` earns a reason — `null` means "not answered",
+      // and `reasons[]` is rendered verbatim into the badge tooltip.
+      reasonFlags['local-head-differs-from-pr'] = drifted === true;
+      reasonFlags['pr-closed'] = prHead.prState === 'closed' && !prHead.merged;
+      reasonFlags['pr-merged'] = prHead.merged;
+    }
+
+    const body = { ...payload, prHead, reasons: buildStaleReasons(reasonFlags) };
+    responded = true;
+
+    // Measured HERE, not at the call sites. Every `return await respond(...)`
+    // waits on `prHeadPromise` above for up to PR_HEAD_CHECK_TIMEOUT_MS, so a
+    // probe stopped before the call reported 30ms for a request the client
+    // experienced as 1250ms — removing the only server-side latency signal on
+    // the endpoint whose budget this feature has to live inside. Both halves
+    // are logged because they fail in completely different ways.
+    const totalElapsed = Date.now() - tEndpoint;
+    if (totalElapsed > 200) {
+      logger.debug(
+        `[perf] check-stale#${req.params.reviewId} local=${localElapsed}ms ` +
+        `total=${totalElapsed}ms (threshold: 200ms)`
+      );
+    }
+    return status === 200 ? res.json(body) : res.status(status).json(body);
+  }
+
   try {
     const reviewId = parseInt(req.params.reviewId);
 
     if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
+      return await respond({ error: 'Invalid review ID' }, 400);
     }
 
     const db = req.app.get('db');
@@ -1647,7 +1934,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     const review = await reviewRepo.getLocalReviewById(reviewId);
 
     if (!review) {
-      return res.json({
+      return await respond({
         isStale: null,
         error: 'Local review not found'
       });
@@ -1655,27 +1942,42 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
     const localPath = review.local_path;
     if (!localPath) {
-      return res.json({
+      return await respond({
         isStale: null,
         error: 'Local review missing path'
       });
     }
+
+    // Kick the remote check off HERE — before any git work — so the GitHub
+    // round-trip overlaps with the local I/O instead of being serialised after
+    // it. The `.catch()` is attached in the same expression: without it an
+    // early return below would leave a rejected promise nobody awaits, which
+    // is an unhandled rejection. `checkPRHeadState` bounds the wait well under
+    // the client's 2000ms abort, so a slow GitHub can no longer eat the
+    // working-directory answer.
+    prHeadPromise = startPRHeadCheck(req, review).catch((err) => {
+      logger.debug(`PR head check failed for review #${reviewId}: ${err.message}`);
+      return null;
+    });
 
     const { start: scopeStart, end: scopeEnd } = reviewScope(review);
 
     // Always check HEAD SHA for supplementary fields
     let headShaChanged = false;
     let previousHeadSha = review.local_head_sha || null;
-    let currentHeadSha = null;
 
     try {
-      const { getHeadSha } = require('../local-review');
-      currentHeadSha = await getHeadSha(localPath);
+      currentHeadSha = await localReview.getHeadSha(localPath);
       headShaChanged = !!(previousHeadSha && currentHeadSha && currentHeadSha !== previousHeadSha);
     } catch (error) {
-      // If branch is in scope, HEAD SHA failure is fatal (existing behavior)
-      if (includesBranch(scopeStart)) {
-        return res.json({
+      // If branch is in scope, HEAD SHA failure is fatal (existing behavior).
+      // Not in prHeadOnly mode: that response asserts nothing about the
+      // working tree, so it must not claim `isStale: true` either. It simply
+      // carries `localHeadSha: null`, and `drifted` answers `null` — unknown,
+      // not "the heads agree" (see `respond`).
+      if (!prHeadOnly && includesBranch(scopeStart)) {
+        reasonFlags['head-sha-unavailable'] = true;
+        return await respond({
           isStale: true,
           headShaChanged,
           previousHeadSha,
@@ -1686,13 +1988,23 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       // Otherwise, just continue with digest check
     }
 
+    reasonFlags['local-head-moved'] = headShaChanged;
+
+    // PR-head-only: everything below this line is working-tree work the caller
+    // did not ask for. See the handler docblock.
+    if (prHeadOnly) {
+      return await respond({
+        isStale: null,
+        prHeadOnly: true,
+        headShaChanged,
+        previousHeadSha,
+        currentHeadSha
+      });
+    }
+
     // When branch is in scope and HEAD changed, early return (existing behavior)
     if (includesBranch(scopeStart) && headShaChanged) {
-      const staleEarlyElapsed = Date.now() - tEndpoint;
-      if (staleEarlyElapsed > 200) {
-        logger.debug(`[perf] check-stale#${reviewId} took ${staleEarlyElapsed}ms (threshold: 200ms)`);
-      }
-      return res.json({
+      return await respond({
         isStale: true,
         headShaChanged,
         previousHeadSha,
@@ -1710,7 +2022,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
         setLocalReviewDiff(reviewId, storedDiffData);
         logger.log('API', `Loaded persisted diff from DB for staleness check on review #${reviewId}`, 'cyan');
       } else {
-        return res.json({
+        return await respond({
           isStale: null,
           headShaChanged,
           previousHeadSha,
@@ -1724,7 +2036,8 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     if (!storedDiffData.digest) {
       // No baseline digest - session may predate staleness detection feature
       // Assume stale to be safe and prompt user to refresh
-      return res.json({
+      reasonFlags['no-baseline-digest'] = true;
+      return await respond({
         isStale: true,
         headShaChanged,
         previousHeadSha,
@@ -1738,7 +2051,8 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
     // If current digest computation failed, assume stale to be safe
     if (!currentDigest) {
-      return res.json({
+      reasonFlags['digest-unavailable'] = true;
+      return await respond({
         isStale: true,
         headShaChanged,
         previousHeadSha,
@@ -1747,13 +2061,11 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
+    // Working-tree comparison ONLY — see the handler docblock.
     const isStale = storedDiffData.digest !== currentDigest;
+    reasonFlags['working-tree-changed'] = isStale;
 
-    const staleElapsed = Date.now() - tEndpoint;
-    if (staleElapsed > 200) {
-      logger.debug(`[perf] check-stale#${reviewId} took ${staleElapsed}ms (threshold: 200ms)`);
-    }
-    res.json({
+    return await respond({
       isStale,
       storedDigest: storedDiffData.digest,
       currentDigest,
@@ -1764,7 +2076,23 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
   } catch (error) {
     logger.warn(`Error checking local review staleness: ${error.message}`);
-    res.json({
+    // The payload has always reported nulls here; keep `localHeadSha` in the
+    // prHead block agreeing with `currentHeadSha` rather than reporting a
+    // value the rest of the response disowns. `drifted` follows it to `null`
+    // — this body knows no local HEAD, so it cannot answer the comparison.
+    currentHeadSha = null;
+    // ...and the same disowning must reach `reasons[]`, which ships in the very
+    // same body. `local-head-moved` (and any other local flag) may already be
+    // set from the work that then threw; leaving it set would ship
+    // `headShaChanged: false, currentHeadSha: null` beside a reason reading
+    // "Local HEAD has moved since the diff was captured." — which the frontend
+    // renders verbatim into the badge tooltip. A payload that answers "I do not
+    // know" must carry no local reason at all.
+    //
+    // Only the LOCAL flags are cleared. The PR-side flags are derived inside
+    // `respond` from the remote result, which this failure did not touch.
+    clearLocalReasonFlags(reasonFlags);
+    return await respond({
       isStale: null,
       headShaChanged: false,
       previousHeadSha: null,

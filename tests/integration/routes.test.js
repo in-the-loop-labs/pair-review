@@ -24,6 +24,8 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
+// Phase 3: the canonical staleness-reason messages both check-stale routes ship.
+const { STALE_REASONS } = require('../../src/providers/stale-check');
 
 // Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
 // shared by every test file that mocks getConfigDir the same way — vitest
@@ -5194,6 +5196,11 @@ describe('Local Review Check-Stale Endpoint', () => {
     if (db) {
       await closeTestDatabase(db);
     }
+    // Phase 3 tests override GitHubClient.prototype.fetchPullRequest to
+    // simulate a failing PR head fetch; re-arm the file's defaults so the
+    // override cannot leak into a later block (and so no later test reaches
+    // the REAL GitHub client).
+    applyDefaultMocks();
   });
 
   describe('GET /api/local/:reviewId/check-stale', () => {
@@ -5276,6 +5283,709 @@ describe('Local Review Check-Stale Endpoint', () => {
       expect(response.body.isStale).toBe(true);
       expect(response.body.error).toContain('No baseline digest');
     });
+
+    // ── Phase 3: reasons[] on every path ────────────────────────────────
+    it('always ships a reasons array, on early-return paths too', async () => {
+      const invalid = await request(server).get('/api/local/invalid/check-stale');
+      expect(Array.isArray(invalid.body.reasons)).toBe(true);
+
+      const missing = await request(server).get('/api/local/9999/check-stale');
+      expect(missing.body.reasons).toEqual([]);
+      expect(missing.body.prHead).toBeNull();
+
+      localReviewDiffs.set(reviewId, { diff: 'd', stats: {}, digest: 'baseline_123456' });
+      const unavailable = await request(server).get(`/api/local/${reviewId}/check-stale`);
+      // Fake path → digest computation fails → fail-safe stale, and the
+      // reason names WHY rather than leaving the frontend to parse `error`.
+      expect(unavailable.body.isStale).toBe(true);
+      expect(unavailable.body.reasons.map((r) => r.code)).toContain('digest-unavailable');
+      expect(unavailable.body.reasons.every((r) => typeof r.message === 'string' && r.message)).toBe(true);
+    });
+
+    it('reports prHead:null and contacts nobody when the review has no associated PR', async () => {
+      localReviewDiffs.set(reviewId, { diff: 'd', stats: {}, digest: 'baseline_123456' });
+
+      const response = await request(server).get(`/api/local/${reviewId}/check-stale`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.prHead).toBeNull();
+      expect(Array.isArray(response.body.reasons)).toBe(true);
+      expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Phase 3 — the associated PR's head commit.
+   *
+   * These need a REAL git repo. The assertions turn on `isStale` being
+   * deterministically FALSE (working tree still matches its captured digest)
+   * while the PR has moved on GitHub — precisely the case a fake path cannot
+   * produce, since there every digest computation fails and `isStale` is
+   * forced true by the fail-safe.
+   */
+  describe('GET /api/local/:reviewId/check-stale — associated PR head', () => {
+    const { execFileSync } = require('child_process');
+    const { computeScopedDigest } = require('../../src/local-review');
+
+    // Per-file temp dir (never a fixed /tmp path — test files run in parallel
+    // forks). Detached from the developer's git config so a global template,
+    // hook or gpgsign setting cannot make the fixture repo unbuildable.
+    const gitEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com',
+    };
+
+    let repoPath;
+    let localHeadSha;
+
+    beforeAll(() => {
+      repoPath = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pair-review-stale-'));
+      const git = (...args) => execFileSync('git', args, { cwd: repoPath, encoding: 'utf8', env: gitEnv });
+      git('init', '-q');
+      fs.writeFileSync(nodePath.join(repoPath, 'file.txt'), 'hello\n');
+      git('add', 'file.txt');
+      git('commit', '-q', '-m', 'initial');
+      localHeadSha = git('rev-parse', 'HEAD').trim();
+    });
+
+    afterAll(() => {
+      if (repoPath) fs.rmSync(repoPath, { recursive: true, force: true });
+    });
+
+    /** Local review on the fixture repo, associated with a PR. */
+    async function insertAssociated({ prNumber = 55, repository = 'owner/repo' } = {}) {
+      const result = await run(db, `
+        INSERT INTO reviews (
+          repository, status, review_type, local_path, local_head_sha,
+          associated_pr_number, associated_pr_repository
+        ) VALUES (?, 'draft', 'local', ?, ?, ?, ?)
+      `, [repository, repoPath, localHeadSha, prNumber, repository]);
+      return result.lastID;
+    }
+
+    /**
+     * Capture the baseline the endpoint compares against, using the REAL
+     * digest function the route uses — so a clean tree reads as NOT stale.
+     */
+    async function captureBaseline(id) {
+      const digest = await computeScopedDigest(repoPath, 'unstaged', 'untracked');
+      expect(digest).toBeTruthy();
+      localReviewDiffs.set(id, { diff: '', stats: {}, digest });
+      return digest;
+    }
+
+    /** Seed the pr_metadata cache — the `prAdvanced` baseline. */
+    async function seedCachedPR({ prNumber = 55, repository = 'owner/repo', headSha = 'old111' } = {}) {
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, 'Test PR', 'octocat', 'main', 'feature', ?)
+      `, [prNumber, repository, JSON.stringify({ state: 'open', merged: false, head_sha: headSha, base_sha: 'base000' })]);
+    }
+
+    it('populates prHead with drift and advance, and flags both as reasons', async () => {
+      const id = await insertAssociated();
+      await captureBaseline(id);
+      await seedCachedPR();
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.prHead).toEqual({
+        checked: true,
+        prNumber: 55,
+        repository: 'owner/repo',
+        localHeadSha,
+        // The default GitHub mock's head_sha
+        remoteHeadSha: 'def456',
+        cachedHeadSha: 'old111',
+        drifted: true,
+        prAdvanced: true,
+        prState: 'open',
+        merged: false,
+        error: null,
+      });
+      expect(response.body.reasons.map((r) => r.code)).toEqual([
+        'pr-head-moved',
+        'local-head-differs-from-pr',
+      ]);
+    });
+
+    it('PR drift does NOT change isStale — a working-tree refresh cannot fix it', async () => {
+      const id = await insertAssociated({ prNumber: 56 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 56 });
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      // The PR has moved (drifted + prAdvanced), yet the working tree still
+      // matches its captured digest. If drift leaked into `isStale`, local
+      // mode's silent `refreshDiff({silent:true})` would fire on every page
+      // load forever, re-capturing a tree that never changed.
+      expect(response.body.prHead.drifted).toBe(true);
+      expect(response.body.prHead.prAdvanced).toBe(true);
+      expect(response.body.isStale).toBe(false);
+      expect(response.body.reasons.map((r) => r.code)).not.toContain('working-tree-changed');
+    });
+
+    it('answers for the working tree independently of the PR head', async () => {
+      const id = await insertAssociated({ prNumber: 57 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 57 });
+
+      const scratch = nodePath.join(repoPath, 'scratch.txt');
+      try {
+        // An untracked file is part of the unstaged..untracked digest.
+        fs.writeFileSync(scratch, 'new work\n');
+
+        const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+        expect(response.body.isStale).toBe(true);
+        expect(response.body.reasons.map((r) => r.code)).toContain('working-tree-changed');
+        // ...and the PR half still reports independently.
+        expect(response.body.prHead.drifted).toBe(true);
+      } finally {
+        fs.rmSync(scratch, { force: true });
+      }
+    });
+
+    it('keeps isStale answering when the GitHub fetch fails, and reports the failure in prHead', async () => {
+      const id = await insertAssociated({ prNumber: 58 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 58 });
+
+      GitHubClient.prototype.fetchPullRequest.mockRejectedValue(
+        Object.assign(new Error('Not Found'), { status: 404 })
+      );
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.status).toBe(200);
+      // The local half is unaffected by the remote failure — that is the
+      // whole point of bounding and isolating the GitHub call.
+      expect(response.body.isStale).toBe(false);
+      expect(response.body.prHead).toEqual({
+        checked: true,
+        prNumber: 58,
+        repository: 'owner/repo',
+        localHeadSha,
+        remoteHeadSha: null,
+        cachedHeadSha: 'old111',
+        // No remote SHA to compare against, so the comparison was never made.
+        // `false` here would read to the frontend as "the heads agree now" and
+        // RETRACT a PR DRIFT badge a complete answer had put up.
+        drifted: null,
+        prAdvanced: false,
+        prState: null,
+        merged: false,
+        error: 'PR not found on GitHub',
+      });
+      expect(response.body.reasons).toEqual([]);
+    });
+
+    it('never writes pr_metadata during a check (Hazard 1)', async () => {
+      const id = await insertAssociated({ prNumber: 59 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 59 });
+
+      await request(server).get(`/api/local/${id}/check-stale`);
+
+      // The cached head_sha is the `prAdvanced` baseline. If the check wrote
+      // the fresh value through, the second call would report prAdvanced
+      // false — "the PR has not moved" — forever.
+      const row = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = 59 AND repository = 'owner/repo'
+      `);
+      expect(JSON.parse(row.pr_data).head_sha).toBe('old111');
+
+      const second = await request(server).get(`/api/local/${id}/check-stale`);
+      expect(second.body.prHead.prAdvanced).toBe(true);
+      expect(second.body.prHead.cachedHeadSha).toBe('old111');
+    });
+
+    it('works with a cold pr_metadata cache — drift still answers, prAdvanced cannot', async () => {
+      const id = await insertAssociated({ prNumber: 60 });
+      await captureBaseline(id);
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.body.prHead.cachedHeadSha).toBeNull();
+      expect(response.body.prHead.prAdvanced).toBe(false);
+      expect(response.body.prHead.drifted).toBe(true);
+      expect(response.body.reasons.map((r) => r.code)).toEqual(['local-head-differs-from-pr']);
+    });
+
+    it('reports prHead:null and attempts no fetch when no credential is configured', async () => {
+      // `resolveHostBinding` consults GITHUB_TOKEN first for github.com repos,
+      // so a developer with one exported would resolve a credential here and
+      // the fetch would run — a test that passes or fails on the shell it was
+      // started from. Clear it for the duration.
+      const savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      app.set('githubToken', '');
+      app.set('config', { port: 7247, theme: 'light', model: 'sonnet', external_comments: false });
+
+      try {
+        const id = await insertAssociated({ prNumber: 61 });
+        await captureBaseline(id);
+
+        const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+        // No fetch attempted → not-applicable, which is a different state from
+        // "attempted and failed" (that one is an object with checked: true).
+        expect(response.body.prHead).toBeNull();
+        expect(response.body.isStale).toBe(false);
+        expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+      } finally {
+        if (savedEnvToken !== undefined) process.env.GITHUB_TOKEN = savedEnvToken;
+      }
+    });
+
+    it('reports a merged PR through prHead and reasons', async () => {
+      const id = await insertAssociated({ prNumber: 62 });
+      await captureBaseline(id);
+      GitHubClient.prototype.fetchPullRequest.mockResolvedValue({
+        ...mockGitHubResponses.fetchPullRequest,
+        head_sha: localHeadSha,
+        state: 'closed',
+        merged: true,
+      });
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.body.prHead.merged).toBe(true);
+      expect(response.body.prHead.prState).toBe('closed');
+      expect(response.body.prHead.drifted).toBe(false);
+      // merged wins over closed — the two are mutually exclusive by design.
+      expect(response.body.reasons.map((r) => r.code)).toEqual(['pr-merged']);
+    });
+
+    it('never ships a reason that contradicts the scalars beside it (catch path)', async () => {
+      // The handler sets `local-head-moved` as soon as it knows HEAD differs,
+      // then the catch block disowns every local scalar (`isStale: null`,
+      // `headShaChanged: false`, `currentHeadSha: null`). Leaving the flag set
+      // shipped "Local HEAD has moved since the diff was captured." in the very
+      // same body — and the frontend renders `reasons[]` verbatim into the
+      // badge tooltip.
+      const staleSha = '0'.repeat(40);
+      const inserted = await run(db, `
+        INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+        VALUES ('owner/repo', 'draft', 'local', ?, ?)
+      `, [repoPath, staleSha]);
+      const id = inserted.lastID;
+
+      // Control: with a readable stored diff the endpoint DOES report the moved
+      // HEAD, so the fixture genuinely raises the flag the catch must clear.
+      localReviewDiffs.set(id, { diff: '', stats: {}, digest: 'not_the_current_digest' });
+      const control = await request(server).get(`/api/local/${id}/check-stale`);
+      expect(control.body.headShaChanged).toBe(true);
+      expect(control.body.reasons.map((r) => r.code)).toContain('local-head-moved');
+
+      // Now throw AFTER the flag is set: reading `.digest` blows up exactly
+      // where the handler inspects the stored diff.
+      localReviewDiffs.set(id, {
+        get digest() { throw new Error('boom'); }
+      });
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.isStale).toBeNull();
+      expect(response.body.headShaChanged).toBe(false);
+      expect(response.body.currentHeadSha).toBeNull();
+      expect(response.body.previousHeadSha).toBeNull();
+      expect(response.body.error).toBe('boom');
+
+      const codes = response.body.reasons.map((r) => r.code);
+      for (const local of [
+        'working-tree-changed', 'local-head-moved', 'no-baseline-digest',
+        'digest-unavailable', 'head-sha-unavailable'
+      ]) {
+        expect(codes).not.toContain(local);
+      }
+    });
+
+    it('keeps the PR-side reasons on the catch path — the remote half still answered', async () => {
+      // Only the LOCAL flags are disowned. The remote result is independent of
+      // whatever made the local half throw, so silencing it would throw away a
+      // true answer.
+      const staleSha = '0'.repeat(40);
+      const inserted = await run(db, `
+        INSERT INTO reviews (
+          repository, status, review_type, local_path, local_head_sha,
+          associated_pr_number, associated_pr_repository
+        ) VALUES ('owner/repo', 'draft', 'local', ?, ?, 64, 'owner/repo')
+      `, [repoPath, staleSha]);
+      const id = inserted.lastID;
+      await seedCachedPR({ prNumber: 64 });
+
+      localReviewDiffs.set(id, {
+        get digest() { throw new Error('boom'); }
+      });
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.body.isStale).toBeNull();
+      // `drifted` needs a local HEAD, which the catch path disowned, so it
+      // answers `null` — unknown, not "the heads agree". `prAdvanced` is
+      // remote-vs-cache and stands on its own.
+      expect(response.body.prHead.localHeadSha).toBeNull();
+      expect(response.body.prHead.drifted).toBeNull();
+      // ...and an unanswered comparison earns no reason.
+      expect(response.body.reasons.map((r) => r.code)).not.toContain('local-head-differs-from-pr');
+      expect(response.body.reasons.map((r) => r.code)).toEqual(['pr-head-moved']);
+    });
+
+    it('reports a closed-unmerged PR as pr-closed', async () => {
+      const id = await insertAssociated({ prNumber: 63 });
+      await captureBaseline(id);
+      GitHubClient.prototype.fetchPullRequest.mockResolvedValue({
+        ...mockGitHubResponses.fetchPullRequest,
+        head_sha: localHeadSha,
+        state: 'closed',
+        merged: false,
+      });
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.body.reasons.map((r) => r.code)).toEqual(['pr-closed']);
+    });
+
+    it('attempts no fetch when the association repository is not owner/repo', async () => {
+      // `isUsablePRTarget` and the `splitRepository` guard beside it are
+      // written to the same rule, so either could be the one that refuses —
+      // what matters is that a malformed association never reaches GitHub.
+      const inserted = await run(db, `
+        INSERT INTO reviews (
+          repository, status, review_type, local_path, local_head_sha,
+          associated_pr_number, associated_pr_repository
+        ) VALUES ('owner/repo', 'draft', 'local', ?, ?, 65, 'not-a-repo')
+      `, [repoPath, localHeadSha]);
+      const id = inserted.lastID;
+      await captureBaseline(id);
+
+      const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+      expect(response.body.prHead).toBeNull();
+      expect(response.body.isStale).toBe(false);
+      expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+    });
+
+    it('still checks the PR head when the cached-metadata read throws', async () => {
+      // The cache read is only the `prAdvanced` BASELINE. Losing it must cost
+      // that one comparison, not the whole remote half.
+      const { PRMetadataRepository } = require('../../src/database');
+      const id = await insertAssociated({ prNumber: 67 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 67 });
+
+      const spy = vi.spyOn(PRMetadataRepository.prototype, 'getByPR')
+        .mockRejectedValue(new Error('database is locked'));
+      try {
+        const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+        expect(response.body.prHead.checked).toBe(true);
+        expect(response.body.prHead.cachedHeadSha).toBeNull();
+        // No baseline → no claim that the PR advanced...
+        expect(response.body.prHead.prAdvanced).toBe(false);
+        // ...but drift is local-vs-remote and still answers.
+        expect(response.body.prHead.drifted).toBe(true);
+        expect(response.body.isStale).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // ── ?prHeadOnly=1 — the post-refresh re-ask ──────────────────────
+
+    it('prHeadOnly answers about the PR and skips the working-tree digest', async () => {
+      const id = await insertAssociated({ prNumber: 68 });
+      await captureBaseline(id);
+      await seedCachedPR({ prNumber: 68 });
+
+      const scratch = nodePath.join(repoPath, 'scratch-68.txt');
+      try {
+        // The full endpoint would answer `isStale: true` on this tree, and it
+        // can only know that by walking it. prHeadOnly must not.
+        fs.writeFileSync(scratch, 'new work\n');
+
+        const full = await request(server).get(`/api/local/${id}/check-stale`);
+        expect(full.body.isStale).toBe(true);
+        expect(full.body.currentDigest).toBeTruthy();
+
+        const response = await request(server).get(`/api/local/${id}/check-stale?prHeadOnly=1`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.prHeadOnly).toBe(true);
+        // `null` is "not asked", and the frontend reads it as exactly that.
+        expect(response.body.isStale).toBeNull();
+        expect(response.body.storedDigest).toBeUndefined();
+        expect(response.body.currentDigest).toBeUndefined();
+        // No digest was computed, so no working-tree reason may be claimed.
+        expect(response.body.reasons.map((r) => r.code)).not.toContain('working-tree-changed');
+
+        // ...and the half the caller actually wanted is fully populated.
+        expect(response.body.prHead).toMatchObject({
+          checked: true,
+          prNumber: 68,
+          localHeadSha,
+          remoteHeadSha: 'def456',
+          drifted: true,
+          prAdvanced: true,
+        });
+        expect(response.body.reasons.map((r) => r.code)).toEqual([
+          'pr-head-moved',
+          'local-head-differs-from-pr',
+        ]);
+      } finally {
+        fs.rmSync(scratch, { force: true });
+      }
+    });
+
+    it('prHeadOnly still reports local HEAD, so drift can be computed', async () => {
+      const id = await insertAssociated({ prNumber: 69 });
+      const response = await request(server).get(`/api/local/${id}/check-stale?prHeadOnly=1`);
+
+      // No stored diff at all — the full endpoint would bail with
+      // 'No stored diff data found'; this mode never looks.
+      expect(response.body.error).toBeUndefined();
+      expect(response.body.currentHeadSha).toBe(localHeadSha);
+      expect(response.body.prHead.drifted).toBe(true);
+    });
+
+    // ── The advisory path may never block the event loop ─────────────
+
+    it('never shells out for a github_token_command while answering', async () => {
+      // `execSync` blocks the event loop for up to 5s and no Promise deadline
+      // can preempt it, while the browser abandons this response at 2000ms. A
+      // broken `gh auth token` would take the WORKING-TREE answer down with it.
+      const prContextModule = require('../../src/providers/pr-context');
+      const marker = nodePath.join(repoPath, 'token-command-ran');
+      // Unique per marker path, so config.js's process-lifetime token cache
+      // cannot answer for another test.
+      const command = `touch ${marker} && echo tok`;
+      const config = { port: 7247, theme: 'light', model: 'sonnet', external_comments: false, github_token_command: command };
+      const savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      app.set('githubToken', '');
+      app.set('config', config);
+
+      try {
+        const id = await insertAssociated({ prNumber: 70 });
+        await captureBaseline(id);
+
+        const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+        // The working-tree answer is intact...
+        expect(response.body.isStale).toBe(false);
+        // ...the PR add-on simply declined, because no credential was already
+        // resolved...
+        expect(response.body.prHead).toBeNull();
+        expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+        // ...and nothing was executed to find out.
+        expect(fs.existsSync(marker)).toBe(false);
+
+        // Control: the fixture is real — an ordinary (non-advisory) resolution
+        // DOES run the command, so the assertion above is not passing because
+        // the command was unrunnable.
+        const binding = prContextModule.resolveRepositoryBinding('owner/repo', config, { localPath: repoPath });
+        expect(binding.token).toBe('tok');
+        expect(fs.existsSync(marker)).toBe(true);
+      } finally {
+        if (savedEnvToken !== undefined) process.env.GITHUB_TOKEN = savedEnvToken;
+        fs.rmSync(marker, { force: true });
+      }
+    });
+
+    it('never reruns the token command when a WARM cached token gets a 401', async () => {
+      // `cachedTokensOnly` governs only whether a command runs to PRODUCE the
+      // binding. A binding already in the cache still carries its `refresh`
+      // closure, and GitHubClient calls that after a 401 — at which point the
+      // command runs anyway, `execSync` and all, on the one path a five-second
+      // synchronous block must never reach. An expired cached token is the
+      // ordinary way to get a 401 here.
+      const prContextModule = require('../../src/providers/pr-context');
+      const marker = nodePath.join(repoPath, 'token-command-401-ran');
+      // Unique per marker path — config.js caches successful command output for
+      // the life of the process, keyed by the command.
+      const command = `touch ${marker} && echo tok401`;
+      const config = { port: 7247, theme: 'light', model: 'sonnet', external_comments: false, github_token_command: command };
+      const savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      app.set('githubToken', '');
+      app.set('config', config);
+
+      let warm;
+      try {
+        // Warm the cache the way the page-load GET does. THIS is the resolution
+        // that is allowed to shell out.
+        warm = prContextModule.resolveRepositoryBinding('owner/repo', config, { localPath: repoPath });
+        expect(warm.token).toBe('tok401');
+        // The capability the advisory route must not hand on.
+        expect(typeof warm.refresh).toBe('function');
+        fs.rmSync(marker, { force: true });
+
+        const id = await insertAssociated({ prNumber: 71 });
+        await captureBaseline(id);
+
+        // Capture what the route's client was actually built with, and answer
+        // the way an expired token does.
+        let refreshOnClient = 'never-called';
+        GitHubClient.prototype.fetchPullRequest.mockImplementation(function fetchPullRequest() {
+          refreshOnClient = this.refresh;
+          throw Object.assign(new Error('Bad credentials'), { status: 401 });
+        });
+
+        const response = await request(server).get(`/api/local/${id}/check-stale`);
+
+        // The client this route built has no way to shell out...
+        expect(refreshOnClient).toBeNull();
+        expect(fs.existsSync(marker)).toBe(false);
+        // ...the 401 fails open through the shared error vocabulary...
+        expect(response.body.prHead.error).toBe('GitHub authentication issue');
+        // ...and the working-tree answer, which is what this endpoint is FOR,
+        // is delivered intact.
+        expect(response.body.isStale).toBe(false);
+
+        // Control: the closure is real and would genuinely have run the
+        // command, so the assertions above are not passing vacuously.
+        warm.refresh();
+        expect(fs.existsSync(marker)).toBe(true);
+      } finally {
+        if (savedEnvToken !== undefined) process.env.GITHUB_TOKEN = savedEnvToken;
+        fs.rmSync(marker, { force: true });
+      }
+    });
+  });
+});
+
+// ============================================================================
+// PR-mode Check-Stale Endpoint Tests (parity regression for the Phase 3
+// provider extraction — this route's response shape must not move)
+// ============================================================================
+
+describe('PR Review Check-Stale Endpoint', () => {
+  let db;
+  let app;
+  let server;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+    server = await listenOnLoopback(app);
+  });
+
+  afterEach(async () => {
+    await closeServer(server);
+    if (db) {
+      await closeTestDatabase(db);
+    }
+    applyDefaultMocks();
+  });
+
+  /** pr_metadata row whose cached head_sha is the KNOWN side of the compare. */
+  async function insertPRWithHead(prNumber, headSha) {
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, author, base_branch, head_branch, pr_data)
+      VALUES (?, 'owner/repo', 'Test PR Title', 'testuser', 'main', 'feature-branch', ?)
+    `, [prNumber, JSON.stringify({ state: 'open', head_sha: headSha, base_sha: 'abc123' })]);
+  }
+
+  it('returns 400 for an invalid PR number', async () => {
+    const response = await request(server).get('/api/pr/owner/repo/abc/check-stale');
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain('Invalid pull request number');
+  });
+
+  it('returns isStale null with reasons [] when there is no local PR data', async () => {
+    const response = await request(server).get('/api/pr/owner/repo/1/check-stale');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      isStale: null,
+      error: 'No local PR data found',
+      reasons: [],
+    });
+  });
+
+  it('returns the unchanged shape plus reasons when the head matches', async () => {
+    // The default GitHub mock reports head_sha 'def456'.
+    await insertPRWithHead(2, 'def456');
+
+    const response = await request(server).get('/api/pr/owner/repo/2/check-stale');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      isStale: false,
+      localHeadSha: 'def456',
+      remoteHeadSha: 'def456',
+      prState: 'open',
+      merged: false,
+      reasons: [],
+    });
+  });
+
+  it('flags pr-head-moved when the remote head has advanced', async () => {
+    await insertPRWithHead(3, 'older999');
+
+    const response = await request(server).get('/api/pr/owner/repo/3/check-stale');
+
+    expect(response.body.isStale).toBe(true);
+    expect(response.body.localHeadSha).toBe('older999');
+    expect(response.body.remoteHeadSha).toBe('def456');
+    expect(response.body.reasons).toEqual([
+      { code: 'pr-head-moved', message: STALE_REASONS['pr-head-moved'] },
+    ]);
+  });
+
+  it('flags pr-merged for a merged PR', async () => {
+    await insertPRWithHead(4, 'def456');
+    GitHubClient.prototype.fetchPullRequest.mockResolvedValue({
+      ...mockGitHubResponses.fetchPullRequest,
+      state: 'closed',
+      merged: true,
+    });
+
+    const response = await request(server).get('/api/pr/owner/repo/4/check-stale');
+
+    expect(response.body.prState).toBe('closed');
+    expect(response.body.merged).toBe(true);
+    expect(response.body.reasons.map((r) => r.code)).toEqual(['pr-merged']);
+  });
+
+  it('fails open with the shared error vocabulary and reasons []', async () => {
+    await insertPRWithHead(5, 'def456');
+    GitHubClient.prototype.fetchPullRequest.mockRejectedValue(
+      Object.assign(new Error('Bad credentials'), { status: 401 })
+    );
+
+    const response = await request(server).get('/api/pr/owner/repo/5/check-stale');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      isStale: null,
+      error: 'GitHub authentication issue',
+      reasons: [],
+    });
+  });
+
+  it('never writes pr_metadata during a check (Hazard 1)', async () => {
+    await insertPRWithHead(6, 'older999');
+
+    await request(server).get('/api/pr/owner/repo/6/check-stale');
+
+    // If the check wrote the fresh head through, the second call would find
+    // the cached and remote shas equal and report "not stale" — silently
+    // destroying PR mode's stale detection.
+    const row = await queryOne(db, `
+      SELECT pr_data FROM pr_metadata WHERE pr_number = 6 AND repository = 'owner/repo'
+    `);
+    expect(JSON.parse(row.pr_data).head_sha).toBe('older999');
+
+    const second = await request(server).get('/api/pr/owner/repo/6/check-stale');
+    expect(second.body.isStale).toBe(true);
   });
 });
 
@@ -9168,6 +9878,9 @@ describe('GET /api/local/:reviewId capabilities', () => {
       // unrelated cache miss would hide a working feature. The frontend
       // degrades anchoring to file level when head_sha is unknown instead.
       canViewPRComments: true,
+      // Phase 3 shares that reasoning exactly: the stale check does a LIVE
+      // read-only head fetch, so it needs no warm metadata cache either.
+      canCheckStaleVsPR: true,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
     // Association + token + cold cache fires the background fetch; settle it
@@ -9207,6 +9920,8 @@ describe('GET /api/local/:reviewId capabilities', () => {
       canShowPRMetadata: true,
       // Phase 2: association + token, independent of the metadata cache.
       canViewPRComments: true,
+      // Phase 3: same independence — a live head fetch, not a cache read.
+      canCheckStaleVsPR: true,
     });
     expect(response.body.associatedPR).toEqual({
       prNumber,
@@ -9960,6 +10675,53 @@ describe('Local mode host resolution, detection backoff and credentials', () => 
     // The row records the alt host — the same one detection would have used.
     const row = await queryOne(db, 'SELECT host FROM pr_metadata WHERE pr_number = ? AND repository = ?', [77, REPO]);
     expect(row.host).toBe(ALT_HOST);
+  });
+
+  /**
+   * The same refusal, on the staleness endpoint.
+   *
+   * Materially different from the no-credential case beside it: credentials
+   * can exist for BOTH hosts, so probing the guessed one succeeds and returns
+   * a same-numbered but UNRELATED pull request. Its head would surface as "The
+   * pull request has new commits" plus a PR DRIFT badge, and would then drive
+   * a forced `?refresh=1` write of the TTL-less `pr_metadata.head_sha` — one
+   * operand of the anchor-trust gate. A wrong answer here does not merely
+   * mislead, it poisons cached state that outlives the request.
+   */
+  describe('GET /api/local/:reviewId/check-stale and the ambiguous host', () => {
+    it('refuses to probe a guessed host', async () => {
+      const localPath = '/mock/mirror-checkout-stale';
+      localRoutes._remoteHostnameCache.set(localPath, 'mirror.internal');
+      await mount(dualConfig());
+      const reviewId = await insertLocal({ associatedPrNumber: 77, localPath });
+
+      const res = await request(server).get(`/api/local/${reviewId}/check-stale`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.prHead).toBeNull();
+      // Load-bearing half: a null `prHead` on its own does not prove that no
+      // host was probed — only that the answer was discarded.
+      expect(fetchPullRequestSpy).not.toHaveBeenCalled();
+    });
+
+    it('does probe when the checkout names a host (control for the refusal)', async () => {
+      // Without this the test above could pass for the wrong reason — a
+      // fixture that never reaches the fetch at all.
+      const localPath = '/mock/alt-checkout-stale';
+      localRoutes._remoteHostnameCache.set(localPath, 'alt.example.com');
+      await mount(dualConfig());
+      const reviewId = await insertLocal({ associatedPrNumber: 77, localPath });
+      fetchPullRequestSpy.mockResolvedValue({
+        number: 77, title: 'Alt host PR', author: 'octocat', state: 'open', merged: false,
+        base_branch: 'main', head_branch: 'feature-x', base_sha: 'aaa', head_sha: 'bbb'
+      });
+
+      const res = await request(server).get(`/api/local/${reviewId}/check-stale`);
+
+      expect(res.status).toBe(200);
+      expect(fetchPullRequestSpy).toHaveBeenCalledTimes(1);
+      expect(res.body.prHead).toMatchObject({ checked: true, prNumber: 77, remoteHeadSha: 'bbb' });
+    });
   });
 
   it('writes NO pr_metadata row when the host is ambiguous (refusal still stands)', async () => {

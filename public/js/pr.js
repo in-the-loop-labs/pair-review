@@ -11,6 +11,46 @@
 // Timeout (ms) for stale check — git commands can hang on locked repos
 const STALE_TIMEOUT = 2000;
 
+/**
+ * The header badge GROUP — one element per independent fact, not one mutable
+ * slot shared by all of them.
+ *
+ * A review can truthfully be in three states at once: the associated pull
+ * request is merged or closed (lifecycle), the captured diff no longer matches
+ * what is on disk (freshness), and local `HEAD` is not the PR's head commit
+ * (commit alignment). A single element forced one of those to erase the
+ * others, and which one won depended on the order the caller happened to
+ * evaluate them in — which is how local mode ended up painting the
+ * informational PR DRIFT over the actionable STALE.
+ *
+ * Only MERGED and CLOSED are genuinely exclusive, so they share one slot.
+ * Every other combination renders side by side.
+ */
+const STALE_BADGE_ELEMENT_IDS = Object.freeze({
+  stale: 'stale-badge',
+  lifecycle: 'pr-state-badge',
+  drift: 'pr-drift-badge',
+});
+
+const STALE_BADGE_TYPES = Object.freeze({
+  stale: {
+    slot: 'stale', text: 'STALE', variant: null,
+    defaultTitle: 'PR data is outdated'
+  },
+  merged: {
+    slot: 'lifecycle', text: 'MERGED', variant: 'pr-merged',
+    defaultTitle: 'This PR has been merged'
+  },
+  closed: {
+    slot: 'lifecycle', text: 'CLOSED', variant: 'pr-closed',
+    defaultTitle: 'This PR has been closed'
+  },
+  'pr-drift': {
+    slot: 'drift', text: 'PR DRIFT', variant: 'pr-drift',
+    defaultTitle: 'Your local HEAD is not the pull request head commit'
+  },
+});
+
 class PRManager {
   // Forward static constants from modules for backward compatibility
   static get FOLD_UP_ICON() {
@@ -8703,6 +8743,16 @@ class PRManager {
    * If stale and no active session data, silently refreshes.
    * If stale and session data exists, shows the badge.
    * Also shows badge variants for closed/merged PRs.
+   *
+   * Lifecycle and freshness are INDEPENDENT and both render — a merged PR
+   * whose local copy is also behind shows MERGED and STALE side by side. This
+   * used to `return` after the lifecycle badge, which both hid the freshness
+   * answer and made the two modes disagree about which fact wins.
+   *
+   * Tooltips come from the backend's `reasons[]` — the same array local mode
+   * renders. Without this the field was computed on every response and read by
+   * nobody in this mode.
+   *
    * @returns {Promise<Object|null>} The parsed staleness result, or null on failure.
    */
   async _checkStalenessOnLoad(owner, repo, number) {
@@ -8710,19 +8760,25 @@ class PRManager {
       const result = await this._fetchStaleness(owner, repo, number);
       if (!result) return null;
 
+      const reasonText = PRManager.formatStaleReasons(result.reasons) || undefined;
+
       // Show badge for closed/merged PRs regardless of staleness
-      if (result.prState && result.prState !== 'open') {
-        const type = result.merged ? 'merged' : 'closed';
-        this._showStaleBadge(type);
-        return result;
-      }
+      const lifecycleEnded = Boolean(result.prState && result.prState !== 'open');
+      this._applyPRLifecycleBadge(
+        { state: result.prState, merged: result.merged },
+        reasonText
+      );
 
       if (result.isStale !== true) return result;
 
       // Stale — decide: silent refresh or show badge
       const hasData = await this._hasActiveSessionData();
-      if (hasData) {
-        this._showStaleBadge('stale');
+      // A closed or merged PR is never silently refreshed: the auto-refresh
+      // exists to pull work-in-progress forward, and there is none. Unchanged
+      // behaviour — but the badge now says so instead of the page saying
+      // nothing at all.
+      if (hasData || lifecycleEnded) {
+        this._showStaleBadge('stale', reasonText);
         if (window.chatPanel) {
           const abbrevLen = this.currentPR?.shaAbbrevLength || 7;
           const oldSha = result.localHeadSha ? result.localHeadSha.substring(0, abbrevLen) : 'unknown';
@@ -8791,39 +8847,124 @@ class PRManager {
   }
 
   /**
-   * Show the stale badge with an optional variant class.
-   * @param {'stale'|'closed'|'merged'} type
+   * Show one badge of the header group, leaving the other slots alone.
+   *
+   * Shared by BOTH modes — PRManager._checkStalenessOnLoad (lifecycle + stale)
+   * and LocalManager (stale, lifecycle and pr-drift). Showing `merged` clears
+   * `closed` and vice versa, because those two share the lifecycle slot; it
+   * does NOT touch STALE or PR DRIFT, which are different questions.
+   *
+   * `pr-drift` is local-mode-only today: the associated PR's head commit is
+   * not the commit this checkout is on. Deliberately NOT the same fact as
+   * `stale` — the refresh button cannot fix it, which is exactly why it must
+   * not be allowed to hide the badge that refresh CAN fix.
+   *
+   * @param {'stale'|'closed'|'merged'|'pr-drift'} type
    * @param {string} [title] - Optional custom tooltip text. Falls back to type-specific defaults.
    */
   _showStaleBadge(type, title) {
-    const badge = document.getElementById('stale-badge');
+    const spec = STALE_BADGE_TYPES[type] || STALE_BADGE_TYPES.stale;
+    const badge = document.getElementById(STALE_BADGE_ELEMENT_IDS[spec.slot]);
     if (!badge) return;
 
-    // Reset variant classes
-    badge.classList.remove('pr-closed', 'pr-merged');
+    // Only the lifecycle slot ever changes variant (MERGED <-> CLOSED), but
+    // resetting unconditionally keeps a slot from inheriting a colour if the
+    // markup is ever reused.
+    badge.classList.remove('pr-closed', 'pr-merged', 'pr-drift');
+    if (spec.variant) badge.classList.add(spec.variant);
 
     const textEl = badge.querySelector('.stale-badge-text');
-    if (type === 'merged') {
-      badge.classList.add('pr-merged');
-      if (textEl) textEl.textContent = 'MERGED';
-      badge.title = title || 'This PR has been merged';
-    } else if (type === 'closed') {
-      badge.classList.add('pr-closed');
-      if (textEl) textEl.textContent = 'CLOSED';
-      badge.title = title || 'This PR has been closed';
-    } else {
-      if (textEl) textEl.textContent = 'STALE';
-      badge.title = title || 'PR data is outdated';
-    }
+    if (textEl) textEl.textContent = spec.text;
+    badge.title = title || spec.defaultTitle;
     badge.style.display = '';
   }
 
   /**
-   * Hide the stale badge.
+   * Reconcile the LIFECYCLE slot from an authoritative PR payload.
+   *
+   * Shared by every path that holds a fresh `state` / `merged` pair — the
+   * on-load `_checkStalenessOnLoad` and `refreshPR` — because a lifecycle
+   * badge is only as true as the last answer about it, and a page can sit open
+   * across a merge, a close and a reopen. `refreshPR` used to clear the
+   * freshness slot and say nothing about this one, so a PR reopened mid-session
+   * kept showing CLOSED, and one merged mid-session showed nothing, until a
+   * full page reload.
+   *
+   * SELF-HEALING, in both directions: an open PR CLEARS the slot. MERGED and
+   * CLOSED share it (they are the one genuinely exclusive pair), and
+   * `_showStaleBadge` swaps between them; nothing else in the group is touched,
+   * because a merge says nothing about whether the local copy is behind.
+   *
+   * GitHub reports a merged PR as `state: 'closed'` with `merged: true`, so
+   * `merged` is checked FIRST — the other order labels every merged PR closed.
+   *
+   * @param {{state: string|null|undefined, merged: boolean|null|undefined}} pr
+   *   Authoritative lifecycle fields. A missing/unknown `state` reads as open.
+   * @param {string} [title] - Optional tooltip, normally the backend's
+   *   `reasons[]` rendered by `formatStaleReasons`.
    */
-  _hideStaleBadge() {
-    const badge = document.getElementById('stale-badge');
-    if (badge) badge.style.display = 'none';
+  _applyPRLifecycleBadge({ state, merged } = {}, title) {
+    if (merged === true) {
+      this._showStaleBadge('merged', title);
+    } else if (state && state !== 'open') {
+      this._showStaleBadge('closed', title);
+    } else {
+      this._hideStaleBadge('lifecycle');
+    }
+  }
+
+  /**
+   * Hide one badge slot, or the whole group.
+   *
+   * @param {'stale'|'lifecycle'|'drift'|'closed'|'merged'|'pr-drift'} [slotOrType]
+   *   Omit to clear every badge (page-level resets). Naming one slot is what
+   *   lets a refresh clear STALE — the state it actually fixed — without also
+   *   erasing a merged PR or a drift the refresh did nothing about.
+   *
+   *   An UNRECOGNISED name clears nothing and warns. Deliberately not "clear
+   *   everything": a typo must not silently become the destructive call, which
+   *   is the exact failure this method was split up to prevent.
+   */
+  _hideStaleBadge(slotOrType) {
+    let ids;
+    if (slotOrType === undefined || slotOrType === null) {
+      ids = Object.values(STALE_BADGE_ELEMENT_IDS);
+    } else {
+      const slot = STALE_BADGE_TYPES[slotOrType]
+        ? STALE_BADGE_TYPES[slotOrType].slot
+        : (STALE_BADGE_ELEMENT_IDS[slotOrType] ? slotOrType : null);
+      if (!slot) {
+        console.warn(`_hideStaleBadge: unknown badge slot "${slotOrType}"`);
+        return;
+      }
+      ids = [STALE_BADGE_ELEMENT_IDS[slot]];
+    }
+    for (const id of ids) {
+      const badge = document.getElementById(id);
+      if (badge) badge.style.display = 'none';
+    }
+  }
+
+  /**
+   * Join the backend's `reasons[]` messages into one tooltip string.
+   *
+   * Lives on PRManager because BOTH modes need it and only pr.js is loaded by
+   * both pages — a renderer parked on LocalManager was a renderer PR mode
+   * structurally could not call, which is how the same backend fact ended up
+   * rendered in one mode and dropped in the other.
+   *
+   * `reasons` is always an array in the pinned contract, but this is fed
+   * straight from a network response, so tolerate anything.
+   *
+   * @param {Array<{code: string, message: string}>} reasons
+   * @returns {string} Joined messages, or '' when there are none.
+   */
+  static formatStaleReasons(reasons) {
+    if (!Array.isArray(reasons)) return '';
+    return reasons
+      .map((reason) => (reason && typeof reason.message === 'string' ? reason.message.trim() : ''))
+      .filter(Boolean)
+      .join(' ');
   }
 
   /**
@@ -8915,7 +9056,17 @@ class PRManager {
           window.scrollTo(0, scrollPosition);
         }, 100);
 
-        this._hideStaleBadge();
+        // The freshness slot is the one a refresh FIXED — it just re-read the
+        // PR, so whatever was behind is not behind any more.
+        this._hideStaleBadge('stale');
+
+        // The lifecycle slot is a different thing: not fixed by the refresh,
+        // but freshly ANSWERED by it. `data.data` carries GitHub's own `state`
+        // and `merged` as of this round trip, so reconcile rather than leave a
+        // badge that may now be wrong in either direction — a PR reopened since
+        // page load kept showing CLOSED, and one merged or closed since page
+        // load showed nothing at all.
+        this._applyPRLifecycleBadge(data.data);
         this._stalenessPromise = null;
 
         console.log('PR refreshed successfully');
@@ -9608,4 +9759,12 @@ if (typeof document !== 'undefined') {
 // Export for testing (Node.js environment)
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { PRManager };
+  // In the browser this file and public/js/local.js are sibling classic
+  // scripts, so `class PRManager` is already a binding local.js can see — that
+  // is how `LocalManager.formatStaleReasons` delegates to the shared renderer.
+  // Under CommonJS (unit tests) each file gets its own module scope instead,
+  // so publish the class where an unqualified reference still resolves.
+  if (typeof globalThis !== 'undefined' && !globalThis.PRManager) {
+    globalThis.PRManager = PRManager;
+  }
 }

@@ -671,16 +671,45 @@ describe('local viewed state survives a refresh that moves HEAD', () => {
 
   it('reads through to a legacy commit-scoped value for the current HEAD', async () => {
     // Anyone mid-session across the upgrade keeps their marks without a
-    // migration step; the next save writes the session key.
+    // migration step.
     global.localStorage.setItem(legacyKey('sha-1'), JSON.stringify(['src/a.js', 'src/b.js']));
     const { pm } = createPatchedPair();
 
     await pm.loadViewedState();
 
     expect(Array.from(pm.viewedFiles)).toEqual(['src/a.js', 'src/b.js']);
-
-    pm.saveViewedState();
+    // ...and the adoption is PERSISTED by the load itself, not left waiting on
+    // a save the user may never trigger. The legacy key stays put: this is an
+    // adoption, not a migration, so a rollback still finds its value.
     expect(global.localStorage.getItem(sessionKey)).toBe(JSON.stringify(['src/a.js', 'src/b.js']));
+    expect(global.localStorage.getItem(legacyKey('sha-1')))
+      .toBe(JSON.stringify(['src/a.js', 'src/b.js']));
+  });
+
+  it('keeps adopted legacy marks across a later HEAD change with no user toggle', async () => {
+    // The regression the read-through exists to prevent, one step further out:
+    // the legacy key is derived from the CURRENT head, so a HEAD move before
+    // the user happens to toggle a file made the next load derive a DIFFERENT
+    // legacy key, miss, and hard-reset the set to empty. `_applyRefreshedDiff`
+    // moves `head_sha` and reloads the diff with zero interaction.
+    global.localStorage.setItem(legacyKey('sha-1'), JSON.stringify(['src/a.js']));
+    const { lm, pm } = createRealDiffPair();
+
+    await pm.loadViewedState();
+    expect(Array.from(pm.viewedFiles)).toEqual(['src/a.js']);
+
+    await lm._applyRefreshedDiff(
+      pm,
+      { headShaChanged: true, previousHeadSha: 'sha-1', currentHeadSha: 'sha-2' },
+      { userInitiated: true }
+    );
+
+    // The refresh ran the real `loadLocalDiff` — and with it `loadViewedState`
+    // — against the new HEAD, for which no legacy key exists.
+    expect(pm.renderDiff).toHaveBeenCalledTimes(1);
+    expect(pm.currentPR.head_sha).toBe('sha-2');
+    expect(Array.from(pm.viewedFiles)).toEqual(['src/a.js']);
+    expect(global.localStorage.getItem(legacyKey('sha-2'))).toBeNull();
   });
 
   it('prefers the session key over a stale legacy value', async () => {

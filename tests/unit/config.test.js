@@ -2378,6 +2378,68 @@ describe('config.js', () => {
       });
     });
 
+    /**
+     * `cachedTokensOnly` — for advisory request paths on a client deadline.
+     *
+     * `execSync` blocks the event loop for up to its 5s timeout and no Promise
+     * race can preempt a synchronous block, so `startPRHeadCheck`
+     * (src/routes/local.js) resolves its credential this way: use a token
+     * somebody already paid for, or report none and skip the add-on.
+     */
+    describe('cachedTokensOnly', () => {
+      it('does not run a repo-level token_command that has never been run', () => {
+        const config = { repos: { 'owner/a': { token_command: 'echo a' } } };
+
+        const binding = resolveHostBinding('owner/a', config, { cachedTokensOnly: true });
+
+        expect(execSyncSpy).not.toHaveBeenCalled();
+        expect(binding.token).toBe('');
+        expect(binding.source).toBe('none');
+      });
+
+      it('does not run the top-level github_token_command either', () => {
+        const config = { github_token_command: 'gh auth token' };
+
+        expect(resolveHostBinding('owner/a', config, { cachedTokensOnly: true }).token).toBe('');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+
+      it('DOES answer from a token another caller already paid for', () => {
+        execSyncSpy.mockReturnValueOnce('warm-token\n');
+        const config = { github_token_command: 'gh auth token' };
+
+        // The page-load path warms it...
+        expect(resolveHostBinding('owner/a', config).token).toBe('warm-token');
+        // ...and the advisory path rides along for free.
+        expect(resolveHostBinding('owner/a', config, { cachedTokensOnly: true }).token).toBe('warm-token');
+        expect(execSyncSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves literal and env credentials untouched', () => {
+        expect(resolveHostBinding('owner/a', { github_token: 'literal' }, { cachedTokensOnly: true }).token)
+          .toBe('literal');
+        expect(execSyncSpy).not.toHaveBeenCalled();
+      });
+
+      it('never leaks into the refresh closure, whose whole job is to re-run the command', () => {
+        // refresh() invalidates the cache and re-resolves. Inheriting
+        // cachedTokensOnly would make it bust the cache and then decline to
+        // repopulate it — a guaranteed empty token.
+        execSyncSpy.mockReturnValueOnce('first\n').mockReturnValueOnce('second\n');
+        const config = { repos: { 'owner/a': { token_command: 'echo tok' } } };
+
+        // Warm it the ordinary way, then re-resolve cache-only to get a
+        // binding whose refresh closure was built under the flag.
+        expect(resolveHostBinding('owner/a', config).token).toBe('first');
+        const binding = resolveHostBinding('owner/a', config, { cachedTokensOnly: true });
+        expect(binding.source).toBe('repo:token_command');
+        expect(typeof binding.refresh).toBe('function');
+
+        expect(binding.refresh()).toBe('second');
+        expect(execSyncSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+
     describe('token_command caching', () => {
       it('caches per (repository, command) and does not collapse across repos', () => {
         execSyncSpy.mockReturnValueOnce('token-a\n').mockReturnValueOnce('token-b\n');
