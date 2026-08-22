@@ -22,7 +22,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 56;
+const CURRENT_SCHEMA_VERSION = 57;
 
 /**
  * Database schema SQL statements
@@ -418,6 +418,10 @@ const INDEX_SQL = [
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // One mirror row per (review, GitHub review). Partial so the local-only
+  // rows (both identifiers NULL) are unaffected — see migration 57.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_node_unique ON github_reviews(review_id, github_node_id) WHERE github_node_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_id_unique ON github_reviews(review_id, github_review_id) WHERE github_review_id IS NOT NULL',
   // Council indexes
   'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
   // Voice tracking indexes
@@ -2419,6 +2423,65 @@ const MIGRATIONS = {
     db.exec("CREATE INDEX IF NOT EXISTS idx_reviews_associated_pr ON reviews(associated_pr_number, associated_pr_repository) WHERE review_type = 'local'");
 
     console.log('Migration to schema version 56 complete');
+  },
+
+  // Migration to version 57: one github_reviews mirror row per GitHub review.
+  //
+  // `syncPendingDraftFromGitHub` looks up the mirror and inserts across
+  // separate awaits, so two overlapping syncs for one review (two tabs, a
+  // reload landing on a manual click, a direct API call) could both miss the
+  // same draft and both insert a row for it. A later sync then updates only
+  // one match and the sibling stays 'pending' forever, shipping contradictory
+  // draft state to the UI and to Phase 5's submit path. The provider now
+  // single-flights and adopts the winner's row on conflict; these indexes are
+  // the durable boundary that makes both true regardless of caller.
+  //
+  // Partial on purpose: rows created by a local (never-pushed) draft carry
+  // NULL in both identifier columns and must stay unconstrained. Existing
+  // duplicates are collapsed first — keeping the HIGHEST id, which is the row
+  // `findPendingByReviewId` (created_at DESC) hands to the updater today, so
+  // the survivor is the one that has been receiving updates.
+  57: (db) => {
+    console.log('Running migration to schema version 57: dedupe github_reviews and add unique indexes...');
+    if (!tableExists(db, 'github_reviews')) {
+      console.log('  github_reviews table absent; nothing to do');
+      console.log('Migration to schema version 57 complete');
+      return;
+    }
+
+    const dedupe = db.transaction(() => {
+      const byNode = db.prepare(`
+        DELETE FROM github_reviews
+        WHERE github_node_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MAX(id) FROM github_reviews
+            WHERE github_node_id IS NOT NULL
+            GROUP BY review_id, github_node_id
+          )
+      `).run();
+      if (byNode.changes > 0) {
+        console.log(`  Removed ${byNode.changes} duplicate github_reviews row(s) sharing a node id`);
+      }
+      const byReviewId = db.prepare(`
+        DELETE FROM github_reviews
+        WHERE github_review_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MAX(id) FROM github_reviews
+            WHERE github_review_id IS NOT NULL
+            GROUP BY review_id, github_review_id
+          )
+      `).run();
+      if (byReviewId.changes > 0) {
+        console.log(`  Removed ${byReviewId.changes} duplicate github_reviews row(s) sharing a numeric review id`);
+      }
+    });
+    dedupe();
+
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_node_unique ON github_reviews(review_id, github_node_id) WHERE github_node_id IS NOT NULL');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_github_reviews_id_unique ON github_reviews(review_id, github_review_id) WHERE github_review_id IS NOT NULL');
+    console.log('  Created unique indexes on github_reviews');
+
+    console.log('Migration to schema version 57 complete');
   }
 };
 
@@ -2643,6 +2706,38 @@ async function withTransaction(db, fn) {
     return result;
   } catch (error) {
     await rollback(db);
+    throw error;
+  }
+}
+
+/**
+ * Execute a function inside a SAVEPOINT — a transaction that NESTS.
+ *
+ * `withTransaction` issues a bare `BEGIN`, which throws inside an open
+ * transaction, and repository methods are called from both sides of that
+ * line: `upsertFromGitHub` runs standalone from the draft sync and INSIDE the
+ * explicit `BEGIN TRANSACTION` the submit path opens in src/main.js. A
+ * savepoint is atomic either way.
+ *
+ * @param {Database} db - Database instance
+ * @param {string} name - Savepoint name. Callers pass a literal; it is
+ *   interpolated into SQL and must never carry user input.
+ * @param {Function} fn - Async function to execute within the savepoint
+ * @returns {Promise<any>} - Result of the function
+ */
+async function withSavepoint(db, name, fn) {
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const result = await fn();
+    db.exec(`RELEASE ${name}`);
+    return result;
+  } catch (error) {
+    try {
+      db.exec(`ROLLBACK TO ${name}`);
+      db.exec(`RELEASE ${name}`);
+    } catch (rollbackError) {
+      console.warn('Savepoint rollback warning:', rollbackError.message);
+    }
     throw error;
   }
 }
@@ -6021,6 +6116,60 @@ class AnalysisRunRepository {
 /**
  * GitHubReviewRepository class for managing GitHub review submission records
  */
+/**
+ * Normalise one of the two `github_reviews` identifier columns.
+ *
+ * They are TEXT columns holding stringified GitHub ids, and every writer
+ * reaches them through a `String(...)` somewhere upstream. `String(null)` is
+ * the four characters "null", which SQLite stores as a perfectly good VALUE:
+ * two different GitHub reviews whose id was missing then shared one literal
+ * identity, matched each other in `findByGitHubReviewId`, and collided under
+ * migration 57's unique indexes as if they were the same review. Absent means
+ * SQL NULL, which those partial indexes deliberately leave unconstrained.
+ *
+ * `undefined` is passed through unchanged: `update` reads it as "leave this
+ * column alone", which is a different instruction from "clear it".
+ *
+ * @param {*} value
+ * @returns {string|null|undefined}
+ */
+function normalizeGitHubReviewId(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const text = String(value).trim();
+  if (!text || text === 'null' || text === 'undefined') return null;
+  return text;
+}
+
+/**
+ * Apply `normalizeGitHubReviewId` to both identifier fields of a write.
+ *
+ * @param {Object} data
+ * @returns {Object} a copy, safe to hand to `create` / `update`
+ */
+function normalizeGitHubReviewIds(data = {}) {
+  const normalized = { ...data };
+  if ('github_review_id' in normalized) {
+    normalized.github_review_id = normalizeGitHubReviewId(normalized.github_review_id);
+  }
+  if ('github_node_id' in normalized) {
+    normalized.github_node_id = normalizeGitHubReviewId(normalized.github_node_id);
+  }
+  return normalized;
+}
+
+/**
+ * Is this a UNIQUE-index violation from SQLite?
+ *
+ * @param {Error} error
+ * @returns {boolean}
+ */
+function isUniqueConstraintError(error) {
+  const code = (error && error.code) || '';
+  return (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT'))
+    || /UNIQUE constraint failed/i.test((error && error.message) || '');
+}
+
 class GitHubReviewRepository {
   /**
    * Create a new GitHubReviewRepository instance
@@ -6044,6 +6193,8 @@ class GitHubReviewRepository {
    * @returns {Promise<Object>} Created github_review record
    */
   async create(reviewId, data = {}) {
+    // Absent identifiers are SQL NULL, never the string "null" — see
+    // `normalizeGitHubReviewId`.
     const {
       github_review_id = null,
       github_node_id = null,
@@ -6052,7 +6203,7 @@ class GitHubReviewRepository {
       body = null,
       submitted_at = null,
       github_url = null
-    } = data;
+    } = normalizeGitHubReviewIds(data);
 
     const submittedAtStr = submitted_at instanceof Date
       ? submitted_at.toISOString()
@@ -6126,6 +6277,146 @@ class GitHubReviewRepository {
   }
 
   /**
+   * Find a github_review record by GitHub's numeric review ID.
+   *
+   * The alt-host REST path may never surface a node id, so this is the only
+   * identifier some rows carry — and both are covered by the partial unique
+   * indexes added in migration 57. Used by the draft-sync provider to adopt
+   * the winner's row when a concurrent sync lost the insert race.
+   *
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {string} githubReviewId - GitHub's numeric review id, as text
+   * @returns {Promise<Object|null>} GitHub review record or null if not found
+   */
+  async findByGitHubReviewId(reviewId, githubReviewId) {
+    const row = await queryOne(this.db, `
+      SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+      FROM github_reviews
+      WHERE review_id = ? AND github_review_id = ?
+    `, [reviewId, githubReviewId]);
+
+    return row || null;
+  }
+
+  /**
+   * Record what GitHub reports about one review, creating the mirror row or
+   * updating the one that already stands for it.
+   *
+   * THE ONE WRITER for every row that has a GitHub identity, because a single
+   * GitHub review reaches us more than once and under both identifiers:
+   *
+   *   - a draft is mirrored by the draft sync, then SUBMITTED — GitHub keeps
+   *     the same review id and node id, so the submission is an update of that
+   *     same row, not a second one;
+   *   - two overlapping syncs (two tabs, a reload landing on a click) can both
+   *     read the mirror before either writes it.
+   *
+   * Migration 57's partial unique indexes make both of those hard errors for a
+   * plain INSERT, so the conflict is resolved here: look the row up by node id
+   * (canonical on the GraphQL path) AND by numeric id (all an alt-host REST
+   * response may give us), merge them when a legacy pair turns out to be one
+   * review split across two rows, and retry the lookup once if either write
+   * loses a race in between.
+   *
+   * Identifiers are normalised on the way in, so an absent one is SQL NULL
+   * rather than the string "null" — see `normalizeGitHubReviewId`.
+   *
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {Object} data - Same fields as `create`
+   * @returns {Promise<Object>} the created or updated record
+   */
+  async upsertFromGitHub(reviewId, data = {}) {
+    const normalized = normalizeGitHubReviewIds(data);
+    const nodeId = normalized.github_node_id;
+    const numericId = normalized.github_review_id;
+
+    // Resolve BOTH identifiers, not the first one that hits. Migration 57
+    // deduplicated node ids and numeric ids independently, so a legacy pair
+    // can survive it with one row carrying only the node id and another only
+    // the numeric id FOR THE SAME GitHub review. Selecting the node row and
+    // then writing the numeric id into it violates the sibling's unique index
+    // — a raw constraint failure out of a sync that had all the information
+    // needed to fix it.
+    const resolveExisting = async () => {
+      const byNode = nodeId ? await this.findByGitHubNodeId(reviewId, nodeId) : null;
+      const byNumeric = numericId ? await this.findByGitHubReviewId(reviewId, numericId) : null;
+      if (byNode && byNumeric && byNode.id !== byNumeric.id) {
+        return this._mergeSplitIdentity(byNode, byNumeric);
+      }
+      return byNode || byNumeric;
+    };
+
+    const writeTo = async (row) => {
+      await this.update(row.id, normalized);
+      return this.getById(row.id);
+    };
+
+    const existing = await resolveExisting();
+    try {
+      return existing ? await writeTo(existing) : await this.create(reviewId, normalized);
+    } catch (error) {
+      // Covers BOTH races: an insert whose row appeared between the lookup and
+      // the write, and an update whose identifier a concurrent writer claimed
+      // for a sibling row in the same window.
+      if (!isUniqueConstraintError(error)) throw error;
+
+      const raced = await resolveExisting();
+      // A constraint we do not know how to resolve — the caller's 500 is honest.
+      if (!raced) throw error;
+      return writeTo(raced);
+    }
+  }
+
+  /**
+   * Collapse two rows that are the same GitHub review under different
+   * identifiers into one canonical row, and return it.
+   *
+   * Survivor is the HIGHER id — the same rule migration 57's dedupe applied
+   * (`MAX(id)`), and the row `findPendingByReviewId` (created_at DESC) hands
+   * to the updater, so it is the one that has been receiving writes. The
+   * loser's non-NULL columns are folded into it first: it may carry the
+   * `event` / `body` / `submitted_at` of a submission the survivor never saw.
+   *
+   * Order matters — the DELETE precedes the identifier fill, because the
+   * unique indexes will not hold both rows carrying the same id for even one
+   * statement. A SAVEPOINT (not a transaction) so this nests inside the
+   * explicit `BEGIN` the submit path in src/main.js opens.
+   *
+   * @param {Object} rowA
+   * @param {Object} rowB
+   * @returns {Promise<Object>} the surviving row
+   */
+  async _mergeSplitIdentity(rowA, rowB) {
+    const keep = rowA.id > rowB.id ? rowA : rowB;
+    const drop = keep === rowA ? rowB : rowA;
+
+    logger.warn(
+      `github_reviews: merging split-identity rows ${drop.id} and ${keep.id} for review `
+      + `${keep.review_id} (node "${keep.github_node_id || drop.github_node_id}", `
+      + `id "${keep.github_review_id || drop.github_review_id}")`
+    );
+
+    await withSavepoint(this.db, 'merge_github_review', async () => {
+      await run(this.db, 'DELETE FROM github_reviews WHERE id = ?', [drop.id]);
+      await run(this.db, `
+        UPDATE github_reviews
+        SET github_node_id = COALESCE(github_node_id, ?),
+            github_review_id = COALESCE(github_review_id, ?),
+            event = COALESCE(event, ?),
+            body = COALESCE(body, ?),
+            submitted_at = COALESCE(submitted_at, ?),
+            github_url = COALESCE(github_url, ?)
+        WHERE id = ?
+      `, [
+        drop.github_node_id, drop.github_review_id, drop.event,
+        drop.body, drop.submitted_at, drop.github_url, keep.id
+      ]);
+    });
+
+    return this.getById(keep.id);
+  }
+
+  /**
    * Update a github_review record
    * @param {number} id - GitHub review record ID
    * @param {Object} data - Fields to update
@@ -6141,6 +6432,9 @@ class GitHubReviewRepository {
   async update(id, data) {
     const setClauses = [];
     const params = [];
+    // Absent identifiers are SQL NULL, never the string "null" — see
+    // `normalizeGitHubReviewId`. `undefined` still means "leave it alone".
+    data = normalizeGitHubReviewIds(data);
 
     if (data.github_review_id !== undefined) {
       setClauses.push('github_review_id = ?');
@@ -6773,6 +7067,7 @@ module.exports = {
   commit,
   rollback,
   withTransaction,
+  withSavepoint,
   getDatabaseStatus,
   getSchemaVersion,
   CURRENT_SCHEMA_VERSION,

@@ -3808,7 +3808,22 @@ class PRManager {
   }
 
   /**
-   * Update the pending draft indicator in the toolbar
+   * Update the pending draft indicator in the toolbar.
+   *
+   * Shared with LOCAL mode (Phase 4 of the local↔PR bridge): local.html loads
+   * pr.css and provides the same `#toolbar-meta` / `#pr-commit` anchors, so
+   * the indicator is genuinely common code rather than a copy.
+   *
+   * The destination comes from `RepoLinks.draftUrl` — the one resolver both
+   * modes and the review modal share. Local mode used to opt OUT of the
+   * configured `url_template` because its RepoLinks context omitted
+   * `{number}` and a template that did not name it resolved to the repository
+   * rather than the draft; it now supplies the ASSOCIATED PR's
+   * owner/repo/number instead (`_applyRepoLinks` in local.js), so the
+   * host-correct answer is available to both and there is nothing to opt out
+   * of. A local session with no association never renders this at all — it
+   * cannot sync a draft in the first place.
+   *
    * @param {Object|null} pendingDraft - Pending draft data or null if no draft
    */
   updatePendingDraftIndicator(pendingDraft) {
@@ -3825,19 +3840,19 @@ class PRManager {
     // Don't show if no pending draft
     if (!pendingDraft) return;
 
-    // Resolve the configured host name + URL (alt-host aware). Prefer the
-    // URL built from the repo's url_template over the server-reported
-    // github_url, which some alt-hosts return as a wrong-host github.com URL.
+    // Resolve the configured host name + URL (alt-host aware) — see
+    // `RepoLinks.draftUrl` for the precedence and why `github_url` alone is
+    // not trustworthy on an alternate host.
     const hostName = (window.RepoLinks && typeof window.RepoLinks.hostName === 'function')
       ? window.RepoLinks.hostName() : 'GitHub';
-    const externalUrl = (window.RepoLinks && typeof window.RepoLinks.externalUrl === 'function')
-      ? window.RepoLinks.externalUrl() : null;
+    const draftUrl = (window.RepoLinks && typeof window.RepoLinks.draftUrl === 'function')
+      ? window.RepoLinks.draftUrl(pendingDraft) : null;
 
     // Create the indicator
     const indicator = document.createElement('a');
     indicator.id = 'pending-draft-indicator';
     indicator.className = 'pending-draft-indicator';
-    indicator.href = externalUrl || pendingDraft.github_url || '#';
+    indicator.href = draftUrl || pendingDraft.github_url || '#';
     indicator.target = '_blank';
     indicator.rel = 'noopener noreferrer';
     indicator.title = `View your pending draft review on ${hostName}`;

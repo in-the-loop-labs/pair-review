@@ -1587,16 +1587,19 @@ describe('GitHubClient', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null when node has no id (invalid response)', async () => {
+    it('should reject when the node is not a pull request review', async () => {
+      // `node` present, inline fragment matched nothing: the id names some
+      // OTHER object. Not a not-found — and `reconcileOldPendingRecords`
+      // writes `dismissed` on a null, so guessing here throws away a live
+      // draft.
       const client = new GitHubClient('test-token');
       const mockGraphql = vi.fn().mockResolvedValue({
         node: { state: 'PENDING' }  // Missing id
       });
       client.octokit.graphql = mockGraphql;
 
-      const result = await client.getReviewById('PRR_invalid');
-
-      expect(result).toBeNull();
+      await expect(client.getReviewById('PRR_invalid'))
+        .rejects.toThrow(/not a pull request review/);
     });
 
     it('should return null on NOT_FOUND GraphQL error', async () => {
@@ -1611,15 +1614,46 @@ describe('GitHubClient', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null on other errors (fail gracefully)', async () => {
+    it('should reject on a transient failure instead of answering not-found', async () => {
+      // The whole point of the null contract: `null` means "GitHub says this
+      // review does not exist". A network blip answering null let
+      // `reconcileOldPendingRecords` durably record a SUBMITTED review as
+      // dismissed, and made the provider's protective catch unreachable.
       const client = new GitHubClient('test-token');
       const networkError = new Error('Network timeout');
       const mockGraphql = vi.fn().mockRejectedValue(networkError);
       client.octokit.graphql = mockGraphql;
 
-      const result = await client.getReviewById('PRR_network_error');
+      await expect(client.getReviewById('PRR_network_error'))
+        .rejects.toThrow('Network timeout');
+    });
 
-      expect(result).toBeNull();
+    it('should reject on a rate limit', async () => {
+      const client = new GitHubClient('test-token');
+      const rateLimit = new Error('API rate limit exceeded');
+      rateLimit.status = 403;
+      client.octokit.graphql = vi.fn().mockRejectedValue(rateLimit);
+
+      await expect(client.getReviewById('PRR_ratelimited'))
+        .rejects.toThrow('API rate limit exceeded');
+    });
+
+    it('should reject on a 5xx', async () => {
+      const client = new GitHubClient('test-token');
+      const serverError = new Error('502 Bad Gateway');
+      serverError.status = 502;
+      client.octokit.graphql = vi.fn().mockRejectedValue(serverError);
+
+      await expect(client.getReviewById('PRR_bad_gateway'))
+        .rejects.toThrow('502 Bad Gateway');
+    });
+
+    it('should return null when GitHub resolves the node to nothing', async () => {
+      // The other authoritative not-found, alongside the NOT_FOUND error.
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValue({ node: null });
+
+      expect(await client.getReviewById('PRR_gone')).toBeNull();
     });
 
     it('should return PENDING state for draft reviews', async () => {

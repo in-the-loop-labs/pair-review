@@ -112,39 +112,63 @@ async function getPendingReviewForUser(octokit, owner, repo, prNumber) {
 /**
  * Fetch a review by its GraphQL node ID.
  *
+ * NULL MEANS "GITHUB SAYS THIS REVIEW DOES NOT EXIST", NOTHING ELSE.
+ *
+ * The only consumer is `reconcileOldPendingRecords`
+ * (src/providers/draft-sync.js), which treats `null` as authoritative and
+ * durably writes `state: 'dismissed'`. Answering `null` for a rate limit, a
+ * 5xx or a dropped connection therefore rewrote the user's review history —
+ * a review they had actually submitted, recorded as thrown away — and made
+ * the provider's protective catch unreachable. Everything that is not an
+ * authoritative not-found now REJECTS, and the caller leaves the row at its
+ * last known value.
+ *
  * @param {Object} octokit - Octokit instance (must expose .graphql)
  * @param {string} nodeId - GraphQL node ID for the review
- * @returns {Promise<Object|null>} Review data or null if not found
+ * @returns {Promise<Object|null>} Review data, or null when GitHub reports no
+ *   such review
+ * @throws when the lookup could not be completed, or answered with something
+ *   that is not a pull request review
  */
 async function getReviewById(octokit, nodeId) {
+  let result;
   try {
     logger.debug(`Fetching review by node ID: ${nodeId}`);
 
-    const result = await octokit.graphql(REVIEW_BY_ID_QUERY, { nodeId });
-
-    if (!result.node || !result.node.id) {
-      logger.debug(`Review not found for node ID: ${nodeId}`);
-      return null;
-    }
-
-    const review = result.node;
-    logger.debug(`Found review ${nodeId}: state=${review.state}, submittedAt=${review.submittedAt}`);
-
-    return {
-      id: review.id,
-      state: review.state,
-      submittedAt: review.submittedAt,
-      url: review.url
-    };
+    result = await octokit.graphql(REVIEW_BY_ID_QUERY, { nodeId });
   } catch (error) {
     if (error.errors?.some(e => e.type === 'NOT_FOUND' || e.message?.includes('not found'))) {
+      // Authoritative: the node id resolved to nothing.
       logger.debug(`Review not found for node ID: ${nodeId}`);
       return null;
     }
 
     logger.warn(`Error fetching review by node ID ${nodeId}: ${error.message}`);
+    throw error;
+  }
+
+  if (!result.node) {
+    // Authoritative: GitHub answered, and the node is gone.
+    logger.debug(`Review not found for node ID: ${nodeId}`);
     return null;
   }
+
+  if (!result.node.id) {
+    // The node EXISTS but the `... on PullRequestReview` fragment matched
+    // nothing, so this id names some other object. That is not a not-found,
+    // and dismissing a live draft on the strength of it would be a guess.
+    throw new Error(`GitHub returned a node for "${nodeId}" that is not a pull request review`);
+  }
+
+  const review = result.node;
+  logger.debug(`Found review ${nodeId}: state=${review.state}, submittedAt=${review.submittedAt}`);
+
+  return {
+    id: review.id,
+    state: review.state,
+    submittedAt: review.submittedAt,
+    url: review.url
+  };
 }
 
 module.exports = {

@@ -647,8 +647,15 @@ class GitHubClient {
    * endpoint identifies a review by (owner, repo, pull_number,
    * review_id) rather than by node id. The GraphQL path ignores it.
    *
+   * Both transports answer `null` ONLY for an authoritative not-found (a
+   * GraphQL NOT_FOUND / missing node, a REST 404) and reject on everything
+   * else. `reconcileOldPendingRecords` writes `dismissed` on that null, so a
+   * rate limit answering it would rewrite review history.
+   *
    * @param {string} nodeId - GraphQL node id
    * @param {Object} [prContext] - `{ owner, repo, prNumber, reviewId? }`
+   * @returns {Promise<Object|null>} Review data, or null when GitHub reports
+   *   no such review
    */
   async getReviewById(nodeId, prContext) {
     return pendingReviewOps.getReviewById(this.octokit, this.features, nodeId, prContext);
