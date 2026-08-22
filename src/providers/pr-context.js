@@ -88,10 +88,15 @@ function splitRepository(repository) {
  *   `resolveHostBinding` options shape. Omit to apply the ambiguity rule.
  * @returns {Object|null} binding, or null when resolution threw
  */
-function tryResolveHostBinding(bindingRepository, config, hostOption) {
+function tryResolveHostBinding(bindingRepository, config, hostOption, { cachedTokensOnly = false } = {}) {
+  // Shape-preserving: with neither a host override nor cache-only resolution
+  // this stays the two-argument call, which is what the ambiguity rule in
+  // `resolveHostBinding` keys on (and what the dual-host tests assert).
+  const options = { ...(hostOption || {}) };
+  if (cachedTokensOnly) options.cachedTokensOnly = true;
   try {
-    return hostOption
-      ? configModule.resolveHostBinding(bindingRepository, config || {}, hostOption)
+    return (hostOption || cachedTokensOnly)
+      ? configModule.resolveHostBinding(bindingRepository, config || {}, options)
       : configModule.resolveHostBinding(bindingRepository, config || {});
   } catch (err) {
     logger.warn(`Host binding resolution failed for ${bindingRepository}: ${err.message}`);
@@ -145,14 +150,14 @@ function getMemoizedRemoteHostname(localPath) {
  * @returns {Object|null} a concrete binding, or null when the remote is
  *   missing, unparseable, or matches neither host ("still ambiguous")
  */
-function resolveDualHostFromRemote(bindingRepository, config, localPath) {
+function resolveDualHostFromRemote(bindingRepository, config, localPath, { cachedTokensOnly = false } = {}) {
   if (!localPath) return null;
   const remoteHostname = getMemoizedRemoteHostname(localPath);
   if (!remoteHostname) return null;
   const apiHost = hostResolution.getConfiguredApiHost(config, bindingRepository);
   const hostOption = hostResolution.remoteHostnameToHostOption(remoteHostname, apiHost);
   if (!hostOption) return null;
-  return tryResolveHostBinding(bindingRepository, config, hostOption);
+  return tryResolveHostBinding(bindingRepository, config, hostOption, { cachedTokensOnly });
 }
 
 /**
@@ -276,10 +281,14 @@ function _clearHostBindingFailureCache() {
  *
  * @param {string|null|undefined} repository - owner/repo identity
  * @param {Object} config - Application config
- * @param {{now?: number, localPath?: string|null}|number} [options] - Options.
+ * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean}|number} [options] - Options.
  *   `localPath` is the review's checkout, used to resolve a dual repo's host
  *   from its git remote. `now` is an injectable clock for the negative memo
  *   (tests only; never wait a TTL out in real time — tests/CONVENTIONS.md).
+ *   `cachedTokensOnly` forbids shelling out for a `token_command` (see
+ *   `resolveHostBinding`), for advisory request paths on a client deadline;
+ *   its token-less answers are deliberately NOT memoized below, since a
+ *   command that never ran is no evidence about the credential.
  *   A bare NUMBER is accepted as a legacy positional `now`, which is how the
  *   router-exposed helper is already called from
  *   tests/unit/wiring/local-host-binding.test.js.
@@ -287,16 +296,16 @@ function _clearHostBindingFailureCache() {
  *   unresolvable
  */
 function normalizeBindingOptions(options) {
-  if (typeof options === 'number') return { now: options, localPath: null };
-  const { now = Date.now(), localPath = null } = options || {};
-  return { now, localPath };
+  if (typeof options === 'number') return { now: options, localPath: null, cachedTokensOnly: false };
+  const { now = Date.now(), localPath = null, cachedTokensOnly = false } = options || {};
+  return { now, localPath, cachedTokensOnly: Boolean(cachedTokensOnly) };
 }
 
 function resolveRepositoryBinding(repository, config, options = {}) {
   if (!repository) return null;
   const parts = splitRepository(repository);
   if (!parts) return null;
-  const { now, localPath } = normalizeBindingOptions(options);
+  const { now, localPath, cachedTokensOnly } = normalizeBindingOptions(options);
   const safeConfig = config || {};
   const bindingRepository = configModule.resolveBindingRepositoryFromPR(parts.owner, parts.repo, safeConfig);
 
@@ -322,16 +331,20 @@ function resolveRepositoryBinding(repository, config, options = {}) {
   // callers).
   let binding;
   if (hostResolution.isDualHostRepo(safeConfig, bindingRepository)) {
-    binding = resolveDualHostFromRemote(bindingRepository, safeConfig, localPath);
+    binding = resolveDualHostFromRemote(bindingRepository, safeConfig, localPath, { cachedTokensOnly });
     if (!binding) {
-      const guess = tryResolveHostBinding(bindingRepository, safeConfig);
+      const guess = tryResolveHostBinding(bindingRepository, safeConfig, undefined, { cachedTokensOnly });
       binding = guess ? { ...guess, hostAmbiguous: true } : null;
     }
   } else {
-    binding = tryResolveHostBinding(bindingRepository, safeConfig);
+    binding = tryResolveHostBinding(bindingRepository, safeConfig, undefined, { cachedTokensOnly });
   }
 
-  if (binding && !binding.token) {
+  // A cache-only resolution that came back token-less proves NOTHING about the
+  // credential — the command was never run. Memoizing that would poison the
+  // next real resolution (the page-load GET, /pr-metadata) for the whole TTL
+  // and report "no GitHub" for a token that resolves fine.
+  if (binding && !binding.token && !cachedTokensOnly) {
     if (!perConfig) {
       perConfig = new Map();
       hostBindingFailureCache.set(safeConfig, perConfig);
@@ -348,7 +361,7 @@ function resolveRepositoryBinding(repository, config, options = {}) {
  *
  * @param {{prNumber: number, repository: string}|null} association
  * @param {Object} config - Application config
- * @param {{now?: number, localPath?: string|null}|number} [options] - See
+ * @param {{now?: number, localPath?: string|null, cachedTokensOnly?: boolean}|number} [options] - See
  *   `resolveRepositoryBinding`. Pass the REVIEW's `local_path` here: the
  *   association's PR lives on whichever host that checkout points at.
  * @returns {Object|null} binding, or null when unresolvable
@@ -464,7 +477,13 @@ function isUsablePRTarget(association) {
  *       are independent fetches, and withholding the comments because the
  *       metadata cache is cold would hide a working feature — without the PR's
  *       head_sha the frontend's anchor check just degrades to file level.
- *     - canCheckStaleVsPR: false   // Phase 3 flips this true
+ *     - canCheckStaleVsPR: Phase 3 — true when hasAssociatedPR AND hasToken.
+ *       Same reasoning as `canViewPRComments`: deliberately NOT gated on
+ *       `prMetadataAvailable`. The check performs a LIVE read-only fetch of
+ *       the PR's head commit (see src/providers/stale-check.js), so it needs
+ *       no warm cache — a cold cache only means the `prAdvanced` comparison
+ *       (remote vs cached head) has nothing to compare against, while the
+ *       drift comparison (local HEAD vs remote head) still answers.
  *     - canSyncDrafts:     false   // Phase 4 flips this true
  *     - canSubmitToGitHub: false   // Phase 5 flips this true
  *
@@ -491,7 +510,7 @@ function buildCapabilities({ association, hasToken, prMetadataAvailable } = {}) 
     // action is real.
     canShowPRMetadata: Boolean(hasAssociatedPR && prMetadataAvailable),
     canViewPRComments: Boolean(hasAssociatedPR && hasToken),
-    canCheckStaleVsPR: false,   // Phase 3 flips true
+    canCheckStaleVsPR: Boolean(hasAssociatedPR && hasToken),
     canSyncDrafts: false,       // Phase 4 flips true
     canSubmitToGitHub: false,   // Phase 5 flips true
   };

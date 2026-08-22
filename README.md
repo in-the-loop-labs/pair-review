@@ -489,7 +489,7 @@ checking the exit code first (as above) covers every outcome.
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
-- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
+- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, header badges for the PR's state (**MERGED** / **CLOSED**) and for local `HEAD` having moved off the PR's head commit (**PR DRIFT**), and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
 - **PR review mode**: Requires a GitHub Personal Access Token to fetch PR data and submit reviews
 
 Configuration is stored in `~/.pair-review/config.json`:
@@ -888,7 +888,7 @@ Sync runs automatically when the PR page loads (non-blocking) and on demand via 
 
 **In local mode**, the same comments appear when the branch you're reviewing has an associated GitHub PR and a token that can read it — see [Local Mode](#local-mode). The **External** segment and the refresh button appear only for those reviews; a local review with no associated PR is unchanged.
 
-One caveat is specific to local mode. Every GitHub comment is anchored to a line of a particular commit, but a local review renders your *working tree*, which can have moved on. pair-review trusts those line numbers when your local `HEAD` is the PR's head commit. When the two differ, the thread is shown in the file's comment zone instead of on a line, with a note explaining why — being visibly approximate beats being invisibly wrong. Pull or push so the two agree, then hit refresh, and the comments snap back to their exact lines.
+One caveat is specific to local mode. Every GitHub comment is anchored to a line of a particular commit, but a local review renders your *working tree*, which can have moved on. pair-review trusts those line numbers when your local `HEAD` is the PR's head commit. When the two differ, the thread is shown in the file's comment zone instead of on a line, with a note explaining why — being visibly approximate beats being invisibly wrong. The header shows a **PR DRIFT** badge whenever that is the case; if your working tree has *also* moved since the diff was captured, the amber **STALE** badge appears alongside it rather than instead of it (see [Local Mode](#local-mode)). Pull or push so the two agree, then hit refresh, and the comments snap back to their exact lines.
 
 Two related limits are worth knowing:
 
@@ -989,9 +989,34 @@ PR context onto the local session — no need to switch to PR mode to see it:
 - a clickable PR pill in the header with title, author, and state
 - (with `external_comments` enabled) that PR's existing review comments inline
   in the diff, read-only — see [GitHub Review Comments](#github-review-comments)
+- a **PR DRIFT** badge in the header when your local `HEAD` is no longer the
+  pull request's head commit — plus **MERGED** / **CLOSED** if the PR is no
+  longer open
 
-Both need a configured GitHub token that can read the repository. Detection runs
-at session start; if you open the PR mid-session, reload the page to pick it up.
+All of these need a configured GitHub token that can read the repository.
+Detection runs at session start; if you open the PR mid-session, reload the page
+to pick it up.
+
+These are three independent facts, so the header shows a **badge group** and
+every applicable badge appears at the same time. **MERGED** / **CLOSED** report
+the pull request's lifecycle; the amber **STALE** badge means your working tree
+moved since the diff was captured; **PR DRIFT** means your local `HEAD` and the
+pull request are on different commits. Only **MERGED** and **CLOSED** are
+mutually exclusive — a merged PR whose working tree has also changed shows both
+**MERGED** and **STALE**, and a drifted one that is also stale shows both
+**STALE** and **PR DRIFT**.
+
+The distinction matters because only one of them is a call to action: the
+refresh button re-captures your working tree, which clears **STALE** and does
+not clear the other two — refreshing cannot move a commit on GitHub. It does
+re-ask GitHub about the pull request, so a PR that was merged, closed or
+reopened since you loaded the page has its badge brought up to date (in PR mode
+too). **PR DRIFT** is informational — push or pull so the two commits agree. It also tells you the inline PR comments are being
+anchored at file level rather than to exact lines (see
+[GitHub Review Comments](#github-review-comments)). Note that drift compares
+*commits*, not file contents: uncommitted edits do not raise it, and a matching
+`HEAD` clears it even if your working tree has since moved on (that is what
+**STALE** answers).
 
 ## Claude Code Plugins
 

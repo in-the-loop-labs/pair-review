@@ -378,8 +378,19 @@
                         </a>
                     </div>
                 </div>
-                <span id="stale-badge" class="stale-badge" style="display: none" title="Working directory has changed">
-                    <span class="stale-badge-text">STALE</span>
+                <!-- Three INDEPENDENT badges, not one mutable slot: the diff can be
+                     stale, the PR merged/closed, and local HEAD off the PR head all at
+                     once. See STALE_BADGE_TYPES in public/js/pr.js. -->
+                <span class="stale-badges" id="stale-badges">
+                    <span id="stale-badge" class="stale-badge" style="display: none" title="Working directory has changed">
+                        <span class="stale-badge-text">STALE</span>
+                    </span>
+                    <span id="pr-state-badge" class="stale-badge" style="display: none" title="">
+                        <span class="stale-badge-text"></span>
+                    </span>
+                    <span id="pr-drift-badge" class="stale-badge pr-drift" style="display: none" title="Your local HEAD is not the pull request head commit">
+                        <span class="stale-badge-text">PR DRIFT</span>
+                    </span>
                 </span>
             </div>
             <div class="header-center">

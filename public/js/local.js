@@ -9,6 +9,27 @@
  */
 // STALE_TIMEOUT is declared in pr.js (shared global scope via script tags)
 
+/**
+ * The working-tree half of the PR-drift chat notification — one sentence per
+ * thing we can actually know about the tree.
+ *
+ * These strings go into the AI agent's context as FACT, so each may assert only
+ * what somebody actually answered. There is no "unknown" default: the caller
+ * that has no working-tree answer to give passes `null` and the clause is
+ * omitted, which is not the same statement as "could not be determined".
+ * See `_workingTreeNote` and `_applyPRHeadStaleState`.
+ */
+const TREE_CURRENT_NOTE =
+  'The working tree is current; refreshing the diff will not close this gap';
+const TREE_CHANGED_NOTE =
+  'The working tree has also changed since the diff was captured; '
+  + 'refreshing it will not close this gap';
+const TREE_UNKNOWN_NOTE =
+  'Whether the working tree still matches the captured diff could not be determined; '
+  + 'refreshing it will not close this gap either';
+const RECAPTURED_TREE_NOTE =
+  'The diff was just re-captured from the working tree, so refreshing again will not close this gap';
+
 class LocalManager {
   /**
    * Create LocalManager instance.
@@ -51,6 +72,15 @@ class LocalManager {
     // `_prMetadataWarmAttempts` is the hard per-page-load retry budget.
     this._prMetadataWarmHolder = null;
     this._prMetadataWarmAttempts = 0;
+
+    // The most recent thing anybody actually learned about the working tree,
+    // as the sentence `_applyPRHeadStaleState` composes into its notification.
+    // Kept SEPARATELY from PR-head state because the two are answered by
+    // different requests: `?prHeadOnly=1` never asks about the tree, so
+    // composing its `isStale: null` as "could not be determined" would destroy
+    // a known fact — the chat panel stores ONE snapshot per tab and every
+    // queue call replaces it. Null until something answers.
+    this._workingTreeNote = null;
 
     // Wait for PRManager to be ready, then initialize local mode
     if (window.prManager) {
@@ -257,19 +287,32 @@ class LocalManager {
 
       try {
         let stored = localStorage.getItem(key);
+        let adoptedLegacy = false;
         if (!stored) {
           // One-time read-through for sessions that started before the key was
           // session-scoped: adopt the legacy commit-scoped value for the
-          // CURRENT head. The next save writes the session key, so this costs
-          // one extra miss-path read and needs no migration step.
+          // CURRENT head. Costs one extra miss-path read and needs no
+          // migration step.
           const headSha = manager.currentPR?.head_sha;
           const prefix = headSha ? viewedKeyPrefix() : null;
           if (prefix) {
             stored = localStorage.getItem(`${prefix}:${headSha}`);
+            adoptedLegacy = Boolean(stored);
           }
         }
         if (stored) {
           manager.viewedFiles = new Set(JSON.parse(stored));
+          // WRITE THROUGH, immediately. Reading a legacy value into memory and
+          // waiting for the next save to persist it is a fallback that fails on
+          // the one path it exists for: the legacy key is derived from the
+          // CURRENT head, so a HEAD change before the user happens to toggle a
+          // file makes the next load derive a different legacy key, miss, and
+          // reset the set to empty. `_applyRefreshedDiff` moves `head_sha` and
+          // then reloads the diff with zero interaction, so that window is the
+          // normal case, not a corner. The legacy key is deliberately left in
+          // place — this is an adoption, not a migration, and a rollback must
+          // still find its value.
+          if (adoptedLegacy) manager.saveViewedState();
         } else {
           manager.viewedFiles = new Set();
         }
@@ -857,6 +900,10 @@ class LocalManager {
    * Refresh the diff from the working directory.
    * @param {Object} [opts] - Options
    * @param {boolean} [opts.silent] - When true, auto-update on HEAD change without dialog
+   * @returns {Promise<{forcedPRMetadataRead: boolean}|undefined>} The outcome of
+   *   `_applyRefreshedDiff`, or undefined when the refresh never got that far
+   *   (button missing or busy, HEAD-change dialog cancelled, request failed).
+   *   Only `_checkLocalStalenessOnLoad` reads it; every other caller ignores it.
    */
   async refreshDiff(opts = {}) {
     const manager = window.prManager;
@@ -868,6 +915,16 @@ class LocalManager {
       // Show loading state
       refreshBtn.disabled = true;
       refreshBtn.classList.add('refreshing');
+
+      // Stamped HERE, before the POST — a working-tree answer taken before a
+      // recapture starts is spent, and the on-load check parks on awaits long
+      // enough to still be holding one. Waiting until `_applyRefreshedDiff`
+      // would leave a window in which that parked check can fire a SECOND,
+      // concurrent refresh of the diff this one is already recapturing.
+      // `_applyRefreshedDiff` stamps again for the answers that landed during
+      // the round trip; both bumps are correct and a counter is idempotent
+      // under repetition.
+      this._nextWorkingTreeCheckGeneration();
 
       const response = await fetch(`/api/local/${this.reviewId}/refresh`, {
         method: 'POST'
@@ -902,7 +959,7 @@ class LocalManager {
         // Branch scope: backend already updated SHA and persisted diff — fall through
       }
 
-      await this._applyRefreshedDiff(manager, result, { userInitiated: !opts.silent });
+      return await this._applyRefreshedDiff(manager, result, { userInitiated: !opts.silent });
 
     } catch (error) {
       console.error('Error refreshing diff:', error);
@@ -1010,20 +1067,48 @@ class LocalManager {
    * @param {boolean} [options.userInitiated=false] - False for the silent
    *   on-load staleness refresh. Its only effect is the forced PR-metadata
    *   re-read below (the PUSH trigger).
+   * @returns {Promise<{forcedPRMetadataRead: boolean}>} Whether this call
+   *   issued a forced (`?refresh=1`) PR-metadata read. `_checkLocalStalenessOnLoad`
+   *   needs the answer to avoid issuing a second, identical one — and it is a
+   *   genuine question, not a constant: the read fires only when local HEAD
+   *   moved or the user asked.
    */
   async _applyRefreshedDiff(manager, result, { userInitiated = false } = {}) {
-    // Notify chat agent about diff refresh
-    if (window.chatPanel) {
-      if (result.headShaChanged) {
-        const prev = result.previousHeadSha;
-        const abbrevLen = this.localData?.shaAbbrevLength || 7;
-        window.chatPanel.queueDiffStateNotification(
-          `HEAD SHA changed: ${prev ? prev.substring(0, abbrevLen) : 'unknown'} \u2192 ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}.`
-        );
-      }
-      window.chatPanel.queueDiffStateNotification(
-        'Local diff refreshed from working directory.'
+    // The recapture has landed: every working-tree answer computed against the
+    // OLD baseline digest — including one whose request left before this
+    // refresh started — is now obsolete. `refreshDiff` stamped once already;
+    // this second bump covers the answers that arrived while the POST was in
+    // flight. PR-head answers are untouched: a refresh cannot move a commit on
+    // GitHub. See `_nextWorkingTreeCheckGeneration`.
+    this._nextWorkingTreeCheckGeneration();
+
+    // ...and the tree the user is now looking at was read moments ago. Remember
+    // that, because the `prHeadOnly` recheck below is answered `isStale: null`
+    // ("not asked") and a later PR-side notification must not launder that into
+    // "could not be determined". See `_workingTreeNote`.
+    this._workingTreeNote = RECAPTURED_TREE_NOTE;
+
+    // Notify chat agent about diff refresh.
+    //
+    // ONE message, composed — `queueDiffStateNotification` is not a queue. It
+    // stores a single snapshot per tab (see ChatPanel), so each call REPLACES
+    // the last: the HEAD-change sentence was being erased by the refresh
+    // sentence before the agent could ever read it. The composed text is also
+    // handed to `_recheckPRHeadState` below, whose own message lands a network
+    // round-trip later and would otherwise overwrite the only signal the agent
+    // has that the diff underneath it was re-captured.
+    const refreshNotes = [];
+    if (result.headShaChanged) {
+      const prev = result.previousHeadSha;
+      const abbrevLen = this.localData?.shaAbbrevLength || 7;
+      refreshNotes.push(
+        `HEAD SHA changed: ${prev ? prev.substring(0, abbrevLen) : 'unknown'} \u2192 ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}.`
       );
+    }
+    refreshNotes.push('Local diff refreshed from working directory.');
+    const refreshNote = refreshNotes.join(' ');
+    if (window.chatPanel) {
+      window.chatPanel.queueDiffStateNotification(refreshNote);
     }
 
     // Needed by the "did local HEAD move?" trigger below, which cannot be
@@ -1105,9 +1190,30 @@ class LocalManager {
       manager.diffOptionsDropdown.branchAvailable = result.branchAvailable;
     }
 
-    // Clear stale state after successful refresh
-    manager._hideStaleBadge();
+    // Clear stale state after successful refresh — the FRESHNESS slot only.
+    // The badge group is what makes that possible: PR DRIFT and MERGED/CLOSED
+    // are not things a refresh fixed, and clearing the whole element meant a
+    // user who saw the drift badge and reached for the only visible affordance
+    // made it disappear while it was still true. The README promises the
+    // opposite ("informational, not a call to refresh").
+    manager._hideStaleBadge('stale');
     manager._stalenessPromise = null;
+
+    // ...and re-ask about the PR side, which a refresh cannot change but which
+    // may have moved on its own since page load. `prHeadOnly` because that is
+    // all this consumes: the refresh route has just rebuilt the diff and its
+    // digest, so recomputing the working-tree digest here would repeat the
+    // whole tree walk to produce an answer nobody reads. Fire-and-forget so the
+    // refresh's own toast is not held up by a network round trip.
+    void this._recheckPRHeadState({
+      // Restates what the composed refresh message said, because this call
+      // replaces it (see above).
+      preface: `${refreshNote} `,
+      // ...and the backend's `isStale: null` here means "not asked", not
+      // "unknown": the diff on screen was re-captured from the tree moments
+      // ago. Say that instead of "could not be determined".
+      workingTreeNote: RECAPTURED_TREE_NOTE
+    });
 
     // Show success toast
     if (window.toast) {
@@ -1115,19 +1221,77 @@ class LocalManager {
     } else if (window.showToast) {
       window.showToast('Diff refreshed successfully', 'success');
     }
+
+    return { forcedPRMetadataRead: forceMetadataRead };
   }
 
   /**
    * Check staleness on page load and show badge or auto-refresh.
    *
    * Logic mirrors PRManager._checkStalenessOnLoad but uses the local
-   * GET endpoint and only supports the 'stale' badge type (no merged/closed).
+   * GET endpoint. Badge types: 'stale' (working tree moved) plus, when the
+   * review has an associated PR, 'merged' / 'closed' / 'pr-drift'.
+   *
+   * NO BADGE PRIORITY — the badges are a GROUP of independent slots (see
+   * `_showStaleBadge` in public/js/pr.js), so a tree that moved AND a PR that
+   * moved render side by side. There is no ordering to get wrong, which is the
+   * point: the single shared element used to let whichever fact was evaluated
+   * last erase the others.
+   *
+   * `result.isStale` means working-tree staleness ONLY and must stay that way:
+   * `isStale === true` with no session data triggers `refreshDiff({silent:true})`,
+   * and re-capturing the local diff cannot make the PR stop having advanced.
+   * OR-ing PR drift into `isStale` would re-capture the diff on every single
+   * page load, forever.
+   *
    * @returns {Promise<Object|null>} The staleness result, or null on failure.
    */
   async _checkLocalStalenessOnLoad() {
+    // Stamp BEFORE the fetch, ONE PER DOMAIN: this is the only request that
+    // answers both questions, and the two are superseded by different events.
+    // Several unawaited paths write each side, and whichever answer landed
+    // last used to win regardless of which was asked last.
+    const prHeadGeneration = this._nextPRHeadCheckGeneration();
+    const workingTreeGeneration = this._nextWorkingTreeCheckGeneration();
+
+    // ...and the working-tree branch needs its stamp re-checked at every await
+    // it parks on, not just where the PR stamp is handed to
+    // `_applyPRHeadStaleState`. The ordering that got through: this check reads
+    // `isStale: true`, parks on the session-data query, the user hits Refresh —
+    // which clears the STALE slot and recaptures the diff — and then the parked
+    // query resolves and repaints STALE, or fires a second silent refresh, over
+    // a diff that was re-captured while it waited.
+    //
+    // A `prHeadOnly` recheck must NOT trip this guard; see
+    // `_nextWorkingTreeCheckGeneration`.
+    //
+    // SIDE EFFECTS ONLY: every guard below returns `result`, never null. This
+    // promise is `_stalenessPromise`, which the Analyze dialog awaits and reads
+    // (see `patchPRManager`) — a superseded badge is a lie, but a superseded
+    // answer is still a true statement about the moment it was asked, and
+    // swallowing it would make the dialog fall back to a second fetch.
+    const superseded = () => workingTreeGeneration !== this._workingTreeCheckGeneration;
+
     try {
       const result = await this._fetchLocalStaleness();
       if (!result) return null;
+      // Nothing past this line — chat snapshot, badge, `refreshDiff`, forced
+      // metadata read — may run on an answer a newer request has replaced.
+      // Dropping `_refreshPRMetadataIfPRAdvanced` with them drops no
+      // convergence: the only thing that advances the WORKING-TREE stamp is a
+      // refresh (or a newer full check), and `_applyRefreshedDiff` issues its
+      // own forced `?refresh=1` whenever the refresh was user-initiated — and a
+      // refresh running against this check can only be user-initiated, since
+      // the sole silent one is the branch below. A `prHeadOnly` recheck no
+      // longer reaches this guard at all, and it now drives that same
+      // convergence itself.
+      if (superseded()) return result;
+
+      // This is the only request that ASKS about the working tree, so it is the
+      // only one that may update the remembered statement — including to `null`
+      // when the backend could not tell. A later `prHeadOnly` recheck composes
+      // whatever is remembered here rather than inventing an answer of its own.
+      this._workingTreeNote = LocalManager.workingTreeNoteFor(result.isStale);
 
       // Notify chat of HEAD SHA change even when diff digest is unchanged
       // (e.g. git commit --amend with identical content, or rebase)
@@ -1137,31 +1301,87 @@ class LocalManager {
           `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased.`
         );
       }
-      if (result.isStale !== true) return result;
 
-      // Stale — decide: silent refresh or show badge
-      const manager = window.prManager;
-      const hasData = await manager._hasActiveSessionData();
-      if (hasData) {
-        console.debug('[Local] working directory stale, session has data — showing badge');
-        manager._showStaleBadge('stale', 'Working directory has changed');
-        if (window.chatPanel) {
-          // Notify chat of HEAD SHA change only when we have session data to protect
-          // (the !hasData path calls refreshDiff() which queues its own notification)
-          if (result.headShaChanged) {
+      // Set by the silent-refresh branch below. `_applyRefreshedDiff` performs
+      // its own forced `?refresh=1` read, and reports whether it did — it only
+      // does so when local HEAD actually moved, so this cannot be assumed.
+      let metadataAlreadyRefreshed = false;
+
+      if (result.isStale === true) {
+        // Stale — decide: silent refresh or show badge
+        const manager = window.prManager;
+        const hasData = await manager._hasActiveSessionData();
+        if (superseded()) return result;
+        if (hasData) {
+          console.debug('[Local] working directory stale, session has data — showing badge');
+          manager._showStaleBadge('stale', 'Working directory has changed');
+          if (window.chatPanel) {
+            // Notify chat of HEAD SHA change only when we have session data to protect
+            // (the !hasData path calls refreshDiff() which queues its own notification)
+            if (result.headShaChanged) {
+              window.chatPanel.queueDiffStateNotification(
+                `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased.`
+              );
+            }
             window.chatPanel.queueDiffStateNotification(
-              `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased.`
+              'Working directory has changed since the diff was captured.'
             );
           }
-          window.chatPanel.queueDiffStateNotification(
-            'Working directory has changed since the diff was captured.'
-          );
+          // The PR side is a different question and gets its own badge slot,
+          // so it is applied on this branch too. Its chat message restates the
+          // working-tree fact (the `isStale === true` arm of the note below),
+          // because it replaces the snapshot just queued.
+          this._applyPRHeadStaleState(result, abbrevLen, { generation: prHeadGeneration });
+        } else {
+          // No user work to protect — refresh silently (auto-update on HEAD change).
+          // `_applyRefreshedDiff` re-asks about the PR head itself, so this
+          // branch deliberately does not.
+          console.debug('[Local] working directory stale, no session data — auto-refreshing');
+          const refreshOutcome = await this.refreshDiff({ silent: true });
+          metadataAlreadyRefreshed = Boolean(refreshOutcome && refreshOutcome.forcedPRMetadataRead);
+          // NO `superseded()` guard on this await, deliberately. The refresh we
+          // just awaited stamps the working-tree generation itself — twice, in
+          // `refreshDiff` and again in `_applyRefreshedDiff` — so OUR OWN
+          // descendant has always advanced the counter by the time this line
+          // runs, and the check would be a constant `true`. It would then skip
+          // `_refreshPRMetadataIfPRAdvanced` on precisely the path that still
+          // needs it: a silent refresh whose local HEAD did not move makes no
+          // forced read (`forceMetadataRead = headMoved || userInitiated`), so a
+          // `pr_metadata.head_sha` left behind by an upstream push would stay
+          // behind — and that is one operand of the anchor-trust gate.
+          // `metadataAlreadyRefreshed` already asks the real question.
         }
       } else {
-        // No user work to protect — refresh silently (auto-update on HEAD change)
-        console.debug('[Local] working directory stale, no session data — auto-refreshing');
-        await this.refreshDiff({ silent: true });
+        // Everything that is NOT `isStale === true` lands here, and that is two
+        // different answers, not one:
+        //   - `false` — the working tree matches the captured diff, so nothing
+        //     here is fixable by refreshing;
+        //   - `null` — the backend could not tell (no stored diff data, or the
+        //     handler threw). It still ships a fully populated `prHead`.
+        // Either way the PR may have moved under us and that fact is
+        // independently true, so the badge is shown for both. Only the wording
+        // differs — see `_applyPRHeadStaleState`, which must not claim the
+        // working tree is current on the `null` answer.
+        this._applyPRHeadStaleState(result, abbrevLen, { generation: prHeadGeneration });
       }
+
+      // Independent of the badge, and of working-tree staleness: `pr_metadata`
+      // has no TTL, so a PR that advanced upstream leaves the cached head_sha
+      // behind — and that cached value is one operand of Phase 2's anchor-trust
+      // gate. `prAdvanced` is precisely "our cache is behind". Fire-and-forget:
+      // this promise is `_stalenessPromise`, which the Analyze dialog awaits,
+      // and a metadata round trip must not sit in front of that dialog.
+      //
+      // Skipped only when the silent refresh above reported that it already
+      // issued a forced read — the cache is then current as of a moment LATER
+      // than the `prAdvanced` flag we are still holding, so a second
+      // `?refresh=1` could only re-fetch what was just fetched. Every other
+      // path (badge shown, not stale, refresh declined, refresh failed, or a
+      // refresh that did not need the forced read) still calls.
+      if (!metadataAlreadyRefreshed) {
+        void this._refreshPRMetadataIfPRAdvanced(result.prHead);
+      }
+
       return result;
     } catch {
       // Fail silently — staleness badge is best-effort
@@ -1170,16 +1390,335 @@ class LocalManager {
   }
 
   /**
+   * Monotonic stamp for PR-HEAD answers.
+   *
+   * TWO unawaited paths end in `_applyPRHeadStaleState` writing the PR-side
+   * badges — the on-load `_checkLocalStalenessOnLoad` (whose promise is parked
+   * on `_stalenessPromise`) and `_recheckPRHeadState`. The refresh button
+   * re-enables in `refreshDiff`'s `finally`, which runs before the recheck it
+   * fired has settled, so a second refresh can start with the first recheck
+   * still outstanding. Without a stamp, whichever RESPONSE landed last won the
+   * badge and the chat snapshot, regardless of which REQUEST was newer — and
+   * the failure is invisible when it happens.
+   *
+   * A counter rather than an AbortController because the requests are already
+   * bounded (`STALE_TIMEOUT`) and cheap; what matters is not spending the
+   * answer, it is not APPLYING a superseded one.
+   *
+   * ONE COUNTER PER DOMAIN — see `_nextWorkingTreeCheckGeneration`.
+   *
+   * @returns {number} the stamp this caller must present when applying.
+   */
+  _nextPRHeadCheckGeneration() {
+    this._prHeadCheckGeneration = (this._prHeadCheckGeneration || 0) + 1;
+    return this._prHeadCheckGeneration;
+  }
+
+  /**
+   * Monotonic stamp for WORKING-TREE answers, deliberately separate from the
+   * PR-head one above.
+   *
+   * A single shared counter made every `?prHeadOnly=1` recheck supersede the
+   * working-tree half of an on-load check that was still parked — and that
+   * request never asks about the working tree (it answers `isStale: null`,
+   * "not asked") and cannot recapture it, so it has no standing to cancel
+   * anything on that side. The path that produced it is routine: a late
+   * association resolves, `_refreshPRMetadata` fires `_recheckPRHeadState`,
+   * and the on-load check's `isStale: true` is discarded before it can show
+   * STALE, notify chat, or silently refresh an empty session. Nothing later
+   * restores those effects.
+   *
+   * So only something that genuinely invalidates a working-tree answer bumps
+   * this: a newer full check, or a refresh (`refreshDiff`, which recaptures
+   * the tree and rebaselines the digest the answer was compared against).
+   *
+   * @returns {number} the stamp this caller must present when applying.
+   */
+  _nextWorkingTreeCheckGeneration() {
+    this._workingTreeCheckGeneration = (this._workingTreeCheckGeneration || 0) + 1;
+    return this._workingTreeCheckGeneration;
+  }
+
+  /**
+   * Badges + chat notification for the associated PR's state.
+   *
+   * Called on EVERY branch of the staleness check, including `isStale === true`.
+   * That is safe — and correct — only because the header renders a badge GROUP
+   * (see `_showStaleBadge` in public/js/pr.js): the PR-side facts live in their
+   * own slots and cannot overwrite the actionable STALE badge. While one shared
+   * element was in play this method carried an unwritten precondition that only
+   * one of its callers enforced.
+   *
+   * Driven entirely by `result.prHead`, never by a capability check: the
+   * backend already returns `prHead: null` when it did not (or could not)
+   * look — no association, no credential, ambiguous host. A second gate here
+   * could only disagree with the answer we were given.
+   *
+   * `prHead.error` (a fetch that was attempted and failed) is treated as
+   * "we do not know", not as "no drift": showing nothing beats showing a
+   * badge derived from a null `remoteHeadSha`, and an unknown must not clear a
+   * badge a KNOWN answer put up.
+   *
+   * @param {Object} result - check-stale response body.
+   * @param {number} abbrevLen - SHA abbreviation length for this review.
+   * @param {Object} [options]
+   * @param {string} [options.preface=''] - Text to prepend to the chat
+   *   notification. `queueDiffStateNotification` REPLACES the stored snapshot
+   *   rather than appending, so a caller that already queued something must
+   *   hand it over here or lose it.
+   * @param {string|null} [options.workingTreeNote=null] - Overrides the
+   *   sentence derived from `result.isStale`. For callers that know something
+   *   the response does not — the post-refresh recheck asks `prHeadOnly`, so
+   *   its `isStale: null` means "not asked", not "unknown".
+   * @param {number|null} [options.generation=null] - Stamp from
+   *   `_nextPRHeadCheckGeneration`. A superseded answer applies nothing.
+   */
+  _applyPRHeadStaleState(result, abbrevLen, { preface = '', workingTreeNote = null, generation = null } = {}) {
+    const manager = window.prManager;
+    if (!manager) return;
+    if (generation !== null && generation !== this._prHeadCheckGeneration) return;
+
+    const prHead = result?.prHead;
+    if (!prHead || prHead.error) return;
+
+    // The tooltip explains every condition the backend reported, in its own
+    // words, so the badge never has to guess at the wording.
+    const reasonText = LocalManager.formatStaleReasons(result.reasons);
+
+    // Lifecycle slot. MERGED and CLOSED are the one genuinely exclusive pair;
+    // an open PR CLEARS the slot so a newer answer can undo an older one (a PR
+    // can be reopened, and a badge nothing ever retracts is a badge that lies).
+    if (prHead.merged === true) {
+      manager._showStaleBadge('merged', reasonText || undefined);
+    } else if (prHead.prState && prHead.prState !== 'open') {
+      manager._showStaleBadge('closed', reasonText || undefined);
+    } else {
+      manager._hideStaleBadge('lifecycle');
+    }
+
+    // Commit-alignment slot, likewise self-healing: a "no longer drifted"
+    // answer must be able to retract the badge an earlier one painted.
+    //
+    // `drifted` is TRI-STATE (see `respond` in src/routes/local.js): `null`
+    // means one of the two SHAs was unknown, so the comparison was never made.
+    // Only an explicit `false` retracts the badge — clearing on `null` let a
+    // half-answered check erase a badge a fully-answered one put up, which is
+    // the same "an unknown must not clear a known" rule `prHead.error` follows
+    // above.
+    if (prHead.drifted !== true) {
+      if (prHead.drifted === false) manager._hideStaleBadge('drift');
+      return;
+    }
+
+    const localSha = prHead.localHeadSha ? prHead.localHeadSha.substring(0, abbrevLen) : 'unknown';
+    const prSha = prHead.remoteHeadSha ? prHead.remoteHeadSha.substring(0, abbrevLen) : 'unknown';
+    const shaDetail = `Local HEAD ${localSha}, PR #${prHead.prNumber} head ${prSha}.`;
+    manager._showStaleBadge('pr-drift', reasonText ? `${reasonText} ${shaDetail}` : shaDetail);
+
+    if (window.chatPanel) {
+      // ChatPanel keeps ONE diff-state snapshot, not a queue —
+      // queueDiffStateNotification REPLACES the stored string. Everything this
+      // call would otherwise erase is therefore restated here: `preface` for
+      // whatever the caller queued, `headChangeNote` for the local-HEAD move,
+      // and the working-tree sentence below.
+      //
+      // Distinct from the `headShaChanged` message, which says the LOCAL head
+      // moved since we captured the diff. This one says local and PR heads are
+      // different commits — a different fact, deliberately worded so the two
+      // cannot be read as contradicting each other.
+      const headChangeNote = result.headShaChanged
+        ? `HEAD SHA changed (${result.previousHeadSha ? result.previousHeadSha.substring(0, abbrevLen) : 'unknown'} → ${result.currentHeadSha ? result.currentHeadSha.substring(0, abbrevLen) : 'unknown'}). The branch may have been rebased. `
+        : '';
+      // This string is fed to the AI agent as fact, so it may only assert what
+      // somebody actually answered. `result.isStale` carries three of those
+      // answers — `false` is a positive "the working tree matches the captured
+      // diff", `true` is the opposite and must not be reported as unknown, and
+      // `null` from a FULL check is genuinely "could not determine" (no stored
+      // diff data, or the handler threw).
+      //
+      // `prHeadOnly: true` is the fourth case and is NOT any of those: that
+      // request never asked, so its `isStale: null` is no evidence at all.
+      // Answering it as "could not be determined" overwrote a known working-tree
+      // fact with a false unknown — the chat panel keeps ONE snapshot per tab,
+      // so the drift message REPLACES whatever the full check (or a refresh that
+      // just recaptured the tree) had already established. It composes the
+      // remembered statement instead, and omits the clause entirely when there
+      // is nothing to remember yet.
+      //
+      // The push-or-pull half holds in every case — no working-tree refresh can
+      // move the PR's head commit.
+      let treeNote = workingTreeNote;
+      if (typeof treeNote !== 'string') {
+        treeNote = result.prHeadOnly === true
+          ? this._workingTreeNote
+          : LocalManager.workingTreeNoteFor(result.isStale);
+      }
+      const treeClause = treeNote ? `${treeNote} — ` : '';
+      window.chatPanel.queueDiffStateNotification(
+        `${preface}${headChangeNote}PR #${prHead.prNumber} head differs from local HEAD (local ${localSha}, PR ${prSha}). `
+        + `${treeClause}push or pull so the two agree.`
+      );
+    }
+  }
+
+  /**
+   * Re-read PR metadata when the backend reports our cached `head_sha` is
+   * behind the PR's real head (`prHead.prAdvanced`).
+   *
+   * Phase 2's anchor-trust gate compares local HEAD against the `head_sha` in
+   * the TTL-less `pr_metadata` cache, so a PR that advances mid-session leaves
+   * that comparison answering about a commit that is no longer the PR head.
+   * Reuses `_refreshPRMetadata({force:true})` — the single apply block that
+   * updates capabilities, `associatedPR`, the header pill and the external
+   * comment overlay — rather than adding a second refresh implementation.
+   *
+   * Respects the warm-up hold the same way `_applyRefreshedDiff` does: acquire
+   * it so a concurrent `_maybeWarmPRMetadata` cannot start a duplicate fetch,
+   * but run regardless of whether we won it (a forced read is not subject to
+   * the cold-cache retry budget, which exists for unforced warm-ups).
+   *
+   * Running without the hold means a forced read can OVERLAP an unforced
+   * warm-up that started earlier. `_refreshPRMetadata` settles that with a
+   * generation stamp: the newest request's answer wins whatever order the two
+   * responses arrive in, so an older warm-up can no longer revert the
+   * `head_sha` this read exists to bring forward.
+   *
+   * @param {Object|null} prHead - `prHead` from the check-stale response.
+   * @returns {Promise<void>}
+   */
+  async _refreshPRMetadataIfPRAdvanced(prHead) {
+    if (!prHead || prHead.error) return;
+    // NO CAPABILITY GATE HERE — deliberately, and this is the same argument
+    // `_applyPRHeadStaleState` makes. `prAdvanced === true` IS the backend's
+    // statement that it reached GitHub, compared the PR's real head against our
+    // cached `head_sha`, and found the cache behind. Reaching GitHub already
+    // required the association and a usable credential, so the flag can only
+    // ever agree — except when it is WRONG, and then it is wrong in the
+    // direction that hurts. `this.capabilities` is a page-load snapshot: on a
+    // dirty tree the association is backfilled AFTER the page-load GET
+    // responded, so `canCheckStaleVsPR` is false while check-stale happily
+    // resolves the association and reports `prAdvanced: true`. Gating here
+    // skipped the forced re-read, leaving the TTL-less `pr_metadata.head_sha`
+    // behind — and that value is one operand of the anchor-trust gate, so
+    // external comments kept anchoring against a commit that is no longer the
+    // PR head. Nothing else re-fires it (`_maybeWarmPRMetadata` bails once
+    // `canShowPRMetadata` is true, and never asks for `?refresh=1`).
+    // A stale snapshot must not be allowed to veto a fresher answer.
+    if (prHead.prAdvanced !== true) return;
+
+    const hold = this._acquirePRMetadataWarmHold();
+    try {
+      await this._refreshPRMetadata({ force: true });
+    } finally {
+      this._releasePRMetadataWarmHold(hold);
+    }
+  }
+
+  /**
+   * Re-ask the backend about the associated PR's head after a refresh, and
+   * re-apply the PR-side badge if drift is still true.
+   *
+   * DELIBERATELY NOT `_checkLocalStalenessOnLoad`
+   * ---------------------------------------------
+   * That method can call `refreshDiff({ silent: true })`, which re-enters
+   * `_applyRefreshedDiff`, which is what calls this — an unbounded loop. This
+   * method touches ONLY `_applyPRHeadStaleState` and the `prAdvanced`
+   * convergence: no working-tree branch, no `_hasActiveSessionData`, and above
+   * all no `refreshDiff`.
+   *
+   * It also re-fetches rather than recomputing drift from `manager.currentPR`
+   * and the freshly-refreshed local HEAD. The backend already owns that
+   * comparison (`prHead.drifted`), and a second client-side implementation of
+   * the same predicate is exactly the duplication that lets the two answers
+   * drift apart. One `prHeadOnly` GET per refresh buys a single source of
+   * truth — and `prHeadOnly` is what keeps that GET from re-walking the whole
+   * working tree for a digest this method never reads.
+   *
+   * Also the recovery path for a LATE association: on a dirty tree the review
+   * row carries no `associated_pr_*` at page load, so the on-load check can
+   * answer `prHead: null` and nothing would ever ask again. `_refreshPRMetadata`
+   * calls this the moment the association appears.
+   *
+   * @param {Object} [options] - Forwarded to `_applyPRHeadStaleState`; see
+   *   `preface` / `workingTreeNote` there.
+   * @returns {Promise<void>} Never rejects — the badge is best-effort.
+   */
+  async _recheckPRHeadState({ preface = '', workingTreeNote = null } = {}) {
+    // PR-head domain ONLY. This request does not ask about the working tree
+    // and cannot recapture it, so it must not stamp that side — see
+    // `_nextWorkingTreeCheckGeneration`.
+    const generation = this._nextPRHeadCheckGeneration();
+    try {
+      const result = await this._fetchLocalStaleness({ prHeadOnly: true });
+      if (!result) return;
+      const abbrevLen = this.localData?.shaAbbrevLength || 7;
+      this._applyPRHeadStaleState(result, abbrevLen, { preface, workingTreeNote, generation });
+      // Badges are not the whole job. `prAdvanced` says the TTL-less
+      // `pr_metadata.head_sha` is behind the PR's real head, and that value is
+      // one operand of the anchor-trust gate — so a recheck that reports it
+      // must drive the same convergence the on-load check drives, or a session
+      // that gained its association late keeps anchoring external comments
+      // against a commit that is no longer the PR head until a manual refresh.
+      // (A late association resolved from an existing-but-stale `pr_metadata`
+      // row is exactly that case: the on-load check saw no association, so it
+      // never got to ask.) Bounded: `_refreshPRMetadata({force:true})` can only
+      // re-fire this method on a false -> true `hasAssociatedPR` transition,
+      // which the apply block it just ran has already made true.
+      void this._refreshPRMetadataIfPRAdvanced(result.prHead);
+    } catch {
+      // Best-effort: a failed recheck leaves the badge hidden, which is the
+      // pre-fix behaviour rather than a new failure mode.
+    }
+  }
+
+  /**
+   * The sentence a FULL check's `isStale` earns.
+   *
+   * Only ever fed `isStale` from a request that actually walked the working
+   * tree — `?prHeadOnly=1` answers `null` without asking, and that is not an
+   * input to this function. See `_workingTreeNote`.
+   *
+   * @param {boolean|null|undefined} isStale
+   * @returns {string} one of the three note constants
+   */
+  static workingTreeNoteFor(isStale) {
+    if (isStale === false) return TREE_CURRENT_NOTE;
+    if (isStale === true) return TREE_CHANGED_NOTE;
+    return TREE_UNKNOWN_NOTE;
+  }
+
+  /**
+   * Join the backend's `reasons[]` messages into one tooltip string.
+   *
+   * Delegates to `PRManager.formatStaleReasons`, which is where the renderer
+   * lives so PR mode can reach it too — only pr.js is loaded by both pages.
+   * Kept here as the local-mode entry point.
+   *
+   * @param {Array<{code: string, message: string}>} reasons
+   * @returns {string} Joined messages, or '' when there are none.
+   */
+  static formatStaleReasons(reasons) {
+    return PRManager.formatStaleReasons(reasons);
+  }
+
+  /**
    * Fetch staleness data from the local review endpoint with a timeout.
    * Uses GET to check the local review staleness endpoint.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.prHeadOnly=false] - Ask the backend to skip the
+   *   working-tree digest and answer about the associated PR's head only. For
+   *   callers that read `prHead` and nothing else; the response carries
+   *   `isStale: null`, meaning "not asked". See the route's docblock in
+   *   src/routes/local.js.
    * @returns {Promise<Object|null>} The parsed staleness result, or null on failure/timeout.
    */
-  async _fetchLocalStaleness() {
+  async _fetchLocalStaleness({ prHeadOnly = false } = {}) {
     try {
       const staleAbort = new AbortController();
       const staleTimer = setTimeout(() => staleAbort.abort(), STALE_TIMEOUT);
       const response = await fetch(
-        `/api/local/${this.reviewId}/check-stale`,
+        `/api/local/${this.reviewId}/check-stale${prHeadOnly ? '?prHeadOnly=1' : ''}`,
         { signal: staleAbort.signal }
       );
       clearTimeout(staleTimer);
@@ -1803,6 +2342,16 @@ class LocalManager {
     // mutate) another caller's outcome.
     const noProgress = () => ({ metadataReady: false, progressed: false });
 
+    // Ordering stamp. A FORCED read (`?refresh=1`, driven by a refresh or by
+    // `prAdvanced`) is deliberately allowed to run while an unforced warm-up is
+    // still in flight — see `_refreshPRMetadataIfPRAdvanced` — so two responses
+    // can be outstanding at once, and this apply block writes `associatedPR`
+    // (head_sha included), the header pill and the external-comment overlay.
+    // If the older warm-up landed last it reverted the head_sha the forced read
+    // was issued to bring forward — and that field is one operand of the
+    // anchor-trust gate. Newest answer wins, regardless of arrival order.
+    const generation = (this._prMetadataGeneration = (this._prMetadataGeneration || 0) + 1);
+
     // Both captured before the merge below, because the TRANSITIONS matter: a
     // newly-resolved association counts as progress even with no metadata, and
     // a false -> true on canViewPRComments decides GET vs SYNC.
@@ -1815,6 +2364,10 @@ class LocalManager {
       if (!response.ok) return noProgress();
       const data = await response.json();
       if (!data || !data.capabilities) return noProgress();
+      // Superseded: a newer read has already applied its answer. Reporting no
+      // progress is also correct for `_maybeWarmPRMetadata`'s retry budget —
+      // this call contributed nothing, and the newer one reported for itself.
+      if (generation !== this._prMetadataGeneration) return noProgress();
 
       // MERGE, never overwrite. _applyScopeResult mutates this.localData in
       // place, so a scope change made while this request was in flight would
@@ -1842,6 +2395,7 @@ class LocalManager {
       // The External segment just switched on: this call is the ONLY thing
       // that can flip `canViewPRComments` mid-session.
       const gainedPRComments = !hadViewPRComments && Boolean(this.capabilities.canViewPRComments);
+      const gainedAssociation = !hadAssociation && Boolean(this.capabilities.hasAssociatedPR);
 
       // Header only — this.localData may have moved on, so render from it
       // rather than from the response body.
@@ -1862,12 +2416,22 @@ class LocalManager {
       // concurrent sync join the same promise.
       void this._renderExternalComments({ sync: gainedPRComments });
 
+      // A LATE association is the only way the PR-side badges ever get a
+      // second chance. `startPRHeadCheck` reads the persisted
+      // `associated_pr_*` columns once per request, and on a dirty tree those
+      // columns are empty when `_checkLocalStalenessOnLoad` runs — detection is
+      // asynchronous and this endpoint is what lands it. Without this the
+      // session shows no PR DRIFT / MERGED / CLOSED badge and never re-drives
+      // `prAdvanced` at all, unless the user happens to press Refresh. Routed
+      // through the guarded recheck, which never re-enters the refresh path.
+      if (gainedAssociation) void this._recheckPRHeadState();
+
       return {
         metadataReady: Boolean(this.capabilities.canShowPRMetadata),
         progressed: Boolean(
           this.capabilities.canShowPRMetadata
           || gainedPRComments
-          || (!hadAssociation && this.capabilities.hasAssociatedPR)
+          || gainedAssociation
         )
       };
     } catch (error) {

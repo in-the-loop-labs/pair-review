@@ -553,12 +553,15 @@ async function globalSetup() {
     }
   });
 
-  // Mock check-stale endpoint (PR is never stale in tests)
+  // Mock check-stale endpoint (PR is never stale in tests). `reasons` is part
+  // of the real contract on EVERY path — always an array — and PR mode renders
+  // it into the badge tooltip, so the fake must ship it too.
   app.get('/api/pr/:owner/:repo/:number/check-stale', (req, res) => {
     res.json({
       isStale: false,
       prState: 'open',
-      merged: false
+      merged: false,
+      reasons: []
     });
   });
 

@@ -39,6 +39,10 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const simpleGit = require('simple-git');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
+// Phase 3: the PR-head fetch + error vocabulary + `reasons[]` builder shared
+// with `GET /api/local/:reviewId/check-stale`. READ-ONLY — the provider never
+// writes `pr_metadata`, which is where this route's KNOWN sha comes from.
+const { buildStaleReasons, describeGitHubError, fetchRemotePRHead } = require('../providers/stale-check');
 const summaryGenerator = require('../ai/summary-generator');
 const tourGenerator = require('../ai/tour-generator');
 const {
@@ -457,6 +461,12 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         body: prMetadata.description,
         author: prMetadata.author,
         state: extendedData.state || 'open',
+        // GitHub reports a merged PR as state 'closed' + merged true, so
+        // `state` alone cannot tell the two apart. Both are persisted; both
+        // ship, because the frontend's lifecycle badge
+        // (`_applyPRLifecycleBadge` in public/js/pr.js) has to choose between
+        // MERGED and CLOSED from this payload.
+        merged: Boolean(extendedData.merged),
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
         head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
@@ -724,6 +734,10 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         body: prMetadata.description,
         author: prMetadata.author,
         state: parsedData.state || 'open',
+        // See the GET endpoint: `state` alone cannot distinguish merged from
+        // closed, and `refreshPR` reconciles the lifecycle badge from exactly
+        // these two fields.
+        merged: Boolean(parsedData.merged),
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
         stack_data: stackData,
@@ -912,7 +926,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
 
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
-        error: 'Invalid pull request number'
+        error: 'Invalid pull request number',
+        reasons: []
       });
     }
 
@@ -931,7 +946,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
       // No local data, can't determine staleness - return null (unknown)
       return res.json({
         isStale: null,
-        error: 'No local PR data found'
+        error: 'No local PR data found',
+        reasons: []
       });
     }
 
@@ -942,7 +958,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     } catch (parseError) {
       return res.json({
         isStale: null,
-        error: 'Failed to parse local PR data'
+        error: 'Failed to parse local PR data',
+        reasons: []
       });
     }
 
@@ -950,7 +967,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     if (!localHeadSha) {
       return res.json({
         isStale: null,
-        error: 'No head SHA in local PR data'
+        error: 'No head SHA in local PR data',
+        reasons: []
       });
     }
 
@@ -959,43 +977,48 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     try {
       const resolved = await resolveBindingForRequest(req, repository);
       if (!resolved) {
-        return res.json({ isStale: null, error: 'GitHub token not configured' });
+        return res.json({ isStale: null, error: 'GitHub token not configured', reasons: [] });
       }
       binding = resolved.binding;
     } catch (configErr) {
-      return res.json({ isStale: null, error: configErr.message });
+      return res.json({ isStale: null, error: configErr.message, reasons: [] });
     }
-    const githubClient = new GitHubClient(binding);
-    const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
-    const remoteHeadSha = remotePrData.head_sha;
+    // Shared with local mode's check-stale — one fetch, one error vocabulary.
+    // READ-ONLY: the KNOWN sha above came out of the `pr_metadata` cache, so a
+    // provider that wrote the fresh value back would make every subsequent
+    // check report "not stale". See src/providers/stale-check.js.
+    const remote = await fetchRemotePRHead({ owner, repo, prNumber, credential: binding });
+    if (!remote.ok) {
+      // Fail-open: return isStale: null (unknown) so analysis can proceed.
+      logger.warn('Error checking PR staleness:', remote.error);
+      return res.json({ isStale: null, error: remote.error, reasons: [] });
+    }
+
+    const remoteHeadSha = remote.headSha;
     const isStale = localHeadSha !== remoteHeadSha;
 
     res.json({
       isStale,
       localHeadSha,
       remoteHeadSha,
-      prState: remotePrData.state,
-      merged: remotePrData.merged
+      prState: remote.state,
+      merged: remote.merged,
+      reasons: buildStaleReasons({
+        'pr-head-moved': isStale,
+        'pr-closed': remote.state === 'closed' && !remote.merged,
+        'pr-merged': remote.merged
+      })
     });
 
   } catch (error) {
     // Fail-open: on any error, return isStale: null (unknown) so analysis can proceed
     logger.warn('Error checking PR staleness:', error.message);
 
-    // Provide more helpful error messages based on error type
-    let errorMessage = error.message;
-    if (error.status === 404) {
-      errorMessage = 'PR not found on GitHub';
-    } else if (error.status === 401 || error.status === 403) {
-      errorMessage = 'GitHub authentication issue';
-    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
-      errorMessage = 'Could not connect to GitHub';
-    }
-
     res.json({
       isStale: null,
-      error: errorMessage
+      error: describeGitHubError(error),
+      reasons: []
     });
   }
 });
