@@ -99,7 +99,16 @@
   color: var(--color-text-tertiary);
 }
 
-/* Stale Badge */
+/* Stale Badge group — one element per independent state (freshness,
+   PR lifecycle, commit alignment). Hidden slots are display:none, so the
+   gap collapses and a lone badge sits exactly where it always did. */
+.stale-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
 .stale-badge {
   display: inline-flex;
   align-items: center;
@@ -113,7 +122,6 @@
   background: #b45309;
   transition: opacity 0.15s ease, transform 0.15s ease;
   white-space: nowrap;
-  margin-left: 8px;
 }
 
 
@@ -123,6 +131,12 @@
 
 .stale-badge.pr-merged {
   background: #6639ba;
+}
+
+/* Informational rather than alarming: PR drift is not fixable by refreshing
+   the local diff, so it reads blue, not amber/red. */
+.stale-badge.pr-drift {
+  background: #0969da;
 }
 
 [data-theme="dark"] .stale-badge {
@@ -135,6 +149,10 @@
 
 [data-theme="dark"] .stale-badge.pr-merged {
   background: #8250df;
+}
+
+[data-theme="dark"] .stale-badge.pr-drift {
+  background: #388bfd;
 }
 
 .pr-title .github-link {
