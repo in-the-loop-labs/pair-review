@@ -62,9 +62,9 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const ANALYSIS_DIRECTIVE =
   'Perform the code-review task described in the input provided on standard input. You are ' +
   'running non-interactively in the repository at the current working directory; you MAY use ' +
-  'your read-only tools (reading files, searching, and read-only git/shell commands) to gather ' +
-  'the context the instructions call for. Never create, modify, or delete files, and never run ' +
-  'mutating commands. When finished, output ONLY the exact result the instructions request (for ' +
+  'your tools (reading files, searching, and running git/shell commands) to gather the context ' +
+  'the instructions call for. Follow the access and leave-no-trace rules stated in the task ' +
+  'instructions. When finished, output ONLY the exact result the instructions request (for ' +
   'example, a single JSON object when JSON is requested), with no extra commentary and no ' +
   'surrounding markdown code fences.';
 

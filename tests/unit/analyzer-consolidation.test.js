@@ -426,6 +426,14 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('temp directory outside the repository');
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('files and git state — exactly as you found it');
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('publishes, deploys, sends, or writes to anything beyond this machine');
+    // Environment-conditional: providers that mechanically restrict execution
+    // (claude/copilot allowlists, codex/muse sandboxes) stay authoritative —
+    // the prompt must never promise what the flags deny, and a denied command
+    // must end the attempt, not start a workaround
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('decided by your environment');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('take the denial as final');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('do not retry or work around it');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('if only the repository is writable, delete them before you finish');
     // Source-neutral wording: the same text serves cross-voice consolidation
     // (reviewers) and cross-level orchestration (levels)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
