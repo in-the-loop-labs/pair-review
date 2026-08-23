@@ -33,19 +33,28 @@
  * Contract (test-pinned): drops require positive refutation evidence;
  * unverifiable findings keep their original confidence; code evidence
  * outranks consensus; verification steps are appended to the reasoning
- * array; execution is permitted for empirical verification but must leave
- * no trace — repository files and git state unchanged, scratch work in temp
- * space outside the repo, nothing with effects beyond the machine (the
- * wording is a real mitigation
+ * array; repository access is READ-ONLY (the warning is a real mitigation
  * layer under harnesses whose shell tool is not mechanically sandboxed,
  * e.g. Pi).
  *
  * The wording is source-neutral ("sources") so the same text serves both
  * multi-reviewer consolidation and multi-level orchestration inputs.
+ *
+ * EXECUTION IS DELIBERATELY UNMENTIONED (2026-08-19, after three failed
+ * experiments). This READ-ONLY text is the eval-validated optimum. An
+ * explicit execution BAN measurably suppressed verification (fewer
+ * confirmed defects, more unverifiable trivia); an explicit execution
+ * PERMISSION conflicted with provider flag restrictions and required
+ * scratch/denial/no-trace machinery with defects of its own. Silence lets
+ * each harness's own permission system be the entire policy: capable
+ * models under permissive harnesses execute when their judgment says it
+ * is worth it (observed, with good eval results), restricted harnesses
+ * enforce their limits without the prompt contradicting them. Do not make
+ * execution explicit in EITHER direction without A/B eval evidence.
  */
 
 const ADVERSARIAL_VERIFICATION_SECTION = `## Adversarial Verification
-The analyses that produced these findings believed them; you do not have to. You are the first reader with no attachment to any finding — before merging, take a fresh, skeptical pass to weed out false positives. Verify however the finding demands: read code with the diff tool shown above, \`cat -n\`, \`ls\`, \`grep\`, and \`find\` — and when reading cannot settle a claim, an empirical check (running the project's tests or binaries, or a scratch script you wrote yourself) is the strongest evidence there is. Whether execution and writes are permitted is decided by your environment: if it denies a command, take the denial as final and verify by reading instead — do not retry or work around it. When you do run code, leave no trace: keep the repository — files and git state — exactly as you found it; put scratch files in a temp directory outside the repository, or if only the repository is writable, delete them before you finish; and run nothing that publishes, deploys, sends, or writes to anything beyond this machine.
+The analyses that produced these findings believed them; you do not have to. You are the first reader with no attachment to any finding — before merging, take a fresh, skeptical pass to weed out false positives. You have READ-ONLY access to the repository: the diff tool shown above, plus \`cat -n\`, \`ls\`, \`grep\`, and \`find\`. Do NOT modify files or run write commands.
 
 You cannot deep-verify everything, so spend verification where it changes the outcome: bug and security findings that are high-severity, corroborated by only a single source (one reviewer or one level), or whose reasoning looks thin or generic.
 

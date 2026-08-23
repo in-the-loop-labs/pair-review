@@ -1664,16 +1664,12 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('find . -name');
     expect(baseline.taggedPrompt).toContain('grep -r');
     expect(baseline.taggedPrompt).toContain('ls, tree commands');
-    // Execution is permitted for empirical verification (eval 2026-08-19:
-    // the blanket execution ban cost confirmed defects), but must leave no
-    // trace and have no effects beyond the machine. The permission is
-    // environment-conditional: providers with mechanical restrictions stay
-    // authoritative, and a denial ends the attempt
-    expect(baseline.taggedPrompt).toContain('empirical check');
-    expect(baseline.taggedPrompt).toContain('exactly as you found it');
-    expect(baseline.taggedPrompt).toContain('temp directory outside the repository');
-    expect(baseline.taggedPrompt).toContain('take the denial as final');
-    expect(baseline.taggedPrompt).toContain('do not retry or work around it');
+    // The eval-validated READ-ONLY original. Execution is deliberately
+    // unmentioned in either direction — see the header comment in
+    // shared/adversarial-verification.js for the three failed experiments
+    expect(baseline.taggedPrompt).toContain('READ-ONLY');
+    expect(baseline.taggedPrompt).not.toContain('empirical check');
+    expect(baseline.taggedPrompt).not.toContain('take the denial as final');
     // Thorough should mention delegation harness-neutrally — never a
     // harness-specific tool name like Claude's "Tasks"
     expect(baseline.taggedPrompt).toContain('subagent or task-delegation tool');
