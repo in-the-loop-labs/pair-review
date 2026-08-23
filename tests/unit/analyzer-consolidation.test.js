@@ -414,26 +414,17 @@ describe('Consolidation prompt templates (direct tests)', () => {
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('keep it at its original confidence');
     // Refutation by code evidence beats source consensus (shared blind spots)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('code evidence outranks consensus');
-    // Execution policy is deliberately PERMISSIVE (user decision 2026-08-19,
-    // reversing a short-lived blanket ban): the tool reviews user- or
-    // team-authored code, and eval showed the ban cost confirmed defects —
-    // empirical runs are the strongest refutation evidence. The binding
-    // constraints are leave-no-trace (repo files and git state unchanged,
-    // scratch in temp space outside the repo) and no effects beyond the
-    // machine. This wording is a real mitigation under harnesses whose
-    // shell tool is not mechanically sandboxed (Pi) — keep all three rules.
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('run code');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('temp directory outside the repository');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('files and git state — exactly as you found it');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('publishes, deploys, sends, or writes to anything beyond this machine');
-    // Environment-conditional: providers that mechanically restrict execution
-    // (claude/copilot allowlists, codex/muse sandboxes) stay authoritative —
-    // the prompt must never promise what the flags deny, and a denied command
-    // must end the attempt, not start a workaround
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('decided by your environment');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('take the denial as final');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('do not retry or work around it');
-    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('if only the repository is writable, delete them before you finish');
+    // Repo access text is the eval-validated READ-ONLY original. Execution
+    // is DELIBERATELY UNMENTIONED — an explicit ban measurably suppressed
+    // verification, and an explicit permission conflicted with provider flag
+    // restrictions (2026-08-19, three failed experiments; see the header
+    // comment in shared/adversarial-verification.js). The harness's own
+    // permission system is the entire execution policy. Do not make
+    // execution explicit in either direction without A/B eval evidence.
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('READ-ONLY');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('Do NOT modify files');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).not.toContain('execute');
+    expect(ADVERSARIAL_VERIFICATION_SECTION).not.toContain('empirical');
     // Source-neutral wording: the same text serves cross-voice consolidation
     // (reviewers) and cross-level orchestration (levels)
     expect(ADVERSARIAL_VERIFICATION_SECTION).toContain('one reviewer or one level');
