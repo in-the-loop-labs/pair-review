@@ -772,11 +772,14 @@ describe('AntigravityProvider', () => {
       // Analysis path enables the agentic tool loop.
       expect(args).toContain('--dangerously-skip-permissions');
 
-      // The -p directive is ANALYSIS_DIRECTIVE (read-only instruction), NOT the
-      // test prompt — that is what makes the write-block test meaningful.
+      // The -p directive is ANALYSIS_DIRECTIVE, NOT the test prompt. The
+      // directive defers access rules to the task instructions rather than
+      // stating its own — a hardcoded "never modify" here contradicted the
+      // thorough tier's environment-conditional execution policy (2026-08-19).
       const pIdx = args.indexOf('-p');
       expect(pIdx).toBeGreaterThanOrEqual(0);
-      expect(args[pIdx + 1]).toContain('Never create, modify, or delete files');
+      expect(args[pIdx + 1]).toContain('Follow the access and leave-no-trace rules stated in the task instructions');
+      expect(args[pIdx + 1]).not.toContain('Never create, modify, or delete files');
     });
 
     it('honors a custom printTimeoutSecs argument', () => {
