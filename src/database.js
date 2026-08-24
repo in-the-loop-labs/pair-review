@@ -5337,6 +5337,30 @@ class PRMetadataRepository {
   }
 
   /**
+   * Get the stored host binding for a PR together with its recorded web URL.
+   *
+   * A stored `NULL` is ambiguous on its own: it means github.com for anything
+   * stamped since schema v50, but "never stamped" for older rows. The recorded
+   * `html_url` is the evidence that settles it, so host resolution can read
+   * both in one query instead of guessing (see `resolveRecordedHost`).
+   *
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} prNumber - Pull request number
+   * @returns {Promise<{host: string|null, recordedUrl: string|null}|undefined>}
+   *   `undefined` when no pr_metadata row exists for the PR.
+   */
+  async getPRHostWithRecordedUrl(repository, prNumber) {
+    const row = await queryOne(this.db, `
+      SELECT host, json_extract(pr_data, '$.html_url') AS recorded_url
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!row) return undefined;
+    return { host: row.host, recordedUrl: row.recorded_url || null };
+  }
+
+  /**
    * Update ONLY the host binding for a PR's metadata row.
    *
    * Used to persist an explicit host correction (e.g. a `?host` query param on

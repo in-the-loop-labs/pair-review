@@ -81,11 +81,14 @@ describe('PR-mode route call sites use host bindings (alt-host safety)', () => {
   it('src/routes/stack-analysis.js — resolves the binding for the stack repo', () => {
     const src = readSource('src/routes/stack-analysis.js');
     // Must resolve the config-binding key first (handles monorepo url_pattern
-    // configs where the config key differs from `${owner}/${repo}`), then
-    // pass that key into `resolveHostBinding`.
+    // configs where the config key differs from `${owner}/${repo}`), then pass
+    // a host-aware key into `resolveHostBinding`. The two are deliberately
+    // separate: `bindingRepository` stays the PR's config identity (worktree
+    // options, reset script), while `stackBindingRepository` is the entry that
+    // can serve the host the trigger PR is recorded on.
     expect(src).toMatch(/resolveBindingRepositoryFromPR\(owner, repo, config\)/);
-    // Now host-aware: the third arg pins the main PR's stored host for the stack.
-    expect(src).toMatch(/resolveHostBinding\(bindingRepository, config, stackHostOption \|\| \{\}\)/);
+    expect(src).toMatch(/resolveBindingRepositoryForHost\(owner, repo, config, mainRecordedHost\)/);
+    expect(src).toMatch(/resolveHostBinding\(stackBindingRepository, config, stackHostOption \|\| \{\}\)/);
     expect(src).toMatch(/new deps\.GitHubClient\(stackBinding\)/);
   });
 

@@ -1,12 +1,11 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 /**
  * Unit tests for the frontend repo-links helper
  * (public/js/repo-links.js).
  *
- * Only the pure URL-template substitution logic is exercised here.
- * DOM-touching code paths (parseSvgIcon, buildExternalLink,
- * applyRepoLinks) require a browser context and are covered by the
- * Playwright E2E suite.
+ * URL-template substitution, SVG sanitisation, and host accessors are exercised
+ * against the production helper. DOM-backed tests use Vitest's jsdom runtime.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -79,6 +78,94 @@ describe('frontend substituteUrlTemplate', () => {
       { owner: 'acme', some_unknown: 'x' }
     );
     expect(url).toBe('https://h/acme/{some_unknown}');
+  });
+});
+
+describe('frontend SVG parsing', () => {
+  it('removes active HTML embedded through foreignObject', () => {
+    const svg = RepoLinks.parseSvgIcon(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        '<foreignObject width="1" height="1">' +
+          '<iframe xmlns="http://www.w3.org/1999/xhtml" srcdoc="&lt;script&gt;parent.document.body.dataset.pwned=1&lt;/script&gt;"></iframe>' +
+        '</foreignObject>' +
+        '<path d="M1 1h14v14H1z"/>' +
+      '</svg>'
+    );
+
+    expect(svg).not.toBeNull();
+    expect(svg.querySelector('foreignObject')).toBeNull();
+    expect(svg.querySelector('iframe')).toBeNull();
+    expect(svg.querySelector('path')).not.toBeNull();
+  });
+
+  it('keeps local fragment references in every equivalent url() form', () => {
+    const svg = RepoLinks.parseSvgIcon(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        '<defs><linearGradient id="paint0"><stop offset="0" stop-color="#fff"/></linearGradient></defs>' +
+        '<path id="bare" d="M1 1h1v1H1z" fill="url(#paint0)"/>' +
+        '<path id="dquote" d="M2 2h1v1H2z" fill="url(&quot;#paint0&quot;)"/>' +
+        "<path id='squote' d='M3 3h1v1H3z' fill=\"url('#paint0')\"/>" +
+        '<path id="spaced" d="M4 4h1v1H4z" fill=" url(#paint0) "/>' +
+      '</svg>'
+    );
+
+    expect(svg).not.toBeNull();
+    for (const id of ['bare', 'dquote', 'squote', 'spaced']) {
+      expect(svg.querySelector('#' + id).getAttribute('fill')).toContain('#paint0');
+    }
+  });
+
+  it('strips url() references that leave the document', () => {
+    const svg = RepoLinks.parseSvgIcon(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        '<path id="remote" d="M1 1h1v1H1z" fill="url(https://evil.example/x)"/>' +
+        '<path id="scheme" d="M2 2h1v1H2z" fill="url(//evil.example/x)"/>' +
+        '<path id="data" d="M3 3h1v1H3z" fill="url(data:image/svg+xml,%3Csvg/%3E)"/>' +
+        '<path id="mixedquotes" d="M4 4h1v1H4z" fill="url(&quot;#a\')"/>' +
+      '</svg>'
+    );
+
+    expect(svg).not.toBeNull();
+    for (const id of ['remote', 'scheme', 'data', 'mixedquotes']) {
+      expect(svg.querySelector('#' + id).hasAttribute('fill')).toBe(false);
+    }
+  });
+
+  it('still strips scripts and event handlers', () => {
+    const svg = RepoLinks.parseSvgIcon(
+      '<svg xmlns="http://www.w3.org/2000/svg" onload="window.pwned=1">' +
+        '<script>window.pwned = 1</script>' +
+        '<path d="M1 1h14v14H1z" onmouseover="window.pwned=1"/>' +
+      '</svg>'
+    );
+
+    expect(svg).not.toBeNull();
+    expect(svg.hasAttribute('onload')).toBe(false);
+    expect(svg.querySelector('script')).toBeNull();
+    expect(svg.querySelector('path').hasAttribute('onmouseover')).toBe(false);
+  });
+
+  it('warns once when sanitisation changes the icon, and stays silent otherwise', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      RepoLinks.parseSvgIcon(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">' +
+          '<path d="M1 1h14v14H1z" fill="url(#paint0)"/>' +
+        '</svg>'
+      );
+      expect(warn).not.toHaveBeenCalled();
+
+      RepoLinks.parseSvgIcon(
+        '<svg xmlns="http://www.w3.org/2000/svg" onload="window.pwned=1">' +
+          '<script>window.pwned = 1</script>' +
+          '<path d="M1 1h14v14H1z" fill="url(https://evil.example/x)"/>' +
+        '</svg>'
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('[repo-links] Sanitised configured icon');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

@@ -15,8 +15,8 @@ const crypto = require('crypto');
 const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
-const { expandPath, resolveBindingRepositoryFromPR } = require('../config');
-const { resolvePreflightBinding } = require('../utils/host-resolution');
+const { expandPath } = require('../config');
+const { resolvePreflightBinding, explicitHostForBinding, resolveBindingRepositoryForHost } = require('../utils/host-resolution');
 const { queryOne, ReviewRepository } = require('../database');
 const { normalizeRepository } = require('../utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('../utils/local-path-input');
@@ -130,13 +130,20 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
 
     // GitHub token is required for PR setup. Resolve the binding key first so
     // monorepo-style `repos[...]` entries (matched via `url_pattern` named
-    // captures) supply their per-repo token even when the captured owner/repo
-    // differs from the config key.
-    const repositoryForToken = resolveBindingRepositoryFromPR(owner, repo, config);
+    // captures) supply their per-repo token — and their path, checkout script,
+    // pool, and reset script — even when the captured owner/repo differs from
+    // the config key. The lookup is host-aware: an explicit github.com host
+    // rejects an EXCLUSIVE alt entry that only pattern-claimed this owner/repo,
+    // matching the parser's invariant that such an entry never binds a
+    // canonical github.com PR. Dual entries are kept for either host.
+    const repositoryForToken = resolveBindingRepositoryForHost(owner, repo, config, bodyHost);
+    // Then normalise the hint against the entry that survived: a github.com hint
+    // for a repo whose own config says alt-host-only is ignored with a warning.
+    const effectiveHost = explicitHostForBinding(config, repositoryForToken, bodyHost);
     // Preflight the credential. resolvePreflightBinding gates on ANY usable
     // binding — including a dual repo's alt-only token or a token pinned by an
     // explicit body host — so an alt-host setup isn't falsely 401'd.
-    const preflightBinding = resolvePreflightBinding(repositoryForToken, config, bodyHost);
+    const preflightBinding = resolvePreflightBinding(repositoryForToken, config, effectiveHost);
     if (!preflightBinding.token) {
       return res.status(401).json({ error: 'GitHub token not configured' });
     }
@@ -226,7 +233,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           githubToken,
           bindingRepository: repositoryForToken,
           config,
-          host: bodyHost,
+          host: effectiveHost,
           poolLifecycle: req.app.get('poolLifecycle'),
           restoreMetadata,
           onProgress: (progress) => {

@@ -18,6 +18,8 @@ const { query, run, withTransaction } = require('../database');
 const { GitHubClient } = require('../github/client');
 const { getGitHubToken, resolveHostBinding } = require('../config');
 const logger = require('../utils/logger');
+const { resolveRepoLinks } = require('../links/repo-links');
+const { resolveBindingRepositoryForHost, setupHostParam } = require('../utils/host-resolution');
 
 const router = express.Router();
 
@@ -236,6 +238,30 @@ async function getCachedRows(db, collection) {
 }
 
 /**
+ * Attach the host-aware repository link configuration consumed by the landing
+ * page, plus the `?host=` value its rows navigate with. Resolution is an
+ * in-memory config lookup, so this avoids per-row HTTP requests while keeping
+ * cached and refreshed responses identical.
+ *
+ * A row's `host` is authoritative here, unlike a legacy `pr_metadata` NULL:
+ * every refresh re-derives these rows, stamping NULL from the github.com search
+ * branch and the `api_host` from the alt-host sweep. Both the links and the
+ * navigation target are therefore resolved for that known host, through the
+ * same two helpers the setup route uses — so a row's action icon and its click
+ * always reach the system the PR actually lives on.
+ */
+function attachRepoLinks(rows, config) {
+  return rows.map((row) => {
+    const bindingRepository = resolveBindingRepositoryForHost(row.owner, row.repo, config, row.host);
+    return {
+      ...row,
+      repo_links: resolveRepoLinks(config, bindingRepository, row.host),
+      setup_host: setupHostParam(config, row.owner, row.repo, row.host)
+    };
+  });
+}
+
+/**
  * Register the GET (cached) and POST (refresh) routes for a single collection.
  * @param {Object} def - Collection definition
  *   ({ name, label, buildQuery, supportsTeamFilter }).
@@ -259,8 +285,9 @@ function registerCollection(def) {
 
       const db = req.app.get('db');
       const rows = await getCachedRows(db, cacheKey(name, team));
+      const prs = attachRepoLinks(rows, req.app.get('config') || {});
       const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
-      res.json({ success: true, prs: rows, fetched_at: fetchedAt });
+      res.json({ success: true, prs, fetched_at: fetchedAt });
     } catch (error) {
       logger.error(`Failed to fetch ${label}:`, error);
       res.status(500).json({ success: false, error: `Failed to fetch ${label}` });
@@ -344,13 +371,13 @@ function registerCollection(def) {
       });
 
       const rows = await getCachedRows(db, key);
+      const resolvedRows = attachRepoLinks(rows, config);
       const fetchedAt = rows.length > 0 ? rows[0].fetched_at : null;
       // `hosts` is additive; omit it entirely when every source is healthy (no
-      // alt-host repos and a working github token) so the github-only happy-path
-      // response shape is byte-identical to before. A skipped github source or
-      // any alt-host status makes it appear.
+      // alt-host repos and a working github token) so the happy path gains no
+      // `hosts` key. A skipped github source or any alt-host status adds it.
       const allStatuses = sourceStatuses.concat(hosts);
-      const payload = { success: true, prs: rows, fetched_at: fetchedAt };
+      const payload = { success: true, prs: resolvedRows, fetched_at: fetchedAt };
       if (allStatuses.length > 0) payload.hosts = allStatuses;
       res.json(payload);
     } catch (error) {

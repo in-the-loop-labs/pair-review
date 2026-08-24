@@ -555,6 +555,29 @@ describe('attemptDelegation', () => {
     expect(deps.open).toHaveBeenCalledWith(expect.stringContaining('host=github'));
   });
 
+  it('threads the github sentinel when a monorepo pattern could claim the repo', async () => {
+    // The parser discards an api_host url_pattern match for a canonical github.com
+    // URL, so it reports host null with no bindingRepository. Setup would still
+    // re-resolve the alt entry from owner/repo, so the sentinel must be sent.
+    class GithubParser {
+      async parsePRArguments() { return { owner: 'acme', repo: 'widgets', number: 42, host: null }; }
+    }
+    const deps = createMockDeps({ PRArgumentParser: GithubParser });
+    const config = {
+      port: 7247,
+      single_port: true,
+      repos: {
+        'acme/platform': {
+          api_host: 'https://alt.example/api/v3',
+          url_pattern: '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 't'
+        }
+      }
+    };
+    await attemptDelegation(config, {}, ['https://github.com/acme/widgets/pull/42'], deps);
+    expect(deps.open).toHaveBeenCalledWith(expect.stringContaining('host=github'));
+  });
+
   it('omits the host param for a plain github repo', async () => {
     class PlainParser {
       async parsePRArguments() { return { owner: 'a', repo: 'b', number: 1, host: null }; }
