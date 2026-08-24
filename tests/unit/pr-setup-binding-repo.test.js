@@ -11,8 +11,8 @@
  * pool_size, reset_script) and resolved the wrong token, causing 401s.
  *
  * These tests assert:
- *   1. routes/setup.js — token preflight calls resolveBindingRepositoryFromPR
- *      and feeds the result to getGitHubToken.
+ *   1. routes/setup.js — token preflight resolves the `repos[...]` binding key
+ *      through the shared helper and feeds the result to the preflight.
  *   2. pr-setup.js findRepositoryPath — config helpers (getRepoPath,
  *      resolveRepoOptions) receive the binding key.
  *   3. pr-setup.js setupPRReview — resolvePoolConfig and getRepoResetScript
@@ -35,17 +35,21 @@ function readSource(relativePath) {
 // ---------------------------------------------------------------------------
 
 describe('src/routes/setup.js — token preflight uses binding key', () => {
-  it('imports resolveBindingRepositoryFromPR from config', () => {
+  it('resolves the binding key through the shared host-aware helper', () => {
     const src = readSource('src/routes/setup.js');
-    expect(src).toMatch(/resolveBindingRepositoryFromPR/);
+    // resolveBindingRepositoryForHost wraps resolveBindingRepositoryFromPR and
+    // additionally rejects an exclusive alt entry that only pattern-claimed a
+    // known-github.com PR (see src/utils/host-resolution.js).
+    expect(src).toMatch(/resolveBindingRepositoryForHost/);
   });
 
   it('resolves the binding key before resolving the preflight token', () => {
     const src = readSource('src/routes/setup.js');
-    const bindingPos = src.indexOf('resolveBindingRepositoryFromPR(owner, repo, config)');
-    // Token resolution now goes through resolvePreflightBinding (which tolerates
-    // a dual repo's alt-only token) keyed on the resolved binding repository.
-    const tokenPos = src.indexOf('resolvePreflightBinding(repositoryForToken, config, bodyHost)');
+    const bindingPos = src.indexOf('resolveBindingRepositoryForHost(owner, repo, config,');
+    // Token resolution goes through resolvePreflightBinding (which tolerates a
+    // dual repo's alt-only token) keyed on the resolved binding repository. Both
+    // literals stop before the host argument: this test is about ordering.
+    const tokenPos = src.indexOf('resolvePreflightBinding(repositoryForToken, config,');
     expect(bindingPos).toBeGreaterThan(-1);
     expect(tokenPos).toBeGreaterThan(-1);
     expect(bindingPos).toBeLessThan(tokenPos);

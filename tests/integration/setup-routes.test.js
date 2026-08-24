@@ -19,6 +19,7 @@ const request = require('supertest');
 const setupRoutes = require('../../src/routes/setup');
 const { WorktreePoolRepository } = require('../../src/database');
 const { activeSetups } = require('../../src/routes/shared');
+const logger = require('../../src/utils/logger');
 
 function createApp(db, config = { github_token: 'test-token' }, { withPool = false } = {}) {
   const app = express();
@@ -242,6 +243,94 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.status).toBe(200);
     expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
     expect(prSetupModule.setupPRReview.mock.calls[0][0].host).toBe('https://althost.example/api/v3');
+  });
+
+  it('ignores a github.com body host for a directly-keyed exclusive alt-host repo', async () => {
+    // A dashboard collection row stamps host NULL for every github.com search
+    // result and sends the 'github' sentinel, which setup.html forwards as
+    // `{ host: null }`. When config declares this repo exclusive alt-host the
+    // hint contradicts configuration: warn and fall back to the ambiguity rule
+    // instead of surfacing resolveHostBinding's exclusive-null throw as a 500.
+    const app = createApp(db, {
+      repos: { 'owner/repo': { api_host: 'https://althost.example/api/v3', token: 'alt-tok' } }
+    });
+    const warnSpy = vi.spyOn(logger, 'warn');
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.setupId).toBeTruthy();
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.host).toBeUndefined();
+    expect(callArgs.bindingRepository).toBe('owner/repo');
+    // The user is told why, and what to change, rather than silently getting
+    // the alt host for a PR the dashboard sourced from github.com.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/exclusive alt-host repo.*"exclusive": false/s)
+    );
+  });
+
+  it('rejects an exclusive monorepo entry that only pattern-claimed a github.com PR', async () => {
+    // resolveBindingRepositoryFromPR probes each alt entry's url_pattern against
+    // a URL built from that entry's own api_host, so an anchored monorepo pattern
+    // claims every owner/repo. An exclusive alt entry has no github.com presence,
+    // so for a PR we KNOW is on github.com it describes neither the API host nor
+    // the checkout — the same call PRArgumentParser.parsePRUrl already makes for
+    // a pasted github.com URL. Bind the PR's own identity instead.
+    const app = createApp(db, {
+      github_token: 'gh-tok',
+      repos: {
+        'acme/platform': {
+          api_host: 'https://althost.example/api/v3',
+          url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 'alt-tok'
+        }
+      }
+    });
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: null });
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.bindingRepository).toBe('owner/repo');
+    // The github.com host survives, so the PR is fetched from where it lives.
+    expect(callArgs.host).toBeNull();
+    expect(callArgs.githubToken).toBe('gh-tok');
+  });
+
+  it('keeps a DUAL monorepo config key for a github.com body host', async () => {
+    // A dual entry does serve github.com (resolveHostBinding has a first-class
+    // dual-github binding), so its key must be preserved — setupPRReview reads
+    // the repo's local path, checkout script, pool size, and reset script from it
+    // (pr-setup.js findRepositoryPath / resolvePoolConfig / getRepoResetScript).
+    // Dropping it here would silently discard the monorepo's local configuration.
+    const app = createApp(db, {
+      github_token: 'gh-tok',
+      repos: {
+        'acme/platform': {
+          api_host: 'https://althost.example/api/v3',
+          exclusive: false,
+          url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 'alt-tok'
+        }
+      }
+    });
+    server = await listenOnLoopback(app);
+    const res = await request(server)
+      .post('/api/setup/pr/owner/repo/42')
+      .send({ host: null });
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview).toHaveBeenCalledOnce();
+    const callArgs = prSetupModule.setupPRReview.mock.calls[0][0];
+    expect(callArgs.bindingRepository).toBe('acme/platform');
+    expect(callArgs.host).toBeNull();
   });
 
   it('passes an explicit body host of null through to setupPRReview', async () => {

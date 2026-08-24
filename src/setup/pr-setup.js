@@ -18,7 +18,7 @@ const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
 const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, getRepoConfig, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
-const { storedHostToOption, isDualHostRepoConfig } = require('../utils/host-resolution');
+const { storedHostToOption, isDualHostRepoConfig, resolveRecordedHost, bindingRepositoryForHost } = require('../utils/host-resolution');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
@@ -270,7 +270,49 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
 async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo, prNumber, host, githubToken, deps = {} }) {
   const Client = deps.GitHubClient || GitHubClient;
   const repository = normalizeRepository(owner, repo);
-  const repoConfig = getRepoConfig(config, bindingRepository);
+
+  // Apply host precedence FIRST, because the resolved host selects which config
+  // entry may be bound through: an exclusive alt entry that only
+  // `url_pattern`-claimed this owner/repo cannot serve a PR that lives on
+  // github.com. The caller's `bindingRepository` arrives already filtered
+  // against the host known at entry (the setup route and CLI both apply this
+  // rule), and that same key selects the repo's local configuration — path,
+  // checkout script, pool, reset script — as well as credentials. The local
+  // `hostBindingRepository` below re-applies the filter with the RECORDED host,
+  // which only this function resolves.
+  let effectiveHost;
+  let hostKnown = false;
+  let recordedHost;
+  if (host !== undefined) {
+    effectiveHost = host;
+    hostKnown = true;
+    recordedHost = host;
+  } else {
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const recorded = await prMetadataRepo.getPRHostWithRecordedUrl(repository, prNumber);
+    if (recorded !== undefined) {
+      // resolveRecordedHost reads the stored host against the recorded html_url,
+      // which is what separates a pre-stamping row from a github.com one.
+      recordedHost = resolveRecordedHost(config, bindingRepository, recorded.host, recorded.recordedUrl);
+      // storedHostToOption applies the legacy-NULL convention: `undefined` means
+      // "host unknown" (leave hostKnown false → ambiguity/probe path), while a
+      // returned option object pins the host. It receives the RESOLVED host, not
+      // the raw column — a pre-stamping row whose recorded URL is on the alt host
+      // must fetch from there instead of being forced to github.com.
+      const storedOption = storedHostToOption(
+        config,
+        bindingRepositoryForHost(config, repository, bindingRepository, recordedHost),
+        recordedHost
+      );
+      if (storedOption !== undefined) {
+        effectiveHost = storedOption.host;
+        hostKnown = true;
+      }
+    }
+  }
+
+  const hostBindingRepository = bindingRepositoryForHost(config, repository, bindingRepository, recordedHost);
+  const repoConfig = getRepoConfig(config, hostBindingRepository);
   const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
     ? repoConfig.api_host
     : null;
@@ -289,34 +331,15 @@ async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo
     if (binding.token) return binding;
     if (binding.apiHost === null) return githubToken;
     throw new Error(
-      `No token configured for alt host ${binding.apiHost} (repo ${bindingRepository}). ` +
-      `Configure repos["${bindingRepository}"].token or token_command.`
+      `No token configured for alt host ${binding.apiHost} (repo ${hostBindingRepository}). ` +
+      `Configure repos["${hostBindingRepository}"].token or token_command.`
     );
   };
-
-  // Apply host precedence to decide whether we know the host up front.
-  let effectiveHost;
-  let hostKnown = false;
-  if (host !== undefined) {
-    effectiveHost = host;
-    hostKnown = true;
-  } else {
-    const prMetadataRepo = new PRMetadataRepository(db);
-    const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
-    // storedHostToOption applies the legacy-NULL convention: `undefined` means
-    // "host unknown" (leave hostKnown false → ambiguity/probe path), while a
-    // returned option object pins the host.
-    const storedOption = storedHostToOption(config, bindingRepository, storedHost);
-    if (storedOption !== undefined) {
-      effectiveHost = storedOption.host;
-      hostKnown = true;
-    }
-  }
 
   // Fixed-binding path: host is known, OR the repo can only live on one host
   // (plain github / exclusive alt) so the ambiguity rule is unambiguous.
   if (hostKnown || !isDual) {
-    const binding = resolveHostBinding(bindingRepository, config, hostKnown ? { host: effectiveHost } : {});
+    const binding = resolveHostBinding(hostBindingRepository, config, hostKnown ? { host: effectiveHost } : {});
     const client = new Client(clientArgFor(binding));
     const repoExists = await client.repositoryExists(owner, repo);
     if (!repoExists) {
@@ -329,7 +352,7 @@ async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo
   // Probe path: dual repo, host unknown. Try the alt host first. `clientArgFor`
   // errors clearly if the alt binding has no token rather than silently probing
   // github.com disguised as the alt host.
-  const altBinding = resolveHostBinding(bindingRepository, config, { host: configuredApiHost });
+  const altBinding = resolveHostBinding(hostBindingRepository, config, { host: configuredApiHost });
   const altClient = new Client(clientArgFor(altBinding));
   try {
     const prData = await altClient.fetchPullRequest(owner, repo, prNumber);
@@ -338,7 +361,7 @@ async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo
   } catch (altErr) {
     if (altErr && altErr.status === 404) {
       logger.info(`PR #${prNumber} (${repository}) not found on alt host ${configuredApiHost}; falling back to github.com`);
-      const githubBinding = resolveHostBinding(bindingRepository, config, { host: null });
+      const githubBinding = resolveHostBinding(hostBindingRepository, config, { host: null });
       const githubClient = new Client(clientArgFor(githubBinding));
       const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
       return { binding: githubBinding, prData, githubClient };

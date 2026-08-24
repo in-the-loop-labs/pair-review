@@ -200,4 +200,87 @@ describe('resolvePrHostBinding — precedence + probe', () => {
     expect(binding.host).toBe(ALT_HOST);
     expect(constructions).toEqual([{ apiHost: ALT_HOST }]);
   });
+
+  it('a recorded github.com PR does not bind an exclusive entry that only pattern-claimed it', async () => {
+    // The monorepo url_pattern probe claims every owner/repo, so re-running setup
+    // for this PR would otherwise fetch from the alt host. Its recorded html_url
+    // proves github.com, so the entry is rejected for this PR and the github
+    // binding is used — matching the dashboard links and the /pr binding.
+    const monorepoConfig = {
+      github_token: 'gh-tok',
+      repos: {
+        'acme/platform': {
+          api_host: ALT_HOST,
+          url_pattern: '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 'alt-tok'
+        }
+      }
+    };
+    await run(db,
+      'INSERT INTO pr_metadata (pr_number, repository, host, pr_data) VALUES (?, ?, NULL, ?)',
+      [42, 'acme/widgets', JSON.stringify({ html_url: 'https://github.com/acme/widgets/pull/42' })]
+    );
+    const { FakeClient, constructions } = makeFakeClient(() => ({ number: 42 }));
+
+    const { binding } = await resolvePrHostBinding({
+      db,
+      config: monorepoConfig,
+      ...base,
+      bindingRepository: 'acme/platform',
+      host: undefined,
+      deps: { GitHubClient: FakeClient }
+    });
+
+    expect(binding.host).toBe(null);
+    expect(constructions).toEqual([{ apiHost: null }]);
+  });
+
+  it('a recorded alt-host PR keeps the pattern-claimed entry', async () => {
+    const monorepoConfig = {
+      github_token: 'gh-tok',
+      repos: {
+        'acme/platform': {
+          api_host: ALT_HOST,
+          url_pattern: '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 'alt-tok'
+        }
+      }
+    };
+    await run(db,
+      'INSERT INTO pr_metadata (pr_number, repository, host, pr_data) VALUES (?, ?, NULL, ?)',
+      [42, 'acme/widgets', JSON.stringify({ html_url: 'https://alt.example/acme/widgets/pull/42' })]
+    );
+    const { FakeClient, constructions } = makeFakeClient(() => ({ number: 42 }));
+
+    const { binding } = await resolvePrHostBinding({
+      db,
+      config: monorepoConfig,
+      ...base,
+      bindingRepository: 'acme/platform',
+      host: undefined,
+      deps: { GitHubClient: FakeClient }
+    });
+
+    expect(binding.host).toBe(ALT_HOST);
+    expect(constructions).toEqual([{ apiHost: ALT_HOST }]);
+  });
+
+  it('a pre-stamping NULL with an alt-host recorded URL fetches from the alt host (dual repo)', async () => {
+    // Dual repo, row recorded before host stamping. The recorded URL contradicts
+    // github.com, so setup must fetch from the alt host directly — reapplying the
+    // raw NULL would force a github.com fetch for a PR that is not there.
+    await run(db,
+      'INSERT INTO pr_metadata (pr_number, repository, host, pr_data) VALUES (?, ?, NULL, ?)',
+      [42, 'acme/widgets', JSON.stringify({ html_url: 'https://alt.example/acme/widgets/pull/42' })]
+    );
+    const { FakeClient, constructions } = makeFakeClient(() => ({ number: 42 }));
+
+    const { binding } = await resolvePrHostBinding({
+      db, config: dualConfig, ...base, host: undefined, deps: { GitHubClient: FakeClient }
+    });
+
+    expect(binding.host).toBe(ALT_HOST);
+    // Bound directly: no github-first attempt and no probe.
+    expect(constructions).toEqual([{ apiHost: ALT_HOST }]);
+  });
 });

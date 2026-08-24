@@ -63,7 +63,10 @@ vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getByPR').mockResolvedV
   description: ''
 });
 vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'updateLastAiRunId').mockResolvedValue(undefined);
-  vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
+vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost').mockResolvedValue(undefined);
+// Host resolution reads the stored host together with the recorded html_url, so
+// the stack binding can tell a github.com PR from a pre-stamping alt-host one.
+vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHostWithRecordedUrl').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'getOrCreate').mockResolvedValue({ review: { id: 1 } });
 vi.spyOn(databaseModule.ReviewRepository.prototype, 'upsertSummary').mockResolvedValue(undefined);
 vi.spyOn(databaseModule.RepoSettingsRepository.prototype, 'getRepoSettings').mockResolvedValue(null);
@@ -330,9 +333,12 @@ describe('executeStackAnalysis — bindingRepository resolution', () => {
         'acme/widget-a': { api_host: 'https://alt.example/api/v3', exclusive: false, token: 'alt-tok' }
       }
     };
-    // Trigger PR (#10) is stored on the alt host.
-    vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHost')
-      .mockResolvedValue('https://alt.example/api/v3');
+    // Trigger PR (#10) is stored on the alt host, with a matching recorded URL.
+    vi.spyOn(databaseModule.PRMetadataRepository.prototype, 'getPRHostWithRecordedUrl')
+      .mockResolvedValue({
+        host: 'https://alt.example/api/v3',
+        recordedUrl: 'https://alt.example/acme/widget-a/pull/10'
+      });
 
     const resolveHostBinding = vi.fn().mockReturnValue({
       apiHost: 'https://alt.example/api/v3', host: 'https://alt.example/api/v3',

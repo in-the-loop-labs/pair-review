@@ -21,7 +21,11 @@ const {
   modelMatches
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
-const { resolvePreflightBinding } = require('../utils/host-resolution');
+const {
+  resolvePreflightBinding,
+  resolveRecordedHost,
+  resolveBindingRepositoryForHost
+} = require('../utils/host-resolution');
 const {
   isRunningViaNpx,
   getGitHubToken,
@@ -347,23 +351,33 @@ router.get('/api/repos/:owner/:repo/links', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const config = req.app.get('config') || {};
     // Resolve via bindingRepository so monorepo-style configs (one
-    // `repos[...]` entry serving many captured owner/repo via
-    // url_pattern) surface the right link config.
-    const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
-
-    // Per-PR host awareness: when the caller names a PR, look up its stored
-    // host so a dual-host repo shows the correct link set (github links for a
-    // github-hosted PR, the external link for an alt-hosted one). A missing
-    // row leaves `host` undefined, which resolveRepoLinks treats as the
-    // repo-level default — so non-dual repos are unaffected regardless.
+    // `repos[...]` entry serving many captured owner/repo via url_pattern)
+    // surface the right link config.
+    //
+    // Per-PR host awareness: when the caller names a PR, resolve the host it is
+    // recorded on so a dual-host repo shows the correct link set (github links
+    // for a github-hosted PR, the external link for an alt-hosted one), and an
+    // exclusive alt entry that only pattern-claimed this owner/repo does not
+    // lend its links to a PR proven to be on github.com. A missing row leaves
+    // `host` undefined (the repo-level default), while an unprovable legacy
+    // NULL resolves to `null` (github.com) — the same value the raw column
+    // carried, so `resolveRepoLinks` sees byte-identical input to before.
     let host;
     const prNumber = parseInt(req.query.number, 10);
     if (Number.isInteger(prNumber) && prNumber > 0) {
       const prMetadataRepo = new PRMetadataRepository(req.app.get('db'));
-      const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
-      if (storedHost !== undefined) host = storedHost;
+      const recorded = await prMetadataRepo.getPRHostWithRecordedUrl(repository, prNumber);
+      if (recorded !== undefined) {
+        host = resolveRecordedHost(
+          config,
+          resolveBindingRepositoryFromPR(owner, repo, config),
+          recorded.host,
+          recorded.recordedUrl
+        );
+      }
     }
 
+    const bindingRepository = resolveBindingRepositoryForHost(owner, repo, config, host);
     const links = resolveRepoLinks(config, bindingRepository, host);
     res.json({ repository, links });
   } catch (error) {

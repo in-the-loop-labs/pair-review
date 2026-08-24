@@ -179,22 +179,83 @@ describe('github-adapter', () => {
       expect(result.isAltHost).toBe(true);
     });
 
-    it('binding-aware: resolves the binding key via resolveBindingRepositoryFromPR before resolveHostBinding', () => {
+    it('a github.com PR does not sync through an exclusive entry that pattern-claimed it', () => {
+      // A monorepo url_pattern probe claims every owner/repo, so comment sync for
+      // a github.com PR would otherwise authenticate against the alt host with
+      // the alt token. `storedHost: null` says this PR is on github.com.
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+
+      const config = {
+        github_token: 'github-com-top-level-token',
+        repos: {
+          'acme/platform': {
+            api_host: 'https://git.example.com/api/v3',
+            url_pattern: '^https://git\\.example\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            token: 'alt-host-repo-token'
+          }
+        }
+      };
+
+      const result = githubAdapter.resolveCredentials(
+        config,
+        'shop/world',
+        { GitHubClient: FakeGitHubClient },
+        { storedHost: null }
+      );
+
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      expect(binding.apiHost).toBe(null);
+      expect(binding.token).toBe('github-com-top-level-token');
+      expect(result.isAltHost).toBe(false);
+    });
+
+    it('an alt-host PR still syncs through the pattern-claimed entry', () => {
+      const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
+      const ALT = 'https://git.example.com/api/v3';
+
+      const config = {
+        github_token: 'github-com-top-level-token',
+        repos: {
+          'acme/platform': {
+            api_host: ALT,
+            url_pattern: '^https://git\\.example\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            token: 'alt-host-repo-token'
+          }
+        }
+      };
+
+      const result = githubAdapter.resolveCredentials(
+        config,
+        'shop/world',
+        { GitHubClient: FakeGitHubClient },
+        { storedHost: ALT }
+      );
+
+      const binding = FakeGitHubClient.mock.calls[0][0];
+      expect(binding.apiHost).toBe(ALT);
+      expect(binding.token).toBe('alt-host-repo-token');
+      expect(result.isAltHost).toBe(true);
+    });
+
+    it('binding-aware: resolves the binding key via resolveBindingRepositoryForHost before resolveHostBinding', () => {
       // Verify the helper chain wiring using injected fakes: the binding key
-      // returned by resolveBindingRepositoryFromPR is what gets passed to
-      // resolveHostBinding (mirrors resolveBindingForRequest in routes/pr.js).
+      // returned by the key resolver is what gets passed to resolveHostBinding
+      // (mirrors resolveBindingForRequest in routes/pr.js). The key lookup is
+      // host-aware, so the PR's recorded host is threaded into it as well.
       const FakeGitHubClient = vi.fn(function (binding) { this.binding = binding; });
       const fakeBinding = { apiHost: 'https://ghe.internal/api/v3', token: 'tok', features: {}, source: 'repo:token' };
-      const resolveBindingRepositoryFromPR = vi.fn(() => 'monorepo/key');
+      const resolveBindingRepositoryForHost = vi.fn(() => 'monorepo/key');
       const resolveHostBinding = vi.fn(() => fakeBinding);
 
       const result = githubAdapter.resolveCredentials(
         { repos: {} },
         'OctoCat/Hello-World',
-        { GitHubClient: FakeGitHubClient, resolveBindingRepositoryFromPR, resolveHostBinding }
+        { GitHubClient: FakeGitHubClient, resolveBindingRepositoryForHost, resolveHostBinding }
       );
 
-      expect(resolveBindingRepositoryFromPR).toHaveBeenCalledWith('OctoCat', 'Hello-World', { repos: {} });
+      expect(resolveBindingRepositoryForHost).toHaveBeenCalledWith(
+        'OctoCat', 'Hello-World', { repos: {} }, undefined
+      );
       // Third arg is the resolved host option; with no storedHost it is {} (ambiguity).
       expect(resolveHostBinding).toHaveBeenCalledWith('monorepo/key', { repos: {} }, {});
       expect(FakeGitHubClient).toHaveBeenCalledWith(fakeBinding);

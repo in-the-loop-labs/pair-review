@@ -6,7 +6,7 @@ const { PRArgumentParser } = require('./github/parser');
 const logger = require('./utils/logger');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { normalizeRepository } = require('./utils/paths');
-const { isDualHostRepo, hostSetupParamValue } = require('./utils/host-resolution');
+const { setupHostParam } = require('./utils/host-resolution');
 const { buildInteractiveAnalysisConfig } = require('./interactive-analysis-config');
 const { version: packageVersion } = require('../package.json');
 
@@ -172,7 +172,7 @@ function storeAnalysisConfigRemote(port, analysisConfig, _deps) {
  *   mirroring the cold-start precedence in handlePullRequest/handleLocalReview.
  * @param {string} [context.host] - Setup `?host=` value (alt api_host string or the
  *   'github' sentinel) so a pasted alt URL binds directly instead of re-probing.
- *   Already resolved by the caller via `hostSetupParamValue`; omitted when null.
+ *   Already resolved by the caller via `setupHostParam`; omitted when null.
  * @param {string} [context.provider] - CLI provider override to carry to the running server
  * @param {string} [context.model] - CLI model override to carry to the running server
  * @param {string} [context.scope] - Local-mode only: the `--scope` range to carry
@@ -340,10 +340,10 @@ async function attemptDelegation(config, flags, prArgs, _deps, options = {}) {
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     const analysisConfigId = await handoffAnalysisConfigId(repository);
     // Thread the parsed host so a pasted alt URL binds directly (no re-probe) —
-    // same mapping as the cold-start handlePullRequest path. bindingRepository
-    // (from a url_pattern match) is the config key that determines dual-ness.
-    const bindingRepository = prInfo.bindingRepository || repository;
-    const host = hostSetupParamValue(prInfo.host, isDualHostRepo(config, bindingRepository));
+    // same mapping as the cold-start handlePullRequest path. See setupHostParam:
+    // a github.com URL announces itself whenever an api_host entry could
+    // otherwise claim this repo, so setup never falls back to the alt host.
+    const host = setupHostParam(config, prInfo.owner, prInfo.repo, prInfo.host);
     url = buildDelegationUrl(port, 'pr', {
       ...prInfo, analyze, councilId, analysisConfigId, host,
       provider: flags.provider, model: flags.model

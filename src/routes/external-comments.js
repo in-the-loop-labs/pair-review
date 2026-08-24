@@ -26,6 +26,8 @@ const {
 const { getAdapter } = require('../external');
 const { GitHubApiError } = require('../github/client');
 const logger = require('../utils/logger');
+const { resolveBindingRepositoryFromPR } = require('../config');
+const { resolveRecordedHost } = require('../utils/host-resolution');
 
 const router = express.Router();
 
@@ -136,15 +138,25 @@ async function executeSync({ db, config, review, source, _deps }) {
     );
   }
 
-  // Look up the PR's stored host so a DUAL repo's alt-hosted PR binds to the
-  // alt host (and its line-based anchoring path) rather than api.github.com.
-  // Pass the raw stored value through to the adapter, which applies the
-  // legacy-NULL convention against its resolved binding key. `undefined`
-  // (no row / unknown) preserves the two-arg ambiguity behaviour.
+  // Look up the host the PR is recorded on so a DUAL repo's alt-hosted PR binds
+  // to the alt host (and its line-based anchoring path) rather than
+  // api.github.com. `resolveRecordedHost` reads the stored host plus the recorded
+  // html_url, which is what distinguishes a pre-stamping row from a github.com
+  // one; the adapter then applies the legacy-NULL convention against the binding
+  // key it resolves for that host. `undefined` (no row) preserves the two-arg
+  // ambiguity behaviour.
   let storedHost;
   if (Number.isInteger(review.pr_number)) {
     const prMetadataRepo = new PRMetadataRepository(db);
-    storedHost = await prMetadataRepo.getPRHost(review.repository, review.pr_number);
+    const recorded = await prMetadataRepo.getPRHostWithRecordedUrl(review.repository, review.pr_number);
+    if (recorded !== undefined) {
+      storedHost = resolveRecordedHost(
+        config || {},
+        resolveBindingRepositoryFromPR(owner, repo, config || {}),
+        recorded.host,
+        recorded.recordedUrl
+      );
+    }
   }
 
   // Delegate credential resolution to the adapter so the route stays

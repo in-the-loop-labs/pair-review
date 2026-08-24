@@ -112,6 +112,13 @@
     return div.innerHTML;
   }
 
+  /** Escape text for insertion into a quoted HTML attribute. */
+  function escapeHtmlAttribute(text) {
+    return escapeHtml(text)
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   // encodeBase64Utf8 / getRepoStorageKey live in public/js/utils/storage-keys.js
   // (window.encodeBase64Utf8 / window.getRepoStorageKey), shared with pr.js so the
   // per-repo keys this page writes stay byte-identical to those the PR page reads.
@@ -339,9 +346,9 @@
 
     return '' +
       '<tr data-session-id="' + session.id + '">' +
-        '<td class="col-local-name" title="' + escapeHtml(session.name || 'Untitled') + '"><a href="' + link + '">' + nameDisplay + '</a></td>' +
-        '<td class="col-local-sha" title="' + escapeHtml(session.local_head_sha || '') + '">' + escapeHtml(sha) + '</td>' +
-        '<td class="col-local-path" title="' + escapeHtml(pathDisplay) + '">' + escapeHtml(pathDisplay) + '</td>' +
+        '<td class="col-local-name" title="' + escapeHtmlAttribute(session.name || 'Untitled') + '"><a href="' + link + '">' + nameDisplay + '</a></td>' +
+        '<td class="col-local-sha" title="' + escapeHtmlAttribute(session.local_head_sha || '') + '">' + escapeHtml(sha) + '</td>' +
+        '<td class="col-local-path" title="' + escapeHtmlAttribute(pathDisplay) + '">' + escapeHtml(pathDisplay) + '</td>' +
         '<td class="col-repo">' + escapeHtml(session.repository || '') + '</td>' +
         '<td class="col-time">' + relativeTime + '</td>' +
         '<td class="col-actions">' +
@@ -349,7 +356,7 @@
           '<button' +
             ' class="btn-delete-session"' +
             ' data-session-id="' + session.id + '"' +
-            ' data-session-path="' + escapeHtml(pathDisplay) + '"' +
+            ' data-session-path="' + escapeHtmlAttribute(pathDisplay) + '"' +
             ' title="Delete session"' +
           '>' +
             '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">' +
@@ -470,6 +477,79 @@
     if (clearBtn) clearBtn.hidden = !value;
   }
 
+  var GITHUB_ACTION_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>';
+  var GRAPHITE_ACTION_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.7932,1.3079L3.101,3.101l-1.7932,6.6921,4.899,4.899,6.6921-1.7931,1.7932-6.6921L9.7932,1.3079Zm1.0936,11.6921H5.1133l-2.8867-5L5.1133,3h5.7735l2.8867,5-2.8867,5Z"/><polygon points="11.3504 4.6496 6.7737 3.4232 3.4232 6.7737 4.6496 11.3504 9.2263 12.5768 12.5768 9.2263 11.3504 4.6496"/></svg>';
+  var EXTERNAL_ACTION_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2A1.75 1.75 0 0 0 2 3.75v8.5C2 13.216 2.784 14 3.75 14h8.5A1.75 1.75 0 0 0 14 12.25v-3a.75.75 0 0 0-1.5 0v3a.25.25 0 0 1-.25.25h-8.5a.25.25 0 0 1-.25-.25v-8.5a.25.25 0 0 1 .25-.25h3a.75.75 0 0 0 0-1.5h-3Zm6.97-.53a.75.75 0 0 0 0 1.06l1.72 1.72-4.97 4.97a.75.75 0 1 0 1.06 1.06l4.97-4.97 1.72 1.72a.75.75 0 0 0 1.28-.53V2.75A.75.75 0 0 0 14.75 2h-3.5a.75.75 0 0 0-.53 1.28Z"/></svg>';
+
+  /**
+   * Render the configured external-host icon, falling back to the generic
+   * "open in new tab" glyph when no icon is configured or the SVG failed
+   * sanitisation. Malformed parser output also falls back instead of breaking
+   * the entire table row.
+   */
+  function renderExternalActionIcon(icon) {
+    if (!icon || !window.RepoLinks || typeof window.RepoLinks.parseSvgIcon !== 'function') {
+      return EXTERNAL_ACTION_ICON;
+    }
+
+    var svg = window.RepoLinks.parseSvgIcon(icon);
+    if (!svg || typeof svg.outerHTML !== 'string') return EXTERNAL_ACTION_ICON;
+
+    // Match the 16px sizing of the built-in action icons.
+    if (typeof svg.getAttribute === 'function' && typeof svg.setAttribute === 'function') {
+      if (!svg.getAttribute('width')) svg.setAttribute('width', '16');
+      if (!svg.getAttribute('height')) svg.setAttribute('height', '16');
+    }
+    return svg.outerHTML;
+  }
+
+  /**
+   * Render the external, GitHub, and Graphite action links resolved by the
+   * backend for one landing-page row.
+   */
+  function renderRepoActionLinks(context) {
+    var repoLinks = context.repo_links || { external: null, github: true, graphite: true };
+    // Prefer html_url to preserve GitHub's original casing for Graphite and to
+    // keep unconfigured alternate-host rows pointing at their actual host.
+    var defaultUrl = typeof context.html_url === 'string' && context.html_url.startsWith('https://')
+      ? context.html_url
+      : 'https://github.com/' + encodeURIComponent(context.owner) + '/' + encodeURIComponent(context.repo) + '/pull/' + context.number;
+    var html = '';
+
+    if (repoLinks.external && window.RepoLinks && typeof window.RepoLinks.substituteUrlTemplate === 'function') {
+      var externalUrl = window.RepoLinks.substituteUrlTemplate(repoLinks.external.url_template, context);
+      // A template that needs row data this surface cannot supply (a stale
+      // `head_sha`, say) substitutes to nothing. Fall back to the recorded PR
+      // URL rather than dropping the button: with `links.github: false` the
+      // external link is the row's ONLY route to the PR.
+      if (!externalUrl && typeof context.html_url === 'string' && context.html_url.startsWith('https://')) {
+        externalUrl = context.html_url;
+      }
+      if (externalUrl) {
+        var label = escapeHtmlAttribute(repoLinks.external.label);
+        html += '<a href="' + escapeHtmlAttribute(externalUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="' + label + '" aria-label="' + label + '">' +
+          renderExternalActionIcon(repoLinks.external.icon) +
+          '</a>';
+      }
+    }
+
+    if (repoLinks.github !== false) {
+      html += '<a href="' + escapeHtmlAttribute(defaultUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
+        GITHUB_ACTION_ICON +
+        '</a>';
+    }
+
+    if (repoLinks.graphite !== false && window.__pairReview?.enableGraphite
+        && typeof context.html_url === 'string' && /^https:\/\/github\.com\//i.test(defaultUrl)) {
+      var graphiteUrl = window.__pairReview.toGraphiteUrl(defaultUrl);
+      html += '<a href="' + escapeHtmlAttribute(graphiteUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
+        GRAPHITE_ACTION_ICON +
+        '</a>';
+    }
+
+    return html;
+  }
+
   /**
    * Render a single row for a collection PR table.
    * @param {Object} pr - PR object from the API
@@ -485,39 +565,37 @@
       ? '<a href="https://github.com/' + encodeURIComponent(pr.author) + '" target="_blank" rel="noopener">' + escapeHtml(pr.author) + '</a>'
       : '';
 
-    var githubLinkHtml =
-      '<a href="' + escapeHtml(pr.html_url || prUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
-        '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
-      '</a>';
-
-    var graphiteLinkHtml = '';
-    if (window.__pairReview?.enableGraphite && pr.html_url) {
-      // Derive from html_url to preserve GitHub's original casing (Graphite URLs are case-sensitive)
-      var graphiteUrl = window.__pairReview.toGraphiteUrl(pr.html_url);
-      graphiteLinkHtml =
-        '<a href="' + escapeHtml(graphiteUrl) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
-          '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.7932,1.3079L3.101,3.101l-1.7932,6.6921,4.899,4.899,6.6921-1.7931,1.7932-6.6921L9.7932,1.3079Zm1.0936,11.6921H5.1133l-2.8867-5L5.1133,3h5.7735l2.8867,5-2.8867,5Z"/><polygon points="11.3504 4.6496 6.7737 3.4232 3.4232 6.7737 4.6496 11.3504 9.2263 12.5768 12.5768 9.2263 11.3504 4.6496"/></svg>' +
-        '</a>';
-    }
-
     var authorTd = collection === 'my-prs'
       ? ''
       : '<td class="col-author">' + authorDisplay + '</td>';
 
-    // `data-host` carries the alt-host api_host string for PRs that live on an
-    // alternate host; github.com rows have no host and render an empty
-    // attribute. The click handler threads it into the setup call so a dual
-    // repo's alt-host PR opens against the right system without re-probing.
-    var hostAttr = pr.host ? ' data-host="' + escapeHtml(pr.host) + '"' : '';
+    // `setup_host` is resolved by the collection API (setupHostParam): an alt
+    // api_host string, the 'github' sentinel, or null to omit. Open, Analyze,
+    // and single-row navigation thread it into setup, which resolves the same
+    // row's binding key from it — so the row opens against the host its action
+    // icons point at. The browser only echoes the value; deriving it here would
+    // duplicate a config-dependent decision and let the icon and the click
+    // disagree.
+    var hostAttr = pr.setup_host
+      ? ' data-host="' + escapeHtmlAttribute(pr.setup_host) + '"'
+      : '';
+    var actionLinks = renderRepoActionLinks({
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      html_url: pr.html_url,
+      repo_links: pr.repo_links,
+      host: pr.host
+    });
 
     return '' +
-      '<tr class="collection-pr-row" data-pr-url="' + escapeHtml(prUrl) + '" data-owner="' + escapeHtml(pr.owner) + '" data-repo="' + escapeHtml(pr.repo) + '" data-number="' + pr.number + '"' + hostAttr + '>' +
+      '<tr class="collection-pr-row" data-pr-url="' + escapeHtmlAttribute(prUrl) + '" data-owner="' + escapeHtmlAttribute(pr.owner) + '" data-repo="' + escapeHtmlAttribute(pr.repo) + '" data-number="' + pr.number + '"' + hostAttr + '>' +
         '<td class="col-repo">' + escapeHtml(repoFull) + '</td>' +
         '<td class="col-pr"><span class="collection-pr-number">#' + pr.number + '</span></td>' +
-        '<td class="col-title" title="' + escapeHtml(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
+        '<td class="col-title" title="' + escapeHtmlAttribute(pr.title || '') + '">' + escapeHtml(pr.title || '') + '</td>' +
         authorTd +
         '<td class="col-time">' + relativeTime + '</td>' +
-        '<td class="col-actions">' + githubLinkHtml + graphiteLinkHtml + '</td>' +
+        '<td class="col-actions">' + actionLinks + '</td>' +
       '</tr>';
   }
 
@@ -1065,7 +1143,11 @@
     const parts = review.repository.split('/');
     const owner = parts[0];
     const repo = parts[1];
-    const link = '/pr/' + owner + '/' + repo + '/' + review.pr_number;
+    // Carry the API's resolved host into /pr so the row opens against the same
+    // system its action icons point at. applyHostQueryCorrection validates it
+    // and stamps a legacy NULL row on the way through.
+    const link = '/pr/' + owner + '/' + repo + '/' + review.pr_number
+      + (review.setup_host ? '?host=' + encodeURIComponent(review.setup_host) : '');
     const settingsLink = '/repo-settings.html?owner=' + encodeURIComponent(owner) + '&repo=' + encodeURIComponent(repo);
     const relativeTime = formatRelativeTime(review.last_accessed_at);
 
@@ -1074,23 +1156,27 @@
       : '';
 
     var reviewIdAttr = review.review_id ? ' data-analysis-review-id="' + review.review_id + '"' : '';
+    var actionLinks = renderRepoActionLinks({
+      owner: owner,
+      repo: repo,
+      number: review.pr_number,
+      html_url: review.html_url,
+      branch: review.head_branch,
+      base_branch: review.base_branch,
+      head_sha: review.head_sha,
+      repo_links: review.repo_links,
+      host: review.host
+    });
 
     return '' +
       '<tr data-review-id="' + review.id + '"' + reviewIdAttr + '>' +
         '<td class="col-repo">' + escapeHtml(review.repository) + '</td>' +
         '<td class="col-pr"><a href="' + link + '">#' + review.pr_number + '</a></td>' +
-        '<td class="col-title" title="' + escapeHtml(review.pr_title) + '">' + escapeHtml(review.pr_title) + '</td>' +
+        '<td class="col-title" title="' + escapeHtmlAttribute(review.pr_title) + '">' + escapeHtml(review.pr_title) + '</td>' +
         '<td class="col-author">' + authorDisplay + '</td>' +
         '<td class="col-time">' + relativeTime + '</td>' +
         '<td class="col-actions">' +
-          '<a href="https://github.com/' + escapeHtml(review.repository) + '/pull/' + review.pr_number + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on GitHub">' +
-            '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>' +
-          '</a>' +
-          (window.__pairReview?.enableGraphite && review.html_url
-            ? '<a href="' + escapeHtml(window.__pairReview.toGraphiteUrl(review.html_url)) + '" target="_blank" rel="noopener" class="btn-github-link" title="Open on Graphite">' +
-                '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.7932,1.3079L3.101,3.101l-1.7932,6.6921,4.899,4.899,6.6921-1.7931,1.7932-6.6921L9.7932,1.3079Zm1.0936,11.6921H5.1133l-2.8867-5L5.1133,3h5.7735l2.8867,5-2.8867,5Z"/><polygon points="11.3504 4.6496 6.7737 3.4232 3.4232 6.7737 4.6496 11.3504 9.2263 12.5768 12.5768 9.2263 11.3504 4.6496"/></svg>' +
-              '</a>'
-            : '') +
+          actionLinks +
           '<a href="' + settingsLink + '" class="btn-repo-settings" title="Repository settings">' +
             '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">' +
               '<path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"/>' +
@@ -1099,7 +1185,7 @@
           '<button' +
             ' class="btn-delete-review"' +
             ' data-review-id="' + review.id + '"' +
-            ' data-repository="' + escapeHtml(review.repository) + '"' +
+            ' data-repository="' + escapeHtmlAttribute(review.repository) + '"' +
             ' data-pr-number="' + review.pr_number + '"' +
             ' title="Delete review"' +
           '>' +
@@ -1370,9 +1456,9 @@
           // string = alt host, null = github.com, undefined = unknown.
           host: data.host,
           bindingRepository: data.bindingRepository,
-          // Whether the repo is dual (github + alt-host). Only dual repos probe,
-          // so only they need an explicit github pick when the URL is a github URL.
-          isDualHost: data.isDualHost
+          // Server-resolved `?host=` value for this URL (see setupHostParam).
+          // The browser echoes it rather than deciding from repo config.
+          setupHost: data.setupHost
         };
       }
 
@@ -1424,17 +1510,12 @@
     let href = '/pr/' + encodeURIComponent(parsed.owner) + '/' + encodeURIComponent(parsed.repo) + '/' + encodeURIComponent(parsed.prNumber);
     var params = new URLSearchParams();
     if (analyze) params.set('analyze', 'true');
-    // Forward the parsed host so setup binds directly instead of probing:
-    //  - alt-host URL string → the api_host (setup binds that alt host)
-    //  - github URL (host === null) on a DUAL repo → the "github" sentinel, so
-    //    setup binds github.com instead of probing alt-first (which would fail
-    //    loudly if the alt host is down for a PR we KNOW is on github)
-    //  - anything else (plain/exclusive repo, unknown host) → omit; no probe
-    //    happens for those and omitting avoids the exclusive-null throw.
-    if (typeof parsed.host === 'string' && parsed.host) {
-      params.set('host', parsed.host);
-    } else if (parsed.host === null && parsed.isDualHost) {
-      params.set('host', 'github');
+    // Forward the server-resolved host so setup binds directly instead of
+    // probing. `setupHost` is already the exact param value — an api_host
+    // string, the 'github' sentinel, or null to omit — so no configuration
+    // reasoning happens in the browser.
+    if (parsed.setupHost) {
+      params.set('host', parsed.setupHost);
     }
     var qs = params.toString();
     if (qs) href += '?' + qs;
@@ -2009,9 +2090,9 @@
           repo: tr.dataset.repo,
           number: tr.dataset.number,
           prUrl: prUrl,
-          // Alt-host rows carry a host; github.com rows leave it undefined. The
-          // single-row click path threads this the same way (see the collection
-          // row click handler) so bulk-open binds to the right system too.
+          // Known rows carry either the "github" sentinel or an alternate
+          // api_host; unknown rows leave it undefined. The single-row click
+          // path threads the same value so bulk and individual routing agree.
           host: tr.dataset.host
         });
       }
@@ -2021,9 +2102,9 @@
 
   function buildReviewUrlsFromRows(rows, query) {
     return rows.map(function (row) {
-      // Preserve any existing params (analyze / analysisConfigId) and append the
-      // alt host so setup opens the PR against the system it lives on instead of
-      // re-probing. github.com rows (no host) keep the URL unchanged.
+      // Preserve existing params and append any known host (the "github"
+      // sentinel or an alternate api_host) so setup bypasses probing. Rows
+      // whose host is unknown keep the URL unchanged.
       var qs = query || '';
       if (row.host) {
         qs += (qs ? '&' : '?') + 'host=' + encodeURIComponent(row.host);
@@ -2282,12 +2363,10 @@
         return;
       }
 
-      // Alt-host PR: we already know owner/repo/number and the host it lives
-      // on, so navigate straight to the PR route with the host as a query
-      // param (setup.html forwards it into the setup POST body). This bypasses
-      // the URL-parse round trip, which can't reliably recover the host from a
-      // pasted alt-host html_url. github.com rows (no host) keep the existing
-      // parse-and-submit flow below, byte-identical.
+      // The collection API resolved this PR's system, so navigate straight to
+      // the PR route with its host (the "github" sentinel or an alternate
+      // api_host). setup.html forwards it into the setup POST body, bypassing
+      // the host probe. Rows with no host retain the parse-and-submit fallback.
       var rowHost = collectionRow.dataset.host;
       if (rowHost) {
         var o = encodeURIComponent(collectionRow.dataset.owner);
@@ -2689,7 +2768,9 @@
       showError: showError,
       showInfo: showInfo,
       showLocalPathUrlError: showLocalPathUrlError,
-      handleLocalPathInput: handleLocalPathInput
+      handleLocalPathInput: handleLocalPathInput,
+      renderCollectionPrRow: renderCollectionPrRow,
+      renderRecentReviewRow: renderRecentReviewRow
     };
   }
 

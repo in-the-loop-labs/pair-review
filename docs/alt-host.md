@@ -134,6 +134,41 @@ its key (`owner/repo`) — regardless of how the URL was actually written.
 
 Invalid regexes are reported with a clear error at startup.
 
+A broad pattern is safe with respect to `github.com`. An `api_host`-bearing
+`url_pattern` never claims a canonical `github.com` or Graphite URL, and when
+pair-review knows a pull request lives on `github.com` — one listed by the
+github.com search on the dashboard, opened from a `github.com` URL, or recorded
+with a `github.com` web URL — it will not bind that pull request through an
+entry that cannot serve `github.com`.
+
+That rejection is narrow, and applies when both of these hold:
+
+- the entry is exclusive alt-host (`api_host` without `exclusive: false`), and
+- its config key differs from the pull request's own `owner/repo`, meaning the
+  entry was matched by probing its `url_pattern` rather than by name.
+
+Such an entry would otherwise claim every `owner/repo` its pattern can capture.
+Pull requests it claims wrongly resolve to their own `owner/repo` instead, use
+the standard GitHub credential chain, and render the default GitHub links.
+
+A dual-host entry (`exclusive: false`) is always kept, because it does serve
+`github.com` — including its local settings (`path`, `checkout_script`,
+`pool_size`, `reset_script`).
+
+An entry keyed **exactly** at the pull request's `owner/repo` is also kept, even
+when exclusive: there the configuration asserts that this specific repository is
+alt-host-only, and configuration wins over inference. If such a repository does
+have `github.com` pull requests, set `exclusive: false` on it. Until you do,
+pair-review refuses to bind them to `github.com` and reports it differently per
+surface:
+
+- **Web** (dashboard row, pasted URL, `?host=` on a review) — logs a warning
+  naming `exclusive: false`, ignores the `github.com` hint, and continues
+  against the alt host, so a click never fails with a server error.
+- **CLI** (`pair-review <url>` and the headless paths) — fails fast before any
+  network work with an error naming the same fix, since a command can afford a
+  loud failure and a wrong-host fetch would only 404 later.
+
 ### `git_remote_pattern`
 
 An optional escape-hatch regex for matching the git remote URL of a local
@@ -208,7 +243,7 @@ endpoint described in "Host Extensions" is used.
 
 ### `links`
 
-Customise the link buttons shown in the review header.
+Customise the link buttons pair-review renders for a repository.
 
 - **`links.external`** — declare a new link with these fields:
   - `name` (optional) — display name of the host (e.g. `"Meteorite"`). Used
@@ -216,22 +251,52 @@ Customise the link buttons shown in the review header.
     success toast, the pending-draft notice and indicator, and the
     "Save as Draft" description. It also joins the global host list described
     in "Naming Your Host in the UI" below. Defaults to `"GitHub"` when unset.
-  - `label` (required) — display text for the header link button.
+  - `label` (required) — display text for the link button.
   - `url_template` (required) — URL with `{owner}`, `{repo}`, `{number}`,
     `{branch}`, `{base_branch}`, `{head_sha}` placeholders. The resolved
-    URL must use `https://`. In addition to the header link, this template
+    URL must use `https://`. In addition to the link button, this template
     is the **authoritative source** for the URL opened after a draft submit
     and the pending-draft "Manage" / indicator links — preferred over the
     PR's API-returned `html_url`, which some hosts return on a different
     (or wrong) domain.
   - `icon` (optional) — inline SVG string for the button icon. Also shown on
     the review-submit button. Sanitised server-side (script tags, `on*`
-    handlers, and `javascript:` URLs are stripped).
+    handlers, and `javascript:` URLs are stripped) and again in the browser,
+    which keeps only inert presentation elements and attributes: shapes,
+    groups, `defs`, gradients, `clipPath`/`mask`, paint attributes, and
+    `url(#id)` references to the icon's own fragments. External references
+    (`url(https://…)`), `foreignObject`, `use`, `style`, and animation
+    elements are removed, and the browser console reports what was dropped.
 - **`links.github: false`** — hide the default "Open on GitHub" link.
 - **`links.graphite: false`** — hide the Graphite stack link.
 
 When `links` is unset, the default link set is preserved and all host-named
 text reads "GitHub".
+
+#### Surfaces that consume `links`
+
+The same resolved configuration drives four surfaces, so `links.github: false`
+and `links.graphite: false` hide those icons everywhere, not only in the
+review header:
+
+1. The **review header** icon group.
+2. The **draft/submit copy and links** — the post-submit URL, the
+   pending-draft notice, indicator, and "Manage" link.
+3. The main dashboard's **collection rows** (review requests, team reviews,
+   my PRs).
+4. The main dashboard's **recent-review rows**.
+
+The two dashboard surfaces substitute `url_template` from data recorded at
+setup or collection-refresh time, not from the live review context. A
+collection row can supply `{owner}`, `{repo}` and `{number}`; a recent-review
+row adds `{branch}`, `{base_branch}` and `{head_sha}` from its stored
+`pr_metadata`. A template that references anything a row cannot supply — or a
+`{head_sha}` that has since moved — falls back to the PR's recorded
+`html_url` for that row rather than dropping the link.
+
+Dashboard rows are also host-aware per PR: a dual-host repo shows the
+external link only for rows that live on the alt host, and the GitHub and
+Graphite links only for rows that live on github.com.
 
 Note that the host's web URL frequently cannot be derived from `api_host`
 (the API host, web host, and the host returned in PR `html_url` values may
@@ -467,8 +532,8 @@ With this configuration:
   cached per-host.
 - All GitHub operations use REST, except draft-review comments which use
   the host extension.
-- The review header shows an "Open on AltHost" link and hides the default
-  GitHub and Graphite links.
+- The review header and both dashboard row types show an "Open on AltHost"
+  link and hide the default GitHub and Graphite links.
 - Other repos in `~/.pair-review/config.json` — including any on
   `github.com` — continue to use the top-level `github_token` and the
   default GraphQL-preferred behaviour.

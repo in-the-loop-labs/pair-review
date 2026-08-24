@@ -19,6 +19,8 @@ import { describe, it, expect } from 'vitest';
 const fs = require('fs');
 const path = require('path');
 const { resolveHostBinding } = require('../../src/config');
+const { setupHostParam, resolvePreflightBinding } = require('../../src/utils/host-resolution');
+const { resolveCliBindingRepository } = require('../../src/main');
 
 function readMainSource() {
   return fs.readFileSync(path.join(__dirname, '../../src/main.js'), 'utf-8');
@@ -167,5 +169,96 @@ describe('main.js — performHeadlessReview / submit feature-gating', () => {
     // for the default github.com (all-GraphQL) configuration.
     expect(src).toMatch(/GraphQL PR node id required for/);
     expect(src).toMatch(/refresh the PR data and try again/);
+  });
+});
+
+describe('main.js — CLI binding key is host-aware at every PR entry point', () => {
+  const ALT = 'https://alt.example/api/v3';
+  const MONOREPO_PATTERN = '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)';
+
+  const dualMonorepo = {
+    github_token: 'gh-tok',
+    repos: {
+      'acme/platform': { api_host: ALT, exclusive: false, url_pattern: MONOREPO_PATTERN, token: 'alt-tok' }
+    }
+  };
+  const exclusiveMonorepo = {
+    github_token: 'gh-tok',
+    repos: {
+      'acme/platform': { api_host: ALT, url_pattern: MONOREPO_PATTERN, token: 'alt-tok' }
+    }
+  };
+
+  it('every in-process PR entry point resolves the key through the shared helper', () => {
+    const src = readMainSource();
+    // handlePullRequest, performHeadlessReview, and the headless PR path. Match
+    // assignments only, so the function declaration itself is not counted.
+    const calls = src.match(/=\s*resolveCliBindingRepository\(prInfo, config\)/g);
+    expect(calls).toHaveLength(3);
+    // The bare fallback that skipped the config probe must be gone.
+    expect(src).not.toMatch(/prInfo\.bindingRepository\s*\n?\s*\|\|\s*normalizeRepository\(/);
+  });
+
+  it('a canonical github.com URL KEEPS a dual monorepo entry (its local config still applies)', () => {
+    // Parser dropped its key (canonical github URL) and reports host null. The
+    // dual entry does serve github.com, so it — and its path/pool/reset
+    // configuration — must be retained.
+    expect(resolveCliBindingRepository(
+      { owner: 'acme', repo: 'widgets', host: null },
+      dualMonorepo
+    )).toBe('acme/platform');
+  });
+
+  it('a canonical github.com URL rejects an EXCLUSIVE monorepo entry', () => {
+    expect(resolveCliBindingRepository(
+      { owner: 'acme', repo: 'widgets', host: null },
+      exclusiveMonorepo
+    )).toBe('acme/widgets');
+  });
+
+  it('a bare PR number preflights against the configured monorepo entry', () => {
+    // Host unknown: the entry serving this owner/repo must still be found, or the
+    // preflight resolves the identity and misses the repo-scoped token.
+    const key = resolveCliBindingRepository(
+      { owner: 'acme', repo: 'widgets', host: undefined },
+      exclusiveMonorepo
+    );
+    expect(key).toBe('acme/platform');
+    expect(resolveHostBinding(key, exclusiveMonorepo, { host: ALT }).token).toBe('alt-tok');
+  });
+
+  it('an alt-host URL keeps the key the parser matched', () => {
+    expect(resolveCliBindingRepository(
+      { owner: 'acme', repo: 'widgets', host: ALT, bindingRepository: 'acme/platform' },
+      exclusiveMonorepo
+    )).toBe('acme/platform');
+  });
+
+  it('a directly keyed exclusive repo fails fast, naming the config fix', () => {
+    // The CLI passes the parsed host straight into the preflight, so a canonical
+    // github.com URL for a repo its own entry declares alt-host-only fails before
+    // any network work. Documented in docs/alt-host.md alongside the web
+    // surface's warn-and-continue behaviour — the two differ deliberately.
+    const directlyKeyedExclusive = {
+      github_token: 'gh-tok',
+      repos: { 'acme/widgets': { api_host: ALT, token: 'alt-tok' } }
+    };
+    const key = resolveCliBindingRepository(
+      { owner: 'acme', repo: 'widgets', host: null },
+      directlyKeyedExclusive
+    );
+    // Config wins over inference: the entry is kept, not escaped.
+    expect(key).toBe('acme/widgets');
+    expect(() => resolvePreflightBinding(key, directlyKeyedExclusive, null))
+      .toThrow(/exclusive alt-host repo.*"exclusive": false/s);
+  });
+
+  it('announces the github sentinel for a canonical URL an alt entry could claim', () => {
+    const src = readMainSource();
+    // main.js must build the ?host= param through the shared mapping.
+    expect(src).toMatch(/setupHostParam\(config, prInfo\.owner, prInfo\.repo, prInfo\.host\)/);
+
+    // Without the sentinel, setup re-resolves the alt entry and fetches from it.
+    expect(setupHostParam(exclusiveMonorepo, 'acme', 'widgets', null)).toBe('github');
   });
 });

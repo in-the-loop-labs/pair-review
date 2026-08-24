@@ -119,6 +119,166 @@ describe('GitHub Collections Routes', () => {
       expect(res.body.fetched_at).toBeTruthy();
     });
 
+    it('should include host-aware repository links for cached PRs', async () => {
+      const apiHost = 'https://meteorite.example/api/v3';
+      app.set('config', {
+        repos: {
+          'shop/world': {
+            api_host: apiHost,
+            exclusive: false,
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              }
+            }
+          }
+        }
+      });
+      await insertCachedPR(db, {
+        owner: 'shop', repo: 'world', number: 2000042,
+        title: 'Meteorite PR', author: 'alice',
+        updated_at: '2026-08-21T18:00:00Z',
+        html_url: 'https://meteorite.example/shop/world/pull/2000042',
+        state: 'open', collection: 'review-requests'
+      });
+      await run(db, 'UPDATE github_pr_cache SET host = ? WHERE owner = ? AND repo = ? AND number = ?', [
+        apiHost,
+        'shop',
+        'world',
+        2000042
+      ]);
+
+      const res = await request(server).get('/api/github/review-requests');
+
+      expect(res.status).toBe(200);
+      expect(res.body.prs[0].repo_links).toMatchObject({
+        external: {
+          name: 'Meteorite',
+          label: 'Open on Meteorite',
+          url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+        },
+        github: false,
+        graphite: false
+      });
+    });
+
+    it('does not lend an exclusive alt-host repo\'s links to an authoritative github.com row', async () => {
+      // resolveBindingRepositoryFromPR probes each alt entry's url_pattern
+      // against a URL built from that entry's own api_host, so this anchored
+      // monorepo pattern claims every owner/repo. This row came from the
+      // github.com search branch, which stamps host NULL — the PR provably
+      // lives on github.com, so the alt entry describes neither its API host
+      // nor its checkout, and must not supply its links. Mirrors the parser
+      // invariant that such an entry never binds a canonical github.com URL.
+      app.set('config', {
+        repos: {
+          'acme/platform': {
+            api_host: 'https://meteorite.example/api/v3',
+            url_pattern: '^https://meteorite\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              },
+              github: false
+            }
+          }
+        }
+      });
+      await insertCachedPR(db, {
+        owner: 'shop', repo: 'world', number: 7,
+        title: 'A github.com PR', author: 'alice',
+        updated_at: '2026-08-21T18:00:00Z',
+        html_url: 'https://github.com/shop/world/pull/7',
+        state: 'open', collection: 'review-requests'
+      });
+
+      const res = await request(server).get('/api/github/review-requests');
+
+      expect(res.status).toBe(200);
+      expect(res.body.prs[0].host).toBeNull();
+      // Default github.com link set: the alt entry's `links` do not apply.
+      expect(res.body.prs[0].repo_links).toEqual({
+        external: null,
+        github: true,
+        graphite: true
+      });
+      // And the click must reach the same place the icon points at.
+      expect(res.body.prs[0].setup_host).toBe('github');
+    });
+
+    it('emits the github sentinel only for a dual-host repo github.com row', async () => {
+      app.set('config', {
+        repos: {
+          'shop/world': {
+            api_host: 'https://meteorite.example/api/v3',
+            exclusive: false,
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              }
+            }
+          }
+        }
+      });
+      await insertCachedPR(db, {
+        owner: 'shop', repo: 'world', number: 9,
+        title: 'A github.com PR on a dual repo', author: 'alice',
+        updated_at: '2026-08-21T18:00:00Z',
+        html_url: 'https://github.com/shop/world/pull/9',
+        state: 'open', collection: 'review-requests'
+      });
+
+      const res = await request(server).get('/api/github/review-requests');
+
+      expect(res.status).toBe(200);
+      expect(res.body.prs[0].setup_host).toBe('github');
+      // A dual repo's github.com row hides the alt-host link, so the sentinel
+      // and the rendered links agree: both mean github.com.
+      expect(res.body.prs[0].repo_links.external).toBeNull();
+      expect(res.body.prs[0].repo_links.github).toBe(true);
+    });
+
+    it('emits the api_host as setup_host for an alt-host row', async () => {
+      const apiHost = 'https://meteorite.example/api/v3';
+      app.set('config', {
+        repos: {
+          'acme/platform': {
+            api_host: apiHost,
+            url_pattern: '^https://meteorite\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              },
+              github: false
+            }
+          }
+        }
+      });
+      await insertCachedPR(db, {
+        owner: 'shop', repo: 'world', number: 8,
+        title: 'A Meteorite PR', author: 'alice',
+        updated_at: '2026-08-21T18:00:00Z',
+        html_url: 'https://meteorite.example/shop/world/pull/8',
+        state: 'open', collection: 'review-requests'
+      });
+      await run(db, 'UPDATE github_pr_cache SET host = ? WHERE number = ?', [apiHost, 8]);
+
+      const res = await request(server).get('/api/github/review-requests');
+
+      expect(res.status).toBe(200);
+      expect(res.body.prs[0].setup_host).toBe(apiHost);
+      expect(res.body.prs[0].repo_links.external).toMatchObject({ label: 'Open on Meteorite' });
+      expect(res.body.prs[0].repo_links.github).toBe(false);
+    });
+
     it('should return data sorted by updated_at DESC', async () => {
       await insertCachedPR(db, {
         owner: 'org', repo: 'repo', number: 1,
