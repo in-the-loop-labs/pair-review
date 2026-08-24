@@ -436,6 +436,134 @@ describe('GET /api/worktrees/recent — pagination', () => {
     expect(res.body.reviews[0].html_url).toBe(htmlUrl);
   });
 
+  it('should include host-aware repository links for recent reviews', async () => {
+    const apiHost = 'https://meteorite.example/api/v3';
+    app.set('config', {
+      repos: {
+        'shop/world': {
+          api_host: apiHost,
+          exclusive: false,
+          links: {
+            external: {
+              name: 'Meteorite',
+              label: 'Open on Meteorite',
+              url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+            }
+          }
+        }
+      }
+    });
+    await insertWorktree(db, {
+      id: 'wt-meteorite',
+      prNumber: 2000042,
+      repository: 'shop/world',
+      title: 'Meteorite PR',
+      author: 'user',
+      accessedAt: new Date().toISOString(),
+      prData: { html_url: 'https://meteorite.example/shop/world/pull/2000042' }
+    });
+    await run(db, 'UPDATE pr_metadata SET host = ? WHERE repository = ? AND pr_number = ?', [
+      apiHost,
+      'shop/world',
+      2000042
+    ]);
+
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviews[0].host).toBe(apiHost);
+    expect(res.body.reviews[0].repo_links).toMatchObject({
+      external: {
+        name: 'Meteorite',
+        label: 'Open on Meteorite',
+        url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+      },
+      github: false,
+      graphite: false
+    });
+  });
+
+  it('reconciles a legacy NULL host against a non-github recorded URL', async () => {
+    // Host stamping was added without a backfill, so rows recorded before it
+    // carry NULL regardless of where the PR lives. Reading NULL as github.com
+    // would hide the configured external link and label the alt-host URL
+    // "Open on GitHub"; the recorded html_url settles it.
+    const apiHost = 'https://meteorite.example/api/v3';
+    app.set('config', {
+      repos: {
+        'shop/world': {
+          api_host: apiHost,
+          exclusive: false,
+          links: {
+            external: {
+              name: 'Meteorite',
+              label: 'Open on Meteorite',
+              url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+            }
+          }
+        }
+      }
+    });
+    await insertWorktree(db, {
+      id: 'wt-legacy-null',
+      prNumber: 2000043,
+      repository: 'shop/world',
+      title: 'Unstamped Meteorite PR',
+      author: 'user',
+      accessedAt: new Date().toISOString(),
+      prData: { html_url: 'https://meteorite.example/shop/world/pull/2000043' }
+    });
+    // Left NULL on purpose: this is the pre-stamping shape.
+
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviews[0].host).toBe(apiHost);
+    // Navigation must reach the same system the external link points at.
+    expect(res.body.reviews[0].setup_host).toBe(apiHost);
+    expect(res.body.reviews[0].repo_links).toMatchObject({
+      external: { label: 'Open on Meteorite' },
+      github: false,
+      graphite: false
+    });
+  });
+
+  it('leaves a legacy NULL host as github.com when the recorded URL is github.com', async () => {
+    const apiHost = 'https://meteorite.example/api/v3';
+    app.set('config', {
+      repos: {
+        'shop/world': {
+          api_host: apiHost,
+          exclusive: false,
+          links: {
+            external: {
+              name: 'Meteorite',
+              label: 'Open on Meteorite',
+              url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+            }
+          }
+        }
+      }
+    });
+    await insertWorktree(db, {
+      id: 'wt-legacy-github',
+      prNumber: 2000044,
+      repository: 'shop/world',
+      title: 'Unstamped github.com PR',
+      author: 'user',
+      accessedAt: new Date().toISOString(),
+      prData: { html_url: 'https://github.com/shop/world/pull/2000044' }
+    });
+
+    const res = await request(server).get('/api/worktrees/recent?limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body.reviews[0].host).toBeNull();
+    expect(res.body.reviews[0].setup_host).toBe('github');
+    expect(res.body.reviews[0].repo_links.external).toBeNull();
+    expect(res.body.reviews[0].repo_links.github).toBe(true);
+  });
+
   it('should return html_url as null when pr_data has no html_url', async () => {
     await insertWorktree(db, {
       id: 'wt-no-url',

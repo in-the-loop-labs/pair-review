@@ -45,8 +45,7 @@ function createMockElement(overrides = {}) {
       this.innerHTML = String(val)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/>/g, '&gt;');
     },
     classList: {
       add: vi.fn((...cls) => cls.forEach(c => classes.add(c))),
@@ -200,6 +199,7 @@ function setupGlobals() {
   // helper (loaded against these stubbed globals) rather than a hand-rolled
   // stub — its setup() is null-safe when no #theme-toggle button is present.
   global.window.PairReviewTheme = require('../../public/js/theme.js');
+  global.window.RepoLinks = require('../../public/js/repo-links.js');
 
   global.fetch = vi.fn(() => Promise.resolve({ ok: false }));
   global.Event = class Event {
@@ -301,7 +301,7 @@ describe('Index page Open/Analyze buttons', () => {
     expect(global.window.location.href).toBe('/pr/testowner/testrepo/42');
   });
 
-  // Helper: mock parse-pr-url with custom host / isDualHost fields.
+  // Helper: mock parse-pr-url with custom host / setupHost fields.
   function mockFetchParsePR(extra) {
     global.fetch = vi.fn((url) => {
       if (typeof url === 'string' && url.includes('/api/parse-pr-url')) {
@@ -316,12 +316,17 @@ describe('Index page Open/Analyze buttons', () => {
     });
   }
 
-  // ─── FIX 2: host sentinel forwarding on the paste flow ───────────────────
+  // ─── Host sentinel forwarding on the paste flow ───────────────────────────
+  // The server resolves `setupHost` (setupHostParam); the browser echoes it, so
+  // these assert the echo, not a config decision made in the browser.
 
   it('paste of an alt-host URL forwards the api_host as ?host=', async () => {
     const form = elementsById['start-review-form'];
     elementsById['pr-url-input'].value = 'https://althost.example/testowner/testrepo/pull/42';
-    mockFetchParsePR({ host: 'https://althost.example/api/v3', isDualHost: false });
+    mockFetchParsePR({
+      host: 'https://althost.example/api/v3',
+      setupHost: 'https://althost.example/api/v3'
+    });
 
     await form._listeners.submit[0]({ preventDefault: vi.fn() });
 
@@ -330,20 +335,20 @@ describe('Index page Open/Analyze buttons', () => {
     );
   });
 
-  it('paste of a github URL for a DUAL repo forwards the "github" sentinel', async () => {
+  it('paste of a github URL forwards a resolved "github" sentinel', async () => {
     const form = elementsById['start-review-form'];
     elementsById['pr-url-input'].value = 'https://github.com/testowner/testrepo/pull/42';
-    mockFetchParsePR({ host: null, isDualHost: true });
+    mockFetchParsePR({ host: null, setupHost: 'github' });
 
     await form._listeners.submit[0]({ preventDefault: vi.fn() });
 
     expect(global.window.location.href).toBe('/pr/testowner/testrepo/42?host=github');
   });
 
-  it('paste of a github URL for a plain repo omits the host param', async () => {
+  it('paste omits the host param when the server resolved none', async () => {
     const form = elementsById['start-review-form'];
     elementsById['pr-url-input'].value = 'https://github.com/testowner/testrepo/pull/42';
-    mockFetchParsePR({ host: null, isDualHost: false });
+    mockFetchParsePR({ host: null, setupHost: null });
 
     await form._listeners.submit[0]({ preventDefault: vi.fn() });
 
@@ -458,9 +463,55 @@ describe('Index page Open/Analyze buttons', () => {
     ]);
   });
 
-  it('buildReviewUrlsFromRows adds no host param for github.com rows', () => {
+  it('renders the API-resolved setup host for bulk Open and Analyze', () => {
+    // The server maps host → setup_host (setupHostParam): the 'github' sentinel
+    // only where a github.com binding exists, so the browser never decides this.
+    const rowHtml = indexModule.renderCollectionPrRow({
+      owner: 'dual-org',
+      repo: 'dual-repo',
+      number: 5,
+      title: 'GitHub PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://github.com/dual-org/dual-repo/pull/5',
+      host: null,
+      setup_host: 'github',
+      repo_links: { external: null, github: true, graphite: false }
+    }, 'my-prs');
+
+    expect(rowHtml).toContain('data-host="github"');
+    expect(indexModule.buildReviewUrlsFromRows(
+      [{ owner: 'dual-org', repo: 'dual-repo', number: '5', host: 'github' }],
+      ''
+    )).toEqual(['/pr/dual-org/dual-repo/5?host=github']);
+    expect(indexModule.buildReviewUrlsFromRows(
+      [{ owner: 'dual-org', repo: 'dual-repo', number: '5', host: 'github' }],
+      '?analyze=true'
+    )).toEqual(['/pr/dual-org/dual-repo/5?analyze=true&host=github']);
+  });
+
+  it('omits data-host when the API resolved no usable setup host', () => {
+    // An exclusive alt-host repo has no github.com binding, so the API returns
+    // setup_host null for a github.com row and the row must not claim one.
+    const rowHtml = indexModule.renderCollectionPrRow({
+      owner: 'alt-org',
+      repo: 'alt-repo',
+      number: 9,
+      title: 'Row with no usable host',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://github.com/alt-org/alt-repo/pull/9',
+      host: null,
+      setup_host: null,
+      repo_links: { external: null, github: true, graphite: true }
+    }, 'my-prs');
+
+    expect(rowHtml).not.toContain('data-host=');
+  });
+
+  it('buildReviewUrlsFromRows adds no host param for host-unknown rows', () => {
     const urls = indexModule.buildReviewUrlsFromRows(
-      [{ owner: 'gh-org', repo: 'gh-repo', number: '5' }], // no host
+      [{ owner: 'gh-org', repo: 'gh-repo', number: '5' }], // host unknown
       '?analyze=true'
     );
     expect(urls).toEqual(['/pr/gh-org/gh-repo/5?analyze=true']);
@@ -638,5 +689,238 @@ describe('Index page Open/Analyze buttons', () => {
     await submitHandler({ preventDefault: vi.fn() });
 
     expect(startBtn.textContent).toBe('Open');
+  });
+
+  it('renders a configured external host action for collection rows', () => {
+    vi.spyOn(window.RepoLinks, 'parseSvgIcon').mockReturnValue({
+      outerHTML: '<svg data-host="meteorite"></svg>'
+    });
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'shop',
+      repo: 'world',
+      number: 2000042,
+      title: 'Meteorite PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://meteorite.example/shop/world/pull/2000042',
+      host: 'https://meteorite.example/api/v3',
+      repo_links: {
+        external: {
+          name: 'Meteorite',
+          label: 'Open on Meteorite',
+          url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}',
+          icon: '<svg></svg>'
+        },
+        github: false,
+        graphite: false
+      }
+    }, 'review-requests');
+
+    expect(html).toContain('href="https://meteorite.example/shop/world/pull/2000042"');
+    expect(html).toContain('title="Open on Meteorite"');
+    expect(html).toContain('aria-label="Open on Meteorite"');
+    expect(html).toContain('<svg data-host="meteorite"></svg>');
+    expect(html).not.toContain('title="Open on GitHub"');
+  });
+
+  it('falls back to the host URL when an external template needs unavailable collection data', () => {
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'shop',
+      repo: 'world',
+      number: 2000042,
+      title: 'Meteorite PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://meteorite.example/shop/world/pull/2000042',
+      host: 'https://meteorite.example/api/v3',
+      repo_links: {
+        external: {
+          label: 'Open on Meteorite',
+          url_template: 'https://meteorite.example/branches/{branch}',
+          icon: null
+        },
+        github: false,
+        graphite: false
+      }
+    }, 'review-requests');
+
+    expect(html).toContain('href="https://meteorite.example/shop/world/pull/2000042"');
+    expect(html).toContain('title="Open on Meteorite"');
+  });
+
+  it('escapes configured external link values in HTML attributes', () => {
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'shop',
+      repo: 'world',
+      number: 2000042,
+      title: 'Meteorite PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      host: 'https://meteorite.example/api/v3',
+      // Config-derived, so still attacker-influenced if a config is shared.
+      setup_host: 'https://meteorite.example/api/v3" onmouseenter="alert(1)',
+      repo_links: {
+        external: {
+          label: 'Open" onmouseover="alert(1)',
+          url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}?next=" onfocus="alert(1)',
+          icon: null
+        },
+        github: false,
+        graphite: false
+      }
+    }, 'review-requests');
+
+    expect(html).not.toContain('title="Open" onmouseover="alert(1)"');
+    expect(html).not.toContain('?next=" onfocus="alert(1)"');
+    expect(html).toContain('title="Open&quot; onmouseover=&quot;alert(1)"');
+    expect(html).toContain('?next=&quot; onfocus=&quot;alert(1)');
+    expect(html).not.toContain('data-host="https://meteorite.example/api/v3" onmouseenter="alert(1)"');
+    expect(html).toContain('data-host="https://meteorite.example/api/v3&quot; onmouseenter=&quot;alert(1)"');
+  });
+
+  // Reduce a row to its attribute-name skeleton: keep tag markup only (quotes
+  // in text nodes are harmless), then blank out every quoted value. A correctly
+  // escaped hostile value collapses into one `""`; a regressed one leaves its
+  // injected `onmouseover=` behind as an attribute NAME, which is the failure.
+  function attributeSkeleton(html) {
+    return (html.match(/<[^>]*>/g) || [])
+      .join('\n')
+      .replace(/"[^"]*"/g, '""');
+  }
+
+  it('escapes GitHub-supplied collection values in HTML attributes', () => {
+    // Titles, owners and repos come straight from the GitHub search API, so they
+    // are remote input. escapeHtml() is text-node escaping and leaves quotes
+    // intact, which let a crafted title close `title="` and open a new
+    // attribute — an event handler, i.e. script execution on the dashboard.
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'sh"op',
+      repo: 'wo"rld',
+      number: 2000042,
+      title: 'Fix " onmouseover="alert(1)" crash',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://github.com/shop/world/pull/2000042?x=" onload="alert(1)',
+      host: null
+    }, 'review-requests');
+
+    // No attribute anywhere in the row may start with `on`.
+    expect(attributeSkeleton(html)).not.toMatch(/\son[a-z]+\s*=/i);
+    expect(html).toContain('title="Fix &quot; onmouseover=&quot;alert(1)&quot; crash"');
+    expect(html).toContain('data-owner="sh&quot;op"');
+    expect(html).toContain('data-repo="wo&quot;rld"');
+    expect(html).toContain('?x=&quot; onload=&quot;alert(1)');
+  });
+
+  it('escapes GitHub-supplied recent-review values in HTML attributes', () => {
+    const html = indexModule.renderRecentReviewRow({
+      id: 7,
+      repository: 'shop/world',
+      pr_number: 42,
+      pr_title: 'Fix " onmouseover="alert(1)" crash',
+      last_accessed_at: new Date().toISOString(),
+      html_url: 'https://github.com/shop/world/pull/42',
+      host: null
+    });
+
+    expect(attributeSkeleton(html)).not.toMatch(/\son[a-z]+\s*=/i);
+    expect(html).toContain('title="Fix &quot; onmouseover=&quot;alert(1)&quot; crash"');
+  });
+
+  it('preserves GitHub URL casing for GitHub and Graphite actions', () => {
+    window.__pairReview.enableGraphite = true;
+    window.__pairReview.toGraphiteUrl = (githubUrl) => githubUrl.replace(
+      /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/,
+      'https://app.graphite.com/github/pr/$1/$2/$3'
+    );
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'mixedowner',
+      repo: 'mixedrepo',
+      number: 42,
+      title: 'GitHub PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://github.com/MixedOwner/MixedRepo/pull/42',
+      repo_links: { external: null, github: true, graphite: true }
+    }, 'review-requests');
+
+    expect(html).toContain('href="https://github.com/MixedOwner/MixedRepo/pull/42"');
+    expect(html).toContain('href="https://app.graphite.com/github/pr/MixedOwner/MixedRepo/42"');
+  });
+
+  it('preserves the host URL when repository link config is absent', () => {
+    window.__pairReview.enableGraphite = true;
+    window.__pairReview.toGraphiteUrl = vi.fn();
+    const html = indexModule.renderCollectionPrRow({
+      owner: 'shop',
+      repo: 'world',
+      number: 2000042,
+      title: 'Meteorite PR',
+      author: 'alice',
+      updated_at: new Date().toISOString(),
+      html_url: 'https://meteorite.example/shop/world/pull/2000042'
+    }, 'review-requests');
+
+    expect(html).toContain('href="https://meteorite.example/shop/world/pull/2000042"');
+    expect(html).not.toContain('href="https://github.com/shop/world/pull/2000042"');
+    expect(window.__pairReview.toGraphiteUrl).not.toHaveBeenCalled();
+    expect(html).not.toContain('title="Open on Graphite"');
+  });
+
+  it('falls back to the host URL for recent rows with unavailable template data', () => {
+    const html = indexModule.renderRecentReviewRow({
+      id: 1,
+      repository: 'shop/world',
+      pr_number: 2000042,
+      pr_title: 'Meteorite PR',
+      author: 'alice',
+      last_accessed_at: new Date().toISOString(),
+      html_url: 'https://meteorite.example/shop/world/pull/2000042',
+      host: 'https://meteorite.example/api/v3',
+      repo_links: {
+        external: {
+          label: 'Open on Meteorite',
+          url_template: 'https://meteorite.example/commits/{head_sha}',
+          icon: null
+        },
+        github: false,
+        graphite: false
+      }
+    });
+
+    expect(html).toContain('href="https://meteorite.example/shop/world/pull/2000042"');
+    expect(html).toContain('title="Open on Meteorite"');
+  });
+
+  it('does not construct a Graphite action without a canonical GitHub URL', () => {
+    window.__pairReview.enableGraphite = true;
+    window.__pairReview.toGraphiteUrl = vi.fn();
+    const html = indexModule.renderRecentReviewRow({
+      id: 1,
+      repository: 'mixedowner/mixedrepo',
+      pr_number: 42,
+      pr_title: 'Legacy GitHub PR',
+      author: 'alice',
+      last_accessed_at: new Date().toISOString()
+    });
+
+    expect(html).toContain('title="Open on GitHub"');
+    expect(html).not.toContain('title="Open on Graphite"');
+    expect(window.__pairReview.toGraphiteUrl).not.toHaveBeenCalled();
+  });
+
+  it('keeps the GitHub action fallback for recent review rows', () => {
+    const html = indexModule.renderRecentReviewRow({
+      id: 1,
+      repository: 'shop/world',
+      pr_number: 42,
+      pr_title: 'GitHub PR',
+      author: 'alice',
+      last_accessed_at: new Date().toISOString()
+    });
+
+    expect(html).toContain('href="https://github.com/shop/world/pull/42"');
+    expect(html).toContain('title="Open on GitHub"');
+    expect(html).not.toContain('Open on Meteorite');
   });
 });

@@ -26,8 +26,8 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
-const { resolveHostBinding, resolveBindingRepositoryFromPR, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled } = require('../config');
-const { storedHostToOption, isDualHostRepo } = require('../utils/host-resolution');
+const { resolveHostBinding, getWorktreeDisplayName, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryEnabled, getTourEnabled, resolveBindingRepositoryFromPR } = require('../config');
+const { storedHostToOption, resolveRecordedHost, resolveBindingRepositoryForHost, setupHostParam } = require('../utils/host-resolution');
 const { resolveHostName } = require('../links/repo-links');
 const { resolveHostListText } = require('../links/host-names');
 const { backgroundQueue } = require('../ai/background-queue');
@@ -140,28 +140,46 @@ module.exports._attachHunkHashes = attachHunkHashes;
  */
 async function resolveBindingForRequest(req, repository) {
   const config = req.app.get('config') || {};
-  // `repository` here is the PR-identity `${owner}/${repo}`. For
-  // monorepo-style configs the binding-key in `config.repos` can differ;
-  // resolve it via `resolveBindingRepositoryFromPR` before looking up
-  // the host binding so per-repo tokens/api_host/features apply.
+  // `repository` here is the PR-identity `${owner}/${repo}`. For monorepo-style
+  // configs the binding-key in `config.repos` can differ, so it is resolved
+  // through the shared helper before looking up the host binding — per-repo
+  // tokens/api_host/features then apply. The lookup is host-aware: an exclusive
+  // alt entry that only `url_pattern`-claimed this owner/repo cannot serve a PR
+  // proven to be on github.com, and must not bind it (same rule the dashboard
+  // rows and the setup route use).
   const [owner, repo] = String(repository).split('/');
-  const bindingRepository = resolveBindingRepositoryFromPR(owner, repo, config);
 
   // PR-aware host resolution. Every caller is an `/:owner/:repo/:number` route,
-  // so a per-PR host may already be stored. When a pr_metadata row exists, bind
-  // to its stored host (github for NULL, the api_host string for an alt host);
-  // when no row exists, fall back to the ambiguity rule (two-arg resolve). A
-  // stale stored host (config changed) makes resolveHostBinding throw — that
-  // surfaces to the route's error handler as a clear failure rather than a
-  // silent bind to a dead host.
+  // so a per-PR host may already be recorded. `resolveRecordedHost` reads the
+  // stored host plus the recorded html_url, upgrading a NULL to the alt host
+  // only where the URL proves it — an unprovable legacy NULL resolves to `null`
+  // (github.com), the same value the raw column carried, so those reviews bind
+  // exactly as before. A stale stored host (config changed) makes
+  // resolveHostBinding throw — that surfaces to the route's error handler
+  // rather than a silent bind to a dead host.
   const prNumber = parseInt(req.params && req.params.number, 10);
-  let hostOptions;
+  let recordedHost;
   if (Number.isInteger(prNumber) && prNumber > 0) {
     const prMetadataRepo = new PRMetadataRepository(req.app.get('db'));
-    const storedHost = await prMetadataRepo.getPRHost(repository, prNumber);
-    // Apply the legacy-NULL back-compat convention (see storedHostToOption).
-    hostOptions = storedHostToOption(config, bindingRepository, storedHost);
+    const recorded = await prMetadataRepo.getPRHostWithRecordedUrl(repository, prNumber);
+    if (recorded !== undefined) {
+      recordedHost = resolveRecordedHost(
+        config,
+        resolveBindingRepositoryFromPR(owner, repo, config),
+        recorded.host,
+        recorded.recordedUrl
+      );
+    }
   }
+  const bindingRepository = resolveBindingRepositoryForHost(owner, repo, config, recordedHost);
+  // Bind the host the evidence resolved to, NOT the raw column: a pre-stamping
+  // row whose recorded URL is on the alt host resolves to that host, and
+  // reapplying its NULL here would force a github.com binding while the row's
+  // links point at the alt host. `storedHostToOption` still applies the
+  // legacy-NULL convention against the entry that survived the check above.
+  const hostOptions = recordedHost === undefined
+    ? undefined
+    : storedHostToOption(config, bindingRepository, recordedHost);
   const binding = resolveHostBinding(bindingRepository, config, hostOptions || {});
   if (binding.token) {
     return { binding, token: binding.token, bindingRepository };
@@ -1770,7 +1788,11 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // string=alt) so a dual-host repo names the system this PR was submitted
       // to rather than its repo-level default.
       const cfg = req.app.get('config') || {};
-      const hostName = resolveHostName(cfg, resolveBindingRepositoryFromPR(owner, repo, cfg), binding.host);
+      const hostName = resolveHostName(
+        cfg,
+        resolveBindingRepositoryForHost(owner, repo, cfg, binding.host),
+        binding.host
+      );
       res.json({
         success: true,
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
@@ -1967,15 +1989,11 @@ router.post('/api/parse-pr-url', (req, res) => {
   const result = parser.parsePRUrl(url);
 
   if (result) {
-    // Report whether the resolved repo is DUAL (github + alt-host). A github URL
-    // (host === null) for a dual repo must be forwarded to setup as an explicit
-    // github pick (the "github" sentinel) so it does not probe alt-first; for a
-    // plain or exclusive repo the client omits host (no probe / avoids the
-    // exclusive-null throw). Resolve the binding key first (url_pattern match
-    // supplies it; otherwise derive from owner/repo).
+    // `setupHost` is the resolved `?host=` value for this URL (see
+    // setupHostParam): an alt api_host string, the 'github' sentinel when any
+    // api_host entry could otherwise claim this repo, or null to omit. Computed
+    // here so the browser never has to reason about repo configuration.
     const safeConfig = config || {};
-    const bindingRepository = result.bindingRepository
-      || resolveBindingRepositoryFromPR(result.owner, result.repo, safeConfig);
     return res.json({
       valid: true,
       owner: result.owner,
@@ -1988,7 +2006,7 @@ router.post('/api/parse-pr-url', (req, res) => {
       // from owner/repo for monorepo-style url_pattern configs).
       host: result.host,
       bindingRepository: result.bindingRepository,
-      isDualHost: isDualHostRepo(safeConfig, bindingRepository)
+      setupHost: setupHostParam(safeConfig, result.owner, result.repo, result.host)
     });
   }
 

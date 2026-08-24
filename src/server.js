@@ -1,9 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const express = require('express');
 const path = require('path');
-const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName, getRepoConfig, resolveBindingRepositoryFromPR, isExclusiveAltHost } = require('./config');
+const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName, getRepoConfig, isExclusiveAltHost } = require('./config');
 const { initializeDatabase, getDatabaseStatus, queryOne, run, PRMetadataRepository } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
+const { resolveBindingRepositoryForHost } = require('./utils/host-resolution');
 const { GlobalSettingsService } = require('./settings/global-settings-service');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const { checkAllChatProviders } = require('./chat/chat-providers');
@@ -79,8 +80,12 @@ async function applyHostQueryCorrection(db, config, owner, repo, repository, prN
   const targetHost = rawHost === 'github' ? null : rawHost;
 
   // Resolve the repo's config entry (handles monorepo-style keys matched via
-  // url_pattern) to learn its configured api_host.
-  const bindingRepo = resolveBindingRepositoryFromPR(owner, repo, config);
+  // url_pattern) to learn its configured api_host. Host-aware: an explicit
+  // github.com correction is authoritative — the dashboard row it came from was
+  // sourced from the github.com search, or the user pasted a github.com URL —
+  // so an exclusive alt entry that merely `url_pattern`-claimed this owner/repo
+  // is rejected here too, and the correction is accepted instead of dropped.
+  const bindingRepo = resolveBindingRepositoryForHost(owner, repo, config, targetHost);
   const repoConfig = getRepoConfig(config, bindingRepo);
   const configuredApiHost = (repoConfig && typeof repoConfig.api_host === 'string' && repoConfig.api_host)
     ? repoConfig.api_host

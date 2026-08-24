@@ -17,6 +17,12 @@ const { activeAnalyses, reviewToAnalysisId, killProcesses, broadcastProgress } =
 const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const { resolvePoolConfig } = require('../config');
+const { resolveRepoLinks } = require('../links/repo-links');
+const {
+  resolveRecordedHost,
+  resolveBindingRepositoryForHost,
+  setupHostParam
+} = require('../utils/host-resolution');
 
 const router = express.Router();
 
@@ -140,6 +146,7 @@ router.get('/api/worktrees/recent', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 10, 50);
     const before = req.query.before || null;
     const db = req.app.get('db');
+    const config = req.app.get('config') || {};
 
     // Fetch limit + 1 to determine hasMore
     const fetchCount = limit + 1;
@@ -152,10 +159,13 @@ router.get('/api/worktrees/recent', async (req, res) => {
         pm.pr_number,
         pm.title,
         pm.author,
+        pm.base_branch,
         pm.head_branch,
         pm.last_accessed_at,
         pm.created_at,
         json_extract(pm.pr_data, '$.html_url') as html_url,
+        json_extract(pm.pr_data, '$.head_sha') as head_sha,
+        pm.host,
         w.id as worktree_id,
         w.path as worktree_path,
         w.branch,
@@ -195,6 +205,27 @@ router.get('/api/worktrees/recent', async (req, res) => {
           }
         }
       }
+      const [owner, repo] = row.repository.split('/');
+      // Host stamping (schema v50) was never backfilled, so a stored NULL can
+      // mean "github.com" OR "recorded before stamping existed".
+      // `resolveRecordedHost` upgrades a NULL to the alt host only where the
+      // recorded html_url proves it; an unprovable legacy row resolves to
+      // `null` (github.com), the stored convention, rather than to a host this
+      // row's click would not bind. Links, navigation, and the /pr binding all
+      // derive from this one value.
+      const host = resolveRecordedHost(
+        config,
+        resolveBindingRepositoryForHost(owner, repo, config, undefined),
+        row.host,
+        row.html_url
+      );
+      // With the host settled, resolve links and navigation from it through the
+      // same helpers the setup route uses, so the row's icon and its click
+      // cannot reach different systems. /pr's applyHostQueryCorrection also
+      // stamps the value on the way through, healing the legacy NULL.
+      const bindingRepository = resolveBindingRepositoryForHost(owner, repo, config, host);
+      const repoLinks = resolveRepoLinks(config, bindingRepository, host);
+      const setupHost = setupHostParam(config, owner, repo, host);
       reviews.push({
         id: row.id,
         repository: row.repository,
@@ -202,10 +233,15 @@ router.get('/api/worktrees/recent', async (req, res) => {
         pr_title: row.title,
         author: row.author || null,
         head_branch: row.head_branch || row.branch || null,
+        base_branch: row.base_branch || null,
         last_accessed_at: row.last_accessed_at,
         created_at: row.created_at,
         storage_status: storageStatus,
         html_url: row.html_url || null,
+        head_sha: row.head_sha || null,
+        host: host,
+        setup_host: setupHost,
+        repo_links: repoLinks,
         review_id: row.review_id || null
       });
     }

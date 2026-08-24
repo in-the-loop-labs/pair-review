@@ -19,12 +19,8 @@
  */
 
 const { GitHubClient, GitHubApiError } = require('../github/client');
-const {
-  getGitHubToken,
-  resolveHostBinding,
-  resolveBindingRepositoryFromPR
-} = require('../config');
-const { storedHostToOption } = require('../utils/host-resolution');
+const { getGitHubToken, resolveHostBinding } = require('../config');
+const { storedHostToOption, resolveBindingRepositoryForHost } = require('../utils/host-resolution');
 
 const name = 'github';
 
@@ -88,17 +84,19 @@ function resolveCredentials(config, repository, _deps, options = {}) {
     GitHubClient,
     getGitHubToken,
     resolveHostBinding,
-    resolveBindingRepositoryFromPR,
+    resolveBindingRepositoryForHost,
     ..._deps
   };
   const safeConfig = config || {};
 
   if (repository) {
     // Binding-aware path. Mirrors resolveBindingForRequest in routes/pr.js:
-    // resolve the PR identity to a binding key, then to a host binding —
-    // pinned to the PR's stored host for dual repos.
+    // resolve the PR identity to a binding key for the host it is recorded on,
+    // then to a host binding — pinned to that host for dual repos. Passing the
+    // host into the key lookup keeps an exclusive alt entry that merely
+    // `url_pattern`-claimed this owner/repo from serving a github.com PR.
     const [owner, repo] = String(repository).split('/');
-    const bindingRepository = deps.resolveBindingRepositoryFromPR(owner, repo, safeConfig);
+    const bindingRepository = deps.resolveBindingRepositoryForHost(owner, repo, safeConfig, options.storedHost);
     const hostOption = storedHostToOption(safeConfig, bindingRepository, options.storedHost);
     const binding = deps.resolveHostBinding(bindingRepository, safeConfig, hostOption || {});
     if (!binding || !binding.token) {

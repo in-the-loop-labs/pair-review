@@ -289,7 +289,7 @@ describe('PR Management Endpoints', () => {
   });
 
   describe('POST /api/parse-pr-url', () => {
-    it('returns host: null for a github.com URL', async () => {
+    it('returns host: null and no setup host for a plain github.com URL', async () => {
       const response = await request(server)
         .post('/api/parse-pr-url')
         .send({ url: 'https://github.com/owner/repo/pull/123' });
@@ -297,11 +297,13 @@ describe('PR Management Endpoints', () => {
       expect(response.status).toBe(200);
       expect(response.body).toMatchObject({
         valid: true, owner: 'owner', repo: 'repo', prNumber: 123, host: null,
-        isDualHost: false
+        // No api_host entry is in play, so the ambiguity rule already binds
+        // github.com and there is nothing to announce.
+        setupHost: null
       });
     });
 
-    it('returns the matched api_host and bindingRepository for a url_pattern match (exclusive → not dual)', async () => {
+    it('returns the matched api_host as the setup host for a url_pattern match', async () => {
       app.set('config', {
         repos: {
           'acme/widgets': {
@@ -319,12 +321,11 @@ describe('PR Management Endpoints', () => {
       expect(response.body).toMatchObject({
         valid: true, owner: 'acme', repo: 'widgets', prNumber: 42,
         host: 'https://althost.example/api/v3', bindingRepository: 'acme/widgets',
-        // api_host with no `exclusive` key → exclusive:true → NOT dual.
-        isDualHost: false
+        setupHost: 'https://althost.example/api/v3'
       });
     });
 
-    it('flags isDualHost:true for a github URL that resolves to a DUAL repo', async () => {
+    it('announces the github sentinel for a github URL on a DUAL repo', async () => {
       app.set('config', {
         github_token: 'gh-tok',
         repos: {
@@ -343,9 +344,34 @@ describe('PR Management Endpoints', () => {
       expect(response.status).toBe(200);
       expect(response.body).toMatchObject({
         valid: true, owner: 'acme', repo: 'widgets', prNumber: 42,
-        // github URL → host null, but the repo is dual so the client sends the
-        // "github" sentinel to avoid an alt-first probe.
-        host: null, isDualHost: true
+        host: null, setupHost: 'github'
+      });
+    });
+
+    it('announces the github sentinel when a monorepo pattern could claim the repo', async () => {
+      // The parser discards an api_host `url_pattern` match for a canonical
+      // github.com URL, so `host` is null and `bindingRepository` is absent. Setup
+      // would still re-resolve the alt entry from owner/repo, so the sentinel has
+      // to be announced or the PR gets fetched from the alt host.
+      app.set('config', {
+        github_token: 'gh-tok',
+        repos: {
+          'acme/platform': {
+            api_host: 'https://althost.example/api/v3',
+            url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)',
+            token: 'alt-tok'
+          }
+        }
+      });
+
+      const response = await request(server)
+        .post('/api/parse-pr-url')
+        .send({ url: 'https://github.com/acme/widgets/pull/42' });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        valid: true, owner: 'acme', repo: 'widgets', prNumber: 42,
+        host: null, setupHost: 'github'
       });
     });
 
@@ -4452,6 +4478,69 @@ describe('Repo Links Endpoint', () => {
       expect(res.body.links.external).not.toBeNull();
       expect(res.body.links.github).toBe(true);
       expect(res.body.links.graphite).toBe(true);
+    });
+
+    it('a github.com PR does not get the links of an exclusive entry that pattern-claimed it', async () => {
+      // The url_pattern probe claims every owner/repo, so this PR resolves to an
+      // exclusive alt entry. Its recorded html_url proves it is on github.com,
+      // so the review header must show github links — matching what the review
+      // page binds and what the dashboard row already renders.
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'acme/platform': {
+            api_host: ALT_HOST,
+            url_pattern: '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              },
+              github: false
+            }
+          }
+        }
+      });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, host, pr_data)
+        VALUES (?, 'gh/repo', 'A github.com PR', NULL, ?)
+      `, [11, JSON.stringify({ html_url: 'https://github.com/gh/repo/pull/11' })]);
+
+      const res = await request(server).get('/api/repos/gh/repo/links?number=11');
+
+      expect(res.status).toBe(200);
+      expect(res.body.links).toEqual({ external: null, github: true, graphite: true });
+    });
+
+    it('a pre-stamping alt-host PR keeps the pattern-claimed entry links', async () => {
+      app.set('config', {
+        ...app.get('config'),
+        repos: {
+          'acme/platform': {
+            api_host: ALT_HOST,
+            url_pattern: '^https://alt\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+            links: {
+              external: {
+                name: 'Meteorite',
+                label: 'Open on Meteorite',
+                url_template: 'https://meteorite.example/{owner}/{repo}/pull/{number}'
+              },
+              github: false
+            }
+          }
+        }
+      });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, host, pr_data)
+        VALUES (?, 'alt/repo', 'An alt-host PR', NULL, ?)
+      `, [12, JSON.stringify({ html_url: 'https://alt.example/alt/repo/pull/12' })]);
+
+      const res = await request(server).get('/api/repos/alt/repo/links?number=12');
+
+      expect(res.status).toBe(200);
+      expect(res.body.links.external).not.toBeNull();
+      expect(res.body.links.github).toBe(false);
     });
   });
 });

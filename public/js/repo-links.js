@@ -25,6 +25,24 @@
     'owner', 'repo', 'number', 'branch', 'base_branch', 'head_sha'
   ];
 
+  // Custom icons are presentation-only. Restrict the parsed tree to inert SVG
+  // shapes and paint attributes before it can enter the live document.
+  const SAFE_SVG_ELEMENTS = new Set([
+    'svg', 'g', 'path', 'circle', 'ellipse', 'line', 'polyline', 'polygon',
+    'rect', 'title', 'desc', 'defs', 'lineargradient', 'radialgradient',
+    'stop', 'clippath', 'mask'
+  ]);
+  const SAFE_SVG_ATTRIBUTES = new Set([
+    'xmlns', 'viewbox', 'preserveaspectratio', 'width', 'height',
+    'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry',
+    'fx', 'fy', 'fr', 'd', 'points', 'fill', 'fill-rule', 'fill-opacity',
+    'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+    'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset',
+    'stroke-opacity', 'opacity', 'transform', 'clip-path', 'clip-rule',
+    'mask', 'id', 'class', 'offset', 'stop-color', 'stop-opacity',
+    'gradientunits', 'gradienttransform', 'spreadmethod', 'role', 'focusable'
+  ]);
+
   // The most recently resolved links + substitution context for the
   // current review. Stored so other code (ReviewModal, pr.js) can read
   // the configured host name / external URL / icon instead of hardcoding
@@ -77,37 +95,68 @@
       // image/svg+xml mode returns a <parsererror> root on bad input.
       const root = doc.documentElement;
       if (!root || root.nodeName !== 'svg') return null;
-      // Belt-and-braces: strip dangerous attributes/elements even though
-      // the server already removed them.
-      stripDangerousAttributes(root);
+      // The server strips scripts/on*/javascript:, while embedded active HTML
+      // and external references are removed by this inert allowlist pass.
+      const removed = { elements: 0, attributes: 0 };
+      sanitizeSvgTree(root, removed);
+      if (removed.elements || removed.attributes) {
+        // A configured icon that renders differently than authored is otherwise
+        // silent and hard to diagnose — this parser also feeds the review header
+        // and the submit button, not just the dashboard rows.
+        console.warn(
+          '[repo-links] Sanitised configured icon: removed ' + removed.elements +
+          ' element(s) and ' + removed.attributes + ' attribute(s). Only inert SVG ' +
+          'shapes, paint attributes, and local url(#id) references are kept.'
+        );
+      }
       return root;
     } catch {
       return null;
     }
   }
 
+  // A paint/reference attribute may point at a LOCAL fragment only. Accepts
+  // optional surrounding whitespace and optional matching quotes — `url(#a)`,
+  // `url("#paint0")`, `url('#clip0')` and ` url(#mask0) ` are all the same
+  // local reference, and the allowlist deliberately keeps `defs`, `id`,
+  // gradients, `clip-path` and `mask` so they are clearly intended. Anything
+  // else (`url(https://…)`, `url(//…)`, `url(data:…)`, mismatched quotes, or
+  // more than one reference) fails and the attribute is dropped.
+  const LOCAL_FRAGMENT_URL_RE = /^\s*url\(\s*(["']?)#[^)"'\s]+\1\s*\)\s*$/i;
+
   /**
-   * Recursively strip on* event handlers and `javascript:` URLs from an
-   * SVG element tree, and remove any `<script>` descendants. Defensive
-   * second pass after server sanitisation.
+   * Restrict a parsed SVG tree to inert presentation elements and attributes.
+   * Active HTML (`foreignObject`, iframes), scripts, event handlers, external
+   * resource references, and animation elements are removed.
+   *
+   * @param {Element} element - Subtree root to sanitise in place
+   * @param {{ elements: number, attributes: number }} removed - Accumulator so
+   *   the caller can report what changed with a single warning.
    */
-  function stripDangerousAttributes(element) {
+  function sanitizeSvgTree(element, removed) {
     if (!element || !element.attributes) return;
     const attrs = Array.from(element.attributes);
     for (const attr of attrs) {
       const name = attr.name.toLowerCase();
-      const value = String(attr.value || '').toLowerCase();
-      if (name.startsWith('on') || value.includes('javascript:')) {
+      const value = String(attr.value || '');
+      const isDataOrAria = name.startsWith('data-') || name.startsWith('aria-');
+      const hasUnsafeUrl = /javascript:/i.test(value)
+        || (/url\s*\(/i.test(value) && !LOCAL_FRAGMENT_URL_RE.test(value));
+      if ((!SAFE_SVG_ATTRIBUTES.has(name) && !isDataOrAria) || hasUnsafeUrl) {
         element.removeAttribute(attr.name);
+        removed.attributes++;
       }
     }
+
     const children = Array.from(element.children || []);
     for (const child of children) {
-      if (child.nodeName && child.nodeName.toLowerCase() === 'script') {
+      const name = String(child.localName || child.nodeName || '').toLowerCase();
+      if (!SAFE_SVG_ELEMENTS.has(name)) {
         child.remove();
+        removed.elements++;
         continue;
       }
-      stripDangerousAttributes(child);
+      sanitizeSvgTree(child, removed);
     }
   }
 

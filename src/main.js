@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides } = require('./config');
+const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides, resolveBindingRepositoryFromPR } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -26,7 +26,7 @@ const { getChangedFiles } = require('./routes/executable-analysis');
 const { safeParseJson } = require('./utils/safe-parse-json');
 const { includesBranch, parseScopeArg, VALID_SCOPE_RANGES, EMPTY_SCOPE_MESSAGE } = require('./local-scope');
 const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
-const { isDualHostRepo, resolvePreflightBinding, hostSetupParamValue } = require('./utils/host-resolution');
+const { resolvePreflightBinding, setupHostParam, bindingRepositoryForHost } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
@@ -1155,6 +1155,38 @@ AI PROVIDERS:
 }
 
 /**
+ * Resolve the `repos[...]` config-lookup key for a PR named on the CLI.
+ *
+ * Shared by every in-process PR entry point (`handlePullRequest`,
+ * `performHeadlessReview`, and the headless PR path) so they cannot drift. The
+ * key drives the token/api_host binding AND the repo's local configuration
+ * (path, checkout script, worktree pool, reset script), so both halves have to
+ * agree on it.
+ *
+ * Two corrections over the raw parse result:
+ *  - `PRArgumentParser` deliberately drops `bindingRepository` for a canonical
+ *    github.com / Graphite URL, so resolve it from owner/repo in that case.
+ *    Without this a github.com PR served by a DUAL monorepo entry would lose
+ *    that entry's local configuration, and a bare PR number on a pattern-only
+ *    alt repo would preflight against the identity instead of its entry.
+ *  - The result is filtered by the PR's known host, so an EXCLUSIVE alt entry
+ *    that only `url_pattern`-claimed this owner/repo never binds a PR that
+ *    lives on github.com (see `bindingRepositoryForHost`).
+ *
+ * @param {{owner: string, repo: string, host?: string|null, bindingRepository?: string}} prInfo
+ * @param {Object} config - Application configuration
+ * @returns {string} The `repos[...]` config-lookup key
+ */
+function resolveCliBindingRepository(prInfo, config) {
+  return bindingRepositoryForHost(
+    config,
+    normalizeRepository(prInfo.owner, prInfo.repo),
+    prInfo.bindingRepository || resolveBindingRepositoryFromPR(prInfo.owner, prInfo.repo, config),
+    prInfo.host
+  );
+}
+
+/**
  * Handle pull request processing
  * @param {Array<string>} args - Command line arguments
  * @param {Object} config - Application configuration
@@ -1174,13 +1206,9 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     const parser = new PRArgumentParser(config);
     const prInfo = await parser.parsePRArguments(args);
 
-    // Resolve token via repo-aware host binding so alt-host and
-    // repo-scoped credentials are respected. When a per-repo
-    // `url_pattern` matched, prefer its `bindingRepository` — that's the
-    // matched `repos[...]` config key, which may differ from the
-    // captured `${owner}/${repo}` for monorepo-style patterns.
-    const repositoryForBinding = prInfo.bindingRepository
-      || normalizeRepository(prInfo.owner, prInfo.repo);
+    // Resolve the config key via the shared helper so the token binding and the
+    // repo's local configuration agree (see resolveCliBindingRepository).
+    const repositoryForBinding = resolveCliBindingRepository(prInfo, config);
     // A pasted URL tells us the host up front (alt-host `url_pattern` match →
     // api_host string; github/graphite URL → null), so preflight the token
     // against that host. A bare number leaves host undefined → ambiguity rule,
@@ -1248,10 +1276,11 @@ async function handlePullRequest(args, config, db, flags = {}, poolLifecycle = n
     }
 
     // Thread the pasted URL's host to setup so it binds directly instead of
-    // probing (shared mapping — see hostSetupParamValue): an alt-host string
-    // forwards the api_host; a github URL on a DUAL repo forwards the 'github'
-    // sentinel; bare numbers / plain / exclusive repos omit it.
-    const hostParam = hostSetupParamValue(prInfo.host, isDualHostRepo(config, repositoryForBinding));
+    // probing (shared mapping — see setupHostParam): an alt-host string forwards
+    // the api_host; a github URL forwards the 'github' sentinel whenever an
+    // api_host entry could otherwise claim this repo; bare numbers and plain
+    // github repos omit it.
+    const hostParam = setupHostParam(config, prInfo.owner, prInfo.repo, prInfo.host);
     if (hostParam) {
       url += (url.includes('?') ? '&' : '?') + `host=${encodeURIComponent(hostParam)}`;
     }
@@ -1354,12 +1383,10 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       }
     }
 
-    // Resolve host binding for the target repo (handles alt-host).
-    // Prefer `bindingRepository` (from url_pattern match) over the raw
-    // `${owner}/${repo}` since they can differ when one config entry
-    // serves many monorepo-shaped URLs.
-    const repositoryForBinding = prInfo.bindingRepository
-      || normalizeRepository(prInfo.owner, prInfo.repo);
+    // Resolve the config key via the shared helper (see
+    // resolveCliBindingRepository): it drives the host binding below AND this
+    // PR's local path / checkout / pool / reset configuration.
+    const repositoryForBinding = resolveCliBindingRepository(prInfo, config);
     // Preflight the token so a missing credential fails fast before any network
     // work. Tolerates a dual repo with only an alt token when the host is
     // unknown (the setup probe tries the alt host first).
@@ -2010,8 +2037,10 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
     }
   }
 
-  const repositoryForBinding = prInfo.bindingRepository
-    || normalizeRepository(prInfo.owner, prInfo.repo);
+  // Resolve the config key via the shared helper (see
+  // resolveCliBindingRepository): the same key drives the host binding and this
+  // PR's local path / checkout / pool / reset configuration.
+  const repositoryForBinding = resolveCliBindingRepository(prInfo, config);
   // Preflight the token so a missing credential fails fast before any network
   // work. Tolerates a dual repo with only an alt token when the host is unknown
   // (the setup probe tries the alt host first).
@@ -3005,4 +3034,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, resolveCliBindingRepository, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };

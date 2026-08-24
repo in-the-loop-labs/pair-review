@@ -88,6 +88,28 @@ describe('applyHostQueryCorrection (/pr fast path ?host)', () => {
     expect(await storedHost(db)).toBe(API_HOST); // untouched
   });
 
+  it('accepts the github sentinel when only a pattern-claimed exclusive entry matched', async () => {
+    // A monorepo url_pattern probe claims every owner/repo, so this repo resolves
+    // to an exclusive alt entry that has no github.com presence. The correction
+    // is authoritative — it came from a dashboard row sourced from the github.com
+    // search — so it must be stamped, not dropped, or the review page keeps
+    // binding the alt host for a PR the dashboard labelled github.com.
+    const monorepoConfig = {
+      repos: {
+        'acme/platform': {
+          api_host: API_HOST,
+          url_pattern: '^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>\\d+)',
+          token: 'alt-token'
+        }
+      }
+    };
+    await seedPR(db, API_HOST);
+
+    await applyHostQueryCorrection(db, monorepoConfig, 'altorg', 'altrepo', REPOSITORY, PR_NUMBER, 'github');
+
+    expect(await storedHost(db)).toBeNull();
+  });
+
   it('does nothing when no host query param is present', async () => {
     await seedPR(db, null);
     const warnSpy = vi.spyOn(logger, 'warn');
