@@ -277,6 +277,367 @@ describe('DiffOptionsDropdown', () => {
     });
   });
 
+  describe('base branch input', () => {
+    /**
+     * Helper: invoke a registered event handler on the base branch input.
+     */
+    function fireInputEvent(input, eventName, eventProps = {}) {
+      const call = input.addEventListener.mock.calls.find((c) => c[0] === eventName);
+      if (call) call[1]({ stopPropagation: vi.fn(), preventDefault: vi.fn(), ...eventProps });
+    }
+
+    it('renders the row visible when branch is in scope', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      expect(dropdown._baseBranchRowEl).not.toBeNull();
+      expect(dropdown._baseBranchRowEl.style.display).toBe('flex');
+      expect(dropdown._baseBranchInput.value).toBe('main');
+    });
+
+    it('hides the row when branch is not in scope', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'unstaged', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      expect(dropdown._baseBranchRowEl.style.display).toBe('none');
+    });
+
+    it('does not render the row without onBaseBranchChange', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        initialScope: { start: 'branch', end: 'untracked' },
+        branchAvailable: true
+      });
+
+      expect(dropdown._baseBranchRowEl).toBeNull();
+      expect(dropdown._baseBranchInput).toBeNull();
+    });
+
+    it('shows the row when the scope expands to include branch', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'unstaged', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      expect(dropdown._baseBranchRowEl.style.display).toBe('none');
+
+      dropdown.scope = { start: 'branch', end: 'untracked' };
+
+      expect(dropdown._baseBranchRowEl.style.display).toBe('flex');
+    });
+
+    it('fires onBaseBranchChange on Enter with a changed value', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = '  origin/main  ';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+      expect(onBaseBranchChange).toHaveBeenCalledTimes(1);
+      expect(onBaseBranchChange).toHaveBeenCalledWith('origin/main');
+      expect(dropdown.baseBranch).toBe('origin/main');
+    });
+
+    it('fires onBaseBranchChange when the confirm button is clicked', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+      fireClick(dropdown._baseBranchConfirmBtn);
+
+      expect(onBaseBranchChange).toHaveBeenCalledTimes(1);
+      expect(onBaseBranchChange).toHaveBeenCalledWith('origin/main');
+    });
+
+    it('enables the confirm button only while the value is dirty', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(false);
+
+      dropdown._baseBranchInput.value = 'main';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+    });
+
+    it('disables the confirm button after committing', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+    });
+
+    it('ignores clicks on the disabled confirm button', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      fireClick(dropdown._baseBranchConfirmBtn);
+
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+    });
+
+    it('discards a pending edit when the popover closes', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+
+      dropdown._hide();
+
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+      expect(dropdown._baseBranchInput.value).toBe('main');
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+    });
+
+    it('does not fire on an unchanged value', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'main';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+    });
+
+    it('reverts an empty value without firing', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = '   ';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+      expect(dropdown._baseBranchInput.value).toBe('main');
+    });
+
+    it('reverts the input on Escape without firing', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'orig';
+      fireInputEvent(dropdown._baseBranchInput, 'input');
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Escape' });
+
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+      expect(dropdown._baseBranchInput.value).toBe('main');
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+    });
+
+    it('locks the input while a commit is in flight', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+      expect(onBaseBranchChange).toHaveBeenCalledTimes(1);
+      expect(dropdown._baseBranchInput.disabled).toBe(true);
+      expect(dropdown._baseBranchConfirmBtn.disabled).toBe(true);
+
+      // A second commit while busy must not fire
+      dropdown._baseBranchInput.value = 'origin/master';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+      fireClick(dropdown._baseBranchConfirmBtn);
+
+      expect(onBaseBranchChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('unlocks the input when clearScopeStatus is called', () => {
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange: vi.fn(),
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'origin/main';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+      expect(dropdown._baseBranchInput.disabled).toBe(true);
+
+      dropdown.clearScopeStatus();
+
+      expect(dropdown._baseBranchInput.disabled).toBe(false);
+      expect(dropdown._scopeMutationBusy).toBe(false);
+    });
+
+    it('ignores scope stop clicks while a base commit is in flight', () => {
+      vi.useFakeTimers();
+      try {
+        const onScopeChange = vi.fn();
+        const dropdown = createDropdown({
+          onScopeChange,
+          onBaseBranchChange: vi.fn(),
+          initialScope: { start: 'branch', end: 'untracked' },
+          initialBaseBranch: 'main',
+          branchAvailable: true
+        });
+
+        dropdown._baseBranchInput.value = 'origin/main';
+        fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+
+        dropdown._handleStopClick('branch', { stopPropagation: vi.fn(), altKey: false });
+        vi.advanceTimersByTime(700);
+
+        expect(dropdown.scope.start).toBe('branch');
+        expect(onScopeChange).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('locks the base branch input while a scope change is in flight', () => {
+      vi.useFakeTimers();
+      try {
+        const onBaseBranchChange = vi.fn();
+        const dropdown = createDropdown({
+          onScopeChange: vi.fn(),
+          onBaseBranchChange,
+          initialScope: { start: 'staged', end: 'untracked' },
+          initialBaseBranch: 'main',
+          branchAvailable: true
+        });
+
+        // Toggle branch on — fires a scope change after the debounce
+        dropdown._handleStopClick('branch', { stopPropagation: vi.fn(), altKey: false });
+        vi.advanceTimersByTime(700);
+
+        expect(dropdown._scopeMutationBusy).toBe(true);
+        expect(dropdown._baseBranchInput.disabled).toBe(true);
+
+        // Base commits are ignored while the scope change is loading
+        dropdown._baseBranchInput.value = 'origin/main';
+        fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+        expect(onBaseBranchChange).not.toHaveBeenCalled();
+
+        dropdown.clearScopeStatus();
+        expect(dropdown._baseBranchInput.disabled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('unlocks and reverts on the rollback path', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown._baseBranchInput.value = 'bogus';
+      fireInputEvent(dropdown._baseBranchInput, 'keydown', { key: 'Enter' });
+      expect(dropdown._baseBranchInput.disabled).toBe(true);
+
+      // local.js error path: revert then clear
+      dropdown.baseBranch = 'main';
+      dropdown.clearScopeStatus();
+
+      expect(dropdown._baseBranchInput.disabled).toBe(false);
+      expect(dropdown._baseBranchInput.value).toBe('main');
+      expect(onBaseBranchChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('baseBranch setter updates the input without firing the callback', () => {
+      const onBaseBranchChange = vi.fn();
+      const dropdown = createDropdown({
+        onScopeChange: vi.fn(),
+        onBaseBranchChange,
+        initialScope: { start: 'branch', end: 'untracked' },
+        initialBaseBranch: 'main',
+        branchAvailable: true
+      });
+
+      dropdown.baseBranch = 'origin/main';
+
+      expect(dropdown._baseBranchInput.value).toBe('origin/main');
+      expect(onBaseBranchChange).not.toHaveBeenCalled();
+    });
+  });
+
   describe('diff view control', () => {
     it('renders Unified and Split option buttons', () => {
       const dropdown = createDropdown();
