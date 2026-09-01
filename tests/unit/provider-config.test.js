@@ -1484,8 +1484,11 @@ describe('Provider Configuration', () => {
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
       expect(claude.models.find(m => m.id === 'fable-5-xhigh')).toBeUndefined();
-      // Unrelated built-ins remain
+      // Unrelated built-ins remain — including the newer Fable generation, which
+      // does not share the 'fable' alias
       expect(claude.models.find(m => m.id === 'fable-5-high')).toBeDefined();
+      expect(claude.models.find(m => m.id === 'fable-5.1-xhigh')).toBeDefined();
+      expect(claude.models.find(m => m.id === 'fable-5.1-high')).toBeDefined();
       expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeDefined();
     });
 
