@@ -440,6 +440,9 @@ class DiffOptionsDropdown {
 
     const label = document.createElement('span');
     label.textContent = 'Diff view';
+    // Spans don't get the .diff-options-popover label color rule, so the
+    // inherited page color goes near-invisible in dark mode without this.
+    label.style.color = 'var(--color-text-primary, #24292f)';
     row.appendChild(label);
 
     const segmented = document.createElement('div');
