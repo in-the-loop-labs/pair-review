@@ -15,9 +15,9 @@
  * IMPORTANT: This dropdown is constructed in BOTH pr.js and local.js.
  * LocalManager (local.js) destroys the pr.js instance and recreates it
  * with scope-selector support. Any new callback added here (e.g.
- * onToggleWhitespace, onToggleMinimize, onScopeChange, onDiffViewChange)
- * MUST be threaded through both construction sites or it will silently
- * no-op in local mode.
+ * onToggleWhitespace, onToggleMinimize, onScopeChange, onBaseBranchChange,
+ * onDiffViewChange) MUST be threaded through both construction sites or it
+ * will silently no-op in local mode.
  *
  * Usage:
  *   const dropdown = new DiffOptionsDropdown(
@@ -26,10 +26,12 @@
  *       onToggleWhitespace: (hidden) => { … },
  *       onToggleMinimize: (minimized) => { … },
  *       onScopeChange: (start, end) => { … },
+ *       onBaseBranchChange: (baseBranch) => { … },
  *       onDiffViewChange: (mode) => { … },   // 'unified' | 'split'
  *       diffView: 'unified',
  *       diffViewAvailable: true,             // false hides the Unified/Split control
  *       initialScope: { start: 'unstaged', end: 'untracked' },
+ *       initialBaseBranch: 'main',
  *       branchAvailable: false
  *     }
  *   );
@@ -68,6 +70,8 @@ class DiffOptionsDropdown {
    * @param {function(boolean):void} callbacks.onToggleWhitespace
    * @param {function(boolean):void} [callbacks.onToggleMinimize]
    * @param {function(string,string):void} [callbacks.onScopeChange]
+   * @param {function(string):void} [callbacks.onBaseBranchChange] - Called with the
+   *        new base branch when the user commits an edit in the base branch input
    * @param {function(string):void} [callbacks.onDiffViewChange] - Called with 'unified'|'split'
    * @param {('unified'|'split')} [callbacks.diffView] - Initial diff view (fallback; localStorage wins)
    * @param {boolean} [callbacks.diffViewAvailable] - Whether the current render
@@ -75,13 +79,15 @@ class DiffOptionsDropdown {
    *        control is not rendered so the user cannot select (and persist) a
    *        mode that would silently no-op. Defaults to true.
    * @param {{start:string,end:string}} [callbacks.initialScope]
+   * @param {string} [callbacks.initialBaseBranch]
    * @param {boolean} [callbacks.branchAvailable]
    */
-  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, onDiffViewChange, diffView, diffViewAvailable, initialScope, branchAvailable, worktreePath }) {
+  constructor(buttonElement, { onToggleWhitespace, onToggleMinimize, onScopeChange, onBaseBranchChange, onDiffViewChange, diffView, diffViewAvailable, initialScope, initialBaseBranch, branchAvailable, worktreePath }) {
     this._btn = buttonElement;
     this._onToggleWhitespace = onToggleWhitespace;
     this._onToggleMinimize = onToggleMinimize || (() => {});
     this._onScopeChange = onScopeChange || null;
+    this._onBaseBranchChange = onBaseBranchChange || null;
     this._onDiffViewChange = onDiffViewChange || (() => {});
     this._worktreePath = worktreePath || null;
     this._worktreeName = null;
@@ -120,6 +126,11 @@ class DiffOptionsDropdown {
     this._scopeTrackEl = null;
     this._scopeDebounceTimer = null;
     this._scopeStatusEl = null;
+    this._baseBranch = initialBaseBranch || null;
+    this._baseBranchRowEl = null;
+    this._baseBranchInput = null;
+    this._baseBranchConfirmBtn = null;
+    this._scopeMutationBusy = false;
 
     // Read persisted state
     this._hideWhitespace = localStorage.getItem(STORAGE_KEY) === 'true';
@@ -235,6 +246,17 @@ class DiffOptionsDropdown {
     this._updateScopeUI();
   }
 
+  /** @returns {string|null} The current base branch. */
+  get baseBranch() {
+    return this._baseBranch;
+  }
+
+  /** Programmatically set the base branch (updates the input, no callback). */
+  set baseBranch(value) {
+    this._baseBranch = value || null;
+    this._updateBaseBranchRow();
+  }
+
   /** Get current scope as {start, end}. */
   get scope() {
     return { start: this._scopeStart, end: this._scopeEnd };
@@ -262,8 +284,12 @@ class DiffOptionsDropdown {
     this._updateWorktreeRow();
   }
 
-  /** Clear the scope status indicator (call after scope change completes). */
+  /**
+   * Clear the scope status indicator and unlock the scope controls
+   * (call after a scope or base branch change completes, success or failure).
+   */
   clearScopeStatus() {
+    this._setScopeBusy(false);
     if (this._scopeStatusEl) {
       this._scopeStatusEl.style.display = 'none';
       this._scopeStatusEl.textContent = '';
@@ -674,6 +700,10 @@ class DiffOptionsDropdown {
     trackContainer.appendChild(stopsRow);
     section.appendChild(trackContainer);
 
+    if (this._onBaseBranchChange) {
+      this._renderBaseBranchRow(section);
+    }
+
     this._scopeTrackEl = trackContainer;
     popover.appendChild(section);
 
@@ -681,9 +711,177 @@ class DiffOptionsDropdown {
     this._updateScopeUI();
   }
 
+  /**
+   * Render the "Base branch" input row inside the scope section. Hidden unless
+   * the current scope includes 'branch' (see _updateBaseBranchRow). Commits on
+   * Enter or the confirm button; Escape reverts the input to the last
+   * committed value, and closing the popover discards a pending edit.
+   * @param {HTMLElement} section
+   */
+  _renderBaseBranchRow(section) {
+    const row = document.createElement('div');
+    row.className = 'scope-base-branch-row';
+    row.style.display = 'none';
+    row.style.alignItems = 'center';
+    row.style.justifyContent = 'space-between';
+    row.style.gap = '12px';
+    row.style.marginTop = '12px';
+    row.style.fontSize = '0.8125rem';
+    row.style.whiteSpace = 'nowrap';
+    row.style.userSelect = 'none';
+
+    const label = document.createElement('span');
+    label.textContent = 'Base branch';
+    // Spans don't get the .diff-options-popover label color rule, so the
+    // inherited page color goes near-invisible in dark mode without this.
+    label.style.color = 'var(--color-text-primary, #24292f)';
+    row.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.setAttribute('aria-label', 'Base branch');
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('autocapitalize', 'off');
+    input.style.width = '140px';
+    input.style.padding = '3px 8px';
+    input.style.fontSize = '0.75rem';
+    input.style.fontFamily = 'inherit';
+    input.style.border = '1px solid var(--color-border-primary, #d0d7de)';
+    input.style.borderRadius = '6px';
+    input.style.background = 'var(--color-bg-primary, #ffffff)';
+    input.style.color = 'var(--color-text-primary, #24292f)';
+    input.style.boxSizing = 'border-box';
+
+    input.addEventListener('click', (e) => e.stopPropagation());
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this._commitBaseBranch();
+      } else if (e.key === 'Escape') {
+        input.value = this._baseBranch || '';
+        this._updateBaseBranchDirtyState();
+      }
+    });
+    input.addEventListener('input', () => this._updateBaseBranchDirtyState());
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.title = 'Apply base branch';
+    confirmBtn.setAttribute('aria-label', 'Apply base branch');
+    confirmBtn.disabled = true;
+    confirmBtn.style.display = 'flex';
+    confirmBtn.style.alignItems = 'center';
+    confirmBtn.style.padding = '4px 7px';
+    confirmBtn.style.border = '1px solid var(--color-border-primary, #d0d7de)';
+    confirmBtn.style.borderRadius = '6px';
+    confirmBtn.style.flexShrink = '0';
+    confirmBtn.style.transition = 'background 0.15s ease, color 0.15s ease, opacity 0.15s ease';
+    confirmBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>';
+    confirmBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirmBtn.disabled) return;
+      this._commitBaseBranch();
+    });
+
+    const inputWrap = document.createElement('div');
+    inputWrap.style.display = 'flex';
+    inputWrap.style.alignItems = 'center';
+    inputWrap.style.gap = '4px';
+    inputWrap.appendChild(input);
+    inputWrap.appendChild(confirmBtn);
+
+    row.appendChild(inputWrap);
+    section.appendChild(row);
+
+    this._baseBranchRowEl = row;
+    this._baseBranchInput = input;
+    this._baseBranchConfirmBtn = confirmBtn;
+    this._updateBaseBranchRow();
+  }
+
+  /**
+   * Enable the confirm button only while the input holds a non-empty value
+   * that differs from the committed base branch.
+   */
+  _updateBaseBranchDirtyState() {
+    if (!this._baseBranchConfirmBtn || !this._baseBranchInput) return;
+    const value = (this._baseBranchInput.value || '').trim();
+    const dirty = !this._scopeMutationBusy && Boolean(value) && value !== (this._baseBranch || '');
+    const btn = this._baseBranchConfirmBtn;
+    btn.disabled = !dirty;
+    btn.style.cursor = dirty ? 'pointer' : 'default';
+    btn.style.opacity = dirty ? '1' : '0.5';
+    btn.style.background = dirty ? 'var(--ai-primary, #8b5cf6)' : 'transparent';
+    btn.style.borderColor = dirty
+      ? 'var(--ai-primary, #8b5cf6)'
+      : 'var(--color-border-primary, #d0d7de)';
+    btn.style.color = dirty
+      ? 'var(--color-text-on-emphasis, #ffffff)'
+      : 'var(--color-text-tertiary, #8b949e)';
+  }
+
+  /**
+   * Commit the base branch input: fires onBaseBranchChange when the trimmed
+   * value is non-empty and different from the current base branch. Empty or
+   * unchanged input reverts to the last committed value.
+   */
+  _commitBaseBranch() {
+    if (!this._baseBranchInput || this._scopeMutationBusy) return;
+    const value = this._baseBranchInput.value.trim();
+    if (!value || value === (this._baseBranch || '')) {
+      this._baseBranchInput.value = this._baseBranch || '';
+      this._updateBaseBranchDirtyState();
+      return;
+    }
+    this._baseBranch = value;
+    // Lock the scope controls until clearScopeStatus — overlapping set-scope
+    // requests could otherwise persist an older base after a newer one
+    // succeeds, because the server writes each result unconditionally.
+    this._setScopeBusy(true);
+    this._setScopeStatus('Loading diff\u2026');
+    if (this._onBaseBranchChange) {
+      this._onBaseBranchChange(value);
+    }
+  }
+
+  /**
+   * Lock or unlock the scope controls (base branch input and scope stops)
+   * while a set-scope mutation is in flight. Base edits and scope changes
+   * hit the same endpoint, so both directions of overlap are blocked.
+   */
+  _setScopeBusy(busy) {
+    this._scopeMutationBusy = Boolean(busy);
+    if (this._baseBranchInput) {
+      this._baseBranchInput.disabled = this._scopeMutationBusy;
+      this._baseBranchInput.style.opacity = this._scopeMutationBusy ? '0.6' : '1';
+    }
+    this._updateBaseBranchDirtyState();
+  }
+
+  /**
+   * Show the base branch row only when the scope includes 'branch', and sync
+   * the input to the current base branch unless the user is mid-edit.
+   */
+  _updateBaseBranchRow() {
+    if (!this._baseBranchRowEl || !this._baseBranchInput) return;
+    const LS = this._localScope;
+    const visible = LS.scopeIncludes(this._scopeStart, this._scopeEnd, 'branch');
+    this._baseBranchRowEl.style.display = visible ? 'flex' : 'none';
+    const focused = typeof document !== 'undefined' && document.activeElement === this._baseBranchInput;
+    if (!focused) {
+      this._baseBranchInput.value = this._baseBranch || '';
+      this._updateBaseBranchDirtyState();
+    }
+  }
+
   _handleStopClick(clickedStop, event) {
     const LS = this._localScope;
     if (!LS) return;
+
+    // A set-scope mutation is in flight — ignore clicks until it settles
+    if (this._scopeMutationBusy) return;
 
     // Branch disabled? Ignore.
     if (clickedStop === 'branch' && !this._branchAvailable) return;
@@ -748,6 +946,7 @@ class DiffOptionsDropdown {
 
     clearTimeout(this._scopeDebounceTimer);
     this._scopeDebounceTimer = setTimeout(() => {
+      this._setScopeBusy(true);
       this._setScopeStatus('Loading diff\u2026');
       if (this._onScopeChange) {
         this._onScopeChange(this._scopeStart, this._scopeEnd);
@@ -762,6 +961,8 @@ class DiffOptionsDropdown {
   }
 
   _updateScopeUI() {
+    this._updateBaseBranchRow();
+
     const LS = this._localScope;
     if (!LS || !this._scopeStops.length) return;
 
@@ -882,6 +1083,12 @@ class DiffOptionsDropdown {
 
   _hide() {
     if (!this._popoverEl) return;
+
+    // Discard a pending base branch edit — closing the popover is not a commit
+    if (this._baseBranchInput) {
+      this._baseBranchInput.value = this._baseBranch || '';
+      this._updateBaseBranchDirtyState();
+    }
 
     this._popoverEl.style.opacity = '0';
     this._popoverEl.style.transform = 'translateX(-50%) translateY(-4px)';
