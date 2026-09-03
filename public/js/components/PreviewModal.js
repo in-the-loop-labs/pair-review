@@ -94,7 +94,7 @@ class PreviewModal {
   /**
    * Show the modal and load comments
    * @param {Object} options - Display options
-   * @param {boolean} options.hideSubmit - Hide the Submit Review button (deprecated, use window.PAIR_REVIEW_LOCAL_MODE)
+   * @param {boolean} options.hideSubmit - Hide the Submit Review button
    * @param {boolean} options.hideClearAll - Hide the Clear All button
    */
   async show(options = {}) {
@@ -102,15 +102,10 @@ class PreviewModal {
 
     this.options = options;
 
-    // Show/hide buttons based on options and local mode
-    const submitBtn = this.modal.querySelector('#submit-review-btn');
-    const clearBtn = this.modal.querySelector('#clear-all-comments-btn');
+    // Show/hide buttons based on options and the review's capabilities
+    this.applySubmitVisibility();
 
-    // Hide Submit Review in local mode or if explicitly requested
-    const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
-    if (submitBtn) {
-      submitBtn.style.display = (isLocalMode || options.hideSubmit) ? 'none' : '';
-    }
+    const clearBtn = this.modal.querySelector('#clear-all-comments-btn');
     if (clearBtn) {
       clearBtn.style.display = options.hideClearAll ? 'none' : '';
     }
@@ -121,6 +116,37 @@ class PreviewModal {
 
     // Load and display comments
     await this.loadComments();
+  }
+
+  /**
+   * Show or hide the Submit Review button from the review's capabilities.
+   *
+   * Split out of `show()` so `PRManager.updateSubmitAffordance` can re-run it
+   * on an ALREADY-OPEN modal: `canSubmitToGitHub` flips mid-session in local
+   * mode when the PR association resolves late, and a modal the user is
+   * looking at must not keep the answer it was opened with. Reads
+   * `this.options`, which `show()` stores, so a caller's `hideSubmit` veto
+   * survives every later re-application.
+   *
+   * Asks the active manager, never `window.PAIR_REVIEW_LOCAL_MODE` — a local
+   * review with an associated PR CAN be submitted (Phase 5), so the old
+   * mode-sniff would hide a button the toolbar shows for the same session.
+   * The legacy flag is consulted only while the manager cannot answer at all.
+   */
+  applySubmitVisibility() {
+    const submitBtn = this.modal?.querySelector('#submit-review-btn');
+    if (!submitBtn) return;
+
+    const managerSaysCanSubmit = typeof window !== 'undefined'
+      && window.prManager
+      && typeof window.prManager.hasCapability === 'function'
+      ? window.prManager.hasCapability('canSubmitToGitHub')
+      : null;
+    const canSubmit = managerSaysCanSubmit !== null
+      ? managerSaysCanSubmit
+      : window.PAIR_REVIEW_LOCAL_MODE !== true;
+
+    submitBtn.style.display = (!canSubmit || this.options?.hideSubmit) ? 'none' : '';
   }
 
   /**

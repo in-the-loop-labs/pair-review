@@ -5320,6 +5320,28 @@ div.external-comment-row {
   box-shadow: 0 0 0 1px var(--ai-border, rgba(217, 119, 6, 0.3));
 }
 
+/*
+ * A review type the target pull request cannot accept (merged/closed PRs take
+ * only COMMENT — see ReviewModal.applyAllowedEvents). Deliberately NOT
+ * `pointer-events: none` like `.assisted-by-toggle.disabled`: the option
+ * carries a `title` explaining why, and killing pointer events kills the
+ * tooltip with it. The disabled radio already refuses the click.
+ */
+.review-type-option.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.review-type-option.disabled:hover {
+  border-color: var(--color-border-primary, #d1d9e0);
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.review-type-option.disabled input[type="radio"] {
+  cursor: not-allowed;
+}
+
 .review-type-option input[type="radio"] {
   margin-right: 12px;
   margin-top: 3px;

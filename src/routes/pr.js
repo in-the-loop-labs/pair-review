@@ -32,7 +32,6 @@ const { resolveHostName } = require('../links/repo-links');
 const { resolveHostListText } = require('../links/host-names');
 const { backgroundQueue } = require('../ai/background-queue');
 const logger = require('../utils/logger');
-const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
@@ -48,6 +47,10 @@ const { buildStaleReasons, describeGitHubError, fetchRemotePRHead } = require('.
 // re-exported below (`_internals`) because it was this file's function before
 // the extraction and tests address it there.
 const { syncPendingDraftFromGitHub, syncPendingDraft, serializePendingDraft } = require('../providers/draft-sync');
+// Phase 5: the review WRITE shared with `POST /api/local/:reviewId/submit-review`.
+// This route keeps the PR-mode preconditions (cached `pr_metadata`, the PR
+// worktree) and hands the provider already-resolved inputs.
+const { submitReview, SubmitReviewError, SUBMIT_EVENTS } = require('../providers/review-submit');
 const summaryGenerator = require('../ai/summary-generator');
 const tourGenerator = require('../ai/tour-generator');
 const {
@@ -1391,7 +1394,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       });
     }
 
-    if (!['APPROVE', 'REQUEST_CHANGES', 'COMMENT', 'DRAFT'].includes(event)) {
+    if (!SUBMIT_EVENTS.includes(event)) {
       return res.status(400).json({
         error: 'Invalid review event. Must be APPROVE, REQUEST_CHANGES, COMMENT, or DRAFT'
       });
@@ -1414,9 +1417,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       return res.status(500).json({ error: configErr.message });
     }
 
-    // Initialize GitHub client
-    const githubClient = new GitHubClient(binding);
-
     // Get PR metadata and worktree path
     const prMetadata = await queryOne(db, `
       SELECT id, pr_data FROM pr_metadata
@@ -1436,24 +1436,16 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     const reviewRepo = new ReviewRepository(db);
     const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
 
-    // Get all active user comments for this PR using review.id
-    const comments = await query(db, `
-      SELECT
-        id,
-        file,
-        line_start,
-        line_end,
-        body,
-        diff_position,
-        side,
-        commit_sha,
-        is_file_level
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND status = 'active'
-      ORDER BY file, line_start
-    `, [review.id]);
+    // PHASE 5a — the WRITE lives in src/providers/review-submit.js so that
+    // local mode's `POST /api/local/:reviewId/submit-review` performs exactly
+    // the same one. Everything above this line stays here: which PR, which
+    // credential, which worktree, is what PR mode alone knows.
 
-    // Get worktree path and generate diff for position calculation
+    // Generate the diff the comment positions are read against. It decides
+    // line-level vs file-level for every comment (see
+    // `formatCommentsForGraphQL`); on failure we continue with an EMPTY diff,
+    // which degrades every comment to file level rather than posting a line
+    // number nothing verified.
     const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
 
@@ -1461,282 +1453,93 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     try {
       diffContent = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
     } catch (diffError) {
-      console.warn('Could not generate diff for position calculation:', diffError.message);
-      // Continue without diff - GitHub client will handle missing positions
+      logger.warn(`Could not generate diff for position calculation: ${diffError.message}`);
+      // Continue without diff - the provider falls back to file-level comments
     }
 
-    // Format comments for GraphQL API
-    // GraphQL supports both line-level comments (within diff hunks) and file-level comments
-    // (for expanded context lines outside diff hunks via subjectType: FILE).
-    //
-    // We check whether the comment's target line actually appears in a diff hunk
-    // rather than relying on diff_position (which may not be set by all sources).
-    const diffLineSet = buildDiffLineSet(diffContent);
-
-    const graphqlComments = comments.map(comment => {
-      const side = comment.side || 'RIGHT';
-      const isRange = comment.line_end && comment.line_end !== comment.line_start;
-
-      // Check if this is an explicit file-level comment (is_file_level=1)
-      // These are comments about the entire file, not tied to specific lines
-      if (comment.is_file_level === 1) {
-        console.log(`Formatting file-level comment: ${comment.file}`);
-
-        return {
-          path: comment.file,
-          body: comment.body,
-          isFileLevel: true
-        };
-      }
-
-      // Detect expanded context comments by checking whether the target line
-      // actually appears in a diff hunk. This is more reliable than checking
-      // diff_position, which may be absent for comments created by the chat agent.
-      // For range comments, both endpoints must be inside the diff; if the start
-      // line falls outside a hunk but the end is inside, submitting with start_line
-      // would produce a position GitHub cannot render.
-      const isExpandedContext = isRange
-        ? !diffLineSet.isLineInDiff(comment.file, comment.line_start, side) || !diffLineSet.isLineInDiff(comment.file, comment.line_end, side)
-        : !diffLineSet.isLineInDiff(comment.file, comment.line_start, side);
-
-      if (isExpandedContext) {
-        // File-level comment with line reference prefix
-        const lineRef = isRange
-          ? `(Ref Lines ${comment.line_start}-${comment.line_end})`
-          : `(Ref Line ${comment.line_start})`;
-
-        console.log(`Formatting file-level comment (expanded context): ${comment.file} ${lineRef}`);
-
-        return {
-          path: comment.file,
-          body: `${lineRef} ${comment.body}`,
-          isFileLevel: true
-        };
-      }
-
-      console.log(`Formatting line comment: ${comment.file}:${comment.line_start}${isRange ? `-${comment.line_end}` : ''} side=${side}`);
-
-      const commentObj = {
-        path: comment.file,
-        line: isRange ? comment.line_end : comment.line_start,
-        body: comment.body,
-        side: side,
-        isFileLevel: false
-      };
-
-      if (isRange) {
-        commentObj.start_line = comment.line_start;
-      }
-
-      return commentObj;
-    });
-
-    // Submit review using GraphQL API (supports file-level comments)
-    console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
-
-    let githubReview;
-
-    // Always check for existing pending draft first
-    // GitHub only allows one pending review per user per PR
-    const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
-
-    // GraphQL PR node id is only required when the dispatcher actually
-    // routes to a GraphQL implementation AND we'll be creating a brand
-    // new review (not reusing the existing draft) OR adding GraphQL
-    // review comments. REST review-lifecycle and host pending-review
-    // -comments address the PR by (owner, repo, prNumber) + numeric
-    // review id and ignore prNodeId; reusing an existing GraphQL draft
-    // also doesn't need the PR node id because the review node id is
-    // sufficient. Compute this after fetching existingDraft so the
-    // requirement is narrowed correctly.
-    const willCreateNewGraphQLReview =
-      binding.features.review_lifecycle === 'graphql' && !existingDraft;
-    const willAddGraphQLComments =
-      graphqlComments.length > 0 && binding.features.pending_review_comments === 'graphql';
-    const needsGraphQLNodeId = willCreateNewGraphQLReview || willAddGraphQLComments;
-
-    if (needsGraphQLNodeId && !prData.node_id) {
-      return res.status(400).json({
-        error:
-          `GraphQL PR node id required for ${repository}#${prNumber} ` +
-          `(features.review_lifecycle = "${binding.features.review_lifecycle}", ` +
-          `pending_review_comments = "${binding.features.pending_review_comments}"). ` +
-          `PR record is missing node_id — refresh the PR data and try again.`
-      });
-    }
-
-    const prNodeId = prData.node_id ?? null;
-
-    // The PR head SHA is required by the host pending-review-comments path
-    // (GitHub-compatible alt-hosts validate each inline comment like
-    // `pulls.createReviewComment`, which mandates `commit_id`). The GraphQL
-    // path on github.com ignores it (the pending review pins the commit
-    // implicitly), so threading it through is harmless there.
     // `prData.head_sha` is the canonical source (merged from the cached PR
-    // JSON); `prMetadata.head_sha` is a defensive fallback for callers whose
-    // record exposes it as a column. If neither is present, proceed without
-    // it but warn loudly so the resulting 422 is diagnosable.
+    // JSON); `prMetadata.head_sha` is a defensive fallback for records that
+    // expose it as a column. The provider warns when neither is present.
     const headSha = prData.head_sha || prMetadata.head_sha || null;
-    if (!headSha) {
-      logger.warn(
-        `Submit review for ${repository}#${prNumber}: PR head SHA is missing ` +
-        `(prData.head_sha and prMetadata.head_sha both absent). Host inline-comment ` +
-        `posting will likely fail with a 422 missing commit_id error.`
-      );
-    }
 
-    const submitPrContext = {
+    // Use the configured remote-host display name (e.g. "Meteorite") instead
+    // of the literal "GitHub". Resolve via the binding repository so monorepo
+    // url_pattern configs map to the right repos[...] entry, and pass the PR's
+    // resolved host (`binding.host`: null=github, api_host string=alt) so a
+    // dual-host repo names the system this PR was submitted to rather than its
+    // repo-level default.
+    const cfg = req.app.get('config') || {};
+    const hostName = resolveHostName(
+      cfg,
+      resolveBindingRepositoryForHost(owner, repo, cfg, binding.host),
+      binding.host
+    );
+
+    const result = await submitReview({
+      db,
+      reviewId: review.id,
       owner,
       repo,
       prNumber,
-      reviewId: existingDraft?.databaseId,
-      headSha
-    };
+      event,
+      body,
+      credential: binding,
+      prNodeId: prData.node_id ?? null,
+      headSha,
+      diffContent,
+      // PR mode's worktree is pinned to the PR head and is never edited by the
+      // user, so no file can carry uncommitted local edits.
+      filesWithLocalEdits: null,
+      hostName
+    });
 
-    if (event === 'DRAFT') {
-      // Delegate to createDraftReviewGraphQL (handles both new and existing drafts)
-      githubReview = await githubClient.createDraftReviewGraphQL(
-        prNodeId, body || '', graphqlComments, existingDraft?.id, submitPrContext
-      );
-      // When adding to an existing draft, use the existing URL and include prior comments in total count
-      if (existingDraft) {
-        githubReview.html_url = githubReview.html_url || existingDraft.url;
-        githubReview.comments_count = existingDraft.comments.totalCount + githubReview.comments_count;
-      }
-    } else {
-      // For non-drafts, create/use review, add comments, and submit
-      githubReview = await githubClient.createReviewGraphQL(
-        prNodeId, event, body || '', graphqlComments, existingDraft?.id, submitPrContext
-      );
-    }
-
-    // ID storage strategy:
-    // - github_reviews.github_review_id -> numeric database ID (consistent with syncPendingDraftFromGitHub)
-    // - github_reviews.github_node_id -> GraphQL node ID (e.g., "PRR_kwDOM..."), always present
-    // - reviewData JSON -> uses 'github_node_id' key for the GraphQL node ID
-    // - reviews.review_id -> legacy column, no longer written (github_reviews table has taken over)
-    const githubNodeId = String(githubReview.id); // GraphQL methods return node IDs
-    // Use databaseId from the mutation response, or fall back to existingDraft's databaseId
-    const githubDatabaseId = githubReview.databaseId
-      ? String(githubReview.databaseId)
-      : (existingDraft && existingDraft.databaseId != null)
-        ? String(existingDraft.databaseId)
-        : null;   // absent means SQL NULL, never the string "null"
-
-    // Build review metadata for database storage
-    const reviewData = {
-      github_node_id: githubNodeId,
-      github_url: githubReview.html_url,
-      event: event,
-      body: body || '',
-      comments_count: githubReview.comments_count
-    };
-
-    // Add timestamps based on review type
-    if (event === 'DRAFT') {
-      reviewData.created_at = new Date().toISOString();
-    } else {
-      reviewData.submitted_at = new Date().toISOString();
-    }
-
-    // Begin database transaction for submission tracking
-    // Moved after GitHub API calls to avoid holding SQLite write lock during network requests.
-    // Accepted risk: if the GitHub review succeeds but the DB transaction fails, the review
-    // exists on GitHub with no local record. For drafts, syncPendingDraftFromGitHub can recover
-    // on next page load. For submitted reviews, there is currently no reconciliation path.
-    await run(db, 'BEGIN TRANSACTION');
-
-    try {
-      // Update review record (status, timestamps, review_data JSON)
-      // Note: reviews.review_id is legacy and no longer written; github_reviews table tracks GitHub IDs
-      await reviewRepo.updateAfterSubmission(review.id, {
-        event: event,
-        reviewData: reviewData
-      });
-
-      // Record this submission in the github_reviews mirror. UPSERT, not
-      // insert: submitting a draft keeps the SAME GitHub review id and node
-      // id, so the row the draft sync already mirrored is this row — a second
-      // insert both duplicates it and violates the unique indexes migration 57
-      // added.
-      const githubReviewRepo = new GitHubReviewRepository(db);
-      await githubReviewRepo.upsertFromGitHub(review.id, {
-        github_review_id: githubDatabaseId,
-        github_node_id: githubNodeId,
-        state: event === 'DRAFT' ? 'pending' : 'submitted',
-        event: event === 'DRAFT' ? null : event,
-        body: body || '',
-        submitted_at: event === 'DRAFT' ? null : new Date().toISOString(),
-        github_url: githubReview.html_url
-      });
-
-      console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
-
-      // Update comments table to mark submitted comments
-      const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
-      const commentUpdateTime = new Date().toISOString();
-      for (const comment of comments) {
-        await run(db, `
-          UPDATE comments
-          SET status = ?, updated_at = ?
-          WHERE id = ?
-        `, [commentStatus, commentUpdateTime, comment.id]);
-      }
-
-      // Commit transaction
-      await run(db, 'COMMIT');
-
-      // Send success response after all database operations complete.
-      // Use the configured remote-host display name (e.g. "Meteorite")
-      // instead of the literal "GitHub". Resolve via the binding repository
-      // so monorepo url_pattern configs map to the right repos[...] entry, and
-      // pass the PR's resolved host (`binding.host`: null=github, api_host
-      // string=alt) so a dual-host repo names the system this PR was submitted
-      // to rather than its repo-level default.
-      const cfg = req.app.get('config') || {};
-      const hostName = resolveHostName(
-        cfg,
-        resolveBindingRepositoryForHost(owner, repo, cfg, binding.host),
-        binding.host
-      );
-      res.json({
-        success: true,
-        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
-        github_url: githubReview.html_url,
-        comments_submitted: githubReview.comments_count,
-        event: event,
-        status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts
-      });
-
-    } catch (submitError) {
-      // Rollback transaction on error
-      await run(db, 'ROLLBACK');
-      throw submitError;
-    }
+    res.json(result);
 
   } catch (error) {
-    console.error('Error submitting review:', error);
+    logger.error('Error submitting review:', error);
+
+    // EVERY RUNG SHIPS A MACHINE `code`, AND IT IS THE SAME VOCABULARY LOCAL
+    // MODE'S `POST /api/local/:reviewId/submit-review` SPEAKS. One shared
+    // provider decides these refusals, one shared `ReviewModal` reads them —
+    // `handleLifecycleRefusal` switches on `code`, and a 409 the user must NOT
+    // blindly retry (`partially_posted`) is indistinguishable from any other
+    // 409 by status alone. The response body is additive here: `error` keeps
+    // its exact text, `code` joins it.
+
+    // A refusal the provider decided (a missing GraphQL PR node id, a
+    // part-written failure, a lifecycle race) already carries its status, its
+    // message AND its code — all three pass through untouched, and it must not
+    // fall through to the substring ladder below, which would classify it as a
+    // 500.
+    if (error instanceof SubmitReviewError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
 
     // Handle different types of errors with appropriate messages
     if (error.message.includes('GitHub authentication failed')) {
       return res.status(401).json({
-        error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json'
+        error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json',
+        code: 'auth_failed'
       });
     } else if (error.message.includes('Insufficient permissions')) {
       return res.status(403).json({
-        error: 'Insufficient permissions to submit review. Your GitHub token may need additional scopes.'
+        error: 'Insufficient permissions to submit review. Your GitHub token may need additional scopes.',
+        code: 'insufficient_permissions'
       });
     } else if (error.message.includes('not found')) {
       return res.status(404).json({
-        error: error.message
+        error: error.message,
+        code: 'not_found'
       });
     } else if (error.message.includes('rate limit')) {
       return res.status(429).json({
-        error: error.message
+        error: error.message,
+        code: 'rate_limited'
       });
     } else {
       return res.status(500).json({
-        error: `Failed to submit review: ${error.message}`
+        error: `Failed to submit review: ${error.message}`,
+        code: 'submit_failed'
       });
     }
   }

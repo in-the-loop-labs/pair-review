@@ -8,8 +8,7 @@
  * - Trigger AI analysis (Level 1, 2, 3)
  * - Get AI suggestions
  * - User comment CRUD operations
- *
- * Note: No submit-review endpoint - GitHub submission is disabled in local mode.
+ * - Submit the review to the associated GitHub PR (Phase 5)
  */
 
 const express = require('express');
@@ -49,6 +48,15 @@ const { buildStaleReasons, checkPRHeadState } = require('../providers/stale-chec
 // Phase 4: the pending-draft reconciliation shared with PR mode's
 // `GET /api/pr/:owner/:repo/:number/github-drafts`.
 const { syncPendingDraft, serializePendingDraft } = require('../providers/draft-sync');
+// Phase 5: the review WRITE shared with PR mode's
+// `POST /api/pr/:owner/:repo/:number/submit-review`. `checkSubmitPreconditions`
+// is local-mode only — PR mode has no local HEAD to drift from.
+const { submitReview, checkSubmitPreconditions, SubmitReviewError, SUBMIT_EVENTS } = require('../providers/review-submit');
+// Phase 5: ONE definition of "the pull request's diff" for both modes — the
+// line/file-level decision for every submitted comment is read from it.
+const { GitWorktreeManager } = require('../git/worktree');
+const { resolveBindingRepositoryForHost } = require('../utils/host-resolution');
+const { resolveHostName } = require('../links/repo-links');
 const { STOPS, isValidScope, normalizeScope, reviewScope, includesBranch, DEFAULT_SCOPE, EMPTY_SCOPE_MESSAGE } = require('../local-scope');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength } = require('../git/sha-abbrev');
@@ -1714,6 +1722,410 @@ router.post('/api/local/:reviewId/sync-drafts', async (req, res) => {
 });
 
 /**
+ * Phase 5 — submit this local review to the GitHub pull request its branch is
+ * associated with.
+ *
+ * The one endpoint in local mode that WRITES to GitHub. The write itself is
+ * `submitReview` in src/providers/review-submit.js, shared verbatim with
+ * `POST /api/pr/:owner/:repo/:number/submit-review`; everything here is the
+ * question PR mode never has to ask — may we write to this PR, from THIS
+ * checkout, right now?
+ *
+ * FOUR THINGS THIS HANDLER OWNS
+ * -----------------------------
+ * 1. HOST + CREDENTIAL, through `resolveAssociationCredential` — the same
+ *    resolver, in the same order, as the two capability endpoints and the
+ *    draft sync. A guessed host is a hard refusal here as everywhere else: a
+ *    same-numbered PR on the other host is a routine coincidence, and this
+ *    endpoint POSTS.
+ * 2. THE SNAPSHOT the comments were AUTHORED against, through
+ *    `evaluateLocalSnapshotDrift` — the same comparison
+ *    `GET /api/local/:reviewId/check-stale` reports, read STRICTLY: only a
+ *    completed comparison that found no difference may proceed. Local, no
+ *    network, and therefore run FIRST; see the ordering note at the call site.
+ * 3. PRECONDITIONS, through `checkSubmitPreconditions` — a LIVE read of the
+ *    PR. It fails CLOSED, unlike every other PR-side check in local mode:
+ *    those inform, this one authorises a write.
+ * 4. THE DIFF and which files carry uncommitted edits. Both feed the
+ *    line-level vs file-level decision the provider makes per comment. When
+ *    either is unavailable the diff is dropped entirely, which degrades every
+ *    comment to file level — the same fallback PR mode has always used when it
+ *    cannot generate a diff. LEFT-side comments degrade UNCONDITIONALLY in
+ *    local mode; the reasoning is recorded at the `trustLeftAnchors: false`
+ *    call site.
+ *
+ * Status ladder, in the order the checks run:
+ *   400 malformed review id, or an event outside `SUBMIT_EVENTS`
+ *   404 no such local review
+ *   403 `no_association` — no usable PR association (`canSubmitToGitHub`
+ *       requires one, so a 403 here means it was cleared since the page loaded)
+ *   409 `host_ambiguous` — dual-host repository whose PR host is UNKNOWN;
+ *       `host_binding_failed` — a stored host config no longer describes.
+ *       Identical to the draft-sync gate, and for the same reason
+ *   401 `no_credential` — nothing configured for this repository
+ *   409 `local_diff_unverified` — the captured snapshot could not be COMPARED
+ *       with the tree (no captured diff, no baseline digest, or the tree could
+ *       not be walked). Carries `snapshotStatus` for diagnosis; the remedy is
+ *       the same for all three, so they share one code
+ *   409 `local_diff_stale` — the captured snapshot is not the snapshot on
+ *       disk, so every stored line anchor describes a diff that no longer
+ *       exists. Both of these are local-only and precede every GitHub call
+ *   409 `local_head_unknown` — local HEAD is unreadable, so it cannot be
+ *       checked against the PR head
+ *   410 `pr_merged` / `pr_closed` — PER EVENT: a settled PR still accepts a
+ *       `COMMENT` review, and refuses only APPROVE / REQUEST_CHANGES / DRAFT
+ *   409 `head_drift` — local HEAD is not the PR's head commit (decision 1:
+ *       hard refuse, no force override)
+ *   404 `pr_not_found` — the PR no longer exists
+ *   401 `auth_failed` / 403 `insufficient_permissions` / 429 `rate_limited` —
+ *       classified by the precondition check, not collapsed into a 502
+ *   502 `pr_state_unknown` — GitHub could not be read, so drift is unknown
+ *   400 `missing_pr_node_id`, 409 `comments_outside_pr`, 409
+ *       `partially_posted` — refusals the PROVIDER decides, thrown as
+ *       `SubmitReviewError` and mapped verbatim by the catch below.
+ *       `partially_posted` is the one that reports a review GitHub accepted
+ *       whose local bookkeeping did not complete
+ *   200 the provider's payload, byte-identical to PR mode's
+ *
+ * Every refusal body carries a `code` alongside `error` so the client can tell
+ * a drift refusal (offer to refresh) from a lifecycle one (nothing to do).
+ */
+router.post('/api/local/:reviewId/submit-review', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const { event, body } = req.body || {};
+    if (!SUBMIT_EVENTS.includes(event)) {
+      return res.status(400).json({
+        error: 'Invalid review event. Must be APPROVE, REQUEST_CHANGES, COMMENT, or DRAFT'
+      });
+    }
+
+    const db = req.app.get('db');
+    const config = req.app.get('config') || {};
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+
+    const association = associationFromReview(review);
+    // The same predicate `buildCapabilities` uses for `hasAssociatedPR`, so the
+    // gate here and the capability that rendered the Submit control cannot
+    // disagree.
+    if (!isUsablePRTarget(association)) {
+      return res.status(403).json({
+        error: 'This local review has no associated pull request',
+        code: 'no_association'
+      });
+    }
+    const parts = splitRepository(association.repository);
+
+    const resolvedToken = req.app.get('githubToken') || '';
+    // Settles the HOST first, then resolves the binding for it — see
+    // `resolveAssociationCredential`. NOT `cachedTokensOnly`: a user-initiated
+    // write has no client deadline, so a `token_command` may legitimately run.
+    const { binding: hostBinding, hostResolved: hostKnown, host: storedHost, hostBindingFailed } =
+      await resolveAssociationCredential({
+        association,
+        repositoryName: review.repository,
+        config,
+        localPath: review.local_path,
+        resolvedToken,
+        db
+      });
+    if (!hostKnown) {
+      return res.status(409).json({
+        error: `Cannot determine which host PR #${association.prNumber} of dual-host repository `
+          + `"${association.repository}" lives on; refusing to submit a review against a guessed host`,
+        code: 'host_ambiguous'
+      });
+    }
+    if (hostBindingFailed) {
+      // A KNOWN host that no longer resolves against config (renamed
+      // `api_host`, deleted `repos` entry). Falling back to the global token
+      // would POST this review to a same-named github.com repository.
+      return res.status(409).json({
+        error: `The stored host for PR #${association.prNumber} of `
+          + `"${association.repository}" (${storedHost === null ? 'github.com' : storedHost}) `
+          + 'no longer matches your configuration; refusing to submit against github.com',
+        code: 'host_binding_failed'
+      });
+    }
+
+    const credential = resolveFetchCredential(hostBinding, resolvedToken);
+    if (!credential) {
+      return res.status(401).json({
+        error: `No GitHub credential configured for ${association.repository}`,
+        code: 'no_credential'
+      });
+    }
+
+    // The commit this session is rendering. Read fresh, never from
+    // `reviews.local_head_sha`: that column is the commit the diff was CAPTURED
+    // at, and a commit made since is exactly the drift this check exists to
+    // catch.
+    let localHeadSha = null;
+    if (review.local_path) {
+      try {
+        localHeadSha = await localReview.getHeadSha(review.local_path);
+      } catch (headError) {
+        logger.warn(`Could not read local HEAD for review #${reviewId}: ${headError.message}`);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // THE SNAPSHOT GATE — is the diff these comments were WRITTEN against
+    // still the diff on disk?
+    //
+    // `checkSubmitPreconditions` below compares the LIVE local HEAD with the
+    // PR head. That is a different question, and passing it is not evidence
+    // for this one: a reviewer who comments, then commits and pushes, ends up
+    // with local HEAD equal to the PR head again — the PR-side check sees a
+    // perfectly aligned checkout while every stored `(file, line, side)` is a
+    // coordinate in the pre-commit snapshot. A dirty-then-reverted tree is the
+    // mirror image: HEAD never moved, and the content under the anchors did.
+    //
+    // So compare against what the session CAPTURED: `reviews.local_head_sha`
+    // and the stored scoped-diff digest, through the same helper
+    // `GET /api/local/:reviewId/check-stale` reports from.
+    //
+    // WHY THIS RUNS BEFORE `checkSubmitPreconditions`. It is pure local git
+    // work — no network, no credential, nothing GitHub could say that changes
+    // the verdict. A stale snapshot is unfixable by any remote answer, so
+    // paying for a round trip (and a possible `token_command` shell-out) only
+    // to refuse anyway is waste; refusing here also guarantees no request is
+    // made on behalf of a session we are about to reject.
+    //
+    // WHY THIS IS A REFUSAL AND NOT A DEGRADATION. Everything else on this
+    // path degrades a doubtful anchor to file level with a `(Ref Line N)`
+    // prefix. That prefix is only meaningful because the number describes the
+    // diff the reviewer was looking at — when the snapshot itself is stale,
+    // the *text* lies too. There is nothing to degrade to.
+    //
+    // UNKNOWN IS NOT "NO". The helper's two flags are PROVEN differences: it
+    // leaves BOTH false for `no-stored-diff`, `no-baseline-digest` and
+    // `digest-unavailable`, which do not mean "nothing changed" — they mean the
+    // captured snapshot could not be compared with the tree AT ALL. Gating on
+    // the flags alone therefore treated "never compared" as "compared and
+    // clean", and the `diffTrustworthy` path below then handed those comments
+    // precise line anchors. The dirty-file check does not cover the hole:
+    // `listFilesModifiedVsHead` compares the tree with HEAD, never with the
+    // historical snapshot the comments were authored against, so a legacy
+    // session (no baseline digest) whose dirty content was later reset presents
+    // a clean tree and posts a numerically valid inline comment against
+    // unrelated PR content. Even the file-level fallback is not safe here: the
+    // `(Ref Line N)` prefix publishes a number whose applicability was never
+    // established. So: proceed ONLY on `status === 'compared'` with both flags
+    // false; every other status is a 409.
+    //
+    // `check-stale` may keep treating these as advisory — it only nags. This
+    // endpoint POSTS, which is why the two callers of the same helper read its
+    // result differently and neither may relax for the other's sake.
+    // ------------------------------------------------------------------
+    const snapshotDrift = await evaluateLocalSnapshotDrift({
+      db, review, currentHeadSha: localHeadSha, reviewRepo
+    });
+    if (snapshotDrift.status !== 'compared') {
+      // ONE code for all three unknown statuses, not three. The client's
+      // reaction is identical in every case — refresh the diff, re-check the
+      // retained comments, submit again — so distinct codes would only produce
+      // three identical branches, and each new "we could not compare" state
+      // added to the helper would silently become a code the frontend has never
+      // heard of. The specific status travels as `snapshotStatus` for logs and
+      // support, deliberately NOT as something the UI is expected to switch on.
+      logger.warn(
+        `Refusing to submit local review #${reviewId}: snapshot could not be verified `
+        + `(status=${snapshotDrift.status})`
+      );
+      return res.status(409).json({
+        error: 'The diff your comments were written against could not be checked against your '
+          + 'working tree, so there is no evidence the stored line numbers still describe it. '
+          + 'Refresh the diff — that captures a fresh snapshot and keeps your comments — then '
+          + 're-check where they landed and submit again.',
+        code: 'local_diff_unverified',
+        snapshotStatus: snapshotDrift.status
+      });
+    }
+    if (snapshotDrift.headMoved || snapshotDrift.digestMoved) {
+      const what = snapshotDrift.headMoved
+        ? (snapshotDrift.digestMoved
+          ? 'the commit it was captured at has changed and the working tree has changed'
+          : 'the commit it was captured at has changed')
+        : 'the working tree has changed';
+      logger.warn(
+        `Refusing to submit local review #${reviewId}: snapshot drift `
+        + `(headMoved=${snapshotDrift.headMoved}, digestMoved=${snapshotDrift.digestMoved})`
+      );
+      return res.status(409).json({
+        error: `The diff your comments were written against is out of date — ${what} since it was `
+          + 'captured, so the stored line numbers describe a snapshot that no longer exists. '
+          + 'Refresh the diff and re-check where your comments landed, then submit again.',
+        code: 'local_diff_stale'
+      });
+    }
+
+    const preconditions = await checkSubmitPreconditions({
+      owner: parts.owner,
+      repo: parts.repo,
+      prNumber: association.prNumber,
+      credential,
+      localHeadSha,
+      // Lifecycle is per-event: a merged or closed PR still takes a COMMENT
+      // review, and refuses only the approving events and a new draft. Without
+      // this the check falls back to refusing all four.
+      event
+    });
+    if (!preconditions.ok) {
+      return res.status(preconditions.status).json({
+        error: preconditions.error,
+        code: preconditions.code
+      });
+    }
+    const prData = preconditions.prData;
+
+    // Which files may keep a line number. A file whose working tree differs
+    // from HEAD renders lines that need not be the lines GitHub holds, so its
+    // comments degrade to file level. If the question cannot be ANSWERED we
+    // degrade everything, by dropping the diff — an empty set would read as
+    // "the tree is clean", which is the claim that buys a line number.
+    let filesWithLocalEdits = new Set();
+    let diffTrustworthy = true;
+    try {
+      filesWithLocalEdits = await localReview.listFilesModifiedVsHead(review.local_path);
+    } catch (dirtyError) {
+      logger.warn(
+        `Could not determine locally-edited files for review #${reviewId}: ${dirtyError.message}. `
+        + 'Submitting every comment at file level.'
+      );
+      diffTrustworthy = false;
+    }
+
+    // The PR's own diff, generated from this checkout — the preconditions have
+    // just proved local HEAD IS the PR head, so the two agree by construction
+    // whenever the base commit is present locally. It is NOT the local
+    // review's scoped diff: GitHub validates each inline comment against the
+    // PULL REQUEST's diff, so a line inside a narrow local scope but outside
+    // the PR would be posted at a position GitHub cannot render.
+    let diffContent = '';
+    if (diffTrustworthy) {
+      try {
+        const worktreeManager = new GitWorktreeManager(db);
+        diffContent = await worktreeManager.generateUnifiedDiff(review.local_path, prData);
+      } catch (diffError) {
+        // Routinely the PR's base commit simply is not fetched locally. Not
+        // fatal: every comment falls back to file level with its line spelled
+        // out in the body.
+        logger.warn(`Could not generate PR diff for review #${reviewId}: ${diffError.message}`);
+      }
+    }
+
+    // Name the host this review is going TO — resolved from the association's
+    // repository and the binding's host, never hardcoded to "GitHub".
+    //
+    // `resolveBindingRepositoryForHost`, not `resolveBindingRepositoryFromPR`:
+    // for a github.com PR (host null) the plain resolver can hand back an
+    // EXCLUSIVE alt-host entry that merely claims this owner/repo, and the
+    // review would then be named after a system it was not submitted to. PR
+    // mode's submit handler resolves it the same way — the two must agree, or
+    // one shared provider ends up with two host vocabularies.
+    const submitHost = (hostBinding && hostBinding.host) ? hostBinding.host : null;
+    const hostName = resolveHostName(
+      config,
+      resolveBindingRepositoryForHost(parts.owner, parts.repo, config, submitHost),
+      submitHost
+    );
+
+    const result = await submitReview({
+      db,
+      reviewId: review.id,
+      owner: parts.owner,
+      repo: parts.repo,
+      prNumber: association.prNumber,
+      event,
+      body,
+      credential,
+      prNodeId: prData.node_id ?? null,
+      headSha: prData.head_sha || null,
+      diffContent,
+      filesWithLocalEdits,
+      // Local mode only: these comments were authored against the WORKING
+      // TREE's diff, not the pull request's, so a file that exists in one and
+      // not the other is routine here and an anomaly in PR mode.
+      refuseCommentsOutsideDiff: true,
+      // ----------------------------------------------------------------
+      // EVERY LOCAL-MODE `side: 'LEFT'` COMMENT DEGRADES TO FILE LEVEL.
+      //
+      // Unconditional, and local mode only — PR mode's comments are authored on
+      // the pull request's own diff, so the provider's default (`true`) keeps
+      // that path posting precise LEFT anchors.
+      //
+      // A LEFT line number is a coordinate in the OLD-side file of whatever base
+      // the reviewer was looking at WHEN THEY WROTE IT. This handler can only
+      // see the review's CURRENT persisted base, and there are at least two
+      // routine ways those differ: the comment may have been authored under a
+      // transient in-UI base override, or BEFORE `set-scope` changed the stored
+      // base. Neither transition touches the working tree, so the snapshot
+      // digest cannot detect either one. A stale LEFT number does not fail
+      // loudly — `buildDiffLineSet` records a LEFT entry for every deleted AND
+      // context line, so it lands inside some hunk and posts silently against
+      // content the reviewer never pointed at.
+      //
+      // WHY DEGRADE RATHER THAN CARRY PROVENANCE. The correct long-term fix is
+      // to persist each LEFT comment's authored old-side base sha and keep
+      // precision only while it equals the live PR base sha. That needs a
+      // schema migration, and this branch already carries an UNRESOLVED
+      // migration-number collision with another in-flight branch; adding one
+      // now compounds it. Degrading is the conservative half of a rule the READ
+      // side already applies (`_externalAnchorContext` and
+      // `_applyBaseOverrideLeftAnchor` in public/js/pr.js), it costs only
+      // precision and never correctness, and tightening it later — once the
+      // provenance column exists — is a pure widening with no compatibility
+      // break. The line itself is not lost: the provider prefixes the body with
+      // `(Ref Line N)` / `(Ref Lines N-M)`.
+      // ----------------------------------------------------------------
+      trustLeftAnchors: false,
+      hostName
+    });
+
+    res.json(result);
+
+  } catch (error) {
+    logger.error('Error submitting local review to GitHub:', error);
+
+    // A refusal the provider decided carries its own status and message.
+    if (error instanceof SubmitReviewError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+
+    // Same vocabulary as PR mode's ladder — one feature, one set of answers.
+    if (error.message.includes('GitHub authentication failed')) {
+      return res.status(401).json({
+        error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json',
+        code: 'auth_failed'
+      });
+    } else if (error.message.includes('Insufficient permissions')) {
+      return res.status(403).json({
+        error: 'Insufficient permissions to submit review. Your GitHub token may need additional scopes.',
+        code: 'insufficient_permissions'
+      });
+    } else if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message, code: 'not_found' });
+    } else if (error.message.includes('rate limit')) {
+      return res.status(429).json({ error: error.message, code: 'rate_limited' });
+    }
+    return res.status(500).json({
+      error: `Failed to submit review: ${error.message}`,
+      code: 'submit_failed'
+    });
+  }
+});
+
+/**
  * Update local review session name
  */
 router.patch('/api/local/:reviewId/name', async (req, res) => {
@@ -2044,6 +2456,115 @@ async function startPRHeadCheck(req, review) {
 }
 
 /**
+ * Has local `HEAD` moved away from the commit a diff was CAPTURED at?
+ *
+ * One line, but it has two callers with the same question and they must not
+ * answer it differently: `GET /api/local/:reviewId/check-stale` (which reports
+ * it as `headShaChanged` and the `local-head-moved` reason) and
+ * `POST /api/local/:reviewId/submit-review` (which REFUSES on it). Both
+ * operands must be known — an unreadable HEAD, or a session that never
+ * recorded one, is not evidence of movement, and inventing movement out of a
+ * null would block every submission from a legacy row.
+ *
+ * @param {string|null} capturedHeadSha - `reviews.local_head_sha`
+ * @param {string|null} currentHeadSha - What `git rev-parse HEAD` says now
+ * @returns {boolean}
+ */
+function localHeadMoved(capturedHeadSha, currentHeadSha) {
+  return Boolean(capturedHeadSha && currentHeadSha && capturedHeadSha !== currentHeadSha);
+}
+
+/**
+ * The LOCAL half of the staleness comparison — "is the snapshot this session's
+ * comments were authored against still the snapshot on disk?" — in ONE place.
+ *
+ * TWO CALLERS, ONE COMPARISON
+ * ---------------------------
+ * 1. `GET /api/local/:reviewId/check-stale` — advisory. Turns the result into
+ *    `isStale` / `reasons[]` for the badge, and the frontend may silently
+ *    re-capture on it.
+ * 2. `POST /api/local/:reviewId/submit-review` — authoritative. REFUSES
+ *    (409 `local_diff_stale`) on a proven difference, because every stored
+ *    comment's `(file, line, side)` is a coordinate in that snapshot — AND
+ *    refuses (409 `local_diff_unverified`) on any status other than
+ *    'compared', because a write may not treat "not compared" as "unchanged".
+ *
+ * It lives here, extracted from (1), rather than being written a second time
+ * in (2): CLAUDE.md's rule about two code paths performing similar multi-step
+ * sequences. The sequence is four steps deep (memory cache → DB fallback →
+ * cache warm → recompute-and-compare) and every step has a way of answering
+ * "I don't know" that must not be read as "nothing changed".
+ *
+ * THE FOUR OUTCOMES, and why they are a `status` rather than a boolean:
+ *   'compared'           both digests known; `digestMoved` is the answer
+ *   'no-stored-diff'     this session never persisted a diff — nothing to
+ *                        compare against, NOT a clean tree
+ *   'no-baseline-digest' a diff, but from before digests existed
+ *   'digest-unavailable' the working tree could not be walked right now
+ * `headMoved` is filled in on ALL FOUR: it needs no diff, and it is the drift
+ * that matters most to the write path (commit-after-commenting re-aligns local
+ * HEAD with the PR head, so the PR-side precondition sees nothing wrong).
+ *
+ * Never throws for a missing/unreadable checkout — `computeScopedDigest`
+ * resolves null rather than rejecting, which is the 'digest-unavailable' case.
+ *
+ * @param {Object} params
+ * @param {Object} params.db
+ * @param {Object} params.review - A `reviews` row (needs `id`, `local_path`,
+ *   `local_head_sha` and the scope columns).
+ * @param {string|null} params.currentHeadSha - Already-read local HEAD. Passed
+ *   in rather than read here because both callers need it before this point
+ *   (one for its own early returns, one for the PR-side precondition).
+ * @param {Object} [params.reviewRepo] - Reuse the caller's repository handle.
+ * @returns {Promise<{capturedHeadSha: string|null, currentHeadSha: string|null,
+ *   headMoved: boolean, storedDigest: string|null, currentDigest: string|null,
+ *   digestMoved: boolean, status: string}>}
+ */
+async function evaluateLocalSnapshotDrift({ db, review, currentHeadSha, reviewRepo }) {
+  const reviewId = review.id;
+  const capturedHeadSha = review.local_head_sha || null;
+  const base = {
+    capturedHeadSha,
+    currentHeadSha: currentHeadSha || null,
+    headMoved: localHeadMoved(capturedHeadSha, currentHeadSha),
+    storedDigest: null,
+    currentDigest: null,
+    // Only ever true on a PROVEN difference. Every unknown leaves it false and
+    // says so through `status`; a caller that wants to refuse on unknowns must
+    // read `status`, not flip the meaning of this flag.
+    digestMoved: false
+  };
+
+  // In-memory first, then the DB, then cache-warm — the same order every other
+  // reader of a captured diff uses.
+  let storedDiffData = getLocalReviewDiff(reviewId);
+  if (!storedDiffData) {
+    const repo = reviewRepo || new ReviewRepository(db);
+    const persistedDiff = await repo.getLocalDiff(reviewId);
+    if (persistedDiff) {
+      storedDiffData = persistedDiff;
+      setLocalReviewDiff(reviewId, storedDiffData);
+      logger.log('API', `Loaded persisted diff from DB for staleness check on review #${reviewId}`, 'cyan');
+    }
+  }
+  if (!storedDiffData) return { ...base, status: 'no-stored-diff' };
+
+  base.storedDigest = storedDiffData.digest || null;
+  if (!storedDiffData.digest) return { ...base, status: 'no-baseline-digest' };
+
+  const { start: scopeStart, end: scopeEnd } = reviewScope(review);
+  // Module-namespace call so `vi.spyOn(localReview, 'computeScopedDigest')` is
+  // observed; the destructured top-level binding is captured at require time
+  // and would not honour a spy.
+  const currentDigest = await localReview.computeScopedDigest(review.local_path, scopeStart, scopeEnd);
+  if (!currentDigest) return { ...base, status: 'digest-unavailable' };
+
+  base.currentDigest = currentDigest;
+  base.digestMoved = storedDiffData.digest !== currentDigest;
+  return { ...base, status: 'compared' };
+}
+
+/**
  * The `reasons[]` codes the LOCAL half of the check owns — the ones derived
  * from this repository's working tree and HEAD, as opposed to the PR-side codes
  * `respond` derives from the remote result.
@@ -2231,7 +2752,9 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       return null;
     });
 
-    const { start: scopeStart, end: scopeEnd } = reviewScope(review);
+    // Only the START stop is read here; the digest half of the comparison
+    // resolves the full scope itself inside `evaluateLocalSnapshotDrift`.
+    const { start: scopeStart } = reviewScope(review);
 
     // Always check HEAD SHA for supplementary fields
     let headShaChanged = false;
@@ -2239,7 +2762,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 
     try {
       currentHeadSha = await localReview.getHeadSha(localPath);
-      headShaChanged = !!(previousHeadSha && currentHeadSha && currentHeadSha !== previousHeadSha);
+      headShaChanged = localHeadMoved(previousHeadSha, currentHeadSha);
     } catch (error) {
       // If branch is in scope, HEAD SHA failure is fatal (existing behavior).
       // Not in prHeadOnly mode: that response asserts nothing about the
@@ -2283,28 +2806,22 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
-    // Get stored diff data (in-memory first, then fall back to DB)
-    let storedDiffData = getLocalReviewDiff(reviewId);
-    if (!storedDiffData) {
-      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
-      if (persistedDiff) {
-        storedDiffData = persistedDiff;
-        // Cache-warm the in-memory Map
-        setLocalReviewDiff(reviewId, storedDiffData);
-        logger.log('API', `Loaded persisted diff from DB for staleness check on review #${reviewId}`, 'cyan');
-      } else {
-        return await respond({
-          isStale: null,
-          headShaChanged,
-          previousHeadSha,
-          currentHeadSha,
-          error: 'No stored diff data found'
-        });
-      }
+    // Stored digest vs. the working tree right now — the four-step sequence
+    // (memory cache, DB fallback, cache warm, recompute) is shared verbatim
+    // with the submit endpoint's refusal gate. See `evaluateLocalSnapshotDrift`.
+    const drift = await evaluateLocalSnapshotDrift({ db, review, currentHeadSha, reviewRepo });
+
+    if (drift.status === 'no-stored-diff') {
+      return await respond({
+        isStale: null,
+        headShaChanged,
+        previousHeadSha,
+        currentHeadSha,
+        error: 'No stored diff data found'
+      });
     }
 
-    // Check if baseline digest exists (must be computed at diff-capture time)
-    if (!storedDiffData.digest) {
+    if (drift.status === 'no-baseline-digest') {
       // No baseline digest - session may predate staleness detection feature
       // Assume stale to be safe and prompt user to refresh
       reasonFlags['no-baseline-digest'] = true;
@@ -2317,11 +2834,8 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
-    // Compute current digest to compare against baseline
-    const currentDigest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
-
-    // If current digest computation failed, assume stale to be safe
-    if (!currentDigest) {
+    if (drift.status === 'digest-unavailable') {
+      // Current digest computation failed - assume stale to be safe
       reasonFlags['digest-unavailable'] = true;
       return await respond({
         isStale: true,
@@ -2333,13 +2847,13 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     }
 
     // Working-tree comparison ONLY — see the handler docblock.
-    const isStale = storedDiffData.digest !== currentDigest;
+    const isStale = drift.digestMoved;
     reasonFlags['working-tree-changed'] = isStale;
 
     return await respond({
       isStale,
-      storedDigest: storedDiffData.digest,
-      currentDigest,
+      storedDigest: drift.storedDigest,
+      currentDigest: drift.currentDigest,
       headShaChanged,
       previousHeadSha,
       currentHeadSha

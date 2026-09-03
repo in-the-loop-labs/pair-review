@@ -4,12 +4,26 @@ const { exec } = require('child_process');
 const { queryOne } = require('../database');
 const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 const { normalizePath, resolveRenamedFile } = require('./paths');
+const { parseDiffGitPaths, unquoteGitPath } = require('./diff-paths');
 
 const execPromise = promisify(exec);
 
 /**
  * Parse a unified diff into a map of file path -> per-file patch.
  * Uses the "b/" path from the diff header as the canonical file path.
+ *
+ * The header is parsed through `src/utils/diff-paths.js`, the same helper
+ * `buildDiffLineSet`/`annotateDiff` use, so the key here is byte-for-byte the
+ * path those parsers answer `hasFile()` with. They used to derive paths from
+ * two different regexes: this one silently DROPPED every C-quoted header
+ * (`diff --git "a/caf\303\251.txt" ...` does not start with `diff --git a/`),
+ * so a file with a non-ASCII, quoted, backslashed or tabbed name had no patch
+ * at all — while the annotator kept the quotes and answered under a path
+ * nothing else in the app uses.
+ *
+ * Only the FIRST line of each part is examined. The split already guarantees
+ * any `diff --git ` at column 0 opens a new part, and hunk content can never
+ * reach column 0 unmarked, so this is the header line by construction.
  *
  * @param {string} diff - Full unified diff
  * @returns {Map<string, string>} Map of file paths to full patch text
@@ -23,9 +37,9 @@ function parseUnifiedDiffPatches(diff) {
   for (const part of parts) {
     if (!part.trim()) continue;
 
-    const match = part.match(/^diff --git a\/(.+?) b\/(.+)$/m);
-    if (match) {
-      filePatchMap.set(match[2], part);
+    const paths = parseDiffGitPaths(part.split('\n', 1)[0]);
+    if (paths) {
+      filePatchMap.set(paths.newPath, part);
     }
   }
 
@@ -89,8 +103,11 @@ function mergeChangedFilesWithDiff(changedFiles, diff) {
     }
 
     const { insertions, deletions } = countPatchStats(patch);
-    const renameFrom = patch.match(/^rename from (.+)$/m)?.[1] || null;
-    const renameTo = patch.match(/^rename to (.+)$/m)?.[1] || null;
+    // `rename from/to` names are C-quoted by git under the same rules as the
+    // header, so they go through the same decoder or a renamed non-ASCII file
+    // reports a `renamedFrom` no other layer can match.
+    const renameFrom = unquoteGitPath(patch.match(/^rename from (.+)$/m)?.[1] || '') || null;
+    const renameTo = unquoteGitPath(patch.match(/^rename to (.+)$/m)?.[1] || '') || null;
     const binary = /^Binary files .* differ$/m.test(patch) || /^GIT binary patch$/m.test(patch);
 
     merged.push({
@@ -145,9 +162,15 @@ async function getDiffFileList(db, review) {
         execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, opts),
         execPromise('git ls-files --others --exclude-standard', opts),
       ]);
+      // `--name-only` and `ls-files` C-quote a path whenever it contains a
+      // non-ASCII byte, a quote, a backslash or a control character
+      // (core.quotePath defaults to true). Callers compare these against the
+      // real, decoded paths comments carry, so decoding here is what keeps
+      // `diffFiles.includes(file)` from answering "not in the diff" for a file
+      // that plainly is. ASCII paths are never quoted, so they are untouched.
       const combined = `${unstaged}\n${untracked}`
         .split('\n')
-        .map(l => l.trim())
+        .map(l => unquoteGitPath(l.trim()))
         .filter(Boolean);
       return [...new Set(combined)];
     } catch {

@@ -8,6 +8,14 @@ We adopted **Option A**: when a local branch has an associated GitHub PR, layer 
 
 We are **not** doing Option B (full unification, ~5-8 weeks). But Option A **seeds Phase 2 of Option B** by extracting shared backend logic into provider functions both routes call — rather than growing the frontend `LocalManager.patches(PRManager)` pattern.
 
+## ⚠ AT REBASE TIME — renumber the migrations against main (decided 2026-08-23)
+
+**This branch's migration numbers are PROVISIONAL. Renumber them to follow whatever `main` is at when this branch rebases, and bump `CURRENT_SCHEMA_VERSION` to match — before merging, never after.** As written the branch adds **56** (the PR-association columns, Phase 0) and **57** (the `github_reviews` dedupe plus its partial unique indexes, Phase 4) on top of a `main` that was at 55. If `main` has moved on, both numbers move with it. Re-run the migrations against a database already stamped at main's current version, not against a fresh one — a fresh database proves nothing here, because the failure only appears on an install that has already been stamped.
+
+The deadline is not a style preference, it is mechanical. `runVersionedMigrations` (`src/database.js`) returns early on `currentVersion >= CURRENT_SCHEMA_VERSION` and then steps `currentVersion + 1 … CURRENT_SCHEMA_VERSION`. Once a user's database has been stamped with a number, any *other* migration later given that same number is permanently unreachable on that database — every existing install skips it in silence, and only brand-new databases ever get the change. Past that point a renumber alone stops being a fix: it takes a new repair migration that re-applies the skipped DDL idempotently, on top of the renumber.
+
+This is the same rule that governs migrations on release branches, and the reason Phase 0's migration was itself renumbered from 47 to 56 during the v5.1.0 rebase (see Phase 0): **a migration number is claimed the moment a database is stamped with it, not the moment the code is written.** Ordering is decided by what users' databases have actually run, not by review order or merge intent — which is exactly why the renumber belongs to the rebase, where main's real state is in front of you.
+
 ## Design principles
 
 1. **No new `LocalManager.patches(PRManager)`.** Shared backend logic goes into `src/providers/`. Both `routes/local.js` and `routes/pr.js` call providers; frontend reads results and renders.
@@ -219,7 +227,7 @@ Extend the existing files; do not create parallel ones.
 - `isPRMode` is shared by both routes deliberately. Two predicates means sync and fetch disagree about what has comments — mirror rows that get written and never read.
 - `tests/unit/ai-panel-external-segment.test.js` encodes "hidden in local mode" as correct today. Flipping it is intended, but confirm each assertion you change is the mode-sniff, not an unrelated kill-switch case.
 - `deleteMissing` (`:226`) prunes rows unseen this sync, scoped `(review_id, source)`. Local and PR reviews are distinct rows, so there should be no cross-mode pruning — prove that with a test rather than by reading.
-- **Migration-number collision, external but lands here:** branch `claude/strange-hofstadter-d11581` (resolved external comments, `is_resolved` column) also claims **migration 56** — same number as this branch's Phase 0, both sitting on v5.1.0 — and it rewrites parts of this same subsystem. Whichever lands second renumbers and re-runs. Settle land order before starting Phase 2.
+- **Migration numbers are provisional until the rebase:** this branch's 56 and 57 were chosen against a `main` at 55, and other in-flight work has claimed 56 too. Do not treat either number as owned. **Renumber against main's actual `CURRENT_SCHEMA_VERSION` at rebase time** — see the rebase note at the top of this plan for why the window closes at merge and what it costs to miss it.
 
 Changeset: `minor` — "Show existing PR review comments inline in local reviews."
 
@@ -498,27 +506,506 @@ Four findings, all addressed.
   FAILED" (`hostBindingFailed`) and every consumer fails closed: 409 from
   sync-drafts, no fetch and no credential from either capability endpoint.
 
-### Phase 5: Submit review to GitHub (highest risk — writes to GitHub)
+### Phase 5: Submit review to GitHub — IMPLEMENTED (uncommitted)
 
-**Goal:** Submit local-mode review as a real GitHub review.
+**Goal:** Submit a local-mode review as a real GitHub review. The only phase
+that writes to GitHub.
 
-**Two-step refactor:**
-- 5a: Extract `src/providers/review-submit.js` — `submitReview({ reviewId, body, event, comments, token }, _deps)` from `routes/pr.js:1067-1356`. PR route calls it identically. Ship + verify pure PR-mode regression.
-- 5b: Wire local route.
+**What shipped**
 
-Files:
-- `src/providers/review-submit.js` (NEW).
-- `src/routes/pr.js` `submit-review` — refactor to use provider.
-- `src/routes/local.js` — new endpoint `POST /api/local/:reviewId/submit-review`. Pre-checks: `hasAssociatedPR`, local HEAD matches PR `head_sha` (HARD REFUSE on drift — no force override in v1), PR still open. Flip `canSubmitToGitHub` to `true`.
-- `public/js/local.js` — submit UI gated on `hasCapability('canSubmitToGitHub')`. On HEAD drift, show clear error explaining user must push/pull to align before submitting.
+- `src/providers/review-submit.js` (NEW) with four exports:
+  - `submitReview({db, reviewId, owner, repo, prNumber, event, body, credential,
+    prNodeId, headSha, diffContent, filesWithLocalEdits, hostName}, _deps)` —
+    the whole write, extracted verbatim from `routes/pr.js`. Loads the active
+    user comments, shapes them, reuses or creates the GitHub review, then
+    records the outcome in one transaction opened AFTER the network call.
+    THREE callers by the end of the round — both web routes and the headless
+    flow in `src/main.js` — so the extraction is the one write path, not a
+    two-route convenience. See the 2026-08-23 review round for the headless
+    fold and its `commentsOverride` seam.
+  - `checkSubmitPreconditions({owner, repo, prNumber, credential, localHeadSha})`
+    — LOCAL MODE ONLY. A live PR read: merged/closed → 410, HEAD drift → 409,
+    unreadable GitHub → 502, missing PR → 404. **Fails CLOSED**, the opposite
+    of every other PR-side check in local mode, because those inform and this
+    one authorises a write. Uses the FULL credential (not
+    `withoutTokenRefresh`): a user-initiated write has no deadline, so an
+    expired cached token should refresh rather than become a refusal.
+  - `SubmitReviewError` — the one refusal the provider decides (missing GraphQL
+    PR node id) carries `status` + `code`; everything else propagates unchanged
+    so each route's existing message-substring ladder still classifies it.
+  - `SUBMIT_EVENTS` — one list, every caller.
+- `POST /api/local/:reviewId/submit-review`. Ladder: 400 id / 400 event / 404
+  review / 403 association / 409 host (ambiguous or `hostBindingFailed`) / 401
+  credential / precondition status / 200. Every refusal body carries a `code`
+  beside `error` so the client can tell a drift refusal from a lifecycle one.
+  Host and credential go through `resolveAssociationCredential` — the same
+  resolver, in the same order, as the two capability endpoints and sync-drafts.
+- `buildCapabilities`: `canSubmitToGitHub = hasAssociatedPR && hasToken &&
+  hostResolved` — identical to `canSyncDrafts`, host requirement included, and
+  deliberately NOT gated on `prMetadataAvailable` (the endpoint reads the PR
+  live; it must, to refuse a drifted one).
+- Frontend: `PRManager.getSubmitReviewEndpoint()`, patched in
+  `LocalManager.patchPRManager` to `/api/local/:reviewId/submit-review`.
+  `ReviewModal` asks the manager for it instead of building a PR-shaped URL.
+  `PreviewModal` migrated off the `window.PAIR_REVIEW_LOCAL_MODE` sniff onto
+  `hasCapability('canSubmitToGitHub')`.
+- `localReview.listFilesModifiedVsHead(repoPath)` (NEW) — `git diff --name-only
+  -z HEAD`. THROWS rather than answering an empty set, because an empty set is
+  indistinguishable from "the tree is clean", which is the claim that buys a
+  comment its line number.
 
-Tests:
-- Unit: provider handles each `event` type.
-- Integration: route returns 409 on HEAD drift; returns 410 on closed PR.
-- E2E: full local-with-PR submit flow (mocked GitHub).
-- Regression: pure PR-mode submit unchanged.
+**Delta — a THIRD way a comment becomes file-level, and it is local-mode only.**
+The plan's pre-checks stop at HEAD drift, which settles the COMMITTED content.
+The working tree is a separate question: local mode renders it, so a comment's
+line number describes the file on disk, and an uncommitted edit above that line
+shifts it. The shifted line still lands inside a hunk, so the existing
+expanded-context check passes and GitHub renders the comment against the wrong
+line, silently — the exact outcome decision 8 rejected for the READ side.
+Refusing the whole submission over an unrelated dirty file would be worse (a
+dirty tree is the normal state of a local review), so comments in locally-edited
+files degrade to file level with a `(Ref Line N)` prefix. `filesWithLocalEdits`
+is null in PR mode, whose worktree is pinned and never edited.
 
-Changeset: `minor` — "Submit local reviews to GitHub when PR is associated."
+**Delta — the diff is a ROUTE input, and local mode's is the PR's diff, not the
+session's.** GitHub validates every inline comment against the PULL REQUEST's
+diff, so a line inside a narrow local scope but outside the PR would be posted
+at a position GitHub cannot render. The local route therefore generates
+`base...head` from the user's own checkout via the SAME
+`GitWorktreeManager.generateUnifiedDiff` PR mode uses — sound because the
+preconditions have just proved local HEAD IS the PR head. When the base commit
+is not fetched locally it throws, and the established fallback applies: empty
+diff, every comment file-level. The unanswerable-dirty-set case reuses that same
+channel rather than inventing a second one.
+
+**Delta — a comment on a file the PR does not touch is REFUSED, not degraded.**
+The two are different failures and the plan conflated them. A comment outside
+every hunk is a degraded ANCHOR — it still posts, at file level, with its line
+in the text. A comment on a file the pull request never changed is a comment
+GitHub will not take at all, inline or file-level, because the path is not part
+of the diff — and a local scope routinely contains such a file (edited locally,
+never committed). `GitHubClient.createReviewGraphQL` already handles it safely
+(it deletes the pending review it created and throws), so the submission fails
+either way; `filesNotInDiff` catches it first, costs no round trip, and names
+the files instead of surfacing a nested GraphQL envelope. 409
+`comments_outside_pr`, nothing consumed, the comments still there to act on.
+An EMPTY diff answers nothing about any path, so the check is skipped there —
+the same "unknown is not no" rule the file-level fallback follows.
+`buildDiffLineSet` gained `hasFile` for it (additive; every existing caller
+destructures `isLineInDiff`).
+
+LOCAL MODE ONLY (`refuseCommentsOutsideDiff`), and the parity rule is what
+decided it: applying it in both modes turned two PR-mode submit tests red, whose
+fixtures comment on files absent from the mock diff. The honest distinction is
+which diff the comments were authored against — PR mode's were written on the
+PULL REQUEST's own diff, so a path outside it is an anomaly that route has never
+refused and 5a may not start refusing; local mode's were written on the working
+tree's, so the mismatch is routine.
+
+**Two open questions, both about how far `hasFile` may be trusted as a REFUSAL
+signal** (as opposed to a degradation signal, where a wrong answer costs only
+precision):
+1. Whether PR mode should adopt `refuseCommentsOutsideDiff` once someone
+   confirms GitHub's exact answer for a file-level thread on an out-of-diff
+   path.
+2. Whether "every commented file must be part of the pull request" should be
+   RELAXED under alt-host support (reviewer note, 2026-08-23 round — recorded,
+   not actioned; no behaviour was changed for it). The refusal assumes the
+   generated `base...head` diff is a faithful statement of what the pull request
+   touches. That holds on github.com, where the base commit is normally
+   fetchable and the diff is the same one the host validates against; a
+   GitHub-compatible alt host is where the assumption is least examined, and a
+   diff that could not be built the same way would turn a routine submission
+   into a whole-submission 409. The safe direction if it does not hold is the
+   one item 1 already contemplates in reverse — degrade rather than refuse.
+
+**Delta — `SplitButton` is the one affordance that cannot re-read a late flip.**
+Every other local-mode affordance re-reads `hasCapability` on each call
+(the LATE FLIP half of the capability contract). `SplitButton` reads
+`canSubmitToGitHub` in its CONSTRUCTOR and stores both `hideSubmit` and the
+derived `defaultAction`, so `_refreshPRMetadata` re-runs `initSplitButton()` on
+EITHER transition — gaining Submit has to reveal it, and losing it has to take
+it away, or a force-push to unrelated history leaves a control that would POST
+to a PR the session is no longer tied to.
+
+**Delta — `PreviewModal` had to move with it.** It still gated Submit on
+`window.PAIR_REVIEW_LOCAL_MODE`, so the preview modal would have hidden a button
+the toolbar was showing for the same session. Same shape as every other defect
+in this feature: one side of a two-sided contract updated, the other left on its
+old assumption.
+
+**Order matters in the local handler:** `review.local_path` may be null, and
+`execSync` with `cwd: undefined` runs in the SERVER's working directory. The
+precondition check runs first and refuses with `local_head_unknown` on a null
+path, so neither `listFilesModifiedVsHead` nor `generateUnifiedDiff` is ever
+reached with one.
+
+**Tests** (measured after the 2026-08-23 round-2 fixes: `pnpm vitest run
+tests/unit/ tests/integration/` → **10739 passed across 306 files**, zero
+failures):
+`tests/unit/review-submit.test.js` (102 — comment shaping incl. the dirty-file
+and LEFT-anchor rules and `start_side` on multi-line ranges, the precondition
+table incl. per-event lifecycle and read-failure classification, the write's
+transaction boundary, id reuse, draft promotion, and the residue classifier
+across all three outcomes), `tests/integration/local-submit-review.test.js`
+(44 — the full refusal ladder against a real database, the snapshot gate incl.
+every uncomparable status, the LEFT-anchor matrix, plus the write's DB effects),
+`tests/unit/local-submit-affordance.test.js` (45 — endpoint indirection, both
+modal gates, the split-button rebuild and its `_settleBeforeAction` flush, the
+lifecycle option gate and the refusal-race recovery),
+`tests/unit/headless-submit-review.test.js` (21 — the
+`commentsOverride` seam: row selection, `formatAISuggestion` bodies, `headSha`
+reaching the provider, the pinned stdout shape),
+`tests/unit/local-review.test.js` (90 —
+extended for `listFilesModifiedVsHead`, `GIT_DIFF_FLAGS` included),
+`tests/unit/diff-line-set.test.js` (32) and `tests/unit/diff-annotator.test.js`
+(54) — extended for hunkless `hasFile` sections and for the hunk-body/file-header
+desync, `tests/unit/diff-paths.test.js` (30 — NEW: the three shapes git actually
+emits, byte-level octal decoding, the `diff --git` split ranking),
+`tests/unit/pr-lifecycle-badge.test.js` (19 — the single reconciler, both modes,
+incl. the unknown/fail-open payloads that must not downgrade a merged PR),
+`tests/e2e/local-submit-review.spec.js` (9),
+`tests/unit/pr-context.test.js` + `tests/integration/routes.test.js` updated for
+the flipped flag and the ambiguous-host capability. New behaviours
+mutation-checked by reverting the production change and confirming the specific
+test fails.
+
+#### Review round (2026-08-23) — feedback applied
+
+The round's through-line: **this phase inherited three "unknown is not no"
+rules from Phases 2–4 and applied each of them one step short.** A refusal
+collapsed four authoritative GitHub answers into one unknown; a trust gate
+settled the RIGHT column and left the LEFT one unasked; a hardening flag was
+proven necessary in one diff invocation and omitted from its newest sibling.
+
+- **A settled pull request refused all four events (critical to the feature's
+  point).** GitHub accepts a `COMMENT` review, and inline review comments, on a
+  closed or merged PR — only `APPROVE` / `REQUEST_CHANGES` and a new pending
+  review are meaningless once it is settled. The blanket 410 blocked legitimate
+  post-merge feedback and was a gratuitous divergence from PR mode, which has no
+  lifecycle check at all. `checkSubmitPreconditions` now takes the intended
+  `event` and refuses per event; the route passes it. **An ABSENT event still
+  refuses everything** — the comparison is against the literal `'COMMENT'`, so a
+  caller that did not say what it intends does not get the permissive branch,
+  and the original conservative behaviour is what an un-updated caller keeps.
+  **The client got the same rule, and a recovery for the race it cannot avoid.**
+  `ReviewModal.applyAllowedEvents` disables the three unavailable radios with
+  the reason on them (disabled-with-an-explanation, matching the Draft
+  textarea's idiom — a control that vanishes reads as a bug), driven by
+  `PRManager.getPRLifecycle`, which resolves `pr.associatedPR || pr` so local
+  mode reasons about the associated PR without mode-sniffing. An unknown
+  `state` reads as null and is treated as OPEN: stripping Approve from a
+  healthy PR whose metadata simply had not arrived is worse than letting the
+  backend refuse. The PR can settle between `show()` and submit, so a
+  `pr_merged` / `pr_closed` refusal is handled as a STATE RACE, not a user
+  error — `handleLifecycleRefusal` PINS the refusal locally and re-applies the
+  options synchronously (correct even if the follow-up refresh fails), then
+  asks the manager to re-read lifecycle. The pin WINS over the manager's copy,
+  because that copy is by definition the stale thing that produced the options
+  just refused; it is cleared on `show()`, so a reopened PR gets its full set
+  back.
+- **The head check could not see the drift that matters most (critical).**
+  `checkSubmitPreconditions` compares LIVE local `HEAD` with the PR head — a
+  different question from "are the stored anchors still valid", and passing it is
+  not evidence for that one. Comment, then commit and push: local `HEAD` is the
+  PR head again, the PR-side check sees a perfectly aligned checkout, and every
+  stored `(file, line, side)` is a coordinate in the pre-commit snapshot. The
+  dirty-then-reverted tree is the mirror image — `HEAD` never moved, the content
+  under the anchors did. New gate: `evaluateLocalSnapshotDrift` compares
+  `reviews.local_head_sha` and the stored scoped-diff digest against the tree,
+  refusing 409 `local_diff_stale`. **Extracted from `check-stale`, not written a
+  second time** — the sequence is four steps deep (memory cache → DB fallback →
+  cache warm → recompute) and every step has a way of saying "I don't know" that
+  must not read as "nothing changed", so it returns a `status` alongside two
+  PROVEN-difference booleans; only the booleans refuse. Runs BEFORE any GitHub
+  call: no remote answer can fix a stale snapshot, and refusing first means no
+  request (and no `token_command` shell-out) is made for a session about to be
+  rejected. **It is a refusal, not a degradation**, and that is the whole
+  distinction the section draws: `(Ref Line N)` is only meaningful while N
+  describes the diff the reviewer was looking at — when the snapshot is stale the
+  prefix text lies too, so there is nothing to degrade to.
+- **The trust gate settled the RIGHT column only (critical).** Both existing
+  file-level fallbacks — expanded context, dirty file — answer about RIGHT-side
+  lines. A `side: 'LEFT'` comment's number was authored in the LOCAL diff's OLD
+  coordinates while it is validated against the PULL REQUEST's `baseSha..headSha`
+  diff; those are the same file only when the two bases are the same commit, and
+  they diverge on a stacked PR, on a PR whose base changed on GitHub, and under
+  the in-UI base-branch override (never persisted, so nothing downstream can
+  notice it). **The trap is that check (2) does not fire:** `buildDiffLineSet`
+  records a LEFT entry for every deleted AND context line, so almost any
+  plausible number lands inside some left-side hunk and the comment posts
+  silently against content nobody pointed at. `formatCommentsForGraphQL` gained
+  `trustLeftAnchors` (default `true`, so PR mode — whose left column IS the pull
+  request's — is unchanged), and the route computes the SAME predicate the read
+  side uses: `scopeIncludesBranch && localMergeBaseSha === prData.base_sha`,
+  mirroring `_externalAnchorContext` in public/js/pr.js and
+  `_applyBaseOverrideLeftAnchor` in public/js/local.js. **The write path must
+  never be more trusting than the read path** — the mismatch would mean the UI
+  refuses to render a line it just posted to. Fails safe on every unknown, and
+  it is per-comment: nothing about the RIGHT column is implicated.
+- **Four authoritative GitHub answers were collapsed into one 502.**
+  `fetchPullRequest` REJECTS with a `GitHubApiError` carrying `.status`; it does
+  not resolve null. A blanket catch therefore turned "gone", "not yours", "no
+  scopes" and "rate-limited" into `pr_state_unknown`, which tells the user to
+  retry a request that cannot succeed and left the routes' own vocabulary
+  (`auth_failed`, `insufficient_permissions`, `rate_limited`) unreachable from
+  the pre-check. `classifyPRReadFailure` keys off the STATUS, never message
+  text, and 502 `pr_state_unknown` is reserved for what it names: a transport
+  failure or a response that genuinely settles nothing. **Fail-closed is
+  untouched** — classification changes the code the user sees, never the verdict.
+- **A partially-written review reported as an ordinary failure.**
+  `GitHubClient` cleans up only the pending review it CREATED; when the review
+  was a pre-existing draft it deliberately does not delete it (the draft is the
+  user's and may hold earlier comments) and logs "comments may be partially
+  added". `submitReview` then threw before touching a `comments` row, so every
+  comment stayed `active` and a retry sent the SAME complete set into the SAME
+  draft, duplicating whatever landed. `describePartialWriteRisk` re-labels it
+  409 `partially_posted`, names the draft, and says to look before resubmitting.
+  **The condition is STRUCTURAL, not the error text** — `createReviewGraphQL`
+  flattens everything into one message, so matching on it would rot; "we reused
+  someone else's draft AND we sent it comments" is exact, and covers the batch
+  throwing, a partial batch, and the final submit mutation failing after all
+  comments landed, because all three leave the same residue. With no draft or no
+  comments, the original error passes through UNCHANGED so both routes' catch
+  ladders keep classifying it as they do today. Durable reconciliation (a
+  per-comment success identity) is a schema change and out of scope; not lying
+  about the state is not.
+- **`hasFile` was an alias for "has at least one hunk line".** It was populated
+  from the hunk loop, so a file header that closes with no hunk body — a
+  100%-similarity rename, `Binary files ... differ`, a mode-only change, an
+  empty new file — registered no path. Every one of those IS a path the diff
+  touches, and rename detection is ON (`GIT_DIFF_FLAGS` carries no
+  `--no-renames`), so the shape is routine. The consequence was
+  disproportionate: `refuseCommentsOutsideDiff` rejected the WHOLE submission,
+  including its unrelated valid comments, over one file-level comment on a
+  renamed file plainly in the pull request. `buildDiffLineSet` now closes each
+  file SECTION and records `newPath || oldPath` — the same expression the hunk
+  loop uses, evaluated after the `---`/`+++` refinements have landed. The two
+  answers stay populated from different places on purpose; `isLineInDiff`
+  remains hunk-keyed.
+- **`listFilesModifiedVsHead` failed OPEN for a subdirectory `local_path`.** It
+  was the one diff invocation in src/local-review.js without `GIT_DIFF_FLAGS`.
+  Most of the set is inert under `--name-only`; `--no-relative` is load-bearing.
+  With `diff.relative` configured and a `local_path` below the repo root, git
+  returns SUBDIRECTORY-relative paths, none of which match the repo-root-relative
+  `comment.file` the caller tests — so **every dirty file reads as clean and its
+  comments KEEP line numbers that no longer describe the commit GitHub holds**.
+  That is precisely the failure direction the function's THROWS-rather-than-empty
+  contract exists to make impossible. A subdir `local_path` is reachable:
+  src/routes/mcp.js and src/routes/analyses.js store the path they are given
+  verbatim.
+- **Finalising a draft left its own comments `draft` forever.** A `DRAFT`
+  submission marks this review's active comments `draft`; finalising that same
+  pending review later sends only the still-`active` ones — correct, the drafted
+  ones are already on GitHub — but **GitHub submits the whole pending review**,
+  drafted comments included. The finalising pass now promotes this review's
+  `draft` rows to `submitted` in the SAME transaction with the SAME stamp (so one
+  submission reads as one event), and folds `existingDraft.comments.totalCount`
+  into the reported total. Order is immaterial: the loop only touches rows that
+  were `active`, the statement only rows that were `draft`. Scoped to
+  `source = 'user'` for the reason `loadSubmittableComments` is. **Skipped under
+  `commentsOverride`** — a caller that supplied its own row set does not share
+  this statement's predicate, and this function will not reach past the rows it
+  was handed.
+- **Test coverage added for the rungs nobody had exercised.** The fail-closed
+  `host_binding_failed` rung (a stored host config no longer describes) with its
+  positive twin proving an alt-host-stamped PR is submitted to the ALT host and
+  not github.com — the negative alone would pass against a route that never
+  reached GitHub at all. Ambiguous-host submit capability at the route level
+  (`canSubmitToGitHub` withheld on an unresolved dual-host association,
+  alongside `canSyncDrafts`), so the flag and the 409 the endpoint would return
+  cannot disagree.
+- **The headless `--ai-review` / `--ai-draft` path had hand-rolled its own copy
+  of the write, and it had already drifted three ways.** Folded onto the shared
+  provider: `src/main.js` now extracts `submitHeadlessAIReview`, which owns only
+  what this flow knows — the AI-row query (`source = 'ai'`, orchestrated,
+  active — NOT the reviewer's own comments), the `formatAISuggestion` bodies,
+  the review body and its `--ai-draft`/`--ai-review` footer, and every line of
+  stdout (this runs in CI; the shape is a contract, and it is pinned by test).
+  All four reach the provider through ONE explicit input, `commentsOverride`
+  (`{comments, status}`), rather than teaching `submitReview` to sniff for a
+  mode: headless answers "which rows", "bodied by whom" and "what status after
+  the write" (`options.commentStatus`) differently on all three counts.
+  **`commentsOverride` also suppresses the draft-promotion statement above** —
+  that statement's `source = 'user'` predicate is not this caller's predicate,
+  and the provider must not reach past rows it was never handed. What headless
+  CI gains: **alt hosts work at all** (it never sent `headSha`, so a
+  GitHub-compatible host validating each inline comment like
+  `pulls.createReviewComment` 422'd the whole submission on `missing commit_id`);
+  an out-of-hunk AI suggestion degrades to a file-level `(Ref Line N)` comment
+  instead of posting a position GitHub cannot render (a deliberate behaviour
+  change, and the point of the fold); fuller `github_reviews` metadata (`event`,
+  `submitted_at`, and `created_at` no longer stamped on a submitted review); and
+  a `partially_posted` branch in the CLI catch ladder, matched on the CODE — the
+  message embeds the underlying GitHub failure verbatim, so the substring ladder
+  below it would happily misfile a "not found" or "rate limit" and tell a
+  retrying CI job to do the one thing that duplicates every comment that landed.
+  `trustLeftAnchors` is deliberately NOT passed: every row built here is
+  `side: 'RIGHT'`, so the gate is unreachable and the provider's default is the
+  correct answer rather than an assumed one. `filesWithLocalEdits` is `null`,
+  PR-mode semantics — the pool worktree is created for this PR and nobody edits
+  it. The diff handed down is the very one this run was ANALYSED against, the
+  `diff` local assigned unconditionally in both arms of `performHeadlessReview`'s
+  checkout branch, so headless can never silently submit against an empty diff.
+- **Residual, NOT a regression — headless draft rows are never promoted.**
+  `--ai-draft` lands its AI rows at `status = 'draft'`; a later `--ai-review`
+  loads only `status = 'active'` rows, and GitHub submits the whole pending
+  review including the drafted ones. The promotion statement that fixes exactly
+  this for the web routes cannot help: it is `source = 'user'`-scoped AND
+  suppressed under `commentsOverride`. So the local rows stay `draft` while the
+  host shows them published. Pre-existing (the old hand-rolled write had no
+  promotion either), and out of scope for a fold that must not change stdout or
+  row semantics — but worth a follow-up, and the fix is the same shape: a
+  promotion the override caller performs over its OWN predicate.
+
+**README:** the feature section was rewritten for this round — the preflight
+list no longer claims a count (it was three, then four, now five), the lifecycle
+bullet states the per-event rule and the modal's greyed-out options and
+refusal-race recovery, `local_diff_stale` is documented as a refusal in the
+position it runs, the LEFT-side rule joins the degradations (not the refusals —
+the section draws that line sharply and the new material keeps it),
+`partially_posted` is documented as neither, and the token sentence now
+separates read-only PR context from Submit review's **Pull requests: Read and
+write**, with the fine-grained equivalent added to the GitHub Token section,
+which had listed classic scopes only.
+
+#### Review round 2 (2026-08-23) — feedback applied
+
+The round's through-line: **round 1 hardened four refusals, and the newest of
+them was the one that failed OPEN.** The rest of the round is the same shape as
+the integration round of 2026-08-19 — a rule applied to one half of a shared
+contract. A LEFT-anchor gate that trusted a base nothing records; a start
+coordinate whose side defaults independently of the end's; a residue guess made
+from outside the write that reports it; a capability flush that lands after the
+action it exists to suppress.
+
+- **The snapshot gate failed open — the one gate in the feature that did
+  (critical).** `evaluateLocalSnapshotDrift` returns a `status` alongside two
+  PROVEN-difference booleans precisely because three of its statuses answer
+  nothing (`no-stored-diff`, `no-baseline-digest`, `digest-unavailable`), and
+  the submit route read only the booleans. All three leave both flags false, so
+  all three read as "compared, and clean" and AUTHORISED THE WRITE — the exact
+  inversion of "unknown is not no" that every other check in this feature had
+  already been fixed for. `src/routes/local.js` now proceeds only on
+  `status === 'compared'` with both flags false; every other status is 409
+  `local_diff_unverified`, carrying `snapshotStatus` for logs and for a client
+  that has not heard of the specific value. One code for all three because the
+  remedy is one thing — refresh the diff. **This is a refusal, not a
+  degradation**, for the round-1 reason: `(Ref Line N)` is only worth writing
+  while N describes the diff the reviewer saw.
+- **LEFT anchors degrade UNCONDITIONALLY in local mode (critical).** Round 1's
+  gate computed `scopeIncludesBranch && localMergeBaseSha === prData.base_sha`
+  and granted precision when it held. The predicate is unprovable: it compares
+  the review's CURRENT persisted base against the PR base, while the question is
+  which base the reviewer was looking at WHEN THEY WROTE THE COMMENT. Two
+  routine transitions break it — a comment authored under a transient in-UI base
+  override, and a comment authored before `set-scope` moved the stored base —
+  and **neither touches the working tree, so the snapshot digest cannot see
+  either one.** The merge-base computation is deleted; the route passes
+  `trustLeftAnchors: false` always. PR mode's default (`true`) is untouched: its
+  left column IS the pull request's. **The provenance fix is DEFERRED, and
+  deliberately linked to the migration blocker at the top of this plan** — the
+  correct long-term answer is to persist each LEFT comment's authored old-side
+  base sha and keep precision only while it equals the live PR base, which is a
+  schema change, and this branch already carries an unresolved
+  migration-number collision. Adding a 58 now compounds it. Degrading costs
+  precision and never correctness, and tightening later is a pure widening.
+- **`parseFileHeader` ran on hunk body lines (critical, pre-existing, escalated
+  by this branch).** Inside a hunk body those prefixes are content: a deleted
+  `-- note` is emitted as `--- note`, an added `++ marker` as `+++ marker`, an
+  unindented `++i;` as `+++i;`. Each was swallowed as a file header, so the
+  recorded path became a fragment of source and — because the swallowed lines
+  were never counted — **every LEFT/RIGHT line number after it in that file was
+  off by one.** Both `buildDiffLineSet` and `annotateDiff` now establish
+  hunk-body state first, with an `isBareFileSectionStart` carve-out for diffs
+  that carry no `diff --git` line at all and separate files with only the
+  `---`/`+++`/`@@` triple. The escalation is this branch's:
+  `refuseCommentsOutsideDiff` turned a file that "looked absent from the diff"
+  from a file-level downgrade into a 409 refusing the WHOLE review.
+- **`src/utils/diff-paths.js` (NEW) — one canonical git path parser.**
+  `diff-annotator.js` and `diff-file-list.js` each had their own, and they
+  disagreed: one kept the bare TAB git appends to a name containing a space,
+  neither decoded C-quoted names (`"a/caf\303\251.txt"`), and the greedy regex
+  took the LAST `" b/"` split candidate where the other took the first. A
+  one-byte disagreement between them is not cosmetic here — `hasFile()` decides
+  whether a comment is REFUSED while `parseUnifiedDiffPatches` decides which
+  patch the UI renders it against, so a file plainly visible in the diff became
+  a file the submitter said was not in it. Octal escapes are decoded at the BYTE
+  level (`\303\251` is two bytes of "é", not two characters); `unquoteGitPath`
+  is exported separately because the same quoting governs `git diff
+  --name-only` and `git ls-files`.
+- **`startSide` was never sent for a multi-line LEFT range (critical).**
+  GitHub's `AddPullRequestReviewThreadInput` defaults `side` and `startSide` to
+  RIGHT **independently**, so a range that declared only `side: LEFT` asked for
+  a thread ending on the old column and starting on the new one — a coordinate
+  pair that means nothing, rejected outright or anchored somewhere nobody
+  pointed at. Both endpoints were already validated against the same side a few
+  lines earlier, so the same side is the only honest answer. Fixed in
+  `formatCommentsForGraphQL` and in the GraphQL transport
+  (`src/github/impl/graphql/pending-review-comments.js`); the REST-shaped host
+  transport already paired `start_side` with `start_line`.
+- **Write residue is REPORTED by the write, not guessed from outside it.** Round
+  1's structural test — `existingDraft && sentComments > 0` — was wrong in both
+  directions. An auth failure or a rate limit at the very first batch writes
+  NOTHING, yet was relabelled 409 `partially_posted`, burying the routes'
+  actionable 401/429 under a blanket "do not retry"; and it stayed SILENT when
+  the review was newly created, even though cleanup only ever covered the
+  comment phase — a failure of the FINAL SUBMIT mutation left a pending review
+  holding every comment, unwarned. `GitHubClient` now stamps every flattened
+  failure with `error.reviewWriteProgress` (phase, confirmed comment count,
+  whether that count is exact, whether the review pre-existed, whether cleanup
+  succeeded) and the submit phase DELETES a review it created, so that retry is
+  clean. `assessWriteResidue` reads the report: `null` (original error
+  propagates unchanged, each route keeps its own classification),
+  `reused_draft`, or `orphaned_review`. "May have written" counts as residue —
+  a transport that throws mid-flight may have had its request applied and only
+  lost the response. The old guess survives as the fallback for an
+  uninstrumented client, because it errs toward warning.
+- **`SplitButton` flushed the revoked capability AFTER acting on it.** The
+  deferred `hideSubmit` flush ran in the dispatcher's trailing
+  `closeDropdown()`, so a click on a Submit row the flush was about to remove
+  still opened the review modal AND still persisted `submit` as the default
+  action to localStorage — outliving the session that revoked it.
+  `_settleBeforeAction` flushes first, re-validates against the SETTLED state,
+  and swallows the click with a toast rather than silently; both dispatchers
+  (main button and menu row) go through it, because the main button stays
+  clickable while the dropdown is open.
+- **One lifecycle reconciler for both modes.** `_applyPRHeadStaleState` in
+  `public/js/local.js` carried a hand-copied twin of `_applyPRLifecycleBadge`
+  and had already drifted from it field by field: it converted an unreported
+  `merged` to `false` and CLEARED the badge on an unreported `state`, so one
+  fail-open staleness response could un-merge a known-merged PR — dropping the
+  MERGED badge and, now that `getPRLifecycle` feeds the modal off exactly these
+  two fields, handing Approve back to a review the backend will refuse. Local
+  mode now delegates to the single implementation, through
+  `lifecycleFromStaleness`, which drops a fail-open payload before it reaches
+  the reconciler. Unknown is not open, and it is not "not merged" either.
+- **DECISION (user, 2026-08-23): the shared modal's per-event lifecycle gate
+  STAYS IN BOTH MODES, and is documented as a PR-mode change.** The reviewer
+  flagged it as local-mode policy leaking into PR mode. It is not: the policy is
+  GitHub's — Approve on a merged pull request fails on the host whoever asks —
+  so one modal enforcing it in both modes is the correct shape. GitHub remains
+  the authority; the client gate is an affordance, and a stale lifecycle copy
+  just means the host refuses exactly as it did before. **No live backend
+  lifecycle check is added to PR mode's submit route** (`src/routes/pr.js` still
+  calls no `checkSubmitPreconditions`), so the asymmetry that remains is
+  deliberate and is the one the README now states.
+- **The changeset stopped claiming "PR mode is unchanged."** It changes in three
+  places and all three are now named there: the shared modal's greyed-out
+  options, the residue classification (a failure that wrote nothing keeps its
+  own status; one that left comments is a 409 naming the review), and the
+  draft-promotion statement. The third is a CORRECTNESS fix in both modes, not a
+  regression — the rows had diverged from what GitHub actually holds, because a
+  `DRAFT` pass marks its comments `draft` locally and does not resend them,
+  while GitHub publishes the whole pending review on finalisation.
+
+**README:** three paragraphs corrected. The snapshot bullet now refuses an
+*uncomparable* snapshot on the same terms as a drifted one, with the same
+one-click remedy and the note that refreshing keeps your comments. The lifecycle
+bullet no longer says PR review mode has no lifecycle check — round 1 wrote that
+as a contrast and the shared modal made it false; it now states where the
+enforcement actually lives in each mode. The LEFT-side paragraph drops the
+"unless the bases provably agree" clause and says why agreement cannot be proven
+after the fact.
 
 ## Hazards
 
@@ -534,12 +1021,19 @@ Changeset: `minor` — "Submit local reviews to GitHub when PR is associated."
 - `updatePendingDraftIndicator` (`public/js/pr.js`) — shared with local mode since Phase 4. Callers: `renderPRHeader` x2 (PR), `ReviewModal.submitReview` x2 (PR), `LocalManager._syncGitHubDrafts` (local), `LocalManager._updateDraftSyncAffordance` (local, the null/clear call). The URL comes from `RepoLinks.draftUrl`, shared with `ReviewModal.updatePendingDraftNotice`; it is only host-correct because local mode feeds RepoLinks the association's `{number}` (`_applyRepoLinks`). Changing one of those three without the others reintroduces a repository-level link for a draft.
 - `GitHubReviewRepository.upsertFromGitHub` (`src/database.js`) — the ONE writer for a mirror row with a GitHub identity, because migration 57 makes a duplicate a hard error. Callers: draft sync (`src/providers/draft-sync.js`), `POST /api/pr/.../submit-review` (`src/routes/pr.js`), headless submit (`src/main.js`). Any new `github_reviews` insert carrying a node id or numeric id must go through it — a bare `create` will throw the moment the same review is seen twice (draft, then submit).
 - `resolveAssociationHost` (`src/routes/local.js`) — the two-tier host answer. Callers: `GET /api/local/:reviewId` and `/pr-metadata` (both feed `buildCapabilities.hostResolved`) and `POST /api/local/:reviewId/sync-drafts` (the 409 gate, which also re-resolves the binding for a stamped host). A capability looser than the gate advertises a button that only errors; a gate looser than the capability contacts a guessed host.
-- `submit-review` (`src/routes/pr.js:1067-1356`) — large handler with side effects (GitHub API write, DB updates, comment status transitions). Phase 5a/5b split required.
+- `submitReview` (`src/providers/review-submit.js`, Phase 5) — the GitHub review WRITE. THREE callers: (1) `POST /api/pr/:owner/:repo/:number/submit-review` (`src/routes/pr.js`), (2) `POST /api/local/:reviewId/submit-review` (`src/routes/local.js`), (3) the headless `--ai-review` / `--ai-draft` flow, via `submitHeadlessAIReview` (`src/main.js`). All three hand it already-resolved inputs (credential, PR node id, head sha, diff, host name); it resolves no config and reads no `pr_metadata`. Anything added to it lands in ALL THREE — which is the point, and also the hazard: PR mode's response body is asserted byte-for-byte by tests/integration/routes.test.js, and headless's STDOUT shape is a CI contract pinned by tests/unit/headless-submit-review.test.js. Caller (3) is the only one that supplies `commentsOverride`, which switches off both the default row query and the draft-promotion statement — a change to either must state what it means for an override caller.
+- `formatCommentsForGraphQL` (`src/providers/review-submit.js` `_internals`) — decides line-level vs file-level for every submitted comment. FOUR independent degradations feed it (explicit file-level, outside-the-diff, locally-edited file, untrusted LEFT anchor) and the diff itself is a caller input. A caller that passes a diff which is not the PULL REQUEST's diff silently posts positions GitHub cannot render; a caller that passes an empty `filesWithLocalEdits` set when it does not KNOW asserts the working tree is clean; a caller that passes `trustLeftAnchors: true` without proving the two bases agree asserts a left column it has not checked — and round 2 established that local mode CANNOT prove it, so the local route passes `false` unconditionally and only PR mode's default `true` remains. It also emits `start_side` beside `start_line`: the two endpoints of a range default their side INDEPENDENTLY on GitHub, so any new range-shaping code must set both or ask for a mixed-side range.
+- `buildDiffLineSet` / `annotateDiff` (`src/utils/diff-annotator.js`) — two parsers walking the same diff text with the same file-header, hunk-header and line-counter logic, and every fix must land in BOTH: they diverged once already and produced different `hasFile` answers for the same input. Since round 2 they share `parseFileHeader`'s hunk-body guard, `isBareFileSectionStart`, and — with `parseUnifiedDiffPatches` in `src/utils/diff-file-list.js` — the one path decoder in `src/utils/diff-paths.js`. **No new diff parser may spell a path for itself.** `hasFile()` decides whether local mode REFUSES a whole submission while `parseUnifiedDiffPatches` decides which patch the UI renders that comment against; a one-byte disagreement (a trailing TAB, surviving quotes, an undecoded octal escape) makes a visible file an absent one.
+- `evaluateLocalSnapshotDrift` (`src/routes/local.js`) — callers: `GET /api/local/:reviewId/check-stale` (reports) and `POST /api/local/:reviewId/submit-review` (AUTHORISES A WRITE). Its `status` is not decoration: three values (`no-stored-diff`, `no-baseline-digest`, `digest-unavailable`) answer nothing while leaving both PROVEN-difference booleans false. A caller that reads only the booleans reads "unknown" as "clean" — which is exactly how round 1 shipped it. Any new caller must decide what an uncomparable snapshot means for IT before it touches the flags.
+- `_applyPRLifecycleBadge` + `lifecycleFromStaleness` (`public/js/pr.js`) — THE single lifecycle reconciler for both modes since round 2; local mode's `_applyPRHeadStaleState` (`public/js/local.js`) delegates to it rather than carrying its own copy, which is what drifted. Callers: `_checkStalenessOnLoad`, `refreshPRLifecycle`, `refreshPR` (PR) and `_applyPRHeadStaleState` (local). It writes back into `currentPR.associatedPR || currentPR` — the same target `getPRLifecycle` reads — so the badge and the modal's allowed events cannot disagree, and it ends by calling `updateSubmitAffordance`, so neither mode can forget to repaint. Two invariants: `merged` is checked BEFORE `state` (GitHub reports a merge as `state: 'closed'` + `merged: true`), and a payload that REPORTS neither field is dropped whole rather than written as false — never pick fields off a fail-open staleness response by hand, pass it through `lifecycleFromStaleness`.
+- `ReviewModal.applyAllowedEvents` / `PRManager.getPRLifecycle` (`public/js/`) — the client half of the per-event lifecycle rule, and it runs in BOTH MODES by decision (see round 2): the modal is shared and the policy is GitHub's. Callers of `applyAllowedEvents`: `show()`, `PRManager.updateSubmitAffordance` (fires while the modal is open), and `handleLifecycleRefusal`. It must stay idempotent and re-entrant, and `getPRLifecycle` must keep reading `pr.associatedPR || pr` so local mode reasons about the ASSOCIATED PR. An unknown `state` reads as null and must be treated as OPEN by every consumer — guessing "closed" from missing metadata takes write actions away from a healthy pull request.
+- `PRManager.getSubmitReviewEndpoint` (`public/js/pr.js`) — overridden in `LocalManager.patchPRManager`. Sole consumer: `ReviewModal.submitReview`. It is what keeps the shared modal free of mode-sniffing; a new submit entry point must ask the manager rather than rebuild a URL.
+- `PreviewModal.show` / `SplitButton` constructor (`public/js/components/`) — both now read `canSubmitToGitHub`. `SplitButton` reads it ONCE and stores `hideSubmit` + `defaultAction`, so it is the only affordance that must be REBUILT on a late capability flip (`_refreshPRMetadata` re-runs `initSplitButton`); every other one re-reads the capability per call. A rebuild arriving while the dropdown is open is DEFERRED (`_pendingHideSubmit`), so both dispatchers must flush through `_settleBeforeAction` BEFORE they act — the old order acted on the answer the flush was holding, which is the answer that revoked it. Any new action added to this component inherits that requirement.
 - `buildCapabilities` (`src/providers/pr-context.js`) — every phase flips one action flag. Forgetting to flip silently disables the feature with no error. Verify flag flips in each phase's integration test.
 
 **Async races:**
 - PR detection is async over GitHub API. If user refreshes mid-detection, `/api/local/:reviewId` may return `hasAssociatedPR: false` then `true` on next poll. Frontend must tolerate capability flags appearing later (re-render, don't latch).
-- PR can be **closed** between session start and Phase 5 submit. Provider must check PR state at submit time, not at capability-flag time. Return 410 + clear error.
+- PR can be **closed or merged** between session start and Phase 5 submit. Provider must check PR state at submit time, not at capability-flag time. 410 + clear error, but PER EVENT: a settled PR still takes a `COMMENT` review, so only APPROVE / REQUEST_CHANGES / DRAFT refuse. The modal derives its options from a lifecycle copy that can be equally stale, so the 410 doubles as the signal that re-syncs it (`handleLifecycleRefusal`).
 - PR `head_sha` can drift between Phase 3 stale check and Phase 5 submit. Submit provider must re-check at submit time and HARD REFUSE on mismatch.
 - Branch rename on GitHub between detection and feature use — `associated_pr_number` persisted, but `associated_pr_repository` could be stale. Provider should re-resolve owner/repo on PR fetch, log if changed.
 - Negative cache (5-min TTL, per-process) never invalidates on external state change. If user opens a PR mid-session, the cache will not reflect it for up to 5 min. Phase 1 may want explicit invalidation on manual refresh.
@@ -580,8 +1074,10 @@ For each phase:
 6. **Background backfill caching:** Per-process Map, 5-min TTL. No external invalidation in Phase 0.
 7. **External comments are review-scoped, not route-scoped (Phase 2):** no `src/providers/pr-comments.js`, no `/api/local/:reviewId/pr-comments`. Local mode reuses `/api/reviews/:reviewId/external-comments[/sync]` with an association-aware target resolver. The provider-extraction rule in principle 1 is satisfied — the shared logic is already out of `routes/pr.js`.
 8. **Anchor trust in local mode (Phase 2):** precise `(file, line, side)` anchoring only when local `HEAD === head_sha`. On drift, every thread degrades to the file-level fallback with a provenance note. No content-based re-anchoring in v1.
-   **Amended during implementation:** that comparison alone is insufficient — both operands are page-load snapshots, so a PR advancing mid-session still reads as a match. A second, per-comment gate compares each row's own `commit_sha` (delivered fresh with the sync, cached nowhere) against the commit the rendered diff IS. Armed in local mode only. Both gates fail safe; PR mode is unchanged.
+   **Amended twice.** First: that comparison alone is insufficient — both operands are page-load snapshots, so a PR advancing mid-session still reads as a match. A second, per-comment gate compares each row's own `commit_sha` (delivered fresh with the sync, cached nowhere) against the commit the rendered diff IS. Armed in local mode only. Both gates fail safe; PR mode is unchanged. Second (Phase 5, round 2): on the WRITE side there is no gate at all — a LEFT-side comment submitted from local mode always degrades to file level, because the base it was authored against is not recorded and therefore cannot be shown to match the pull request's. Restoring precision needs that provenance column, which needs a migration, which waits on the blocker at the top of this plan.
 9. **`isStale` is working-tree-only, forever (Phase 3):** the local stale check's `isStale` answers ONE question — does the working tree still match the captured diff. PR-head drift ships beside it in `prHead` + `reasons[]` and must never be OR-ed in. `public/js/local.js` calls `refreshDiff({ silent: true })` whenever `isStale === true` and the session holds no user data; a refresh re-captures the working tree and can do nothing about a PR that advanced on GitHub, so folding drift in would mean a silent re-capture on every page load, forever, that never clears the condition that triggered it. The badge follows the same split: working-tree staleness wins the slot because it is the only one the refresh button fixes.
+10. **Migration numbering (2026-08-23):** this branch lands against whatever `main` is at the time; its 56/57 are provisional and get renumbered during the rebase, with `CURRENT_SCHEMA_VERSION` bumped to match. No coordination with any other branch is assumed. **See the rebase note at the top of this plan** — once a database is stamped, a renumber alone stops being a sufficient fix.
+11. **The per-event lifecycle gate applies in BOTH modes (2026-08-23):** the shared `ReviewModal` disables Approve / Request Changes / Save as Draft on a settled pull request in PR mode as well as local mode. The policy is GitHub's, not local mode's, so one modal enforcing it is correct rather than leakage; GitHub stays the authority and a stale client copy just means the host refuses, as before. **No live backend lifecycle check is added to PR mode's submit route** — the asymmetry is deliberate and documented in the README.
 
 #### Integration review round (2026-08-19) — cross-boundary defects
 
