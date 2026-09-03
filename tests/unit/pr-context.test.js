@@ -45,21 +45,65 @@ describe('splitRepository', () => {
 });
 
 describe('buildCapabilities', () => {
-  it('keeps the UNSHIPPED action flag (Phase 5) false regardless of inputs', () => {
-    // Hard-coded false until the phase that implements it lands.
-    // canShowPRMetadata (Phase 1), canViewPRComments (Phase 2),
-    // canCheckStaleVsPR (Phase 3) and canSyncDrafts (Phase 4) are real now and
-    // have their own truth tables below.
-    const cases = [
-      { association: null, hasToken: false },
-      { association: null, hasToken: true },
-      { association: { prNumber: 1, repository: 'a/b' }, hasToken: false },
-      { association: { prNumber: 1, repository: 'a/b' }, hasToken: true },
-    ];
+  it('has no unshipped action flags left — every one has a truth table below', () => {
+    // Phases 1-5 have all landed, so no flag is hard-coded false any more.
+    // This guards the reverse regression: a new flag added for a future phase
+    // must be pinned false here until its implementation ships.
+    const caps = buildCapabilities({
+      association: { prNumber: 1, repository: 'a/b' },
+      hasToken: true,
+      prMetadataAvailable: true,
+    });
+    expect(caps).toEqual({
+      hasAssociatedPR: true,
+      hasGitHubToken: true,
+      canShowPRMetadata: true,
+      canViewPRComments: true,
+      canCheckStaleVsPR: true,
+      canSyncDrafts: true,
+      canSubmitToGitHub: true,
+    });
+  });
 
-    for (const params of cases) {
-      expect(buildCapabilities(params).canSubmitToGitHub).toBe(false);
-    }
+  /**
+   * Phase 5. Identical truth table to canSyncDrafts, host requirement
+   * included: `POST /api/local/:reviewId/submit-review` refuses an unresolved
+   * dual-host binding with 409 before it contacts GitHub, and this endpoint
+   * WRITES — submitting a review to a same-numbered PR on the wrong host is
+   * the worst outcome this feature can produce.
+   */
+  describe('canSubmitToGitHub (Phase 5)', () => {
+    it('is true only with BOTH a usable association and a token', () => {
+      expect(buildCapabilities({ association: null, hasToken: true }).canSubmitToGitHub).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: false }).canSubmitToGitHub).toBe(false);
+      expect(buildCapabilities({ association: { prNumber: 1, repository: 'a/b' }, hasToken: true }).canSubmitToGitHub).toBe(true);
+    });
+
+    it('is NOT gated on prMetadataAvailable — the endpoint reads the PR live', () => {
+      const caps = buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' },
+        hasToken: true,
+        prMetadataAvailable: false,
+      });
+      expect(caps.canShowPRMetadata).toBe(false);
+      expect(caps.canSubmitToGitHub).toBe(true);
+    });
+
+    it('is false when the PR\'s host is an unresolved dual-host guess', () => {
+      const caps = buildCapabilities({
+        association: { prNumber: 1, repository: 'a/b' },
+        hasToken: true,
+        hostResolved: false,
+      });
+      expect(caps.hasGitHubToken).toBe(true);
+      expect(caps.canSubmitToGitHub).toBe(false);
+    });
+
+    it('falls with hasAssociatedPR when the association is not a usable target', () => {
+      const caps = buildCapabilities({ association: { prNumber: '123', repository: 'a/b' }, hasToken: true });
+      expect(caps.hasAssociatedPR).toBe(false);
+      expect(caps.canSubmitToGitHub).toBe(false);
+    });
   });
 
   /**

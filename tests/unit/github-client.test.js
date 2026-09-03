@@ -613,6 +613,238 @@ describe('GitHubClient', () => {
     });
   });
 
+  /**
+   * STRUCTURED WRITE PROGRESS (`error.reviewWriteProgress`).
+   *
+   * The orchestration flattens every failure into one sentence, which is
+   * useless for deciding whether anything is still on the pull request. It now
+   * also reports the state it alone can see — which phase failed, how many
+   * comments GitHub confirmed, whether that count is exact, whether the review
+   * pre-existed, and whether cleanup worked — and
+   * `src/providers/review-submit.js` classifies from that instead of guessing
+   * from the outside. These tests pin the producing half.
+   */
+  describe('review write progress reporting', () => {
+    const { REVIEW_WRITE_PHASES } = require('../../src/github/client');
+
+    /** Run a write that is expected to fail, and hand back its rejection. */
+    async function failing(promise) {
+      try {
+        await promise;
+        throw new Error('expected the write to fail');
+      } catch (error) {
+        return error;
+      }
+    }
+
+    it('reports the CREATE phase with no review and nothing written', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockRejectedValue(new Error('cannot create review'));
+
+      const error = await failing(
+        client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', [
+          { path: 'a.js', line: 1, side: 'RIGHT', body: 'c' }
+        ])
+      );
+
+      expect(error.reviewWriteProgress).toMatchObject({
+        phase: REVIEW_WRITE_PHASES.CREATE_REVIEW,
+        reviewId: null,
+        reviewPreExisted: false,
+        commentsSent: 1,
+        commentsWritten: 0,
+        commentsWrittenExact: true,
+        cleanupAttempted: false,
+        cleanupSucceeded: null
+      });
+      // The original rejection stays reachable for classification.
+      expect(error.cause.message).toBe('cannot create review');
+    });
+
+    it('reports the CONFIRMED count when a batch answers with failures', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: { pullRequestReview: { id: 'PRR_new', databaseId: 12 } }
+      });
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 2, failed: true, failedDetails: ['a.js:9 - nope']
+      });
+      vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [1, 2, 3].map(n => ({ path: 'a.js', line: n, side: 'RIGHT', body: 'c' }));
+      const error = await failing(client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', comments));
+
+      expect(error.reviewWriteProgress).toMatchObject({
+        phase: REVIEW_WRITE_PHASES.ADD_COMMENTS,
+        reviewId: 'PRR_new',
+        commentsSent: 3,
+        commentsWritten: 2,
+        // The batch ANSWERED, so 2 is a fact rather than a floor.
+        commentsWrittenExact: true,
+        cleanupAttempted: true,
+        cleanupSucceeded: true
+      });
+    });
+
+    it('marks the count INEXACT when the comment transport threw', async () => {
+      // The request may have been applied and only the response lost, so
+      // "0 confirmed" must not be reported as "0 written".
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: { pullRequestReview: { id: 'PRR_new', databaseId: 12 } }
+      });
+      vi.spyOn(client, 'addCommentsInBatches').mockRejectedValue(new Error('socket hang up'));
+      vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const error = await failing(client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', [
+        { path: 'a.js', line: 1, side: 'RIGHT', body: 'c' }
+      ]));
+
+      expect(error.reviewWriteProgress).toMatchObject({
+        phase: REVIEW_WRITE_PHASES.ADD_COMMENTS,
+        commentsWritten: 0,
+        commentsWrittenExact: false,
+        cleanupSucceeded: true
+      });
+    });
+
+    it('reports a pre-existing review as such, and never deletes it', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn();
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 1, failed: true, failedDetails: []
+      });
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const error = await failing(client.createReviewGraphQL(
+        'PR_node', 'COMMENT', 'Body',
+        [{ path: 'a.js', line: 1, side: 'RIGHT', body: 'c' }, { path: 'b.js', line: 1, side: 'RIGHT', body: 'd' }],
+        'PRR_theirs'
+      ));
+
+      expect(error.reviewWriteProgress).toMatchObject({
+        reviewPreExisted: true,
+        reviewId: 'PRR_theirs',
+        commentsWritten: 1,
+        cleanupAttempted: false,
+        cleanupSucceeded: null
+      });
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    describe('a failure of the FINAL SUBMIT mutation', () => {
+      /** Create succeeds, comments land, the submit mutation fails. */
+      function clientFailingAtSubmit() {
+        const client = new GitHubClient('test-token');
+        client.octokit.graphql = vi.fn()
+          .mockResolvedValueOnce({ addPullRequestReview: { pullRequestReview: { id: 'PRR_new', databaseId: 12 } } })
+          .mockResolvedValueOnce({ comment0: { thread: { id: 'thread-0' } } })
+          .mockRejectedValueOnce(new Error('submit exploded'));
+        return client;
+      }
+      const oneComment = [{ path: 'a.js', line: 1, side: 'RIGHT', body: 'c' }];
+
+      it('DELETES the review it created — the gap that used to strand every comment', async () => {
+        // Cleanup only ever covered the comment phase, so a submit failure left
+        // a pending review holding the whole review, silently.
+        const client = clientFailingAtSubmit();
+        const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+        const error = await failing(client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', oneComment));
+
+        expect(deleteSpy).toHaveBeenCalledWith('PRR_new', { reviewId: 12 });
+        expect(error.reviewWriteProgress).toMatchObject({
+          phase: REVIEW_WRITE_PHASES.SUBMIT_REVIEW,
+          commentsWritten: 1,
+          cleanupAttempted: true,
+          cleanupSucceeded: true
+        });
+      });
+
+      it('reports cleanupSucceeded: false when the delete answers no', async () => {
+        const client = clientFailingAtSubmit();
+        vi.spyOn(client, 'deletePendingReview').mockResolvedValue(false);
+
+        const error = await failing(client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', oneComment));
+
+        expect(error.reviewWriteProgress).toMatchObject({
+          phase: REVIEW_WRITE_PHASES.SUBMIT_REVIEW,
+          reviewId: 'PRR_new',
+          commentsWritten: 1,
+          cleanupAttempted: true,
+          cleanupSucceeded: false
+        });
+      });
+
+      it('keeps the REAL failure when the delete itself throws', async () => {
+        // A cleanup error must never replace the cause the user needs to read.
+        const client = clientFailingAtSubmit();
+        vi.spyOn(client, 'deletePendingReview').mockRejectedValue(new Error('delete blew up'));
+
+        const error = await failing(client.createReviewGraphQL('PR_node', 'COMMENT', 'Body', oneComment));
+
+        expect(error.message).toContain('submit exploded');
+        expect(error.message).not.toContain('delete blew up');
+        expect(error.reviewWriteProgress).toMatchObject({
+          cleanupAttempted: true,
+          cleanupSucceeded: false
+        });
+      });
+
+      it('leaves a PRE-EXISTING review alone and reports it as residue', async () => {
+        const client = new GitHubClient('test-token');
+        client.octokit.graphql = vi.fn()
+          .mockResolvedValueOnce({ comment0: { thread: { id: 'thread-0' } } })
+          .mockRejectedValueOnce(new Error('submit exploded'));
+        const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+        const error = await failing(client.createReviewGraphQL(
+          'PR_node', 'COMMENT', 'Body', oneComment, 'PRR_theirs'
+        ));
+
+        expect(deleteSpy).not.toHaveBeenCalled();
+        expect(error.reviewWriteProgress).toMatchObject({
+          phase: REVIEW_WRITE_PHASES.SUBMIT_REVIEW,
+          reviewPreExisted: true,
+          commentsWritten: 1,
+          cleanupAttempted: false
+        });
+      });
+    });
+
+    it('reports the draft path too, carrying the URL its create mutation returned', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.graphql = vi.fn().mockResolvedValueOnce({
+        addPullRequestReview: {
+          pullRequestReview: {
+            id: 'PRR_draft',
+            databaseId: 88,
+            url: 'https://github.com/o/r/pull/1#pullrequestreview-88'
+          }
+        }
+      });
+      vi.spyOn(client, 'addCommentsInBatches').mockResolvedValue({
+        successCount: 1, failed: true, failedDetails: []
+      });
+      vi.spyOn(client, 'deletePendingReview').mockResolvedValue(false);
+
+      const error = await failing(client.createDraftReviewGraphQL('PR_node', 'Body', [
+        { path: 'a.js', line: 1, side: 'RIGHT', body: 'c' },
+        { path: 'b.js', line: 1, side: 'RIGHT', body: 'd' }
+      ]));
+
+      expect(error.reviewWriteProgress).toMatchObject({
+        phase: REVIEW_WRITE_PHASES.ADD_COMMENTS,
+        reviewId: 'PRR_draft',
+        reviewUrl: 'https://github.com/o/r/pull/1#pullrequestreview-88',
+        commentsWritten: 1,
+        cleanupSucceeded: false
+      });
+      // And the message stops claiming a deletion that did not happen.
+      expect(error.message).toContain('could NOT be deleted');
+    });
+  });
+
   describe('createDraftReviewGraphQL — cleanup when addCommentsInBatches throws', () => {
     it('deletes the newly-created draft and propagates the error when addCommentsInBatches throws', async () => {
       const client = new GitHubClient('test-token');
