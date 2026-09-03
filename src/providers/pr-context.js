@@ -513,8 +513,15 @@ function isUsablePRTarget(association) {
  *       keeps its documented exception (a credential genuinely exists); an
  *       ACTION contract may not, or it advertises a button whose every click
  *       is a deterministic error.
- *     - canSubmitToGitHub: false   // Phase 5 flips this true — and when it
- *       does, it inherits the same `hostResolved` requirement.
+ *     - canSubmitToGitHub: Phase 5 — true when hasAssociatedPR AND hasToken
+ *       AND `hostResolved`, exactly like `canSyncDrafts` and for the same
+ *       reason: `POST /api/local/:reviewId/submit-review` refuses an
+ *       unresolved dual-host binding with 409 before it contacts GitHub, and
+ *       an ACTION contract may not advertise a control whose every click is a
+ *       deterministic error. Also NOT gated on `prMetadataAvailable`: the
+ *       endpoint reads the PR LIVE (it must, to refuse a drifted or closed
+ *       PR — see `checkSubmitPreconditions`), so a cold cache is no reason to
+ *       hide the one control that would warm it.
  *
  * Token is passed in (do not re-resolve config). Caller is responsible for
  * computing the boolean via `getGitHubToken(config)`.
@@ -546,7 +553,7 @@ function buildCapabilities({ association, hasToken, prMetadataAvailable, hostRes
     canViewPRComments: Boolean(hasAssociatedPR && hasToken),
     canCheckStaleVsPR: Boolean(hasAssociatedPR && hasToken),
     canSyncDrafts: Boolean(hasAssociatedPR && hasToken && hostResolved),
-    canSubmitToGitHub: false,   // Phase 5 flips true
+    canSubmitToGitHub: Boolean(hasAssociatedPR && hasToken && hostResolved),
   };
 }
 

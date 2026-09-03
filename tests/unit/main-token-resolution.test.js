@@ -152,23 +152,85 @@ describe('main.js — repo-scoped-only config resolves to a token', () => {
   });
 });
 
-describe('main.js — performHeadlessReview / submit feature-gating', () => {
-  it('headless submit gates node-id requirement on binding features', () => {
-    const src = readMainSource();
-    // Predicate must reference both feature areas the dispatcher cares about.
-    expect(src).toMatch(/needsGraphQLNodeId/);
-    expect(src).toMatch(/headlessBinding\.features\.review_lifecycle/);
-    expect(src).toMatch(/headlessBinding\.features\.pending_review_comments/);
-    // The unconditional throw must be gone.
-    expect(src).not.toMatch(/PR node_id not available for .* Cannot submit review without GraphQL node ID/);
+/**
+ * The node-id feature gate.
+ *
+ * These were source-text assertions on `performHeadlessReview` until Phase 5
+ * folded the headless write into `submitReview` (src/providers/review-submit.js)
+ * — the gate now lives in exactly one place for all three callers, so grepping
+ * src/main.js for it can only ever go stale. Asserted through the behaviour
+ * instead, which is what the original bug was about: a github.com-only
+ * assumption made an all-REST alt host unable to submit at all.
+ */
+describe('headless submit — node-id feature gating', () => {
+  const { submitHeadlessAIReview } = require('../../src/main.js');
+  const { SubmitReviewError } = require('../../src/providers/review-submit');
+
+  const silentLogger = { log: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+
+  function fakeClientClass(features) {
+    return class {
+      constructor() { this.features = features; }
+      async getPendingReviewForUser() { return null; }
+      async createReviewGraphQL(prNodeId, event, body, comments) {
+        return {
+          id: 'PRR_1', databaseId: 1, html_url: 'https://example.test/r/1',
+          comments_count: comments.length, state: 'COMMENTED'
+        };
+      }
+    };
+  }
+
+  function runHeadless({ features, nodeId }) {
+    const { submitReview } = require('../../src/providers/review-submit');
+    return submitHeadlessAIReview({
+      db: {},
+      reviewId: 1,
+      prInfo: { owner: 'owner', repo: 'alt', number: 5 },
+      storedPRData: { node_id: nodeId, head_sha: 'head1' },
+      credential: { token: 'alt-host-secret', apiHost: 'https://ghe.example.com/api/v3', features },
+      hostName: 'GHE',
+      diffContent: '',
+      options: { mode: 'review', reviewEvent: 'COMMENT', commentStatus: 'submitted' },
+      _deps: {
+        query: async () => [{ id: 1, file: 'a.js', line_start: 2, body: 'x', diff_position: null, title: 't', type: 'bug' }],
+        submitReview: (params) => submitReview({
+          ...params,
+          _deps: {
+            GitHubClient: fakeClientClass(features),
+            ReviewRepository: class { async updateAfterSubmission() { return true; } },
+            GitHubReviewRepository: class { async upsertFromGitHub() { return { id: 1 }; } },
+            logger: silentLogger,
+            query: async () => [],
+            run: async () => ({ changes: 1 })
+          }
+        })
+      }
+    });
+  }
+
+  it('does NOT require a node id when the binding dispatches to REST', async () => {
+    // The alt-host regression: an all-REST host addresses the PR by
+    // (owner, repo, number) and never sees `prNodeId`.
+    const result = await runHeadless({
+      features: { review_lifecycle: 'rest', pending_review_comments: 'rest' },
+      nodeId: null
+    });
+    expect(result.success).toBe(true);
   });
 
-  it('headless submit still throws when GraphQL is in play and node_id is missing', () => {
-    const src = readMainSource();
-    // The new error message preserves the "missing node_id" failure mode
-    // for the default github.com (all-GraphQL) configuration.
-    expect(src).toMatch(/GraphQL PR node id required for/);
-    expect(src).toMatch(/refresh the PR data and try again/);
+  it('still refuses when GraphQL is in play and node_id is missing', async () => {
+    await expect(runHeadless({
+      features: { review_lifecycle: 'graphql', pending_review_comments: 'graphql' },
+      nodeId: null
+    })).rejects.toThrow(/GraphQL PR node id required for owner\/alt#5[\s\S]*refresh the PR data and try again/);
+  });
+
+  it('classifies that refusal as a SubmitReviewError so callers can map it', async () => {
+    await expect(runHeadless({
+      features: { review_lifecycle: 'graphql', pending_review_comments: 'graphql' },
+      nodeId: null
+    })).rejects.toBeInstanceOf(SubmitReviewError);
   });
 });
 

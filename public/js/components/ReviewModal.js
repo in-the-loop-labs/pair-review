@@ -13,6 +13,9 @@ class ReviewModal {
     this.isVisible = false;
     this.isSubmitting = false;
     this.assistedByUrl = DEFAULT_ASSISTED_BY_URL;
+    // A `pr_merged` / `pr_closed` refusal pinned for this modal session — see
+    // `currentLifecycle`. Cleared on every `show()`.
+    this._lifecycleRefusal = null;
     fetch('/api/config')
       .then(res => res.ok ? res.json() : null)
       .then(data => {
@@ -124,8 +127,25 @@ class ReviewModal {
                   </div>
                 </label>
               </div>
+
+              <!--
+                Why a review type may be unavailable. Reuses the warning-dialog
+                shell (the same one as the large-review warning) rather than a
+                bespoke style, and is shown ONLY when something is actually
+                disabled — an open PR must not carry a permanent explanation of
+                a restriction that is not in force.
+              -->
+              <div class="warning-dialog" id="review-lifecycle-warning" style="display: none;">
+                <div class="warning-dialog-title">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/>
+                  </svg>
+                  <span id="review-lifecycle-warning-title">Pull request closed</span>
+                </div>
+                <div class="warning-dialog-content" id="review-lifecycle-warning-text"></div>
+              </div>
             </div>
-            
+
             <div class="review-comment-summary">
               <div class="review-comment-count"></div>
             </div>
@@ -239,11 +259,166 @@ class ReviewModal {
   }
 
   /**
+   * The review events a settled (merged or closed) pull request still accepts.
+   *
+   * Mirrors the backend precondition in src/providers/review-submit.js: a
+   * merged or closed PR takes a COMMENT review — the discussion outlives the
+   * merge — but refuses APPROVE, REQUEST_CHANGES and DRAFT with 410. Kept as a
+   * named constant so the two halves of the same rule are greppable from each
+   * other.
+   */
+  static SETTLED_PR_EVENTS = ['COMMENT'];
+
+  /** Every event the modal offers, in the order the radios are rendered. */
+  static ALL_EVENTS = ['COMMENT', 'APPROVE', 'REQUEST_CHANGES', 'DRAFT'];
+
+  /**
+   * Classify a PR lifecycle into the restriction it imposes, or null when it
+   * imposes none.
+   *
+   * `merged` is checked FIRST — the other order labels every merged PR closed,
+   * because GitHub reports a merge as `state: 'closed'` plus `merged: true`.
+   * Same ordering rule as `_applyPRLifecycleBadge` in public/js/pr.js, and for
+   * the same reason.
+   *
+   * An unknown/missing `state` reads as OPEN. Guessing "settled" from missing
+   * data would silently strip Approve from a healthy PR whose metadata simply
+   * had not arrived — a far worse failure than letting the backend refuse.
+   *
+   * @param {{state: string|null|undefined, merged: boolean|null|undefined}|null} lifecycle
+   * @returns {{kind: 'merged'|'closed', title: string, message: string}|null}
+   */
+  static lifecycleRestriction(lifecycle) {
+    if (!lifecycle) return null;
+    const merged = lifecycle.merged === true;
+    const closed = !merged
+      && typeof lifecycle.state === 'string'
+      && lifecycle.state.toLowerCase() !== 'open';
+
+    if (!merged && !closed) return null;
+
+    const host = ReviewModal.hostName();
+    const what = merged ? 'has been merged' : 'is closed';
+    return {
+      kind: merged ? 'merged' : 'closed',
+      title: merged ? 'Pull request merged' : 'Pull request closed',
+      message: `This pull request ${what} on ${host}, so it can no longer be approved, `
+        + 'have changes requested, or hold a new draft review. '
+        + 'A comment review can still be submitted.'
+    };
+  }
+
+  /**
+   * The review events that may be submitted against a given PR lifecycle.
+   *
+   * @param {{state: string|null|undefined, merged: boolean|null|undefined}|null} lifecycle
+   * @returns {string[]}
+   */
+  static allowedEvents(lifecycle) {
+    return ReviewModal.lifecycleRestriction(lifecycle)
+      ? [...ReviewModal.SETTLED_PR_EVENTS]
+      : [...ReviewModal.ALL_EVENTS];
+  }
+
+  /**
+   * The lifecycle this modal is currently reasoning about.
+   *
+   * A refusal the backend just returned WINS over the manager's copy. That copy
+   * is what produced the options the user submitted, so by definition it was
+   * stale; re-reading it after a `pr_merged` / `pr_closed` refusal would put
+   * the same wrong options straight back — including when the corrective
+   * refresh itself fails, which is precisely when the guard matters.
+   *
+   * Scoped to one modal session: `show()` clears it, so a PR that is reopened
+   * gets its full option set back on the next open.
+   *
+   * @returns {{state: string|null, merged: boolean}|null}
+   */
+  currentLifecycle() {
+    if (this._lifecycleRefusal) return this._lifecycleRefusal;
+    // Ask the active manager — never `window.PAIR_REVIEW_LOCAL_MODE`. In local
+    // mode this resolves the ASSOCIATED PR's lifecycle; in PR mode, the PR's
+    // own. See `PRManager.getPRLifecycle`.
+    return window.prManager?.getPRLifecycle?.() || null;
+  }
+
+  /**
+   * Enable/disable the review-type radios from the target PR's lifecycle.
+   *
+   * Disabled-with-an-explanation rather than removed, matching the idiom the
+   * modal already uses for the Draft textarea (`updateTextareaState` disables
+   * it and says why in a `title`) — a control that vanishes reads as a bug,
+   * while a greyed-out one with a reason reads as an answer. The reason also
+   * appears as a visible `.warning-dialog`, because a `title` alone is
+   * invisible to anyone not hovering.
+   *
+   * Re-entrant and idempotent: called from `show()`, from
+   * `PRManager.updateSubmitAffordance` while the modal is already open, and
+   * after a lifecycle refusal.
+   */
+  applyAllowedEvents() {
+    if (!this.modal) return;
+
+    const lifecycle = this.currentLifecycle();
+    const restriction = ReviewModal.lifecycleRestriction(lifecycle);
+    const allowed = ReviewModal.allowedEvents(lifecycle);
+
+    let reselect = false;
+    this.modal.querySelectorAll('input[name="review-event"]').forEach((input) => {
+      const ok = allowed.includes(input.value);
+      input.disabled = !ok;
+
+      const option = input.closest('.review-type-option');
+      if (option) {
+        option.classList.toggle('disabled', !ok);
+        if (!ok && restriction) {
+          option.title = restriction.message;
+        } else {
+          option.removeAttribute('title');
+        }
+      }
+
+      // The selection can go stale under the user: the modal may have been
+      // opened against an open PR that merged while it sat there. Uncheck
+      // first, choose afterwards — a radio group with the checked member
+      // disabled still submits that value.
+      if (!ok && input.checked) {
+        input.checked = false;
+        reselect = true;
+      }
+    });
+
+    if (reselect) {
+      const fallback = this.modal.querySelector('input[name="review-event"]:not(:disabled)');
+      if (fallback) fallback.checked = true;
+    }
+
+    const warning = this.modal.querySelector('#review-lifecycle-warning');
+    if (warning) {
+      const titleEl = warning.querySelector('#review-lifecycle-warning-title');
+      const textEl = warning.querySelector('#review-lifecycle-warning-text');
+      if (restriction) {
+        if (titleEl) titleEl.textContent = restriction.title;
+        if (textEl) textEl.textContent = restriction.message;
+      }
+      warning.style.display = restriction ? 'block' : 'none';
+    }
+
+    // The selection may have moved off DRAFT, which owns the textarea's
+    // disabled state. Never let the two disagree.
+    this.updateTextareaState();
+  }
+
+  /**
    * Show the modal
    */
   show() {
     if (!this.modal) return;
-    
+
+    // A new open is a fresh reading of the world: drop any refusal the LAST
+    // submission attempt pinned, so a reopened PR regains its full option set.
+    this._lifecycleRefusal = null;
+
     // Update comment count
     this.updateCommentCount();
     
@@ -262,6 +437,11 @@ class ReviewModal {
 
     // Update textarea state (ensures it's enabled since COMMENT is selected by default)
     this.updateTextareaState();
+
+    // Then narrow the offer to what the target PR can actually accept. Must
+    // run AFTER the reset above, which unconditionally re-enables nothing but
+    // does re-check COMMENT — the one event a settled PR still takes.
+    this.applyAllowedEvents();
 
     // Restore assisted-by toggle from localStorage
     this.restoreAssistedByToggle();
@@ -523,8 +703,14 @@ class ReviewModal {
       if (!pr) {
         throw new Error('No PR loaded');
       }
-      
-      const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`, {
+
+      // The manager owns the endpoint — local mode addresses its review by
+      // session id, PR mode by owner/repo/number, and this modal is shared.
+      // Never mode-sniff here; see `PRManager.getSubmitReviewEndpoint`.
+      const endpoint = window.prManager?.getSubmitReviewEndpoint?.()
+        || `/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`;
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -536,10 +722,35 @@ class ReviewModal {
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to ${isDraft ? 'submit draft' : 'submit'} review`);
+        // Status-derived message FIRST, parse second. This endpoint does real
+        // network work against a code host, so a non-JSON error body is
+        // plausible — an Express HTML 500 page, a proxy 502 — and a bare
+        // `await response.json()` rejects with a SyntaxError that the outer
+        // catch renders verbatim: the user was shown `Unexpected token '<'`
+        // instead of anything actionable. Same shape as the sibling local-mode
+        // POST in `_syncGitHubDrafts` (public/js/local.js); the two paths had
+        // diverged.
+        let message = `Failed to ${isDraft ? 'submit draft' : 'submit'} review (${response.status})`;
+        let code = null;
+        try {
+          const errorData = await response.json();
+          if (errorData) {
+            if (errorData.error) message = errorData.error;
+            if (errorData.code) code = errorData.code;
+          }
+        } catch {
+          // Non-JSON error body — keep the status-derived message.
+        }
+        const err = new Error(message);
+        // The submit endpoint's stable refusal code (`head_drift`,
+        // `pr_merged`, `comments_outside_pr`, ...). Carried on the error so the
+        // catch below can tell a LIFECYCLE refusal — which invalidates the
+        // options we are still showing — apart from every other 4xx, which
+        // does not. Without this the shared modal could only show the text.
+        err.code = code;
+        throw err;
       }
-      
+
       const result = await response.json();
       
       // Show appropriate success message
@@ -623,6 +834,46 @@ class ReviewModal {
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
       }
+
+      // A lifecycle refusal is a STATE RACE, not a user error: the PR settled
+      // between the metadata we built these options from and the submit. The
+      // modal stays open (the message is in it), so leaving the stale options
+      // behind would invite the identical failed submit again.
+      if (error.code === 'pr_merged' || error.code === 'pr_closed') {
+        void this.handleLifecycleRefusal(error.code);
+      }
+    }
+  }
+
+  /**
+   * Reconcile after the backend refused on PR lifecycle.
+   *
+   * Two steps, in this order and both needed:
+   *   1. Pin the refusal locally and re-apply the options. Synchronous, so the
+   *      modal is correct the moment the error text appears — and correct even
+   *      if step 2 fails.
+   *   2. Ask the manager to re-read the lifecycle from the server, which also
+   *      repaints the header badge and the toolbar. `refreshPRLifecycle` calls
+   *      back into `updateSubmitAffordance`, which re-applies these options
+   *      again; that is idempotent.
+   *
+   * @param {'pr_merged'|'pr_closed'} code
+   * @returns {Promise<void>} never rejects
+   */
+  async handleLifecycleRefusal(code) {
+    // GitHub reports a merge as `state: 'closed'` plus `merged: true`; the
+    // code is the only thing that separates the two, so it is translated back
+    // into the same two-field shape every other lifecycle reader consumes.
+    this._lifecycleRefusal = code === 'pr_merged'
+      ? { state: 'closed', merged: true }
+      : { state: 'closed', merged: false };
+    this.applyAllowedEvents();
+
+    try {
+      await window.prManager?.refreshPRLifecycle?.();
+    } catch (refreshError) {
+      // Best-effort: the options are already correct from the pin above.
+      console.warn('PR lifecycle refresh after refusal failed:', refreshError);
     }
   }
 
@@ -735,7 +986,8 @@ class ReviewModal {
    * Precedence:
    *   1. The URL built from the repo's configured `links.external.url_template`
    *      (`window.RepoLinks.externalUrl()`) — authoritative and host-correct.
-   *   2. The PR's canonical `html_url` (the host's own PR page).
+   *   2. The PR's canonical `html_url` (the host's own PR page), or the
+   *      associated PR's `url` when the session carries one instead.
    *   3. The server-reported `github_url` as a last resort.
    *
    * Some alt-hosts return the pending-review `html_url` as a
@@ -743,7 +995,19 @@ class ReviewModal {
    * We must never assume github.com, so there is no hardcoded fallback host:
    * if none of the above yields a URL we open nothing.
    *
-   * @param {{html_url?: string}|null|undefined} pr - current PR (from prManager)
+   * Phase 5 made this reachable from LOCAL mode, where tier 2 was structurally
+   * unreachable: the synthetic `currentPR` had no `html_url` at all, so an
+   * alt-host draft submit fell through to exactly the wrong-host URL tier 2
+   * exists to avoid, and tier 1 does not cover it (`externalUrl()` is null
+   * unless a `url_template` is configured, which a GHE repo set up with only
+   * `api_host` + a token does not have). The PRIMARY fix is in
+   * public/js/local.js, which now populates `html_url` from
+   * `associatedPR.url` — the host-correct value the PR pill already links to.
+   * The `associatedPR.url` arm below is belt-and-braces for any other producer
+   * of a `currentPR` that carries the association but not the flattened field.
+   *
+   * @param {{html_url?: string, associatedPR?: {url?: string}}|null|undefined} pr
+   *   current PR (from prManager)
    * @param {{github_url?: string}|null|undefined} result - submit-review response
    * @returns {string|null} URL to open, or null if none is available
    */
@@ -753,7 +1017,10 @@ class ReviewModal {
       const templated = window.RepoLinks.externalUrl();
       if (templated) return templated;
     }
-    if (pr && pr.html_url) return pr.html_url;
+    if (pr) {
+      const canonical = pr.html_url || pr.associatedPR?.url;
+      if (canonical) return canonical;
+    }
     if (result && result.github_url) return result.github_url;
     return null;
   }

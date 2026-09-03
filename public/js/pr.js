@@ -543,6 +543,125 @@ class PRManager {
   }
 
   /**
+   * The endpoint `ReviewModal` POSTs a review to.
+   *
+   * A method rather than a URL the modal builds itself: local mode addresses
+   * its review by session id (`/api/local/:reviewId/submit-review`) and PR mode
+   * by `owner/repo/number`, and the modal must not mode-sniff to tell which.
+   * `LocalManager.patchPRManager` overrides it — see public/js/local.js.
+   *
+   * @returns {string|null} null when no PR is loaded yet
+   */
+  getSubmitReviewEndpoint() {
+    const pr = this.currentPR;
+    if (!pr) return null;
+    return `/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`;
+  }
+
+  /**
+   * The lifecycle state of the pull request a review will be submitted to.
+   *
+   * ONE implementation for both modes, and deliberately no local override: the
+   * question is "which PR does this review target", and the answer is
+   * `currentPR.associatedPR` when there is one and `currentPR` itself
+   * otherwise. PR mode never sets `associatedPR` (see `_externalAnchorContext`)
+   * and local mode's synthetic `currentPR` has no lifecycle of its own, so the
+   * branch resolves correctly in each without either knowing about the other.
+   *
+   * `state` and `merged` are kept separate rather than collapsed into a
+   * derived `'merged'`, exactly as the backend ships them and as
+   * `_applyPRLifecycleBadge` consumes them — GitHub reports a merged PR as
+   * `state: 'closed'` plus `merged: true`, and the two facts get different
+   * wording.
+   *
+   * @returns {{state: string|null, merged: boolean}} An unknown `state` reads
+   *   as null, which every consumer must treat as OPEN — the same rule
+   *   `_applyPRLifecycleBadge` documents. Guessing "closed" from missing data
+   *   would take write actions away from a healthy PR.
+   */
+  getPRLifecycle() {
+    const pr = this.currentPR;
+    if (!pr) return { state: null, merged: false };
+    const target = pr.associatedPR || pr;
+    return {
+      state: target.state ?? null,
+      merged: target.merged === true
+    };
+  }
+
+  /**
+   * Re-read the target PR's lifecycle from the server and push the answer into
+   * every affordance that depends on it.
+   *
+   * The state race this exists for: the modal derives its allowed review events
+   * from lifecycle at `show()` time, and the PR can be merged or closed by
+   * someone else while the modal sits open. The backend then refuses the submit
+   * with `pr_merged` / `pr_closed`, and that refusal is the signal that our copy
+   * of the lifecycle is stale — see `ReviewModal.submitReview`.
+   *
+   * `LocalManager.patchPRManager` overrides this with `_refreshPRMetadata`,
+   * which re-reads the association (lifecycle included) through the local
+   * endpoint. This PR-mode implementation reuses the staleness check, which is
+   * the only endpoint that reports `state`/`merged` without a full PR reload.
+   *
+   * Never rejects: a failed refresh leaves the last known answer in place,
+   * which is strictly better than blanking the options.
+   *
+   * @returns {Promise<void>}
+   */
+  async refreshPRLifecycle() {
+    const pr = this.currentPR;
+    if (!pr || !pr.owner || !pr.repo || !pr.number) return;
+    const result = await this._fetchStaleness(pr.owner, pr.repo, pr.number);
+    if (!result) return;
+    // Writes back into `currentPR` as well as painting the badge, so the badge
+    // and `getPRLifecycle` can never disagree. A fail-open answer reports no
+    // lifecycle at all and is dropped here — see `lifecycleFromStaleness`.
+    const lifecycle = PRManager.lifecycleFromStaleness(result);
+    if (!lifecycle) return;
+    this._applyPRLifecycleBadge(
+      lifecycle,
+      PRManager.formatStaleReasons(result.reasons) || undefined
+    );
+  }
+
+  /**
+   * THE single path for "the ability to submit this review, or what may be
+   * submitted, just changed". Shared by the toolbar SplitButton, PreviewModal
+   * and ReviewModal so the three can never disagree about the same session.
+   *
+   * Callers must invoke it UNCONDITIONALLY rather than tracking transitions
+   * themselves — every step below is idempotent, and the transition-tracking
+   * version of this code is what let one affordance update while another kept
+   * a stale answer.
+   *
+   * Both open modals are refreshed IN PLACE. They read their state on `show()`,
+   * so a capability or lifecycle change arriving afterwards would otherwise sit
+   * behind a dialog the user is still looking at.
+   */
+  updateSubmitAffordance() {
+    const canSubmit = this.hasCapability('canSubmitToGitHub');
+
+    // Mutate, never rebuild: `SplitButton.setCanSubmit` preserves the visible
+    // action and defers while its menu is open. Re-running `initSplitButton`
+    // does neither — see the docblock on `setCanSubmit`.
+    if (this.splitButton?.setCanSubmit) {
+      this.splitButton.setCanSubmit(canSubmit);
+    }
+
+    // The globals, not `this.previewModal` / `this.reviewModal`: both classes
+    // publish the live instance on `window` in their constructor, and that is
+    // the instance whose DOM is on screen (`openReviewModal` may never have
+    // run — the modals are also created by their own module tails).
+    if (window.previewModal?.isVisible) {
+      window.previewModal.applySubmitVisibility?.();
+    }
+    if (window.reviewModal?.isVisible) {
+      window.reviewModal.applyAllowedEvents?.();
+    }
+  }
+
+  /**
    * Install a global fetch interceptor that adds X-Client-Id to all
    * mutation requests (POST/PUT/DELETE) targeting the review API.
    * This is the SINGLE SOURCE of X-Client-Id injection — no individual
@@ -8777,12 +8896,14 @@ class PRManager {
 
       const reasonText = PRManager.formatStaleReasons(result.reasons) || undefined;
 
-      // Show badge for closed/merged PRs regardless of staleness
+      // Show badge for closed/merged PRs regardless of staleness. A fail-open
+      // answer reports no lifecycle and is dropped rather than read as an open
+      // PR — one transient GitHub error must not retract a MERGED badge.
       const lifecycleEnded = Boolean(result.prState && result.prState !== 'open');
-      this._applyPRLifecycleBadge(
-        { state: result.prState, merged: result.merged },
-        reasonText
-      );
+      const lifecycle = PRManager.lifecycleFromStaleness(result);
+      if (lifecycle) {
+        this._applyPRLifecycleBadge(lifecycle, reasonText);
+      }
 
       if (result.isStale !== true) return result;
 
@@ -8895,37 +9016,96 @@ class PRManager {
   }
 
   /**
-   * Reconcile the LIFECYCLE slot from an authoritative PR payload.
+   * The lifecycle a `check-stale` response reports, or null when it reports
+   * none.
    *
-   * Shared by every path that holds a fresh `state` / `merged` pair — the
-   * on-load `_checkStalenessOnLoad` and `refreshPR` — because a lifecycle
-   * badge is only as true as the last answer about it, and a page can sit open
-   * across a merge, a close and a reopen. `refreshPR` used to clear the
-   * freshness slot and say nothing about this one, so a PR reopened mid-session
-   * kept showing CLOSED, and one merged mid-session showed nothing, until a
-   * full page reload.
+   * BOTH modes' staleness payloads carry the pair under the same two names —
+   * PR mode at the top level of `/check-stale`, local mode inside `prHead` —
+   * and both fail OPEN: on any GitHub error the handler answers
+   * `{ isStale: null, error, reasons: [] }` with no `prState` and no `merged`
+   * at all. That response is evidence about nothing, so it never reaches the
+   * reconciler: one transient error must not be able to un-merge a PR.
    *
-   * SELF-HEALING, in both directions: an open PR CLEARS the slot. MERGED and
-   * CLOSED share it (they are the one genuinely exclusive pair), and
+   * @param {{prState?: string|null, merged?: boolean|null, error?: string}|null} payload
+   * @returns {{state: string|null|undefined, merged: boolean|null|undefined}|null}
+   */
+  static lifecycleFromStaleness(payload) {
+    if (!payload || payload.error) return null;
+    return { state: payload.prState, merged: payload.merged };
+  }
+
+  /**
+   * Reconcile the LIFECYCLE slot — and the lifecycle every other affordance
+   * reads — from an authoritative PR payload.
+   *
+   * THE single implementation for BOTH modes. PR mode calls it from
+   * `_checkStalenessOnLoad`, `refreshPRLifecycle` and `refreshPR`; local mode
+   * calls it from `_applyPRHeadStaleState` (see public/js/local.js), which used
+   * to carry its own copy of this sequence and drifted from this one field by
+   * field. A lifecycle badge is only as true as the last answer about it, and a
+   * page can sit open across a merge, a close and a reopen.
+   *
+   * The write-back target is resolved EXACTLY as `getPRLifecycle` resolves its
+   * read target — the association when there is one, the PR itself otherwise —
+   * so the badge and the review modal's allowed events can never disagree about
+   * the same session, in either mode.
+   *
+   * UNKNOWN IS NOT OPEN, and it is not "not merged" either. Every field is
+   * written only when the payload actually REPORTED it (`state` a non-empty
+   * string, `merged` a real boolean), and a payload that reports neither is
+   * dropped whole: it would otherwise convert a known-merged PR into an open
+   * one, drop the MERGED badge and hand Approve back to a review the backend
+   * will refuse. Only an explicit OPEN answer retracts the badge.
+   *
+   * SELF-HEALING, in both directions: an explicitly open PR CLEARS the slot.
+   * MERGED and CLOSED share it (they are the one genuinely exclusive pair) and
    * `_showStaleBadge` swaps between them; nothing else in the group is touched,
    * because a merge says nothing about whether the local copy is behind.
    *
    * GitHub reports a merged PR as `state: 'closed'` with `merged: true`, so
    * `merged` is checked FIRST — the other order labels every merged PR closed.
    *
-   * @param {{state: string|null|undefined, merged: boolean|null|undefined}} pr
-   *   Authoritative lifecycle fields. A missing/unknown `state` reads as open.
+   * @param {{state: string|null|undefined, merged: boolean|null|undefined}} lifecycle
+   *   Authoritative lifecycle fields, as reported. Pass a fail-open staleness
+   *   response through `lifecycleFromStaleness` rather than picking the fields
+   *   off it by hand.
    * @param {string} [title] - Optional tooltip, normally the backend's
    *   `reasons[]` rendered by `formatStaleReasons`.
    */
   _applyPRLifecycleBadge({ state, merged } = {}, title) {
-    if (merged === true) {
+    // "Reported" is a stricter test than truthiness on purpose: `merged: false`
+    // is an answer, `merged: undefined` is not.
+    const reportedState = typeof state === 'string' && state ? state : null;
+    const reportedMerged = typeof merged === 'boolean' ? merged : null;
+    if (reportedState === null && reportedMerged === null) return;
+
+    // Same target `getPRLifecycle` reads: local mode's association when the
+    // review has one, the PR itself in PR mode (which never sets `associatedPR`).
+    const target = this.currentPR?.associatedPR || this.currentPR || null;
+    if (target) {
+      if (reportedState !== null) target.state = reportedState;
+      if (reportedMerged !== null) target.merged = reportedMerged;
+    }
+
+    // Painted from the RECONCILED lifecycle, not from the payload alone, so a
+    // half-answer cannot paint a badge that contradicts `getPRLifecycle`.
+    const settledState = target ? (target.state ?? null) : reportedState;
+    const settledMerged = target ? target.merged === true : reportedMerged === true;
+
+    if (settledMerged) {
       this._showStaleBadge('merged', title);
-    } else if (state && state !== 'open') {
+    } else if (settledState && settledState !== 'open') {
       this._showStaleBadge('closed', title);
-    } else {
+    } else if (settledState === 'open') {
       this._hideStaleBadge('lifecycle');
     }
+    // else: nothing known about `state` and not merged — leave the slot as a
+    // better-informed answer left it.
+
+    // Everything gated on the lifecycle we just learned (an open ReviewModal's
+    // options, the toolbar, an open PreviewModal). Idempotent, so it runs
+    // unconditionally, and it lives HERE so neither mode can forget it.
+    this.updateSubmitAffordance?.();
   }
 
   /**

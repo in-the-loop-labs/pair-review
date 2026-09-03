@@ -661,9 +661,36 @@ class LocalManager {
       }
     };
 
-    // Note: initSplitButton is NOT patched - it will use the standard SplitButton
-    // which automatically detects local mode via window.PAIR_REVIEW_LOCAL_MODE
-    // and hides the Submit Review option accordingly.
+    // Note: initSplitButton is NOT patched — the standard SplitButton reads
+    // `canSubmitToGitHub` off whichever manager owns the page, so local mode
+    // with an associated PR (Phase 5) shows Submit and one without hides it.
+    // It reads that flag ONCE, in its constructor; a late flip is applied by
+    // `PRManager.updateSubmitAffordance` (a mutator, not a rebuild), which
+    // `_refreshPRMetadata` calls on every metadata read.
+
+    // Phase 5 — the lifecycle re-read behind `ReviewModal`'s `pr_merged` /
+    // `pr_closed` race handling. PR mode asks its own check-stale endpoint;
+    // a local session has no `owner/repo/number` to ask with, and the
+    // association's lifecycle arrives on the metadata endpoint instead.
+    //
+    // `_refreshPRMetadata({force: true})` is the whole job: it re-reads
+    // `associatedPR` (state and merged included), repaints the header pill and
+    // ends by calling `updateSubmitAffordance`, which re-applies the open
+    // modal's allowed events. Forced, because the backend's metadata cache has
+    // no TTL — an unforced read would answer with the very state that was
+    // just proven stale.
+    manager.refreshPRLifecycle = async function() {
+      await self._refreshPRMetadata({ force: true });
+    };
+
+    // Phase 5 — where ReviewModal POSTs the review. PR mode addresses the PR by
+    // owner/repo/number; a local session is addressed by its own review id, and
+    // the backend resolves the association from the row. Overriding the method
+    // (rather than teaching the shared modal about modes) is what keeps
+    // ReviewModal free of mode-sniffing.
+    manager.getSubmitReviewEndpoint = function() {
+      return `/api/local/${reviewId}/submit-review`;
+    };
 
     // Note: openPreviewModal is NOT patched - PreviewModal now automatically
     // detects local mode and uses the correct API endpoint.
@@ -1503,15 +1530,25 @@ class LocalManager {
     // words, so the badge never has to guess at the wording.
     const reasonText = LocalManager.formatStaleReasons(result.reasons);
 
-    // Lifecycle slot. MERGED and CLOSED are the one genuinely exclusive pair;
-    // an open PR CLEARS the slot so a newer answer can undo an older one (a PR
-    // can be reopened, and a badge nothing ever retracts is a badge that lies).
-    if (prHead.merged === true) {
-      manager._showStaleBadge('merged', reasonText || undefined);
-    } else if (prHead.prState && prHead.prState !== 'open') {
-      manager._showStaleBadge('closed', reasonText || undefined);
-    } else {
-      manager._hideStaleBadge('lifecycle');
+    // Lifecycle slot, write-back included, through the ONE implementation both
+    // modes share (`PRManager._applyPRLifecycleBadge`). This response is the
+    // FRESHEST lifecycle answer local mode gets — fresher than the `pr_metadata`
+    // row `associatedPR` was built from — and the badge is no longer its only
+    // reader: `PRManager.getPRLifecycle` feeds ReviewModal's allowed review
+    // events off exactly these two fields, so a PR that merged since page load
+    // has to take Approve away as well as raise the badge.
+    //
+    // This block used to be a hand-copied twin of the PR-mode sequence and had
+    // already drifted from it (it converted an unreported `merged` to `false`
+    // and cleared the badge on an unreported `state`). The reconciler owns all
+    // of it now: which object to write, "unknown is not open", the MERGED /
+    // CLOSED ordering, and the `updateSubmitAffordance` that follows.
+    //
+    // `prHead.error` is already refused above, so this only ever hands over an
+    // answer the backend actually made.
+    const lifecycle = PRManager.lifecycleFromStaleness(prHead);
+    if (lifecycle) {
+      manager._applyPRLifecycleBadge(lifecycle, reasonText || undefined);
     }
 
     // Commit-alignment slot, likewise self-healing: a "no longer drifted"
@@ -1819,7 +1856,24 @@ class LocalManager {
         // Mirror the association, not just the capability flags, so shared
         // code can answer PR-shaped questions without knowing which manager it
         // is attached to — `_externalAnchorContext` reads it.
-        associatedPR: reviewData.associatedPR || null
+        associatedPR: reviewData.associatedPR || null,
+        // The associated PR's canonical page, under the key PR mode uses.
+        //
+        // Phase 5 made `ReviewModal.resolveDraftPrUrl` reachable from local
+        // mode, and its middle tier — "the PR's own `html_url`" — was
+        // STRUCTURALLY unreachable here, because nothing ever wrote that key on
+        // this synthetic object. An alt-host draft submit therefore fell
+        // through to the response's `github_url`, which some hosts return as a
+        // github.com `/issues/<n>` URL: wrong host, wrong page. The tier-1
+        // template is not a general cover either — it is null unless a repo has
+        // `links.external.url_template` configured.
+        //
+        // The correct value was already in hand under a different name:
+        // `associatedPR.url`, mapped from the host API in
+        // src/providers/pr-context.js and already the PR pill's href. Flatten
+        // it rather than teaching the shared modal about local mode. Kept in
+        // step with `associatedPR` in `_refreshPRMetadata`'s apply block.
+        html_url: reviewData.associatedPR?.url || null
       };
 
       this._applyLeftAnchorInputs(reviewData);
@@ -2398,6 +2452,10 @@ class LocalManager {
         // while that is unknown.
         if (manager.currentPR) {
           manager.currentPR.associatedPR = data.associatedPR || manager.currentPR.associatedPR || null;
+          // Kept in step with the flattened key `loadLocalReview` writes, or a
+          // late association would leave `html_url` null and send an alt-host
+          // draft submit to the wrong host — see the docblock there.
+          manager.currentPR.html_url = manager.currentPR.associatedPR?.url || null;
         }
         manager._updateExternalCommentsAffordances?.();
       }
@@ -2423,6 +2481,20 @@ class LocalManager {
       // can go false as well as true (an association cleared by a force-push
       // to unrelated history), and the button has to retract for that too.
       this._updateDraftSyncAffordance();
+
+      // Phase 5, and unconditional for the same reason as the call above: the
+      // Submit capability can go false as well as true (an association cleared
+      // by a force-push to unrelated history), and a stale Submit control
+      // POSTs a review to a PR this session is no longer tied to.
+      //
+      // NOT `initSplitButton()`. That zero-argument constructor path cannot
+      // carry state across a rebuild: it re-ran `loadSavedAction()` and could
+      // promote the primary action from Preview to Submit as association
+      // metadata arrived, and it destroyed an open dropdown. It also reached
+      // only the toolbar, leaving an open Preview or Review modal on the
+      // answer it was opened with. `updateSubmitAffordance` mutates all three
+      // in place — see public/js/pr.js.
+      manager?.updateSubmitAffordance?.();
 
       // Fire-and-forget: never let an external-comment re-render delay or fail
       // the metadata read it is piggy-backing on.

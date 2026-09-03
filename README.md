@@ -489,7 +489,7 @@ checking the exit code first (as above) covers every outcome.
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
-- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, header badges for the PR's state (**MERGED** / **CLOSED**) and for local `HEAD` having moved off the PR's head commit (**PR DRIFT**), an indicator for any pending draft review you started in the GitHub UI, and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
+- **Local mode** (`--local`): Works without a GitHub token - no configuration needed. If a token is configured and the local branch has an open pull request, the header surfaces a clickable PR pill with title, author, and state, header badges for the PR's state (**MERGED** / **CLOSED**) and for local `HEAD` having moved off the PR's head commit (**PR DRIFT**), an indicator for any pending draft review you started in the GitHub UI, the ability to submit your review to that pull request, and (with `external_comments` enabled) that PR's existing review comments appear inline in the diff — see [GitHub Review Comments](#github-review-comments).
 - **PR review mode**: Requires a GitHub Personal Access Token to fetch PR data and submit reviews
 
 Configuration is stored in `~/.pair-review/config.json`:
@@ -625,6 +625,11 @@ Create a Personal Access Token (PAT) with these scopes:
 - `read:org` (if reviewing organization repos)
 
 [Create token on GitHub](https://github.com/settings/tokens/new)
+
+Fine-grained tokens work as well: grant **Contents: Read** and **Pull requests:
+Read and write** on the repositories you review. Read alone is enough to fetch
+PRs and their comments, but submitting a review writes, so a read-only token
+gets you all the way to the Submit button and then fails.
 
 ### AI Provider Configuration
 
@@ -1002,8 +1007,17 @@ PR context onto the local session — no need to switch to PR mode to see it:
   pair-review. That button also refreshes the PR's inline review comments in
   the same click, so a draft submitted since page load shows up as comments
   right away
+- **Submit review** in the toolbar, which posts your comments to that pull
+  request as a real GitHub review — Approve, Request Changes, Comment, or Save
+  as Draft, exactly as in PR review mode
 
-All of these need a configured GitHub token that can read the repository. On a
+All of these need a configured GitHub token for the repository. Read access
+covers every one of them except **Submit review**, which writes: it additionally
+needs permission to create and submit pull request reviews — the `repo` scope on
+a classic PAT, **Pull requests: Read and write** on a fine-grained one. A
+read-only fine-grained token satisfies the rest of this list, so it will show
+you the pill, the comments, the badges and the draft indicator, and then fail at
+submit time — after the review is written and the button is live. On a
 **dual-host** repository the token that counts is the one for the host that pull
 request actually lives on, so a repo-scoped alt-host token is enough even with
 no `github.com` token configured — and a `github.com` token alone will not
@@ -1030,6 +1044,100 @@ anchored at file level rather than to exact lines (see
 *commits*, not file contents: uncommitted edits do not raise it, and a matching
 `HEAD` clears it even if your working tree has since moved on (that is what
 **STALE** answers).
+
+#### Submitting a local review to the pull request
+
+With an associated pull request, the toolbar's **Submit Review** button works
+the same way it does in PR review mode — the same modal, the same four options
+(Approve, Request Changes, Comment, Save as Draft), the same inline comments.
+
+Because your checkout is what the comments were written against, pair-review
+runs preflight validations and refuses rather than posting something misleading:
+
+- **The diff your comments were written against must still be the diff on
+  disk.** Every stored comment is a file-line-side coordinate in the snapshot
+  the session captured, so the captured `HEAD` and a digest of the captured diff
+  are compared against your working tree, and a proven difference in either
+  refuses. Passing the head check below is not evidence for this one: comment,
+  then commit and push, and your local `HEAD` agrees with the pull request again
+  while every stored anchor still describes the pre-commit snapshot. A snapshot
+  that cannot be *compared* at all is refused on the same terms — a session that
+  captured no diff, one captured before diff digests existed, a working tree
+  that cannot be read right now — because an unverified anchor is not a verified
+  one. Nor is any of this a candidate for the file-level fallback below: a
+  `(Ref Line N)` prefix is only meaningful while the number describes the diff
+  you were looking at. Refresh the diff, re-check where your comments landed,
+  then submit — the refresh captures a fresh snapshot and keeps your comments.
+  Being purely local, this runs before GitHub is contacted at all.
+- **Your local `HEAD` must be the pull request's head commit.** Inline comments
+  are file-and-line pairs resolved against the PR's head, so a review submitted
+  from a different commit lands on lines that have since moved, with nothing in
+  the result to say so. On drift the submission is refused — push or pull so the
+  two agree, then submit. There is no override; this is the same reasoning
+  behind **PR DRIFT** and the file-level anchoring of inline PR comments.
+- **A merged or closed pull request takes a Comment review only.** GitHub still
+  accepts comment reviews, and inline review comments, on a settled pull
+  request, so the refusal is per event rather than per pull request: Comment
+  goes through, Approve, Request Changes and Save as Draft do not. Post-merge
+  feedback is legitimate, so the refusal narrows to the events that are
+  genuinely meaningless on a settled pull request rather than blocking the
+  pull request outright. You will normally meet this in the modal rather than as
+  a refusal: the three unavailable options are greyed out with the reason on
+  them, leaving Comment — **in PR review mode as well**, since the modal is
+  shared and the rule being enforced is GitHub's, not local mode's. What differs
+  is where the enforcement is: local mode also checks the pull request's state
+  server-side before it writes, while in PR review mode the greyed-out options
+  are the whole of it and a stale copy of that state simply means GitHub refuses
+  the submission itself, as it always did. Should the pull request settle while
+  the modal is open, the refusal comes back, the options correct themselves in
+  place, and you can resubmit as a Comment without reopening.
+- **GitHub must answer for the pull request.** An authoritative answer is
+  reported as itself — a rejected credential, missing permission, a pull request
+  that is gone or invisible to your token, a rate limit — so you are told what
+  to fix instead of being invited to retry something that cannot succeed. Only a
+  genuinely unknown state (a transport failure, a response that settles nothing)
+  is the fail-closed case, and that one refuses because not knowing whether the
+  pull request moved is not permission to write to it. The PR pill, the badges
+  and the draft indicator all degrade quietly when GitHub cannot be reached;
+  this check does not, because they inform and this one authorises a write.
+- **Every commented file must be part of the pull request.** A local review can
+  cover files you have not committed, and GitHub will not take a comment on a
+  path outside the PR's diff. Those files are named back to you before anything
+  is sent — commit and push them, or remove those comments. A file the pull
+  request touches counts even when its diff carries no hunks at all: a pure
+  rename, a binary file, a mode-only change, an empty new file.
+
+A comment in a file with **uncommitted edits** is posted as a file-level comment
+with its line number in the text, rather than on the line itself. Local mode
+renders your working tree, so an edit above the comment shifts the line it
+describes — and the shifted number can still fall inside the diff, which is
+precisely the case a line check cannot catch. Unrelated dirty files are the
+normal state of a local review, so those comments degrade instead of blocking
+the submission. Commit (or stash) the file if you want its comments on exact
+lines. The same fallback applies when the pull request's base commit is not
+present in your checkout, since the diff the lines are validated against cannot
+be built.
+
+A comment on the **deleted (left) side** of the diff degrades the same way —
+always, in local mode. A left-side line number is a coordinate in whichever base
+the diff was built from, and the base a comment was written against is not
+recorded, so agreement with the pull request's base cannot be proven after the
+fact. The two part company routinely: a stacked pull request, a pull request
+whose base was changed on GitHub, the in-UI base-branch override, a base that
+moved between writing the comment and submitting it. Nothing downstream catches
+the difference: every deleted *and* context line is a left-side line, so a
+shifted number lands inside some hunk and the
+comment would post silently against content you never pointed at. This is the
+same anchor-trust rule that decides whether an inline PR comment is rendered at
+its line — the write path is never more trusting than the read path. Right-side
+comments are unaffected, which is why this degrades individual comments rather
+than refusing the submission.
+
+One failure is neither a refusal nor a degradation: if some comments have
+already landed on a pending draft that was yours before this submission, and a
+later batch fails, you are told so and pointed at the draft on GitHub. Look at
+what it holds before submitting again — a blind retry resends the comments that
+did land.
 
 ## Claude Code Plugins
 

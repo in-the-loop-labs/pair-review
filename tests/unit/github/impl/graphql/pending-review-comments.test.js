@@ -12,7 +12,15 @@ import { describe, it, expect } from 'vitest';
  */
 
 const graphqlImpl = require('../../../../../src/github/impl/graphql/pending-review-comments');
-const { buildBatchMutation } = graphqlImpl;
+const { buildBatchMutation, toDiffSide } = graphqlImpl;
+
+/**
+ * Collapse runs of whitespace so a mutation can be asserted as a field
+ * SEQUENCE without pinning the document's indentation. Field ORDER is what
+ * these assertions care about: `startLine`/`startSide` must travel together and
+ * describe the same endpoint.
+ */
+const flat = (mutation) => mutation.replace(/\s+/g, ' ').trim();
 
 /**
  * Pull out the GraphQL string literal that follows a given field
@@ -125,6 +133,104 @@ describe('impl/graphql/pending-review-comments', () => {
 
       const bodyLiteral = extractStringLiteral(mutation, 'body');
       expect(JSON.parse(bodyLiteral)).toBe(trickyBody);
+    });
+
+    /**
+     * `AddPullRequestReviewThreadInput` (the published schema at
+     * docs.github.com/public/fpt/schema.docs.graphql) declares FOUR positional
+     * fields for a multi-line thread, and both sides default to RIGHT
+     * independently:
+     *
+     *   line: Int        "... The end of the line range for multi-line comments."
+     *   side: DiffSide = RIGHT
+     *                    "... For multi-line comments, this is the side for the
+     *                     end of the line range."
+     *   startLine: Int   "The first line of the range to which the comment refers."
+     *   startSide: DiffSide = RIGHT
+     *                    "The side of the diff on which the start line resides."
+     *
+     * So a LEFT range that emits `side: LEFT` and no `startSide` does not ask
+     * for a LEFT range — it asks for one that starts on the NEW side and ends on
+     * the OLD one. These tests assert the FINAL mutation text because that is
+     * the only place the omission was visible: the provider's intermediate
+     * object carried `start_side` and the transport silently dropped it.
+     */
+    describe('multi-line ranges carry a side per endpoint', () => {
+      it('emits startSide: LEFT beside startLine for a LEFT range', () => {
+        const mutation = buildBatchMutation([
+          { path: 'src/foo.js', line: 12, start_line: 9, side: 'LEFT', start_side: 'LEFT', body: 'old code' }
+        ]);
+
+        expect(flat(mutation)).toContain('startLine: 9 startSide: LEFT line: 12 side: LEFT');
+      });
+
+      it('emits startSide: RIGHT beside startLine for a RIGHT range', () => {
+        const mutation = buildBatchMutation([
+          { path: 'src/foo.js', line: 4, start_line: 2, side: 'RIGHT', start_side: 'RIGHT', body: 'new code' }
+        ]);
+
+        expect(flat(mutation)).toContain('startLine: 2 startSide: RIGHT line: 4 side: RIGHT');
+      });
+
+      it('falls back to the END side when a caller sends start_line alone', () => {
+        // Older callers (and any transport-level caller that has not been
+        // updated) send only `start_line`. Inheriting `side` is the only answer
+        // that cannot produce a mixed-side range.
+        const mutation = buildBatchMutation([
+          { path: 'src/foo.js', line: 12, start_line: 9, side: 'LEFT', body: 'old code' }
+        ]);
+
+        expect(flat(mutation)).toContain('startLine: 9 startSide: LEFT line: 12 side: LEFT');
+      });
+
+      it('emits NEITHER range field for a single-line comment', () => {
+        // `startSide` describes where the start line lives; with no start line
+        // it describes nothing, so it is not sent at all.
+        const mutation = buildBatchMutation([
+          { path: 'src/foo.js', line: 7, side: 'LEFT', body: 'one line' }
+        ]);
+
+        expect(mutation).not.toContain('startLine');
+        expect(mutation).not.toContain('startSide');
+        expect(flat(mutation)).toContain('line: 7 side: LEFT');
+      });
+
+      it('keeps each comment in a mixed batch on its own sides', () => {
+        const mutation = flat(buildBatchMutation([
+          { path: 'a.js', line: 3, start_line: 1, side: 'RIGHT', start_side: 'RIGHT', body: 'added' },
+          { path: 'b.js', line: 8, start_line: 6, side: 'LEFT', start_side: 'LEFT', body: 'removed' },
+          { path: 'c.js', body: 'whole file', isFileLevel: true }
+        ]));
+
+        expect(mutation).toContain('startLine: 1 startSide: RIGHT line: 3 side: RIGHT');
+        expect(mutation).toContain('startLine: 6 startSide: LEFT line: 8 side: LEFT');
+        // The file-level thread has no coordinates at all.
+        expect(mutation).toContain('subjectType: FILE');
+        expect([...mutation.matchAll(/startSide:/g)]).toHaveLength(2);
+      });
+    });
+
+    describe('DiffSide enum safety', () => {
+      // Enum values are interpolated UNQUOTED, so unlike `path`/`body` they
+      // cannot be escaped — anything but the two legal values must be coerced,
+      // not passed through into the document.
+      it('coerces an unknown side to RIGHT rather than injecting it', () => {
+        const mutation = buildBatchMutation([
+          { path: 'a.js', line: 2, start_line: 1, side: 'BOTH}) { x } #', body: 'b' }
+        ]);
+
+        expect(mutation).not.toContain('BOTH');
+        expect(mutation).not.toContain('#');
+        expect(flat(mutation)).toContain('startLine: 1 startSide: RIGHT line: 2 side: RIGHT');
+      });
+
+      it('maps only the two legal values, defaulting everything else to RIGHT', () => {
+        expect(toDiffSide('LEFT')).toBe('LEFT');
+        expect(toDiffSide('RIGHT')).toBe('RIGHT');
+        expect(toDiffSide('left')).toBe('RIGHT');
+        expect(toDiffSide(undefined)).toBe('RIGHT');
+        expect(toDiffSide(null)).toBe('RIGHT');
+      });
     });
 
     it('handles a mixed batch with a malicious path next to a normal one', () => {

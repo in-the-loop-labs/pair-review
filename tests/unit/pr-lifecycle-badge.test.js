@@ -133,13 +133,46 @@ describe('PRManager._applyPRLifecycleBadge', () => {
     expect(lifecycleLabel()).toBeNull();
   });
 
-  it('treats an absent state as open rather than guessing', () => {
+  it('leaves the slot alone for a payload that reports no lifecycle at all', () => {
+    // UNKNOWN IS NOT OPEN. Every payload that reaches here comes off the
+    // network, and the fail-open `check-stale` answer omits both fields — so
+    // reading an absent state as "open" let ONE transient error retract a badge
+    // that a good answer had put up.
     const pm = createTestPRManager();
     pm._applyPRLifecycleBadge({ state: 'closed', merged: false });
 
     pm._applyPRLifecycleBadge({});
 
-    expect(lifecycleLabel()).toBeNull();
+    expect(lifecycleLabel()).toBe('CLOSED');
+  });
+
+  it('keeps a known MERGED PR merged when the next answer reports nothing', () => {
+    const pm = createTestPRManager();
+    pm._applyPRLifecycleBadge({ state: 'closed', merged: true });
+
+    pm._applyPRLifecycleBadge({ state: undefined, merged: undefined });
+
+    expect(lifecycleLabel()).toBe('MERGED');
+    // The write-back the review modal reads through `getPRLifecycle` survives
+    // too, or the badge and the modal would disagree.
+    expect(pm.currentPR.merged).toBe(true);
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
+  });
+
+  it('updates only the half a partial answer actually reported', () => {
+    const pm = createTestPRManager();
+    pm._applyPRLifecycleBadge({ state: 'closed', merged: true });
+
+    // A state without a `merged` field: the PR is still merged.
+    pm._applyPRLifecycleBadge({ state: 'closed' });
+    expect(lifecycleLabel()).toBe('MERGED');
+    expect(pm.currentPR.merged).toBe(true);
+
+    // `merged: false` IS an answer — unlike `undefined` — so it lands, and the
+    // still-closed state takes the slot.
+    pm._applyPRLifecycleBadge({ merged: false });
+    expect(lifecycleLabel()).toBe('CLOSED');
+    expect(pm.currentPR.state).toBe('closed');
   });
 
   it('never touches the freshness or drift slots', () => {
@@ -233,5 +266,125 @@ describe('PRManager._checkStalenessOnLoad — lifecycle slot', () => {
     await pm._checkStalenessOnLoad('owner', 'repo', 42);
 
     expect(lifecycleLabel()).toBeNull();
+  });
+
+  it('does not let a fail-open error answer downgrade a merged PR', async () => {
+    // The regression: `check-stale` fails open with `{isStale: null, error}` —
+    // no `prState`, no `merged` — and that single transient response used to
+    // overwrite `currentPR.merged`, drop the MERGED badge, and hand the review
+    // modal an "open" PR to widen its options from.
+    const pm = createTestPRManager();
+    pm._hasActiveSessionData = vi.fn().mockResolvedValue(true);
+    pm._applyPRLifecycleBadge({ state: 'closed', merged: true });
+    stalenessResponse({ isStale: null, error: 'GitHub API request failed', reasons: [] });
+
+    await pm._checkStalenessOnLoad('owner', 'repo', 42);
+
+    expect(lifecycleLabel()).toBe('MERGED');
+    expect(pm.currentPR.merged).toBe(true);
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
+  });
+});
+
+describe('PRManager.lifecycleFromStaleness', () => {
+  it('drops an error answer whole, whatever else it carries', () => {
+    expect(PRManager.lifecycleFromStaleness(null)).toBeNull();
+    expect(PRManager.lifecycleFromStaleness({ isStale: null, error: 'boom' })).toBeNull();
+    // Belt-and-braces: an error payload that somehow also carried fields is
+    // still not evidence.
+    expect(PRManager.lifecycleFromStaleness({ error: 'boom', prState: 'open', merged: false }))
+      .toBeNull();
+  });
+
+  it('renames the staleness fields onto the lifecycle shape', () => {
+    expect(PRManager.lifecycleFromStaleness({ prState: 'closed', merged: true }))
+      .toEqual({ state: 'closed', merged: true });
+  });
+});
+
+describe('PRManager.getPRLifecycle', () => {
+  /**
+   * THE single lifecycle resolver, for BOTH modes and with no local-mode
+   * override. The question it answers is "which pull request does this review
+   * target", and the answer is the association when there is one and the PR
+   * itself otherwise. PR mode never sets `associatedPR`, so the same branch
+   * serves both without either mode knowing about the other — which is exactly
+   * why `ReviewModal.currentLifecycle` may call it instead of mode-sniffing on
+   * `window.PAIR_REVIEW_LOCAL_MODE`.
+   */
+  it('reads the PR ITSELF in PR mode', () => {
+    const pm = createTestPRManager();
+    pm.currentPR.state = 'closed';
+    pm.currentPR.merged = true;
+
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
+  });
+
+  it('reads the ASSOCIATED pull request when the review has one', () => {
+    // Local mode: the synthetic `currentPR` has no lifecycle of its own, and
+    // reading it would report an open PR for a merged association.
+    const pm = createTestPRManager();
+    pm.currentPR.state = 'open';
+    pm.currentPR.merged = false;
+    pm.currentPR.associatedPR = { prNumber: 77, state: 'closed', merged: true };
+
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
+  });
+
+  it('reports an unknown lifecycle as null/false rather than guessing', () => {
+    // Consumers must read this as OPEN. Guessing "settled" from missing
+    // metadata takes Approve away from a healthy PR; the backend refuses if we
+    // guess the other way, which is recoverable.
+    const pm = createTestPRManager();
+
+    expect(pm.getPRLifecycle()).toEqual({ state: null, merged: false });
+  });
+
+  it('answers before a PR is loaded at all', () => {
+    const pm = createTestPRManager();
+    pm.currentPR = null;
+
+    expect(pm.getPRLifecycle()).toEqual({ state: null, merged: false });
+  });
+
+  it('reports `merged` as a strict boolean, so a truthy non-answer is not a merge', () => {
+    const pm = createTestPRManager();
+    pm.currentPR.state = 'open';
+    pm.currentPR.merged = 'no';
+
+    expect(pm.getPRLifecycle()).toEqual({ state: 'open', merged: false });
+  });
+});
+
+describe('PRManager.refreshPRLifecycle', () => {
+  it('preserves the known lifecycle when the re-read fails open', async () => {
+    // `ReviewModal` calls this after a `pr_merged` refusal. An error answer
+    // that reads as "open" would put the refused options straight back.
+    const pm = createTestPRManager();
+    pm._applyPRLifecycleBadge({ state: 'closed', merged: true });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ isStale: null, error: 'timeout', reasons: [] }),
+    });
+
+    await pm.refreshPRLifecycle();
+
+    expect(lifecycleLabel()).toBe('MERGED');
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
+  });
+
+  it('applies a good answer, badge and write-back together', async () => {
+    const pm = createTestPRManager();
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        isStale: false, prState: 'closed', merged: true, reasons: []
+      }),
+    });
+
+    await pm.refreshPRLifecycle();
+
+    expect(lifecycleLabel()).toBe('MERGED');
+    expect(pm.getPRLifecycle()).toEqual({ state: 'closed', merged: true });
   });
 });

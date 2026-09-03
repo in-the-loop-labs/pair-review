@@ -19,6 +19,28 @@ const MIN_BATCH_SIZE = 1;
 const DEFAULT_BATCH_SIZE = 10;
 
 /**
+ * Coerce a side into GitHub's `DiffSide` enum.
+ *
+ * Enum values are interpolated into the mutation UNQUOTED — that is what makes
+ * them enums rather than strings — so unlike `path` and `body` they cannot be
+ * escaped with `JSON.stringify`. Anything other than the two legal values would
+ * therefore be injected raw into the document, breaking the whole batch (and, in
+ * the pathological case, more than that). The value reaches here from a stored
+ * `comments.side` column, so "it is always LEFT or RIGHT" is an assumption about
+ * data, not a guarantee about code.
+ *
+ * RIGHT is the fallback because it is GitHub's own default for both `side` and
+ * `startSide`, and because the new column is where a comment lands when nothing
+ * says otherwise.
+ *
+ * @param {*} side
+ * @returns {'LEFT'|'RIGHT'}
+ */
+function toDiffSide(side) {
+  return side === 'LEFT' ? 'LEFT' : 'RIGHT';
+}
+
+/**
  * Build the GraphQL mutation text for a batch of comments. Aliases each
  * inner mutation as `comment0`, `comment1`, ... so partial-failure paths
  * can map errors back to individual comments via `error.path[0]`.
@@ -44,14 +66,37 @@ function buildBatchMutation(batch) {
         `;
     }
 
-    const side = comment.side || 'RIGHT';
-    const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
+    const side = toDiffSide(comment.side);
+    // MULTI-LINE THREADS TAKE A SIDE PER ENDPOINT.
+    // `AddPullRequestReviewThreadInput` (docs.github.com/public/fpt/schema.docs.graphql):
+    //   line      — "The line of the blob to which the thread refers ... The end
+    //                of the line range for multi-line comments."
+    //   side      — "The side of the diff on which the line resides. For
+    //                multi-line comments, this is the side for the end of the
+    //                line range."   DiffSide = RIGHT
+    //   startLine — "The first line of the range to which the comment refers."
+    //   startSide — "The side of the diff on which the start line resides."
+    //                DiffSide = RIGHT
+    //
+    // Both sides DEFAULT TO RIGHT independently. Emitting `side: LEFT` for a
+    // range while omitting `startSide` therefore does not mean "same side"; it
+    // means "end on the old column, start on the new one" — a mixed-side range
+    // GitHub refuses or renders against content nobody pointed at. This omission
+    // was the bug.
+    //
+    // Emitted ONLY beside `startLine`: `startSide` describes where the start
+    // line lives, so without a start line it describes nothing. That is the same
+    // pairing GitHub's REST API documents for `start_line`/`start_side`, and the
+    // one the host transport already implements (`impl/host/pending-review-comments.js`).
+    const rangeFields = comment.start_line
+      ? `startLine: ${comment.start_line}\n            startSide: ${toDiffSide(comment.start_side || side)}\n            `
+      : '';
     return `
           comment${index}: addPullRequestReviewThread(input: {
             pullRequestId: $prId
             pullRequestReviewId: $reviewId
             path: ${JSON.stringify(comment.path)}
-            ${startLineField}line: ${comment.line}
+            ${rangeFields}line: ${comment.line}
             side: ${side}
             body: ${JSON.stringify(comment.body)}
           }) {
@@ -225,6 +270,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
 module.exports = {
   addCommentsInBatches,
   buildBatchMutation,
+  toDiffSide,
   MIN_BATCH_SIZE,
   DEFAULT_BATCH_SIZE
 };

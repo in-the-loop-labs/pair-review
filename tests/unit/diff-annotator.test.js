@@ -761,6 +761,123 @@ index abc123..def456 100644
   });
 });
 
+describe('annotateDiff: hunk bodies that look like file headers', () => {
+  // Same real-git fixture as tests/unit/diff-line-set.test.js. `annotateDiff`
+  // shares `parseFileHeader` with `buildDiffLineSet` and had the identical
+  // ordering bug: header parsing ran BEFORE the `!inHunk` guard, so a deleted
+  // `-- x` line (emitted as `--- x`) and an added `++ x` (emitted as `+++ x`)
+  // were swallowed as headers — dropped from the output entirely and, worse,
+  // never counted, so every later line number in the file was off by one.
+  const rawDiff = [
+    'diff --git a/notes.md b/notes.md',
+    'index c332251ce08631f085ed4b4552e8b906ccff3fb1..ab9c79d312d0e50e0e15be7e62344cbf4112def1 100644',
+    '--- a/notes.md',
+    '+++ b/notes.md',
+    '@@ -1,4 +1,5 @@',
+    ' line one',
+    '--- deleted marker',
+    '+++ added marker',
+    ' line three',
+    '+++i;',
+    ' line four',
+    ''
+  ].join('\n');
+
+  it('titles the section with the real path, not a fragment of the body', () => {
+    const result = annotateDiff(rawDiff);
+    expect(result).toContain('=== notes.md ===');
+    expect(result).not.toContain('=== added marker ===');
+  });
+
+  it('emits the disguised lines as content with correct numbering', () => {
+    const parsed = parseAnnotatedDiff(annotateDiff(rawDiff));
+    expect(parsed.length).toBe(1);
+    expect(parsed[0].path).toBe('notes.md');
+
+    const content = parsed[0].lines.filter(l => l.type !== 'hunk');
+    expect(content).toEqual([
+      { oldLineNum: 1, newLineNum: 1, type: 'context', content: 'line one' },
+      { oldLineNum: 2, newLineNum: null, type: 'delete', content: '-- deleted marker' },
+      { oldLineNum: null, newLineNum: 2, type: 'add', content: '++ added marker' },
+      { oldLineNum: 3, newLineNum: 3, type: 'context', content: 'line three' },
+      { oldLineNum: null, newLineNum: 4, type: 'add', content: '++i;' },
+      { oldLineNum: 4, newLineNum: 5, type: 'context', content: 'line four' }
+    ]);
+  });
+
+  it('keeps annotating the next file after such a body', () => {
+    const twoFiles = `${rawDiff}${[
+      'diff --git a/after.js b/after.js',
+      '--- a/after.js',
+      '+++ b/after.js',
+      '@@ -10,2 +10,3 @@',
+      ' keep',
+      '+added',
+      ' tail',
+      ''
+    ].join('\n')}`;
+    const parsed = parseAnnotatedDiff(annotateDiff(twoFiles));
+    expect(parsed.map(f => f.path)).toEqual(['notes.md', 'after.js']);
+    const added = parsed[1].lines.find(l => l.type === 'add');
+    expect(added).toEqual({
+      oldLineNum: null, newLineNum: 11, type: 'add', content: 'added'
+    });
+  });
+
+  it('annotates a bare unified diff with no `diff --git` lines', () => {
+    const bare = [
+      '--- a/first.js',
+      '+++ b/first.js',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '-old',
+      '+new',
+      '--- a/second.js',
+      '+++ b/second.js',
+      '@@ -10,2 +10,2 @@',
+      ' keep2',
+      '-old2',
+      '+new2',
+      ''
+    ].join('\n');
+    const parsed = parseAnnotatedDiff(annotateDiff(bare));
+    expect(parsed.map(f => f.path)).toEqual(['first.js', 'second.js']);
+    // The second file's lines must be numbered from ITS hunk header, not
+    // appended to the first file's still-open hunk.
+    expect(parsed[1].lines.find(l => l.type === 'add')).toEqual({
+      oldLineNum: null, newLineNum: 11, type: 'add', content: 'new2'
+    });
+  });
+
+  it('uses the decoded path for names git had to quote or pad', () => {
+    const spaced = [
+      'diff --git a/my file.txt b/my file.txt',
+      'index de98044..7be73ce 100644',
+      '--- a/my file.txt\t',
+      '+++ b/my file.txt\t',
+      '@@ -1,2 +1,2 @@',
+      ' a',
+      '-b',
+      '+B',
+      ''
+    ].join('\n');
+    expect(annotateDiff(spaced)).toContain('=== my file.txt ===');
+
+    const quoted = [
+      String.raw`diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"`,
+      'index de98044..7be73ce 100644',
+      String.raw`--- "a/caf\303\251.txt"`,
+      String.raw`+++ "b/caf\303\251.txt"`,
+      '@@ -1,2 +1,2 @@',
+      ' a',
+      '-b',
+      '+B',
+      ''
+    ].join('\n');
+    expect(annotateDiff(quoted)).toContain('=== café.txt ===');
+  });
+});
+
 describe('git-diff-lines CLI', () => {
   const projectRoot = path.resolve(__dirname, '../..');
   const scriptPath = path.join(projectRoot, 'bin', 'git-diff-lines');

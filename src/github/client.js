@@ -75,6 +75,98 @@ function normaliseBinding(arg) {
 }
 
 /**
+ * The phases a review write passes through, in order. Stamped on
+ * `error.reviewWriteProgress.phase` so a caller knows HOW FAR the write got
+ * without parsing a flattened message.
+ *
+ *   create_review — asking GitHub for a pending review. Nothing is on the PR
+ *                   yet, so a failure here can leave no residue at all.
+ *   add_comments  — pushing inline comments onto that pending review. The only
+ *                   phase that can leave comments behind.
+ *   submit_review — the final mutation that publishes the pending review. Every
+ *                   comment is already on GitHub by the time it runs, so a
+ *                   failure here is the WORST residue case, not the mildest.
+ */
+const REVIEW_WRITE_PHASES = Object.freeze({
+  CREATE_REVIEW: 'create_review',
+  ADD_COMMENTS: 'add_comments',
+  SUBMIT_REVIEW: 'submit_review'
+});
+
+/**
+ * A mutable record of how far a review write got, and what it left behind.
+ *
+ * WHY THIS EXISTS. `createReviewGraphQL` / `createDraftReviewGraphQL` flatten
+ * every failure into `Failed to submit review (<transport>): <message>`, which
+ * tells a caller nothing about state. The provider above (see
+ * `describePartialWriteRisk` in src/providers/review-submit.js) has to answer a
+ * question only this layer can answer — "may comments still be sitting on
+ * GitHub?" — and used to GUESS it from the outside: "we reused someone's draft
+ * and we sent comments" was read as residue, which was wrong in both
+ * directions. It warned when an early auth failure wrote nothing (burying the
+ * route's actionable 401 under a generic do-not-retry 409), and it stayed
+ * silent when a final-submit failure on a review we created left every comment
+ * behind.
+ *
+ * So the orchestration REPORTS rather than the provider guessing. The record is
+ * attached to whatever error escapes, as `error.reviewWriteProgress`.
+ *
+ * FIELDS
+ *   phase                — one of `REVIEW_WRITE_PHASES`, the phase that failed.
+ *   reviewPreExisted     — did we reuse the user's own pending review? We never
+ *                          delete one of those (it may hold comments from
+ *                          earlier sessions), so anything we added to it stays.
+ *   reviewId             — id of the review holding the residue, when known.
+ *   reviewUrl            — its URL, when the create mutation returned one
+ *                          (drafts do; `addPullRequestReview` does not).
+ *   commentsSent         — how many comments this call carried.
+ *   commentsWritten      — how many GitHub CONFIRMED it accepted.
+ *   commentsWrittenExact — is `commentsWritten` a fact or a floor? False when
+ *                          the comment transport THREW mid-flight: the request
+ *                          may have been applied and the response lost, so
+ *                          "0 confirmed" is not "0 written".
+ *   cleanupAttempted     — did we try to delete a review WE created?
+ *   cleanupSucceeded     — true only when the delete was confirmed. `null`
+ *                          means never attempted; `false` means the review (and
+ *                          every comment on it) is still on the pull request.
+ *
+ * @param {number} commentsSent
+ * @returns {Object} a fresh, mutable progress record
+ */
+function newReviewWriteProgress(commentsSent) {
+  return {
+    phase: REVIEW_WRITE_PHASES.CREATE_REVIEW,
+    reviewPreExisted: false,
+    reviewId: null,
+    reviewUrl: null,
+    commentsSent,
+    commentsWritten: 0,
+    commentsWrittenExact: true,
+    cleanupAttempted: false,
+    cleanupSucceeded: null
+  };
+}
+
+/**
+ * Stamp a flattened review-write failure with the progress record and the
+ * original rejection, then hand it back for throwing.
+ *
+ * `cause` matters as much as the record: the underlying error is what carries
+ * the HTTP status and the wording both route ladders classify on, and the
+ * provider preserves that classification whenever nothing was left behind.
+ *
+ * @param {Error} wrapped - The flattened error about to be thrown
+ * @param {Error} cause - The rejection that actually happened
+ * @param {Object} progress - The `newReviewWriteProgress` record
+ * @returns {Error} `wrapped`
+ */
+function attachReviewWriteProgress(wrapped, cause, progress) {
+  wrapped.cause = cause;
+  wrapped.reviewWriteProgress = progress;
+  return wrapped;
+}
+
+/**
  * GitHub API client wrapper with error handling and rate limiting.
  *
  * Constructor accepts either a bare token string (legacy) or a binding
@@ -680,6 +772,51 @@ class GitHubClient {
   }
 
   /**
+   * Delete a pending review THIS call created, after the write around it
+   * failed — and record whether the deletion actually happened.
+   *
+   * ONE COPY of a sequence that had four (two per orchestration method: the
+   * comment batch throwing, and the batch reporting failures) and now has five
+   * (the final submit mutation failing, added with the residue report). They
+   * had already drifted in their log wording; more importantly each one has to
+   * stamp `cleanupAttempted` / `cleanupSucceeded` identically or the report
+   * lies about what is still on the pull request.
+   *
+   * NEVER CALLED FOR A PRE-EXISTING REVIEW. A draft the user already had is
+   * theirs and may hold comments from earlier sessions; deleting it to tidy up
+   * after our own failure would destroy their work. Callers check
+   * `usedExistingReview` first, and the report says so via `reviewPreExisted`.
+   *
+   * SWALLOWS ITS OWN REJECTION, deliberately. This runs inside a `catch` that
+   * is about to rethrow the REAL failure; letting a delete error escape would
+   * replace "GitHub rejected your comments" with "could not delete review",
+   * hiding the cause. The failed delete is not lost — it is exactly what
+   * `cleanupSucceeded: false` reports, which is how the provider decides to
+   * warn about residue.
+   *
+   * @param {string|number} reviewId - The review we created
+   * @param {Object|null} prContext - Downstream context (carries the numeric id)
+   * @param {Object} progress - The `newReviewWriteProgress` record to stamp
+   * @returns {Promise<boolean>} whether the review is confirmed gone
+   */
+  async cleanupReviewCreatedHere(reviewId, prContext, progress) {
+    progress.cleanupAttempted = true;
+    let cleaned = false;
+    try {
+      cleaned = Boolean(await this.deletePendingReview(reviewId, prContext));
+    } catch (cleanupError) {
+      logger.warn(
+        `Failed to clean up pending review ${reviewId} after a failed write: ${cleanupError.message}`
+      );
+    }
+    progress.cleanupSucceeded = cleaned;
+    if (!cleaned) {
+      logger.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+    }
+    return cleaned;
+  }
+
+  /**
    * Submit a review using GraphQL API
    * This supports both line-level comments (within diff hunks) and file-level comments
    * (for expanded context lines outside diff hunks).
@@ -704,6 +841,9 @@ class GitHubClient {
     // the alt-host REST/extension path rather than GraphQL. Keep the
     // messages accurate to what really ran.
     const transport = this.apiHost ? 'alt-host' : 'GraphQL';
+    // Declared OUTSIDE the try so the catch that flattens every failure can
+    // attach it. See `newReviewWriteProgress`.
+    const progress = newReviewWriteProgress(comments.length);
     try {
       console.log(`Creating review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -720,6 +860,11 @@ class GitHubClient {
       const existingRestReviewId = this.features.review_lifecycle === 'rest' ? prContext?.reviewId : null;
       const effectiveExistingReviewId = existingReviewId ?? existingRestReviewId;
       const usedExistingReview = effectiveExistingReviewId !== undefined && effectiveExistingReviewId !== null;
+      // A review we did not create is never deleted by us, so anything we add
+      // to it survives our failure. The provider reads this to tell "your own
+      // draft now holds some of these comments" from "we cleaned up after
+      // ourselves; retry is safe".
+      progress.reviewPreExisted = usedExistingReview;
 
       let reviewId;
       let reviewDatabaseId = null;
@@ -745,6 +890,8 @@ class GitHubClient {
         reviewDatabaseId = (typeof created.databaseId === 'number') ? created.databaseId : null;
         console.log(`Created pending review: ${reviewId}${reviewDatabaseId !== null ? ` (databaseId=${reviewDatabaseId})` : ''}`);
       }
+      // Whichever branch ran, this is the review any residue would sit on.
+      progress.reviewId = reviewId;
 
       // Build a downstream prContext that carries the numeric review id
       // so REST/host paths (which need a numeric REST id) can resolve it
@@ -755,6 +902,7 @@ class GitHubClient {
 
       let successfulComments = 0;
       if (comments.length > 0) {
+        progress.phase = REVIEW_WRITE_PHASES.ADD_COMMENTS;
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         let batchResult;
         try {
@@ -767,11 +915,12 @@ class GitHubClient {
           // `batchResult.failed` was returned, leaving a pending review
           // behind on these throws when we created it ourselves.
           console.error(`CRITICAL: comment batch threw before completion: ${commentError.message}`);
+          // The transport died without answering, so a request it had already
+          // sent may well have been applied: "0 confirmed" is a floor, not a
+          // count. Say so, rather than reporting a clean zero.
+          progress.commentsWrittenExact = false;
           if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
-            }
+            await this.cleanupReviewCreatedHere(reviewId, downstreamPrContext, progress);
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
@@ -783,16 +932,15 @@ class GitHubClient {
           throw wrapped;
         }
         successfulComments = batchResult.successCount;
+        // The batch answered, so this count is a fact: exactly these landed.
+        progress.commentsWritten = successfulComments;
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
           const details = batchResult.failedDetails || [];
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
           if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
-            }
+            await this.cleanupReviewCreatedHere(reviewId, downstreamPrContext, progress);
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
@@ -801,15 +949,35 @@ class GitHubClient {
         }
       }
 
+      // EVERY comment is on GitHub by now. A failure from here on is the worst
+      // residue case there is, not the mildest — see the submit-phase catch.
+      progress.phase = REVIEW_WRITE_PHASES.SUBMIT_REVIEW;
       console.log(`Step 3: Submitting review with event ${event}...`);
-      const result = await reviewLifecycleOps.submitPullRequestReview(
-        this.octokit,
-        this.features,
-        reviewId,
-        event,
-        body,
-        downstreamPrContext
-      );
+      let result;
+      try {
+        result = await reviewLifecycleOps.submitPullRequestReview(
+          this.octokit,
+          this.features,
+          reviewId,
+          event,
+          body,
+          downstreamPrContext
+        );
+      } catch (submitError) {
+        // THE GAP THIS CLOSES. Cleanup used to exist only around the comment
+        // phase, so a review we created ourselves and then failed to SUBMIT
+        // stayed on the pull request as a pending review holding every comment
+        // — invisible to the caller, and duplicated by the next attempt. It is
+        // ours, we created it in this call, and nothing else can be waiting on
+        // it, so deleting it is the honest undo. A pre-existing draft is left
+        // alone for the reason it always is.
+        if (!usedExistingReview) {
+          await this.cleanupReviewCreatedHere(reviewId, downstreamPrContext, progress);
+        } else {
+          console.warn('Skipping cleanup of pre-existing pending review - its comments remain on GitHub');
+        }
+        throw submitError;
+      }
 
       console.log(`Review submitted successfully: ${result.url}`);
 
@@ -827,12 +995,18 @@ class GitHubClient {
       // The `error.errors` branch is a GraphQL-shaped error envelope. It is
       // harmless on the REST/host path (which won't populate it); we still
       // label the message with the actual transport for accuracy.
-      if (error.errors) {
-        const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub ${transport} error: ${messages}`);
-      }
-
-      throw new Error(`Failed to submit review (${transport}): ${error.message}`);
+      //
+      // Either way the message is FLATTENED, which is exactly why the progress
+      // record rides along: message text cannot be re-parsed into state, and a
+      // caller that tried would rot on the next wording change.
+      const messages = error.errors ? error.errors.map(e => e.message).join(', ') : null;
+      throw attachReviewWriteProgress(
+        messages !== null
+          ? new Error(`GitHub ${transport} error: ${messages}`)
+          : new Error(`Failed to submit review (${transport}): ${error.message}`),
+        error,
+        progress
+      );
     }
   }
 
@@ -854,6 +1028,9 @@ class GitHubClient {
     // historical; the real transport may be the alt-host REST/extension
     // path rather than GraphQL. See createReviewGraphQL for the rationale.
     const transport = this.apiHost ? 'alt-host' : 'GraphQL';
+    // Same record the submit path builds — a draft write leaves exactly the
+    // same kind of residue, minus the submit phase. See `newReviewWriteProgress`.
+    const progress = newReviewWriteProgress(comments.length);
     try {
       console.log(`Creating draft review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -864,6 +1041,7 @@ class GitHubClient {
       const existingRestReviewId = this.features.review_lifecycle === 'rest' ? prContext?.reviewId : null;
       const effectiveExistingReviewId = existingReviewId ?? existingRestReviewId;
       const usedExistingReview = effectiveExistingReviewId !== undefined && effectiveExistingReviewId !== null;
+      progress.reviewPreExisted = usedExistingReview;
 
       let reviewId;
       let reviewDatabaseId = null;
@@ -896,6 +1074,10 @@ class GitHubClient {
         reviewUrl = created.url;
         console.log(`Created pending review: ${reviewId}${reviewDatabaseId !== null ? ` (databaseId=${reviewDatabaseId})` : ''}`);
       }
+      progress.reviewId = reviewId;
+      // Unlike the submit path, the draft create mutation DOES return a URL, so
+      // a report about a draft can point the user straight at it.
+      progress.reviewUrl = reviewUrl || null;
 
       // Build a downstream prContext carrying the numeric review id so
       // REST/host paths can address the review without re-resolving it.
@@ -905,6 +1087,7 @@ class GitHubClient {
 
       let successfulComments = 0;
       if (comments.length > 0) {
+        progress.phase = REVIEW_WRITE_PHASES.ADD_COMMENTS;
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         let batchResult;
         try {
@@ -917,11 +1100,11 @@ class GitHubClient {
           // `batchResult.failed` was returned, leaving a pending review
           // behind on these throws when we created it ourselves.
           console.error(`CRITICAL: comment batch threw before completion: ${commentError.message}`);
+          // No answer from the transport means no count worth trusting; see the
+          // identical branch in `createReviewGraphQL`.
+          progress.commentsWrittenExact = false;
           if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
-            }
+            await this.cleanupReviewCreatedHere(reviewId, downstreamPrContext, progress);
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
@@ -933,6 +1116,7 @@ class GitHubClient {
           throw wrapped;
         }
         successfulComments = batchResult.successCount;
+        progress.commentsWritten = successfulComments;
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
@@ -940,13 +1124,17 @@ class GitHubClient {
           const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
           if (!usedExistingReview) {
-            const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
-            if (!cleaned) {
-              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
-            }
+            // The message says what actually happened. It used to claim the
+            // draft "has been deleted" unconditionally, which is a lie when the
+            // delete failed — and that is precisely the case where the user has
+            // something left to clean up.
+            const cleaned = await this.cleanupReviewCreatedHere(reviewId, downstreamPrContext, progress);
             throw new Error(
               `Failed to add ${failedCount} of ${comments.length} comments to draft review. ` +
-              `The draft review has been deleted.${detailSuffix}`
+              `${cleaned
+                ? 'The draft review has been deleted.'
+                : `The draft review could NOT be deleted and is still on the pull request with ${successfulComments} `
+                  + `comment${successfulComments === 1 ? '' : 's'} on it.`}${detailSuffix}`
             );
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
@@ -971,12 +1159,16 @@ class GitHubClient {
 
       // The `error.errors` branch is a GraphQL-shaped error envelope,
       // harmless on the REST/host path. Label with the actual transport.
-      if (error.errors) {
-        const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub ${transport} error: ${messages}`);
-      }
-
-      throw new Error(`Failed to create draft review (${transport}): ${error.message}`);
+      // The progress record rides along for the same reason it does on the
+      // submit path: the message is flattened, the state is not re-derivable.
+      const messages = error.errors ? error.errors.map(e => e.message).join(', ') : null;
+      throw attachReviewWriteProgress(
+        messages !== null
+          ? new Error(`GitHub ${transport} error: ${messages}`)
+          : new Error(`Failed to create draft review (${transport}): ${error.message}`),
+        error,
+        progress
+      );
     }
   }
 
@@ -1278,5 +1470,10 @@ module.exports = {
   // Exported for unit tests asserting binding normalisation (e.g. that the
   // `refresh` capability is preserved for object bindings and null for the
   // legacy bare-token path).
-  normaliseBinding
+  normaliseBinding,
+  // The vocabulary of `error.reviewWriteProgress.phase`. Exported so the
+  // provider that READS the report (src/providers/review-submit.js) and the
+  // tests that pin it name the phases from one place instead of three copies
+  // of three string literals.
+  REVIEW_WRITE_PHASES
 };

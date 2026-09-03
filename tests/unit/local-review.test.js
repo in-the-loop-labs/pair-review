@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest, detectAndBuildBranchInfo, detectPRForBranch, parseRemoteUrl, getRemoteHostname, getRepositoryName } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot, generateScopedDiff, computeScopedDigest, detectAndBuildBranchInfo, detectPRForBranch, parseRemoteUrl, getRemoteHostname, getRepositoryName, listFilesModifiedVsHead } = require('../../src/local-review');
 const baseBranchModule = require('../../src/git/base-branch');
 
 describe('computeLocalDiffDigest', () => {
@@ -231,6 +231,166 @@ describe('generateLocalDiff', () => {
       // No absolute paths
       expect(result.diff).not.toContain(testDir);
     });
+  });
+});
+
+// Exercised against REAL repositories on purpose. Every claim this function
+// makes is a claim about git's behaviour — which operand covers the index,
+// what `-z` emits, how a rename is named — and a mocked execSync would only
+// re-assert the assumption under test. This is the single input deciding
+// whether a submitted comment keeps its line number (src/routes/local.js,
+// `submit-review`), so a silent regression here anchors comments to lines the
+// commit on GitHub does not have.
+describe('listFilesModifiedVsHead', () => {
+  let testDir;
+
+  /** Deterministic repo: fixed identity, no signing, no reliance on user config. */
+  const initRepo = (dir) => {
+    execSync('git init', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+  };
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-dirty-'));
+    initRepo(testDir);
+
+    await fs.writeFile(path.join(testDir, 'tracked.txt'), 'one\ntwo\n');
+    await fs.writeFile(path.join(testDir, 'other.txt'), 'other\n');
+    execSync('git add -A', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: testDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty set for a clean tree', async () => {
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect(result).toBeInstanceOf(Set);
+    expect([...result]).toEqual([]);
+  });
+
+  it('reports a file whose change is only UNSTAGED', async () => {
+    await fs.writeFile(path.join(testDir, 'tracked.txt'), 'one\ntwo changed\n');
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect(result.has('tracked.txt')).toBe(true);
+    expect(result.has('other.txt')).toBe(false);
+  });
+
+  it('reports a file whose change is only STAGED', async () => {
+    // The HEAD operand is what makes this visible: a bare `git diff` compares
+    // the index to the working tree and calls a fully staged edit clean, which
+    // would hand a shifted line number to GitHub.
+    await fs.writeFile(path.join(testDir, 'tracked.txt'), 'one\ntwo staged\n');
+    execSync('git add tracked.txt', { cwd: testDir, stdio: 'pipe' });
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect(result.has('tracked.txt')).toBe(true);
+  });
+
+  it('reports a file that is staged AND further modified once', async () => {
+    await fs.writeFile(path.join(testDir, 'tracked.txt'), 'one\nstaged\n');
+    execSync('git add tracked.txt', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'tracked.txt'), 'one\nstaged then more\n');
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect([...result]).toEqual(['tracked.txt']);
+  });
+
+  it('excludes untracked files', async () => {
+    // Deliberate: an untracked file is in no commit, so it is in no PR diff,
+    // and its comments are file-level for that reason rather than this one.
+    await fs.writeFile(path.join(testDir, 'brand-new.txt'), 'hello\n');
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect(result.has('brand-new.txt')).toBe(false);
+    expect([...result]).toEqual([]);
+  });
+
+  it('reports a rename under its POST-IMAGE path only', async () => {
+    // Comments are anchored to the path local mode renders, which is the name
+    // on disk now. Reporting the pre-image name instead would leave the file
+    // the reviewer commented on looking clean.
+    execSync('git mv tracked.txt renamed.txt', { cwd: testDir, stdio: 'pipe' });
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect(result.has('renamed.txt')).toBe(true);
+    expect(result.has('tracked.txt')).toBe(false);
+  });
+
+  it('survives the -z parse for paths containing a space', async () => {
+    // Without -z git QUOTES such a path ("with space.txt"), and the quoted
+    // form matches no `comment.file`, so the file reads as clean.
+    await fs.writeFile(path.join(testDir, 'with space.txt'), 'a\n');
+    execSync('git add -A', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Add spaced path"', { cwd: testDir, stdio: 'pipe' });
+    await fs.writeFile(path.join(testDir, 'with space.txt'), 'b\n');
+
+    const result = await listFilesModifiedVsHead(testDir);
+
+    expect([...result]).toEqual(['with space.txt']);
+  });
+
+  it('returns REPO-ROOT-relative paths even with diff.relative set and a subdirectory repoPath', async () => {
+    // Regression guard for the missing GIT_DIFF_FLAGS. `diff.relative` makes
+    // git answer with subdirectory-relative names ("f.txt"), which match no
+    // repo-root-relative comment path — so every dirty file silently reads as
+    // clean and KEEPS its line number. Failing that direction is the one
+    // outcome this function must never produce. `local_path` can point below
+    // the repo root: src/routes/mcp.js and src/routes/analyses.js store the
+    // path they are handed verbatim.
+    const subDir = path.join(testDir, 'nested');
+    await fs.mkdir(subDir);
+    await fs.writeFile(path.join(subDir, 'f.txt'), 'a\n');
+    execSync('git add -A', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Add nested file"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config diff.relative true', { cwd: testDir, stdio: 'pipe' });
+
+    await fs.writeFile(path.join(subDir, 'f.txt'), 'b\n');
+
+    const result = await listFilesModifiedVsHead(subDir);
+
+    expect([...result]).toEqual(['nested/f.txt']);
+  });
+
+  it('REJECTS rather than resolving empty when the path is not a git repository', async () => {
+    // The whole contract: an empty set means "clean", which is what buys a
+    // comment its line number. An unanswerable question must throw so the
+    // caller degrades every comment to file level.
+    const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-nongit-'));
+    try {
+      await expect(listFilesModifiedVsHead(nonGitDir)).rejects.toThrow(
+        /Failed to list files modified vs HEAD/
+      );
+    } finally {
+      await fs.rm(nonGitDir, { recursive: true, force: true });
+    }
+  });
+
+  it('REJECTS on a repository with no commits (HEAD does not resolve)', async () => {
+    const emptyRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-nocommit-'));
+    try {
+      initRepo(emptyRepo);
+      await fs.writeFile(path.join(emptyRepo, 'a.txt'), 'a\n');
+      execSync('git add -A', { cwd: emptyRepo, stdio: 'pipe' });
+
+      await expect(listFilesModifiedVsHead(emptyRepo)).rejects.toThrow(
+        /Failed to list files modified vs HEAD/
+      );
+    } finally {
+      await fs.rm(emptyRepo, { recursive: true, force: true });
+    }
   });
 });
 
