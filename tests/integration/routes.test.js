@@ -3509,6 +3509,10 @@ describe('Review Submission Endpoint', () => {
         expect(response.body.error).toMatch(/GraphQL PR node id required/);
         expect(response.body.error).toMatch(/review_lifecycle = "graphql"/);
         expect(response.body.error).toMatch(/refresh the PR data/);
+        // The provider's own `SubmitReviewError.code`, forwarded verbatim —
+        // not re-derived from the status, and not one of the ladder's own
+        // codes. See the ladder-vocabulary describe below.
+        expect(response.body.code).toBe('missing_pr_node_id');
       });
 
       it('succeeds without node_id when review_lifecycle=rest and pending_review_comments=host (alt-host all-REST/host)', async () => {
@@ -3544,6 +3548,353 @@ describe('Review Submission Endpoint', () => {
         // operations layer would route to REST under these features) the
         // route returns 200.
         expect(response.status).toBe(200);
+      });
+    });
+
+    /**
+     * PR MODE HAS NO LIVE LIFECYCLE PRECONDITION — AND THAT IS THE CHOSEN
+     * CONTRACT, NOT AN OVERSIGHT.
+     *
+     * Local mode's `POST /api/local/:reviewId/submit-review` calls
+     * `checkSubmitPreconditions` (src/providers/review-submit.js), which reads
+     * the PR live and refuses APPROVE / REQUEST_CHANGES / DRAFT on a settled
+     * pull request with 410. This route deliberately does NOT: it reads the
+     * cached `pr_metadata` row for the node id and head sha and nothing else,
+     * and lets the code host be the authority on whether the write is legal.
+     *
+     * The reasoning: local mode needs the live read anyway (it must compare the
+     * PR head against the working tree to refuse a drifted submit), so the
+     * lifecycle answer is free there. PR mode has no such read, and adding one
+     * would put a second blocking round-trip in front of every submit to
+     * re-derive a refusal GitHub already returns.
+     *
+     * If a future change adds a precondition call here, these tests fail. That
+     * is the point — decide it on purpose, and update the release notes, rather
+     * than "fixing" what looks like a missing check.
+     */
+    describe('lifecycle gating stays the code host\'s job on this route', () => {
+      /** Rewrite the cached PR JSON's lifecycle fields in place. */
+      async function setCachedLifecycle(state, merged) {
+        const row = await queryOne(db, 'SELECT pr_data FROM pr_metadata WHERE pr_number = 1 AND repository = ?', ['owner/repo']);
+        const prData = { ...JSON.parse(row.pr_data), state, merged };
+        await run(db, 'UPDATE pr_metadata SET pr_data = ? WHERE pr_number = 1 AND repository = ?', [JSON.stringify(prData), 'owner/repo']);
+      }
+
+      it('submits APPROVE against a cached MERGED pull request, without reading the PR live', async () => {
+        await setCachedLifecycle('closed', true);
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+          VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Late approval', 'active')
+        `, [prId]);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'APPROVE', body: 'LGTM' });
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        // The pin: `checkSubmitPreconditions` reads the PR through
+        // `fetchPullRequest`. This route never calls it, so no 410 can come
+        // from here — GitHub answers instead.
+        expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+        expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      });
+
+      it('submits DRAFT against a cached CLOSED pull request too', async () => {
+        await setCachedLifecycle('closed', false);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'DRAFT', body: 'Still drafting' });
+
+        expect(response.status).toBe(200);
+        expect(response.status).not.toBe(410);
+        expect(GitHubClient.prototype.fetchPullRequest).not.toHaveBeenCalled();
+      });
+
+      it('lets a GitHub refusal be the refusal, classified by the route ladder', async () => {
+        // The other half of the same decision: because nothing is pre-checked,
+        // the host's own error is what the user sees. It must still reach them
+        // as a status, not a blanket 500.
+        await setCachedLifecycle('closed', true);
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(
+          new Error('Insufficient permissions to submit review')
+        );
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'APPROVE', body: 'LGTM' });
+
+        expect(response.status).toBe(403);
+        expect(response.body.code).toBe('insufficient_permissions');
+      });
+    });
+
+    /**
+     * Finalising a pending GitHub draft submits everything already on it, so
+     * the rows an earlier DRAFT pass left at `draft` locally are submitted too.
+     * Shared with local mode via src/providers/review-submit.js — pinned here
+     * because PR mode reaches it through its own route, and the release notes
+     * claim this behaviour for both modes.
+     */
+    describe('finalising an existing draft promotes this review\'s draft rows', () => {
+      const consumedDraft = {
+        id: 'PRR_existing_pending',
+        databaseId: 88888,
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-88888',
+        state: 'PENDING',
+        comments: { totalCount: 3 }
+      };
+
+      it('promotes draft user rows to submitted and folds the draft total into the count', async () => {
+        GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(consumedDraft);
+        GitHubClient.prototype.createReviewGraphQL.mockResolvedValueOnce({
+          ...mockGitHubResponses.createReviewGraphQL,
+          comments_count: 1
+        });
+
+        // One new comment this call sends...
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+          VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'New comment', 'active')
+        `, [prId]);
+        // ...and two the earlier DRAFT pass already parked on GitHub.
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'user', 'file.js', 3, 'Parked A', 'draft')
+        `, [prId]);
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'user', 'file.js', 4, 'Parked B', 'draft')
+        `, [prId]);
+        // An AI suggestion nobody adopted is not part of any review, whatever
+        // status it carries — the promotion is scoped to `source = 'user'`.
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'ai', 'file.js', 5, 'Unadopted suggestion', 'draft')
+        `, [prId]);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'Finalising' });
+
+        expect(response.status).toBe(200);
+        // 3 already on the draft + the 1 this call added.
+        expect(response.body.comments_submitted).toBe(4);
+
+        const rows = await query(db, 'SELECT body, status FROM comments WHERE review_id = ? ORDER BY id', [prId]);
+        const byBody = Object.fromEntries(rows.map(r => [r.body, r.status]));
+        expect(byBody['New comment']).toBe('submitted');
+        expect(byBody['Parked A']).toBe('submitted');
+        expect(byBody['Parked B']).toBe('submitted');
+        expect(byBody['Unadopted suggestion']).toBe('draft');
+      });
+
+      /**
+       * The shared write-failure handling DOES change some PR-mode responses,
+       * and that is intended: a failure that left comments behind on GitHub is
+       * re-labelled 409 so nobody retries into a duplicate. What must NOT
+       * change is a CLEAN failure — one that wrote nothing — which keeps the
+       * status this route's ladder always gave it.
+       *
+       * (`src/providers/review-submit.js` puts a stable `code` on the refusal
+       * and this route now forwards it, exactly as local mode does — status
+       * alone cannot separate "do not retry, comments already landed" from any
+       * other 409, so the code is asserted here.)
+       */
+      it('re-labels a part-written GitHub failure as 409, naming the draft to check', async () => {
+        GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(consumedDraft);
+        const thrown = new Error('GitHub API request failed');
+        thrown.reviewWriteProgress = {
+          phase: 'add_comments',
+          reviewPreExisted: true,
+          reviewId: consumedDraft.id,
+          reviewUrl: consumedDraft.url,
+          commentsSent: 1,
+          commentsWritten: 1,
+          commentsWrittenExact: true,
+          cleanupAttempted: false,
+          cleanupSucceeded: null
+        };
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(thrown);
+
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+          VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Half-landed', 'active')
+        `, [prId]);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'Finalising' });
+
+        expect(response.status).toBe(409);
+        expect(response.body.code).toBe('partially_posted');
+        expect(response.body.error).toContain(consumedDraft.url);
+        expect(response.body.error).toMatch(/before submitting again/);
+        // The rows are untouched, so a retry after the user cleans up still
+        // has everything to send.
+        const rows = await query(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Half-landed'", [prId]);
+        expect(rows[0].status).toBe('active');
+      });
+
+      it('leaves a CLEAN auth failure as 401 — reusing a draft does not make it partial', async () => {
+        GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(consumedDraft);
+        const thrown = new Error('GitHub authentication failed');
+        thrown.reviewWriteProgress = {
+          phase: 'create_review',
+          reviewPreExisted: true,
+          reviewId: consumedDraft.id,
+          reviewUrl: consumedDraft.url,
+          commentsSent: 1,
+          commentsWritten: 0,
+          commentsWrittenExact: true,
+          cleanupAttempted: false,
+          cleanupSucceeded: null
+        };
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(thrown);
+
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+          VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Nothing landed', 'active')
+        `, [prId]);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'Finalising' });
+
+        expect(response.status).toBe(401);
+        expect(response.body.error).not.toMatch(/failed part way through/);
+        // A clean failure keeps the LADDER's code, not the provider's — the
+        // difference between "retry freely" and "do not retry blindly".
+        expect(response.body.code).toBe('auth_failed');
+      });
+
+      it('leaves the parked rows alone for a DRAFT event — they are still pending', async () => {
+        GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(consumedDraft);
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'user', 'file.js', 3, 'Parked A', 'draft')
+        `, [prId]);
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'DRAFT', body: 'Adding more' });
+
+        expect(response.status).toBe(200);
+        const rows = await query(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Parked A'", [prId]);
+        expect(rows[0].status).toBe('draft');
+      });
+    });
+
+    /**
+     * ONE ERROR VOCABULARY FOR BOTH MODES.
+     *
+     * `ReviewModal` is shared: local mode reaches the same write through
+     * `POST /api/local/:reviewId/submit-review` and that route's catch ladder
+     * ships `{ error, code }` on every rung. This route used to ship `error`
+     * alone, which cost the client two things it cannot recover from a status
+     * code: it could not tell `partially_posted` (the 409 that means DO NOT
+     * retry — comments already landed) from any other 409, and
+     * `handleLifecycleRefusal`, which switches on `code`, was dead here.
+     *
+     * The codes below are local mode's, spelled identically on purpose. Adding
+     * a new rung means adding it to BOTH ladders, with the same spelling.
+     */
+    describe('catch-ladder rungs ship local mode\'s machine codes', () => {
+      /** Fail the review write with a plain (residue-free) error. */
+      function failWriteWith(message) {
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(new Error(message));
+      }
+
+      async function submit() {
+        return request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .send({ event: 'COMMENT', body: 'Ladder' });
+      }
+
+      it('classifies an auth failure as 401 auth_failed', async () => {
+        failWriteWith('GitHub authentication failed for host');
+        const response = await submit();
+
+        expect(response.status).toBe(401);
+        expect(response.body.code).toBe('auth_failed');
+        expect(response.body.error).toMatch(/GitHub authentication failed/);
+      });
+
+      it('classifies a permission failure as 403 insufficient_permissions', async () => {
+        failWriteWith('Insufficient permissions for this repository');
+        const response = await submit();
+
+        expect(response.status).toBe(403);
+        expect(response.body.code).toBe('insufficient_permissions');
+      });
+
+      it('classifies a missing resource as 404 not_found, echoing the host message', async () => {
+        failWriteWith('Pull request head branch not found');
+        const response = await submit();
+
+        expect(response.status).toBe(404);
+        expect(response.body.code).toBe('not_found');
+        expect(response.body.error).toBe('Pull request head branch not found');
+      });
+
+      it('classifies throttling as 429 rate_limited', async () => {
+        failWriteWith('API rate limit exceeded for user');
+        const response = await submit();
+
+        expect(response.status).toBe(429);
+        expect(response.body.code).toBe('rate_limited');
+      });
+
+      it('classifies anything else as 500 submit_failed', async () => {
+        failWriteWith('GraphQL transport exploded');
+        const response = await submit();
+
+        expect(response.status).toBe(500);
+        expect(response.body.code).toBe('submit_failed');
+        expect(response.body.error).toMatch(/Failed to submit review: GraphQL transport exploded/);
+      });
+
+      /**
+       * THE RUNG THAT MAKES `handleLifecycleRefusal` REACHABLE IN PR MODE.
+       *
+       * A `SubmitReviewError` carries its own status AND its own code, and the
+       * route must forward the code untouched rather than re-deriving one from
+       * the status or from the message. Proved with a refusal whose UNDERLYING
+       * message would have been classified `auth_failed` by the substring
+       * ladder: the provider's verdict wins, so whatever code the provider
+       * decides — `partially_posted` here, `pr_merged` / `pr_closed` from
+       * `checkSubmitPreconditions` should a future caller pass one through —
+       * arrives at the client verbatim.
+       */
+      it('forwards a SubmitReviewError\'s own code instead of the ladder\'s', async () => {
+        const thrown = new Error('GitHub authentication failed mid-write');
+        thrown.reviewWriteProgress = {
+          phase: 'add_comments',
+          reviewPreExisted: false,
+          reviewId: 'PRR_orphan',
+          reviewUrl: 'https://github.com/owner/repo/pull/1#pullrequestreview-777',
+          commentsSent: 2,
+          commentsWritten: 2,
+          commentsWrittenExact: true,
+          cleanupAttempted: true,
+          cleanupSucceeded: false
+        };
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(thrown);
+
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+          VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Landed anyway', 'active')
+        `, [prId]);
+
+        const response = await submit();
+
+        // 409 + partially_posted, NOT the 401/auth_failed the message alone
+        // would have produced.
+        expect(response.status).toBe(409);
+        expect(response.body.code).toBe('partially_posted');
+        expect(response.body.code).not.toBe('auth_failed');
+        expect(response.body.error).toContain('pullrequestreview-777');
       });
     });
   });
@@ -9884,6 +10235,9 @@ describe('GET /api/local/:reviewId capabilities', () => {
   // implementation ships, so cases that expect a shipped flag spread this and
   // override only that key (e.g. `{ ...ALL_ACTIONS_FALSE, canViewPRComments: true }`)
   // — keeping the still-unshipped flags pinned by exact match.
+  // Baseline for the NO-association cases: every action contract is false
+  // when there is no PR to act on. Cases with an association spread this and
+  // override the flags that phase ships.
   const ALL_ACTIONS_FALSE = {
     canShowPRMetadata: false,
     canViewPRComments: false,
@@ -9973,11 +10327,73 @@ describe('GET /api/local/:reviewId capabilities', () => {
       // Phase 4, same again: the draft sync asks GitHub for the pending
       // review directly, so the metadata cache is not an input.
       canSyncDrafts: true,
+      // Phase 5, same again: the submit endpoint reads the PR LIVE to refuse a
+      // drifted or closed one, so a cold cache is no reason to hide it.
+      canSubmitToGitHub: true,
     });
     expect(response.body.associatedPR).toEqual({ prNumber: 456, repository: 'owner/repo' });
     // Association + token + cold cache fires the background fetch; settle it
     // before teardown closes the server and DB out from under it.
     await waitForBackgroundFetch();
+  });
+
+  it('withholds canSubmitToGitHub AND canSyncDrafts on an UNRESOLVED dual-host association', async () => {
+    // The route wiring, not the truth table. `buildCapabilities` defaults
+    // `hostResolved` to TRUE, so a route that stopped threading the resolved
+    // host through would keep every unit assertion green while the UI
+    // advertised Submit and Sync for a review whose endpoints refuse it:
+    // POST /sync-drafts and POST /submit-review both 409 `host_ambiguous`
+    // rather than ask the wrong host about a PR that merely shares a number.
+    // A button that is deterministically broken on click is worse than one
+    // that is absent.
+    app.set('config', {
+      github_token: 'test-token',
+      port: 7247,
+      theme: 'light',
+      model: 'sonnet',
+      external_comments: false,
+      repos: {
+        // exclusive:false + api_host is the DUAL shape: this repository name
+        // exists on github.com AND on the alt host, so the name alone cannot
+        // say which one owns PR #77.
+        'owner/repo': {
+          exclusive: false,
+          api_host: 'https://ghe.example/api/v3',
+          token: 'ghe-token'
+        }
+      }
+    });
+    // No checkout at this path, so no git remote can break the tie, and no
+    // pr_metadata row exists to carry a host stamp — the host stays a GUESS.
+    const reviewId = await insertLocal({
+      associatedPrNumber: 77,
+      associatedPrRepository: 'owner/repo',
+      path: '/definitely/not/a/checkout'
+    });
+
+    const response = await request(server).get(`/api/local/${reviewId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.capabilities).toEqual({
+      hasAssociatedPR: true,
+      // A credential IS resolvable for this repository; the token is not what
+      // is missing, so this must stay true or the diagnosis reads wrong.
+      hasGitHubToken: true,
+      ...ALL_ACTIONS_FALSE,
+      // Read-only capabilities are unaffected: guessing wrong there shows the
+      // wrong PR's comments, which is visible and reversible. The two flags
+      // withheld above WRITE.
+      canViewPRComments: true,
+      canCheckStaleVsPR: true,
+    });
+    expect(response.body.capabilities.canSubmitToGitHub).toBe(false);
+    expect(response.body.capabilities.canSyncDrafts).toBe(false);
+    // Nothing is left in flight to settle: the background metadata fetch
+    // refuses an `hostAmbiguous` binding too (fetchPRMetadata), for the same
+    // reason — asking the wrong host answers about a different PR. The
+    // decision is made in the same tick as the response, so this is a
+    // completed branch, not an observation window.
+    expect(fetchPullRequestSpy).not.toHaveBeenCalled();
   });
 
   // Phase 1: when pr_metadata cache is warm, canShowPRMetadata flips true
@@ -10016,6 +10432,8 @@ describe('GET /api/local/:reviewId capabilities', () => {
       canCheckStaleVsPR: true,
       // Phase 4: same independence — a live pending-review fetch.
       canSyncDrafts: true,
+      // Phase 5: same independence — the submit endpoint reads the PR live.
+      canSubmitToGitHub: true,
     });
     expect(response.body.associatedPR).toEqual({
       prNumber,

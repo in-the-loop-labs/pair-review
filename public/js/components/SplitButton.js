@@ -30,7 +30,14 @@ class SplitButton {
     const canSubmit = managerSaysCanSubmit !== null
       ? managerSaysCanSubmit
       : !legacyLocalMode;
-    this.hideSubmit = !canSubmit || options.hideSubmit === true;
+    // Kept separate from `hideSubmit` so `setCanSubmit` can re-derive the
+    // latter without ever un-hiding a button the CALLER asked to hide. The
+    // capability is a fact about the review; this is the caller's veto, and a
+    // late capability flip must not overrule it.
+    this.forcedHideSubmit = options.hideSubmit === true;
+    this.hideSubmit = !canSubmit || this.forcedHideSubmit;
+    // Set only while the menu is open and a flip arrived — see `setCanSubmit`.
+    this._pendingHideSubmit = null;
 
     // Determine default action: when submit is hidden, fall back to
     // preview. Otherwise honor saved preference or caller default.
@@ -177,9 +184,81 @@ class SplitButton {
   }
 
   /**
+   * Release a capability answer parked by `setCanSubmit` BEFORE this click acts
+   * on it, and report whether the action the user aimed at survived the flush.
+   *
+   * The deferral exists so an open menu never repaints under the pointer, and
+   * `closeDropdown` was its only release point — but both dispatchers ran their
+   * action FIRST and closed SECOND, so throughout that window `hideSubmit` was
+   * still the answer the flip had already revoked. A `submit` click landing
+   * there wrote `submit` to localStorage at the exact moment the capability was
+   * gone (leaking a preference to every other review) and opened ReviewModal for
+   * a session the backend would refuse.
+   *
+   * Flushing FIRST rather than special-casing `submit` at the call site is the
+   * general fix: any future action a parked answer could revoke is re-validated
+   * against the settled state below instead of against a stale field.
+   *
+   * Safe to call from inside a click handler — it cannot re-enter or tear down
+   * the element whose handler is running:
+   *   - `closeDropdown` dispatches no events; it flips flags, hides the
+   *     dropdown, removes a document listener and calls `_applyHideSubmit`.
+   *   - `_applyHideSubmit` refills `this.dropdown.innerHTML` and one text span.
+   *     The dropdown NODE survives (menu items are delegated to it, see
+   *     `render`), so the in-flight listener is still attached and the caller
+   *     has already read everything it needs off the clicked row.
+   *   - `_applyHideSubmit` clears `_pendingHideSubmit` before applying and is
+   *     idempotent, so the trailing `closeDropdown()` re-applies nothing.
+   *
+   * @param {string} action - the action this click is about to run.
+   * @returns {boolean} false when the click must be swallowed.
+   */
+  _settleBeforeAction(action) {
+    if (this._pendingHideSubmit !== null) {
+      this.closeDropdown();
+    }
+
+    // Re-validated against the SETTLED state, which also covers a stale menu
+    // row that somehow outlived a hide.
+    if (action === 'submit' && this.hideSubmit) {
+      // Idempotent, and the swallowing branch is the one that skips the
+      // dispatcher's own trailing close — a menu left open over a row that no
+      // longer exists would invite the same click again.
+      this.closeDropdown();
+      this._notifySubmitUnavailable();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Tell the user why their click did nothing. A control that silently ignores
+   * a click reads as broken; the capability really did disappear out from under
+   * them (an association cleared by a force-push, most often), and the menu row
+   * they aimed at is already gone by the time this runs.
+   *
+   * Deliberately host- and mode-neutral wording: SplitButton is shared, and
+   * asking the manager which mode it is would be the mode-sniff this component
+   * was cleaned of.
+   */
+  _notifySubmitUnavailable() {
+    if (typeof window === 'undefined') return;
+    if (typeof window.toast?.showWarning === 'function') {
+      window.toast.showWarning('Submit is no longer available for this review.');
+    }
+  }
+
+  /**
    * Handle click on the main button area
    */
   handleMainClick() {
+    // The main button stays clickable while the dropdown is open (the outside
+    // click handler ignores anything inside the container), so this path needs
+    // the same flush the menu rows get — otherwise a Submit-labelled main
+    // button fires the action a parked answer already revoked.
+    const aimedAt = this.defaultAction;
+    if (!this._settleBeforeAction(aimedAt)) return;
+
     if (this.defaultAction === 'submit') {
       this.onSubmit();
     } else {
@@ -206,6 +285,11 @@ class SplitButton {
     if (!button || button.disabled) return;
 
     const action = button.dataset.action;
+
+    // Flush before dispatching — see `_settleBeforeAction`. The old ordering
+    // (act, then close) ran the action against the capability answer the flush
+    // was holding, which is precisely the answer that revoked it.
+    if (!this._settleBeforeAction(action)) return;
 
     switch (action) {
       case 'submit':
@@ -282,6 +366,14 @@ class SplitButton {
 
     // Remove outside click listener
     document.removeEventListener('click', this.handleOutsideClick);
+
+    // Flush a capability flip that arrived while the menu was open — deferred
+    // by `setCanSubmit` so the rows never moved under the pointer. This is the
+    // ONLY place the deferral is released, so every close path (menu item,
+    // outside click, toggle) has to funnel through here — they all do.
+    if (this._pendingHideSubmit !== null) {
+      this._applyHideSubmit(this._pendingHideSubmit);
+    }
   }
 
   /**
@@ -315,6 +407,74 @@ class SplitButton {
     if (!this.hideSubmit) {
       this.saveAction(action);
     }
+  }
+
+  /**
+   * Mutate the Submit affordance in place after the capability that gates it
+   * changed — the counterpart to reading it in the constructor.
+   *
+   * Why a mutator and not another `initSplitButton()`: the zero-argument
+   * constructor path cannot carry state across a rebuild. `canSubmitToGitHub`
+   * flips mid-session in local mode (the PR association resolves after the
+   * page-load GET), and a rebuild re-ran `loadSavedAction()`, which promoted a
+   * user with a stale saved `submit` preference — or none at all — from Preview
+   * to Submit under their cursor, mid-click. It also destroyed an open dropdown
+   * out from under the pointer.
+   *
+   * Two invariants, both about not surprising the user:
+   *
+   *   GAINING submit NEVER promotes it to the main action. The visible action
+   *   is whatever it already was; the new capability only makes the menu item
+   *   appear. Only a deliberate menu choice moves the primary action
+   *   (`setDefaultAction`, which is also what persists the preference).
+   *
+   *   LOSING submit MUST demote it, because the action is no longer reachable
+   *   — a Submit main button left behind POSTs a review to a PR this session
+   *   is no longer tied to. That demotion is deliberately not persisted:
+   *   `setDefaultAction` would overwrite a genuine `submit` preference that
+   *   belongs to other reviews.
+   *
+   * @param {boolean} canSubmit - the manager's current `canSubmitToGitHub`
+   */
+  setCanSubmit(canSubmit) {
+    const hideSubmit = !canSubmit || this.forcedHideSubmit;
+
+    // While the menu is OPEN, replacing its items moves every row under the
+    // pointer — the click that lands is not the one the user aimed at. Park
+    // the answer and apply it on close; `closeDropdown` flushes it.
+    //
+    // Parking is NOT a licence for the next click to act on the OLD answer:
+    // both dispatchers flush through `_settleBeforeAction` before they act, so
+    // the window between parking and closing can no longer submit a review —
+    // or persist a `submit` preference — that this flip just revoked.
+    if (this.isOpen) {
+      this._pendingHideSubmit = hideSubmit;
+      return;
+    }
+    this._applyHideSubmit(hideSubmit);
+  }
+
+  /**
+   * Apply a resolved `hideSubmit` answer to the rendered button. Idempotent —
+   * an unchanged answer touches nothing, which is what lets every caller
+   * invoke `setCanSubmit` unconditionally instead of tracking transitions.
+   *
+   * @param {boolean} hideSubmit
+   */
+  _applyHideSubmit(hideSubmit) {
+    this._pendingHideSubmit = null;
+    if (hideSubmit === this.hideSubmit) return;
+
+    this.hideSubmit = hideSubmit;
+
+    // Demote only. See `setCanSubmit` for why gaining the capability leaves
+    // the visible action exactly where the user last left it.
+    if (hideSubmit && this.defaultAction === 'submit') {
+      this.defaultAction = 'preview';
+    }
+
+    this.updateDropdownMenu();
+    this.updateButtonText();
   }
 
   /**

@@ -443,6 +443,59 @@ async function findMergeBase(repoPath, baseBranch) {
 }
 
 /**
+ * List the TRACKED files whose working-tree content differs from `HEAD`
+ * (staged and unstaged alike).
+ *
+ * Phase 5 uses this to decide which comments may be posted to GitHub as line
+ * comments. Local mode renders the WORKING TREE, so a comment's line number
+ * describes the file on disk; for a file with uncommitted edits that number
+ * need not be the line at the commit GitHub holds, and a shifted line comment
+ * is wrong in a way the reader cannot see. Those comments degrade to
+ * file-level with a `(Ref Line N)` prefix — see `formatCommentsForGraphQL` in
+ * src/providers/review-submit.js.
+ *
+ * Untracked files are deliberately absent: they exist in no commit, so they
+ * appear in no PR diff, and their comments are already file-level for that
+ * reason.
+ *
+ * THROWS rather than returning an empty set. An empty set is indistinguishable
+ * from "the tree is clean", which is precisely the claim that buys a comment
+ * its line number; a caller that cannot get an answer must degrade, not
+ * assume. See the `submit-review` handler in src/routes/local.js.
+ *
+ * @param {string} repoPath - Path to the git repository
+ * @returns {Promise<Set<string>>} Repository-relative paths
+ */
+async function listFilesModifiedVsHead(repoPath) {
+  try {
+    // -z: NUL-separated, so paths with spaces, quotes or newlines survive.
+    // No pathspec and no rename detection flags — the default output names the
+    // post-image path, which is the one comments are anchored to.
+    //
+    // GIT_DIFF_FLAGS for the same reason every other diff in this file carries
+    // it: the user's git config must not change the answer. Most of the set is
+    // inert under `--name-only`; `--no-relative` is the load-bearing one. With
+    // `diff.relative` configured and a `local_path` below the repo root, git
+    // returns SUBDIRECTORY-relative paths, none of which match the repo-root
+    // relative `comment.file` the caller tests — so every dirty file reads as
+    // clean and its comments KEEP line numbers that no longer describe the
+    // commit GitHub holds. That is the failure direction this function exists
+    // to make impossible: an unanswerable question must throw, never come back
+    // as "clean". A subdir `local_path` is reachable — src/routes/mcp.js and
+    // src/routes/analyses.js store the path they are given verbatim.
+    const output = execSync(`git diff ${GIT_DIFF_FLAGS} --name-only -z HEAD`, {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 10 * 1024 * 1024
+    });
+    return new Set(output.split('\0').filter(f => f.length > 0));
+  } catch (error) {
+    throw new Error(`Failed to list files modified vs HEAD: ${error.message}`);
+  }
+}
+
+/**
  * Generate diff output for untracked files using git diff --no-index.
  * @param {string} repoPath - Path to the git repository
  * @param {Array} untrackedFiles - Array from getUntrackedFiles()
@@ -1439,5 +1492,6 @@ module.exports = {
   getUntrackedFiles,
   computeLocalDiffDigest,
   computeScopedDigest,
-  findMergeBase
+  findMergeBase,
+  listFilesModifiedVsHead
 };
