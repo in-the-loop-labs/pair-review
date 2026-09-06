@@ -638,7 +638,7 @@ pair-review integrates with AI providers via their CLI tools:
 - **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)
 - **Pi**: Uses Pi coding agent CLI (requires model configuration)
 - **OMP**: Uses the [Oh My Pi](https://github.com/can1357/oh-my-pi) CLI (`omp`), a fork of the Pi coding agent. Install it with `npm install -g @oh-my-pi/pi-coding-agent`. Works out of the box: the built-in `default` mode uses whatever model your OMP configuration selects, and you can add specific models via `providers.omp.models` (run `omp models` to list the catalog). OMP's advisor runtime — which passively reviews each turn and injects notes — is disabled during reviews by default for deterministic, lower-cost analysis; set `"advisor": true` in `providers.omp` to opt back in.
-- **Muse**: Uses Meta's Muse Code CLI (`muse`), a terminal coding agent released in beta in August 2026 and powered by the Muse Spark 1.2 model. Install it with the single shell command from Meta's Muse Code install instructions (macOS/Linux), then authenticate once with `muse login` (credentials are stored in `~/.config/muse/auth.json`). pair-review drives it headlessly via `muse exec --json`. Within pair-review, Muse is analysis-only: the CLI exposes no ACP server mode, so there is no Muse chat provider.
+- **Muse**: Uses Meta's Muse Code CLI (`muse`), a terminal coding agent released in beta in August 2026 and powered by the Muse Spark 1.3 model. Install it with the single shell command from Meta's Muse Code install instructions (macOS/Linux), then authenticate once with `muse login` (credentials are stored in `~/.config/muse/auth.json`). pair-review drives it headlessly via `muse exec --json`. Within pair-review, Muse is analysis-only: the CLI exposes no ACP server mode, so there is no Muse chat provider.
 
 You can select your preferred provider and model in the repository settings UI.
 
@@ -650,20 +650,22 @@ Most providers (Claude, Antigravity, Codex, Copilot, Muse) come with built-in mo
 
 Muse exposes its built-in models as reasoning-effort variants over two underlying CLI models:
 
-| Model ID | Tier | Underlying CLI model |
-|----------|------|----------------------|
-| `muse-spark-1.2-ultra` | thorough | `muse-spark-1.2` |
-| `muse-spark-1.2-contributor-ultra` | thorough | `muse-spark-1.2-contributor` |
-| `muse-spark-1.2-xhigh` | thorough | `muse-spark-1.2` |
-| `muse-spark-1.2-contributor-xhigh` | thorough | `muse-spark-1.2-contributor` |
-| `muse-spark-1.2-high` | balanced (**default**) | `muse-spark-1.2` |
-| `muse-spark-1.2-contributor-high` | balanced | `muse-spark-1.2-contributor` |
-| `muse-spark-1.2-low` | fast | `muse-spark-1.2` |
-| `muse-spark-1.2-contributor-low` | fast | `muse-spark-1.2-contributor` |
+| Model ID | Tier | CLI model |
+|----------|------|-----------|
+| `muse-spark-1.3-max` | thorough | `muse-spark-1.3` |
+| `muse-spark-1.3-contributor-max` | thorough | `muse-spark-1.3-contributor` |
+| `muse-spark-1.3-xhigh` | thorough | `muse-spark-1.3` |
+| `muse-spark-1.3-contributor-xhigh` | thorough | `muse-spark-1.3-contributor` |
+| `muse-spark-1.3-high` | balanced (**default**) | `muse-spark-1.3` |
+| `muse-spark-1.3-contributor-high` | balanced | `muse-spark-1.3-contributor` |
+| `muse-spark-1.3-low` | fast | `muse-spark-1.3` |
+| `muse-spark-1.3-contributor-low` | fast | `muse-spark-1.3-contributor` |
 
-`muse-spark-1.2` and `muse-spark` are convenience aliases for `muse-spark-1.2-high`. `muse-spark-1.2-contributor` is likewise an alias for `muse-spark-1.2-contributor-high` — worth knowing because it is the bare CLI model name, so `--model muse-spark-1.2-contributor` selects the data-sharing tier described below rather than erroring out.
+`muse-spark-1.3` and `muse-spark` are convenience aliases for `muse-spark-1.3-high`. `muse-spark-1.3-contributor` is likewise an alias for `muse-spark-1.3-contributor-high` — worth knowing because it is the bare CLI model name, so `--model muse-spark-1.3-contributor` selects the data-sharing tier described below rather than erroring out.
 
-The `-contributor` models are substantially cheaper ($0.10/M input, $0.20/M output versus $1.25/M and $4.25/M) **because Meta may use their content for product improvement**. Since a code review sends your diff and surrounding source to the model, pair-review deliberately defaults to the non-contributor `muse-spark-1.2-high` — opting into data sharing is always an explicit choice you make by selecting a `-contributor` model, whether by its full ID or by that alias.
+Muse Spark 1.3 is priced identically to 1.2 and is strictly better, so every `muse-spark-1.2-*` id (including the bare `muse-spark-1.2` and `muse-spark-1.2-contributor`) is kept as an alias of its 1.3 twin at the same reasoning effort — saved councils and configs upgrade in place. The former `-ultra` ids resolve to the `-max` entries: `--reasoning-effort ultra` is behind a closed feature gate and silently runs at `xhigh`, whereas `max` actually runs.
+
+The `-contributor` models are substantially cheaper ($0.10/M input, $0.20/M output versus $1.25/M and $4.25/M) **because Meta may use their content for product improvement**. Since a code review sends your diff and surrounding source to the model, pair-review deliberately defaults to the non-contributor `muse-spark-1.3-high` — opting into data sharing is always an explicit choice you make by selecting a `-contributor` model, whether by its full ID or by that alias.
 
 #### Configuring Custom Models
 

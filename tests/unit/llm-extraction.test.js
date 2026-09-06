@@ -55,14 +55,21 @@ describe('LLM-based JSON extraction fallback', () => {
       expect(provider.getFastTierModel()).toBe('haiku');
     });
 
-    it('should return fast-tier model for Antigravity (gemini-3.5-flash-low)', () => {
+    it('should return fast-tier model for Antigravity (gemini-3.8-flash-low)', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-low');
-      expect(provider.getFastTierModel()).toBe('gemini-3.5-flash-low');
+      expect(provider.getFastTierModel()).toBe('gemini-3.8-flash-low');
     });
 
-    it('should return fast-tier model for Codex (gpt-5.4-nano)', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
-      expect(provider.getFastTierModel()).toBe('gpt-5.4-nano');
+    it('should keep gemini-3.8-flash-low as the extraction model now that 3.8 Flash (High) is the thorough default', () => {
+      const provider = new AntigravityProvider();
+      expect(provider.model).toBe('gemini-3.8-flash-high');
+      expect(provider.getFastTierModel()).toBe('gemini-3.8-flash-low');
+      expect(provider.getFastTierModel()).not.toBe(provider.model);
+    });
+
+    it('should return fast-tier model for Codex (gpt-5.4-mini)', () => {
+      const provider = new CodexProvider('gpt-5.6-sol-high');
+      expect(provider.getFastTierModel()).toBe('gpt-5.4-mini');
     });
 
     it('should return fast-tier model for Copilot (claude-haiku-4.6)', () => {
@@ -121,7 +128,7 @@ describe('LLM-based JSON extraction fallback', () => {
     describe('AntigravityProvider', () => {
       it('should return valid config', () => {
         const provider = new AntigravityProvider();
-        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+        const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -130,7 +137,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should deliver the extraction prompt via stdin without enabling tools', () => {
         const provider = new AntigravityProvider();
-        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+        const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
         // agy reads the prompt from stdin (plain text); extraction is a pure
         // text->JSON reformat, so it must NOT enable the agentic tool loop.
@@ -140,17 +147,17 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should include the resolved cliName in args', () => {
         const provider = new AntigravityProvider();
-        const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+        const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
         // The clean id resolves to the exact `agy --model` display string.
-        expect(config.args).toContain('Gemini 3.5 Flash (Low)');
+        expect(config.args).toContain('Gemini 3.8 Flash (Low)');
       });
     });
 
     describe('CodexProvider', () => {
       it('should return valid config', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-nano');
+        const config = provider.getExtractionConfig('gpt-5.4-mini');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -159,7 +166,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should use read-only sandbox for extraction', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-nano');
+        const config = provider.getExtractionConfig('gpt-5.4-mini');
 
         // For extraction, we don't need shell commands
         expect(config.args).toContain('read-only');
@@ -167,9 +174,9 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should include model in args', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-nano');
+        const config = provider.getExtractionConfig('gpt-5.4-mini');
 
-        expect(config.args).toContain('gpt-5.4-nano');
+        expect(config.args).toContain('gpt-5.4-mini');
       });
     });
 
@@ -211,8 +218,8 @@ describe('LLM-based JSON extraction fallback', () => {
     it('all providers should have fast-tier models defined', () => {
       const providers = [
         { Class: ClaudeProvider, expectedFast: 'haiku' },
-        { Class: AntigravityProvider, expectedFast: 'gemini-3.5-flash-low' },
-        { Class: CodexProvider, expectedFast: 'gpt-5.4-nano' },
+        { Class: AntigravityProvider, expectedFast: 'gemini-3.8-flash-low' },
+        { Class: CodexProvider, expectedFast: 'gpt-5.4-mini' },
         { Class: CopilotProvider, expectedFast: 'claude-haiku-4.6' },
       ];
 

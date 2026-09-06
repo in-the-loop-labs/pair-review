@@ -91,42 +91,33 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * which contains spaces and parentheses and must never leak into ids.
  *
  * We curate the Gemini-family models here — Antigravity is the Gemini CLI's
- * successor and its native models are Gemini. `agy` also exposes Claude and
- * GPT-OSS models; those remain reachable via a `providers.antigravity.models`
- * config override but are intentionally left out of the default picker to keep
- * the cross-provider model-mismatch guard and the UX unambiguous.
+ * successor and its native models are Gemini. Ordered thorough -> balanced ->
+ * fast, matching the other providers' pickers. Gemini 3.8 Flash at high effort
+ * is the thorough-tier default: it is the strongest Gemini agy exposes today
+ * (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4 — on par with GPT-6 Astra and
+ * Muse 1.3), so "Flash" now describes latency, not capability. Gemini 3.1 Pro
+ * (Low/High, Feb 2026) is the previous-generation Pro line and stays on the
+ * balanced/thorough tiers for anyone who prefers it. Gemini 3.8 Flash at low
+ * effort is the sole fast-tier entry, which also makes it the JSON-extraction
+ * model (getFastTierModel() picks the first `tier: 'fast'` model — position
+ * in this array does not matter). Retired ids (3.5 Flash) are kept as aliases
+ * of their 3.8 Flash counterparts so saved selections keep working. `agy` also
+ * exposes Claude and GPT-OSS models; those remain reachable via a
+ * `providers.antigravity.models` config override but are intentionally left
+ * out of the default picker to keep the cross-provider model-mismatch guard
+ * and the UX unambiguous.
  */
 const ANTIGRAVITY_MODELS = [
   {
-    id: 'gemini-3.5-flash-low',
-    cliName: 'Gemini 3.5 Flash (Low)',
-    aliases: ['gemini-3.5-flash'],
-    name: '3.5 Flash (Low)',
-    tier: 'fast',
-    tagline: 'Rapid Sanity Check',
-    description: 'Cheapest, fastest pass — quick scans and the JSON-extraction fallback',
-    badge: 'Cheapest',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'gemini-3.5-flash-high',
-    cliName: 'Gemini 3.5 Flash (High)',
-    name: '3.5 Flash (High)',
-    tier: 'fast',
-    tagline: 'Quick Look',
-    description: 'Flash speed with more reasoning effort for a sharper first pass',
-    badge: 'Quick Look',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'gemini-3.1-pro-low',
-    cliName: 'Gemini 3.1 Pro (Low)',
-    aliases: ['gemini-3.1-pro'],
-    name: '3.1 Pro (Low)',
-    tier: 'balanced',
-    tagline: 'Standard PR Review',
-    description: 'Strong reasoning with a large context window — the reliable daily driver',
-    badge: 'Daily Driver',
+    id: 'gemini-3.8-flash-high',
+    cliName: 'Gemini 3.8 Flash (High)',
+    // Retired 3.5 Flash (High) id — see the note on gemini-3.8-flash-low.
+    aliases: ['gemini-3.5-flash-high'],
+    name: '3.8 Flash (High)',
+    tier: 'thorough',
+    tagline: 'Frontier Review',
+    description: 'Gemini 3.8 Flash at high effort is the strongest Gemini on agy — DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4, on par with GPT-6 Astra and Muse 1.3. "Flash" now means latency, not capability. Uses the thorough prompt set.',
+    badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
   },
@@ -136,13 +127,39 @@ const ANTIGRAVITY_MODELS = [
     name: '3.1 Pro (High)',
     tier: 'thorough',
     tagline: 'Deep Dive',
-    description: 'Maximum reasoning effort for complex, architectural reviews',
+    description: 'Previous-generation Pro (Feb 2026) at maximum reasoning effort — slower and now outscored by 3.8 Flash (High), kept for reviewers who prefer the Pro line',
     badge: 'Deep Dive',
     badgeClass: 'badge-power'
+  },
+  {
+    id: 'gemini-3.1-pro-low',
+    cliName: 'Gemini 3.1 Pro (Low)',
+    aliases: ['gemini-3.1-pro'],
+    name: '3.1 Pro (Low)',
+    tier: 'balanced',
+    tagline: 'Previous-Gen Pro',
+    description: 'Previous-generation Pro (Feb 2026) at low effort — a large-context middle ground, superseded as the default by 3.8 Flash (High)',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gemini-3.8-flash-low',
+    cliName: 'Gemini 3.8 Flash (Low)',
+    // The 3.5 Flash ids no longer exist on agy (`agy --model gemini-3.5-flash-low`
+    // exits 1 with an unknown-model listing). Saved councils/configs that still
+    // name them resolve to the same effort level on 3.8 Flash; without the
+    // aliases they would hit agy's exit-1 unknown-model failure.
+    aliases: ['gemini-3.8-flash', 'gemini-3.5-flash-low', 'gemini-3.5-flash'],
+    name: '3.8 Flash (Low)',
+    tier: 'fast',
+    tagline: 'Rapid Sanity Check',
+    description: 'Cheapest, fastest pass — quick scans and the JSON-extraction fallback model',
+    badge: 'Cheapest',
+    badgeClass: 'badge-speed'
   }
 ];
 
-const DEFAULT_ANTIGRAVITY_MODEL = 'gemini-3.1-pro-low';
+const DEFAULT_ANTIGRAVITY_MODEL = 'gemini-3.8-flash-high';
 
 class AntigravityProvider extends AIProvider {
   /**
@@ -201,7 +218,9 @@ class AntigravityProvider extends AIProvider {
     // Exact `agy --model` string. Config overrides honor the shared `cli_model`
     // contract used across providers (documented in config.example.json) and
     // fall back to `cliName`; built-ins carry `cliName`. Raw id is the last
-    // resort — agy tolerates an unknown name by using its default.
+    // resort. Note: agy no longer falls back to its default for an unknown
+    // name — as of agy 1.0.16 it exits 1 and prints the model listing, and
+    // the provider's clean ids (`gemini-3.8-flash-low`) are accepted verbatim.
     const cliModel =
       configModel?.cli_model ||
       configModel?.cliName ||

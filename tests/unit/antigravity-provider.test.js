@@ -91,8 +91,15 @@ describe('AntigravityProvider', () => {
       expect(AntigravityProvider.getProviderId()).toBe('antigravity');
     });
 
-    it('should return gemini-3.1-pro-low as default model', () => {
-      expect(AntigravityProvider.getDefaultModel()).toBe('gemini-3.1-pro-low');
+    it('should return gemini-3.8-flash-high as default model', () => {
+      expect(AntigravityProvider.getDefaultModel()).toBe('gemini-3.8-flash-high');
+    });
+
+    it('should no longer treat gemini-3.1-pro-low as the default', () => {
+      expect(AntigravityProvider.getDefaultModel()).not.toBe('gemini-3.1-pro-low');
+      const proLow = AntigravityProvider.getModels().find(m => m.id === 'gemini-3.1-pro-low');
+      expect(proLow.default).toBeUndefined();
+      expect(proLow.tier).toBe('balanced');
     });
 
     it('should return the 4 built-in models with expected ids', () => {
@@ -101,38 +108,53 @@ describe('AntigravityProvider', () => {
       expect(models.length).toBe(4);
 
       const modelIds = models.map(m => m.id);
+      // Ordered thorough -> balanced -> fast, matching the other providers.
       expect(modelIds).toEqual([
-        'gemini-3.5-flash-low',
-        'gemini-3.5-flash-high',
+        'gemini-3.8-flash-high',
+        'gemini-3.1-pro-high',
         'gemini-3.1-pro-low',
-        'gemini-3.1-pro-high'
+        'gemini-3.8-flash-low'
       ]);
     });
 
     it('should map each model to the correct tier', () => {
       const models = AntigravityProvider.getModels();
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
-      expect(tierMap['gemini-3.5-flash-low']).toBe('fast');
-      expect(tierMap['gemini-3.5-flash-high']).toBe('fast');
+      expect(tierMap['gemini-3.8-flash-low']).toBe('fast');
+      expect(tierMap['gemini-3.8-flash-high']).toBe('thorough');
       expect(tierMap['gemini-3.1-pro-low']).toBe('balanced');
       expect(tierMap['gemini-3.1-pro-high']).toBe('thorough');
+    });
+
+    it('should keep gemini-3.8-flash-low as the only fast-tier (extraction) model', () => {
+      const fast = AntigravityProvider.getModels().filter(m => m.tier === 'fast');
+      expect(fast.map(m => m.id)).toEqual(['gemini-3.8-flash-low']);
+      expect(new AntigravityProvider().getFastTierModel()).toBe('gemini-3.8-flash-low');
     });
 
     it('should carry the exact `agy --model` cliName on each model', () => {
       const models = AntigravityProvider.getModels();
       const cliNameMap = Object.fromEntries(models.map(m => [m.id, m.cliName]));
-      expect(cliNameMap['gemini-3.5-flash-low']).toBe('Gemini 3.5 Flash (Low)');
-      expect(cliNameMap['gemini-3.5-flash-high']).toBe('Gemini 3.5 Flash (High)');
+      expect(cliNameMap['gemini-3.8-flash-low']).toBe('Gemini 3.8 Flash (Low)');
+      expect(cliNameMap['gemini-3.8-flash-high']).toBe('Gemini 3.8 Flash (High)');
       expect(cliNameMap['gemini-3.1-pro-low']).toBe('Gemini 3.1 Pro (Low)');
       expect(cliNameMap['gemini-3.1-pro-high']).toBe('Gemini 3.1 Pro (High)');
     });
 
-    it('should mark exactly one model (gemini-3.1-pro-low) as default', () => {
+    it('should mark exactly one model (gemini-3.8-flash-high) as default', () => {
       const models = AntigravityProvider.getModels();
       const defaults = models.filter(m => m.default === true);
       expect(defaults.length).toBe(1);
-      expect(defaults[0].id).toBe('gemini-3.1-pro-low');
-      expect(defaults[0].tier).toBe('balanced');
+      expect(defaults[0].id).toBe('gemini-3.8-flash-high');
+      expect(defaults[0].tier).toBe('thorough');
+      expect(defaults[0].badge).toBe('Recommended');
+      expect(defaults[0].badgeClass).toBe('badge-recommended');
+    });
+
+    it('should demote gemini-3.1-pro-low to a previous-generation badge', () => {
+      const proLow = AntigravityProvider.getModels().find(m => m.id === 'gemini-3.1-pro-low');
+      expect(proLow.badge).toBe('Previous Gen');
+      expect(proLow.badgeClass).toBe('badge-balanced');
     });
 
     it('should return install instructions with the antigravity install script', () => {
@@ -144,7 +166,8 @@ describe('AntigravityProvider', () => {
   describe('constructor: command precedence and shell mode', () => {
     it('should create instance with default model', () => {
       const provider = new AntigravityProvider();
-      expect(provider.model).toBe('gemini-3.1-pro-low');
+      expect(provider.model).toBe('gemini-3.8-flash-high');
+      expect(provider.model).toBe(AntigravityProvider.getDefaultModel());
     });
 
     it('should create instance with a specified model', () => {
@@ -222,18 +245,45 @@ describe('AntigravityProvider', () => {
     it('should translate a clean id into its exact cliName', () => {
       const provider = new AntigravityProvider();
       expect(provider._resolveCliModel('gemini-3.1-pro-low')).toBe('Gemini 3.1 Pro (Low)');
-      expect(provider._resolveCliModel('gemini-3.5-flash-high')).toBe('Gemini 3.5 Flash (High)');
+      expect(provider._resolveCliModel('gemini-3.8-flash-high')).toBe('Gemini 3.8 Flash (High)');
     });
 
     it('should resolve a built-in alias to its cliName', () => {
       const provider = new AntigravityProvider();
       // gemini-3.1-pro is an alias of gemini-3.1-pro-low
       expect(provider._resolveCliModel('gemini-3.1-pro')).toBe('Gemini 3.1 Pro (Low)');
-      // gemini-3.5-flash is an alias of gemini-3.5-flash-low
-      expect(provider._resolveCliModel('gemini-3.5-flash')).toBe('Gemini 3.5 Flash (Low)');
+      // gemini-3.8-flash is an alias of gemini-3.8-flash-low
+      expect(provider._resolveCliModel('gemini-3.8-flash')).toBe('Gemini 3.8 Flash (Low)');
     });
 
-    it('should return an unknown id unchanged (agy falls back to its default)', () => {
+    it('should resolve each retired 3.5 Flash id to its 3.8 Flash counterpart at the same effort', () => {
+      const provider = new AntigravityProvider();
+      // The 3.5 Flash ids no longer exist on agy; saved councils/configs naming
+      // them must land on 3.8 Flash instead of agy's exit-1 unknown-model failure.
+      expect(provider._resolveCliModel('gemini-3.5-flash-low')).toBe('Gemini 3.8 Flash (Low)');
+      expect(provider._resolveCliModel('gemini-3.5-flash')).toBe('Gemini 3.8 Flash (Low)');
+      expect(provider._resolveCliModel('gemini-3.5-flash-high')).toBe('Gemini 3.8 Flash (High)');
+    });
+
+    it('should declare the retired 3.5 Flash ids as aliases on the 3.8 Flash entries', () => {
+      const byId = Object.fromEntries(AntigravityProvider.getModels().map(m => [m.id, m]));
+      expect(byId['gemini-3.8-flash-low'].aliases).toEqual([
+        'gemini-3.8-flash', 'gemini-3.5-flash-low', 'gemini-3.5-flash'
+      ]);
+      expect(byId['gemini-3.8-flash-high'].aliases).toEqual(['gemini-3.5-flash-high']);
+    });
+
+    it('should keep every alias unique across the built-in models', () => {
+      const all = AntigravityProvider.getModels().flatMap(m => [m.id, ...(m.aliases || [])]);
+      expect(new Set(all).size).toBe(all.length);
+    });
+
+    it('should not expose a retired 3.5 Flash id as a canonical model', () => {
+      const ids = AntigravityProvider.getModels().map(m => m.id);
+      expect(ids.some(id => id.includes('3.5-flash'))).toBe(false);
+    });
+
+    it('should return an unknown id unchanged (agy exits 1 with its model listing)', () => {
       const provider = new AntigravityProvider();
       expect(provider._resolveCliModel('some-unknown-model')).toBe('some-unknown-model');
     });
@@ -673,7 +723,7 @@ describe('AntigravityProvider', () => {
   describe('getExtractionConfig', () => {
     it('should deliver the prompt via stdin and bake the extraction directive into -p', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-low');
-      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+      const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
       expect(config.command).toBe('agy');
       expect(config.useShell).toBe(false);
@@ -687,19 +737,19 @@ describe('AntigravityProvider', () => {
 
       // Fast-tier model resolves to its cliName.
       const modelIdx = config.args.indexOf('--model');
-      expect(config.args[modelIdx + 1]).toBe('Gemini 3.5 Flash (Low)');
+      expect(config.args[modelIdx + 1]).toBe('Gemini 3.8 Flash (Low)');
     });
 
     it('should NOT enable tools for extraction (no --dangerously-skip-permissions)', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-low');
-      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+      const config = provider.getExtractionConfig('gemini-3.8-flash-low');
       expect(config.args).not.toContain('--dangerously-skip-permissions');
     });
 
     it('should use shell mode for a multi-word command', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = 'docker run agy';
       const provider = new AntigravityProvider('gemini-3.1-pro-low');
-      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+      const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run agy');
@@ -713,10 +763,10 @@ describe('AntigravityProvider', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-low', {
         env: { PROVIDER_VAR: 'p' },
         models: [
-          { id: 'gemini-3.5-flash-low', env: { MODEL_VAR: 'm' } }
+          { id: 'gemini-3.8-flash-low', env: { MODEL_VAR: 'm' } }
         ]
       });
-      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+      const config = provider.getExtractionConfig('gemini-3.8-flash-low');
       expect(config.env).toBeTruthy();
       expect(config.env.PROVIDER_VAR).toBe('p');
       expect(config.env.MODEL_VAR).toBe('m');
@@ -728,10 +778,10 @@ describe('AntigravityProvider', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-high', {
         models: [
           { id: 'gemini-3.1-pro-high', env: { ANALYSIS_ONLY: 'a' } },
-          { id: 'gemini-3.5-flash-low', env: { EXTRACT_ONLY: 'e' } }
+          { id: 'gemini-3.8-flash-low', env: { EXTRACT_ONLY: 'e' } }
         ]
       });
-      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+      const config = provider.getExtractionConfig('gemini-3.8-flash-low');
       expect(config.env.EXTRACT_ONLY).toBe('e');
       expect(config.env.ANALYSIS_ONLY).toBeUndefined();
     });
@@ -753,7 +803,7 @@ describe('AntigravityProvider', () => {
 
       const modelIdx = args.indexOf('--model');
       expect(modelIdx).toBeGreaterThanOrEqual(0);
-      expect(args[modelIdx + 1]).toBe('Gemini 3.1 Pro (Low)');
+      expect(args[modelIdx + 1]).toBe('Gemini 3.8 Flash (High)');
 
       // Analysis path enables the agentic tool loop.
       expect(args).toContain('--dangerously-skip-permissions');

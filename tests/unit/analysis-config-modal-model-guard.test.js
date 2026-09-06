@@ -32,21 +32,22 @@ function makeContext(models) {
 }
 
 const ANTIGRAVITY_MODELS = [
-  { id: 'gemini-3.1-pro-low', default: true, tier: 'thorough' },
-  { id: 'gemini-3.5-flash-low', tier: 'fast' }
+  { id: 'gemini-3.8-flash-high', default: true, tier: 'thorough' },
+  { id: 'gemini-3.1-pro-low', tier: 'balanced' },
+  { id: 'gemini-3.8-flash-low', tier: 'fast' }
 ];
 
 describe('AnalysisConfigModal.selectModel guard', () => {
   it('keeps a model that belongs to the current provider', () => {
     const ctx = makeContext(ANTIGRAVITY_MODELS);
-    AnalysisConfigModal.prototype.selectModel.call(ctx, 'gemini-3.5-flash-low');
-    expect(ctx.selectedModel).toBe('gemini-3.5-flash-low');
+    AnalysisConfigModal.prototype.selectModel.call(ctx, 'gemini-3.8-flash-low');
+    expect(ctx.selectedModel).toBe('gemini-3.8-flash-low');
   });
 
   it('falls back to the provider default when given a foreign model', () => {
     const ctx = makeContext(ANTIGRAVITY_MODELS);
     AnalysisConfigModal.prototype.selectModel.call(ctx, 'opus');
-    expect(ctx.selectedModel).toBe('gemini-3.1-pro-low');
+    expect(ctx.selectedModel).toBe('gemini-3.8-flash-high');
   });
 
   it('falls back to the first model when no model is flagged default', () => {

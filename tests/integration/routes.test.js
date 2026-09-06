@@ -3545,8 +3545,8 @@ describe('Config Endpoints', () => {
       // rejects the foreign value and returns claude's coherent default rather than
       // publishing a model id no model-card can match — matching what the modal's
       // selectModel() guard does with 'sonnet' anyway. Claude's coherent default is
-      // the canonical 'opus-4.8-xhigh'.
-      expect(response.body.default_model).toBe('opus-4.8-xhigh');
+      // 'opus-5-high'.
+      expect(response.body.default_model).toBe('opus-5-high');
     });
 
     // The landing page, its URL-validation errors, and the local-path "that's
@@ -3640,7 +3640,7 @@ describe('Config Endpoints', () => {
 
       expect(response.body.default_provider).toBe('antigravity');
       expect(response.body.default_model).not.toBe('opus');
-      // antigravity's default model (gemini-3.1-pro-low) belongs to the provider
+      // antigravity's default model (gemini-3.8-flash-high) belongs to the provider
       expect(response.body.default_model).toMatch(/^gemini-/);
     });
 

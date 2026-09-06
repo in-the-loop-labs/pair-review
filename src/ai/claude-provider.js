@@ -64,6 +64,8 @@ const CLAUDE_MODELS = [
     // The bare 'fable' alias intentionally stays pinned to Fable 5 (the same way
     // 'opus' stays on opus-4.8-xhigh) so existing configs and --model fable
     // invocations keep resolving to the generation they were written against.
+    // The provider DEFAULT is a separate knob: it moved to opus-5-high (same
+    // price as Opus 4.8) while the 'opus' alias stayed pinned to opus-4.8-xhigh.
     aliases: ['fable'],
     cli_model: 'claude-fable-5',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
@@ -95,8 +97,8 @@ const CLAUDE_MODELS = [
     name: 'Opus 5 XHigh',
     tier: 'thorough',
     tagline: 'Newest Opus',
-    description: 'Opus 5 (newest) with extra-high effort',
-    badge: 'Latest',
+    description: 'Opus 5 (newest) with extra-high effort — deepest thorough reviews',
+    badge: 'Extra-High Effort',
     badgeClass: 'badge-power'
   },
   {
@@ -105,10 +107,11 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 5 High',
     tier: 'thorough',
-    tagline: 'Newest Opus',
-    description: 'Opus 5 with high effort — quicker than XHigh',
-    badge: 'High Effort',
-    badgeClass: 'badge-power'
+    tagline: 'Recommended Default',
+    description: 'Opus 5 (newest) with high effort — the recommended default for thorough reviews',
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended',
+    default: true
   },
   {
     id: 'opus-4.8-xhigh',
@@ -117,11 +120,10 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Opus 4.8 XHigh',
     tier: 'thorough',
-    tagline: 'Maximum Depth',
-    description: 'Opus 4.8 with extra-high effort — deepest analysis',
-    badge: 'Most Thorough',
-    badgeClass: 'badge-power',
-    default: true
+    tagline: 'Previous Gen',
+    description: 'Opus 4.8 with extra-high effort',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
   },
   {
     id: 'opus-4.8-high',
@@ -1041,7 +1043,7 @@ class ClaudeProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'opus-4.8-xhigh';
+    return 'opus-5-high';
   }
 
   static getInstallInstructions() {

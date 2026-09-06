@@ -27,7 +27,7 @@ const { URLSearchParams: NativeURLSearchParams } = require('url');
 // shape of /api/providers (id, models, defaultModel).
 const PROVIDERS = [
   { id: 'claude', defaultModel: 'opus', models: [{ id: 'opus' }, { id: 'sonnet-4.6' }, { id: 'haiku' }] },
-  { id: 'antigravity', defaultModel: 'gemini-3.1-pro-low', models: [{ id: 'gemini-3.1-pro-low' }, { id: 'pro' }, { id: 'gemini-3.5-flash-low' }] },
+  { id: 'antigravity', defaultModel: 'gemini-3.8-flash-high', models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.1-pro-low' }, { id: 'pro' }, { id: 'gemini-3.8-flash-low' }] },
   { id: 'pi', defaultModel: 'multi-model', models: [{ id: 'multi-model' }] }
 ];
 
@@ -162,7 +162,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
       default_model: 'opus',
     });
     expect(config.provider).toBe('antigravity');
-    expect(config.model).toBe('gemini-3.1-pro-low');
+    expect(config.model).toBe('gemini-3.8-flash-high');
     expect(config.model).not.toBe('opus');
   });
 
@@ -367,7 +367,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     const appConfig = { default_provider: 'claude', default_model: 'opus', provider_override: 'antigravity' };
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
     expect(config.provider).toBe('antigravity');
-    expect(config.model).toBe('gemini-3.1-pro-low');
+    expect(config.model).toBe('gemini-3.8-flash-high');
   });
 
   it('lets a per-invocation (delegation URL) override outrank both repo settings and the CLI flag override', async () => {
@@ -391,7 +391,7 @@ describe('PRManager._buildDefaultAnalysisConfig', () => {
     const config = await manager._buildDefaultAnalysisConfig(repoSettings, {}, appConfig, PROVIDERS);
     expect(config.isCouncil).toBeUndefined();
     expect(config.provider).toBe('antigravity');
-    expect(config.model).toBe('gemini-3.1-pro-low');
+    expect(config.model).toBe('gemini-3.8-flash-high');
     // Must NOT fetch council config when the override forces single-provider.
     expect(councilFetch).not.toHaveBeenCalled();
   });
