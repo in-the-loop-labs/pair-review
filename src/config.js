@@ -68,7 +68,7 @@ const DEFAULT_CONFIG = {
   single_port: true,  // When true, reuse a single server on the configured port; new invocations delegate to the running server
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'antigravity', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi', 'omp', 'muse'
-  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-3.1-pro-low' for Antigravity)
+  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-3.8-flash-high' for Antigravity)
   tours: {
     enabled: false,            // When true, the guided-tour feature is available (toolbar button visible, etc.)
     auto_generate: true,       // When true, a tour generation job is kicked off automatically on review load

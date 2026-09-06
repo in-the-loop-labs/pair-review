@@ -153,25 +153,41 @@ function attemptIdOf(record) {
  * The provider's default model.
  *
  * DELIBERATE: this is the NON-contributor model, even though the muse CLI's own
- * default is `muse-spark-1.2-contributor`. Pair-review sends potentially
+ * default is `muse-spark-1.3-contributor`. Pair-review sends potentially
  * proprietary source code to the model, and the contributor tier is discounted
  * precisely because Meta may use that content for product improvement. Opting
  * into data sharing must be an explicit user choice, never a silent default.
  */
-const DEFAULT_MUSE_MODEL = 'muse-spark-1.2-high';
+const DEFAULT_MUSE_MODEL = 'muse-spark-1.3-high';
 
 /**
  * Muse model definitions with tier mappings.
  *
- * Muse exposes exactly two real CLI model IDs; everything below is a
- * reasoning-effort variant over those two, using the same `cli_model` +
+ * Muse exposes two real CLI model IDs per generation; everything below is a
+ * reasoning-effort variant over the current pair, using the same `cli_model` +
  * `extra_args` pattern as the Codex provider:
- * - muse-spark-1.2             — $1.25/$4.25 per MTok, ~1M context, 256k max output
- * - muse-spark-1.2-contributor — $0.10/$0.20 per MTok, discounted because
- *   submitted content may be used by Meta for product improvement
+ * - muse-spark-1.3             — $1.25/$4.25 per MTok ($0.15 cached), ~1M context
+ * - muse-spark-1.3-contributor — $0.10/$0.20 per MTok ($0.002 cached), discounted
+ *   because submitted content may be used by Meta for product improvement
  *
- * `--reasoning-effort` accepts none|minimal|low|medium|high|xhigh|ultra
- * (muse's own default is `high`).
+ * Muse Spark 1.3 (released 2026-09-02) is priced identically to 1.2 and is
+ * strictly better (Meta reports ~20% fewer tool calls and ~25% fewer tokens;
+ * DeepSWE v1.1 75.4 vs 55.0, Terminal-Bench 2.1 88.8 vs 82.9). The 1.2 ids still
+ * work on the CLI and are not deprecated, but there is no reason to offer both
+ * generations at the same price, so every `muse-spark-1.2-*` id is kept as an
+ * alias of its 1.3 twin at the same reasoning effort. Saved councils and configs
+ * upgrade in place instead of falling through to muse's own default.
+ *
+ * Do NOT treat the locally cached catalog (~/.local/share/muse/model-catalog/)
+ * as authoritative: it lags the CLI and still listed only 1.2 after 1.3 worked.
+ *
+ * `--reasoning-effort` accepts minimal|low|medium|high|xhigh|max|ultra with
+ * `--provider meta` (`none` is rejected outright; muse's own default is `high`).
+ * `ultra` is behind a closed feature gate: muse prints "reasoning effort ultra
+ * is not available (gate ultra_reasoning_effort is closed); using xhigh" and
+ * silently runs at xhigh, whereas `max` actually runs. The top built-in is
+ * therefore `max`, and the former `-ultra` ids alias onto it rather than
+ * shipping a duplicate of the xhigh entries.
  *
  * Ordering matters: each reasoning effort is listed as a non-contributor entry
  * followed by its contributor twin, so that getFastTierModel() — which picks the
@@ -180,32 +196,37 @@ const DEFAULT_MUSE_MODEL = 'muse-spark-1.2-high';
  */
 const MUSE_MODELS = [
   {
-    id: 'muse-spark-1.2-ultra',
-    cli_model: 'muse-spark-1.2',
-    extra_args: ['--reasoning-effort', 'ultra'],
-    name: 'Muse Spark 1.2 Ultra',
+    id: 'muse-spark-1.3-max',
+    // `-ultra` ids resolve here because ultra is gate-closed and degrades to
+    // xhigh; 1.2 ids resolve here because 1.3 is a same-price upgrade.
+    aliases: ['muse-spark-1.3-ultra', 'muse-spark-1.2-max', 'muse-spark-1.2-ultra'],
+    cli_model: 'muse-spark-1.3',
+    extra_args: ['--reasoning-effort', 'max'],
+    name: 'Muse Spark 1.3 Max',
     tier: 'thorough',
     tagline: 'Maximum Depth',
-    description: 'Muse Spark at the highest reasoning effort for the hardest reviews: architecture, concurrency, and security-sensitive changes.',
+    description: 'Muse Spark at the highest available reasoning effort for the hardest reviews: architecture, concurrency, and security-sensitive changes.',
     badge: 'Max Reasoning',
     badgeClass: 'badge-power'
   },
   {
-    id: 'muse-spark-1.2-contributor-ultra',
-    cli_model: 'muse-spark-1.2-contributor',
-    extra_args: ['--reasoning-effort', 'ultra'],
-    name: 'Muse Spark 1.2 Contributor Ultra',
+    id: 'muse-spark-1.3-contributor-max',
+    aliases: ['muse-spark-1.3-contributor-ultra', 'muse-spark-1.2-contributor-max', 'muse-spark-1.2-contributor-ultra'],
+    cli_model: 'muse-spark-1.3-contributor',
+    extra_args: ['--reasoning-effort', 'max'],
+    name: 'Muse Spark 1.3 Contributor Max',
     tier: 'thorough',
     tagline: 'Discounted Depth',
-    description: 'Same model and highest reasoning effort at roughly a tenth of the cost. Content you send on this tier may be used by Meta for product improvement—do not select it for proprietary code.',
+    description: 'Same model and highest available reasoning effort at roughly a tenth of the cost. Content you send on this tier may be used by Meta for product improvement—do not select it for proprietary code.',
     badge: 'Shares Data',
     badgeClass: 'badge-power'
   },
   {
-    id: 'muse-spark-1.2-xhigh',
-    cli_model: 'muse-spark-1.2',
+    id: 'muse-spark-1.3-xhigh',
+    aliases: ['muse-spark-1.2-xhigh'],
+    cli_model: 'muse-spark-1.3',
     extra_args: ['--reasoning-effort', 'xhigh'],
-    name: 'Muse Spark 1.2 XHigh',
+    name: 'Muse Spark 1.3 XHigh',
     tier: 'thorough',
     tagline: 'Frontier Depth',
     description: 'Muse Spark with extra-high reasoning effort for difficult architectural reviews and subtle behavioral regressions.',
@@ -213,10 +234,11 @@ const MUSE_MODELS = [
     badgeClass: 'badge-power'
   },
   {
-    id: 'muse-spark-1.2-contributor-xhigh',
-    cli_model: 'muse-spark-1.2-contributor',
+    id: 'muse-spark-1.3-contributor-xhigh',
+    aliases: ['muse-spark-1.2-contributor-xhigh'],
+    cli_model: 'muse-spark-1.3-contributor',
     extra_args: ['--reasoning-effort', 'xhigh'],
-    name: 'Muse Spark 1.2 Contributor XHigh',
+    name: 'Muse Spark 1.3 Contributor XHigh',
     tier: 'thorough',
     tagline: 'Discounted Frontier',
     description: 'Same model and extra-high reasoning effort at roughly a tenth of the cost. Content you send on this tier may be used by Meta for product improvement—do not select it for proprietary code.',
@@ -224,12 +246,13 @@ const MUSE_MODELS = [
     badgeClass: 'badge-power'
   },
   {
-    id: 'muse-spark-1.2-high',
-    // Aliases keep results/councils saved under a bare model ID resolving here.
-    aliases: ['muse-spark-1.2', 'muse-spark'],
-    cli_model: 'muse-spark-1.2',
+    id: 'muse-spark-1.3-high',
+    // Bare model ids (and the previous generation's) keep results/councils
+    // saved under them resolving here.
+    aliases: ['muse-spark-1.3', 'muse-spark', 'muse-spark-1.2', 'muse-spark-1.2-high'],
+    cli_model: 'muse-spark-1.3',
     extra_args: ['--reasoning-effort', 'high'],
-    name: 'Muse Spark 1.2 High',
+    name: 'Muse Spark 1.3 High',
     tier: 'balanced',
     tagline: 'Best Balance',
     description: 'Meta\'s coding model with high reasoning effort and roughly 1M tokens of context—strong everyday PR review across large diffs.',
@@ -238,11 +261,11 @@ const MUSE_MODELS = [
     default: true
   },
   {
-    id: 'muse-spark-1.2-contributor-high',
-    aliases: ['muse-spark-1.2-contributor'],
-    cli_model: 'muse-spark-1.2-contributor',
+    id: 'muse-spark-1.3-contributor-high',
+    aliases: ['muse-spark-1.3-contributor', 'muse-spark-1.2-contributor', 'muse-spark-1.2-contributor-high'],
+    cli_model: 'muse-spark-1.3-contributor',
     extra_args: ['--reasoning-effort', 'high'],
-    name: 'Muse Spark 1.2 Contributor High',
+    name: 'Muse Spark 1.3 Contributor High',
     tier: 'balanced',
     tagline: 'Discounted Tier',
     description: 'Same model and high reasoning effort at roughly a tenth of the cost. Content you send on this tier may be used by Meta for product improvement—do not select it for proprietary code.',
@@ -250,10 +273,11 @@ const MUSE_MODELS = [
     badgeClass: 'badge-balanced'
   },
   {
-    id: 'muse-spark-1.2-low',
-    cli_model: 'muse-spark-1.2',
+    id: 'muse-spark-1.3-low',
+    aliases: ['muse-spark-1.2-low'],
+    cli_model: 'muse-spark-1.3',
     extra_args: ['--reasoning-effort', 'low'],
-    name: 'Muse Spark 1.2 Low',
+    name: 'Muse Spark 1.3 Low',
     tier: 'fast',
     tagline: 'Quick Pass',
     description: 'Muse Spark with low reasoning effort for fast surface scans of small, straightforward changes.',
@@ -261,10 +285,11 @@ const MUSE_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'muse-spark-1.2-contributor-low',
-    cli_model: 'muse-spark-1.2-contributor',
+    id: 'muse-spark-1.3-contributor-low',
+    aliases: ['muse-spark-1.2-contributor-low'],
+    cli_model: 'muse-spark-1.3-contributor',
     extra_args: ['--reasoning-effort', 'low'],
-    name: 'Muse Spark 1.2 Contributor Low',
+    name: 'Muse Spark 1.3 Contributor Low',
     tier: 'fast',
     tagline: 'Lowest Cost',
     description: 'The cheapest option: low reasoning effort on the discounted tier. Content you send on this tier may be used by Meta for product improvement—do not select it for proprietary code.',
@@ -334,8 +359,8 @@ class MuseProvider extends AIProvider {
 
     // Resolve cli_model + extra_args + env from built-in model, provider config,
     // and per-model config. This is what lets reasoning variants like
-    // muse-spark-1.2-ultra pass `--model muse-spark-1.2` plus
-    // `--reasoning-effort ultra`.
+    // muse-spark-1.3-max pass `--model muse-spark-1.3` plus
+    // `--reasoning-effort max`.
     const { cliModel, extraArgs, env } = this._resolveModelConfig(model);
 
     // A cli_model of explicitly `null` omits --model entirely, letting muse pick
@@ -368,7 +393,13 @@ class MuseProvider extends AIProvider {
     const configOverrides = this.configOverrides || {};
 
     const builtIn = MUSE_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
-    const configModel = configOverrides.models?.find(m => m.id === modelId);
+    // A config override may target the built-in by any of its ids/aliases (e.g.
+    // keyed under a retired 1.2 id while the provider was constructed with the
+    // 1.3 id), or declare its own aliases; match on the union so no lookup diverges.
+    const modelKeys = new Set([modelId, builtIn?.id, ...(builtIn?.aliases || [])].filter(Boolean));
+    const configModel = configOverrides.models?.find(
+      m => modelKeys.has(m.id) || (m.aliases || []).some(a => modelKeys.has(a))
+    );
 
     const cliModel = configModel?.cli_model !== undefined
       ? configModel.cli_model
@@ -1078,8 +1109,8 @@ class MuseProvider extends AIProvider {
 
     if (this.isUnknownModelError(diagnostic)) {
       return new Error(
-        `${levelPrefix} Muse CLI rejected the model "${this.model}" as unknown. ` +
-        `Check the model ID (and any cli_model override) against Muse's catalog. ` +
+        `${levelPrefix} Muse CLI rejected the model "${this.model}" as unknown or inaccessible. ` +
+        `Check the model ID (and any cli_model override) against what \`muse exec --model\` accepts — the locally cached catalog can lag the CLI. ` +
         `Original error: ${diagnostic}`
       );
     }
@@ -1102,14 +1133,16 @@ class MuseProvider extends AIProvider {
   }
 
   /**
-   * Detect an unknown/hidden model rejection. Muse fails fast with
-   * "model `X` is not in the catalog".
+   * Detect an unknown/hidden/inaccessible model rejection. Muse fails fast
+   * with either "model `X` is not in the catalog" (older CLIs; also "is hidden
+   * in the catalog") or "model `X` does not exist or you lack access" (current
+   * CLI, exit 1).
    *
    * @param {string} text - Captured stderr and/or terminal reason
    * @returns {boolean}
    */
   isUnknownModelError(text) {
-    return /is (?:not in|hidden in) the catalog/i.test(text || '');
+    return /(?:is (?:not in|hidden in) the catalog|does not exist or you lack access)/i.test(text || '');
   }
 
   /**

@@ -175,8 +175,8 @@ describe('MuseProvider', () => {
       expect(MuseProvider.getProviderId()).toBe('muse');
     });
 
-    it('returns muse-spark-1.2-high as the default model', () => {
-      expect(MuseProvider.getDefaultModel()).toBe('muse-spark-1.2-high');
+    it('returns muse-spark-1.3-high as the default model', () => {
+      expect(MuseProvider.getDefaultModel()).toBe('muse-spark-1.3-high');
     });
 
     it('returns models with the expected structure', () => {
@@ -194,10 +194,19 @@ describe('MuseProvider', () => {
 
     it('gives every model a real cli_model and reasoning effort', () => {
       for (const model of MuseProvider.getModels()) {
-        expect(['muse-spark-1.2', 'muse-spark-1.2-contributor']).toContain(model.cli_model);
+        expect(['muse-spark-1.3', 'muse-spark-1.3-contributor']).toContain(model.cli_model);
         expect(model.extra_args[0]).toBe('--reasoning-effort');
-        expect(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra'])
+        // `none` is rejected by `--provider meta`; `ultra` is gate-closed and
+        // silently degrades to xhigh, so neither may appear in a built-in.
+        expect(['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
           .toContain(model.extra_args[1]);
+      }
+    });
+
+    it('never ships a built-in at the rejected `none` or gate-closed `ultra` effort', () => {
+      for (const model of MuseProvider.getModels()) {
+        expect(model.extra_args[1]).not.toBe('none');
+        expect(model.extra_args[1]).not.toBe('ultra');
       }
     });
 
@@ -208,12 +217,12 @@ describe('MuseProvider', () => {
       // Reviews carry potentially proprietary source, so the data-sharing tier
       // must never be the silent default even though muse's own CLI default is
       // the contributor model.
-      expect(defaults[0].cli_model).toBe('muse-spark-1.2');
+      expect(defaults[0].cli_model).toBe('muse-spark-1.3');
     });
 
     it('warns in the description of every contributor model that Meta may use the content', () => {
       const contributors = MuseProvider.getModels()
-        .filter(m => m.cli_model === 'muse-spark-1.2-contributor');
+        .filter(m => m.cli_model === 'muse-spark-1.3-contributor');
       expect(contributors.length).toBeGreaterThan(0);
       for (const model of contributors) {
         expect(model.description).toMatch(/used by Meta for product improvement/i);
@@ -224,20 +233,20 @@ describe('MuseProvider', () => {
       // getFastTierModel() takes the FIRST fast-tier model; it must not resolve
       // to the data-sharing tier. Adding models must never disturb this order.
       const firstFast = MuseProvider.getModels().find(m => m.tier === 'fast');
-      expect(firstFast.cli_model).toBe('muse-spark-1.2');
-      expect(new MuseProvider().getFastTierModel()).toBe('muse-spark-1.2-low');
+      expect(firstFast.cli_model).toBe('muse-spark-1.3');
+      expect(new MuseProvider().getFastTierModel()).toBe('muse-spark-1.3-low');
     });
 
     it('offers a contributor counterpart at every reasoning effort it exposes', () => {
       const models = MuseProvider.getModels();
       const effortOf = (m) => m.extra_args[1];
-      const efforts = new Set(models.filter(m => m.cli_model === 'muse-spark-1.2').map(effortOf));
+      const efforts = new Set(models.filter(m => m.cli_model === 'muse-spark-1.3').map(effortOf));
       const contributorEfforts = new Set(
-        models.filter(m => m.cli_model === 'muse-spark-1.2-contributor').map(effortOf)
+        models.filter(m => m.cli_model === 'muse-spark-1.3-contributor').map(effortOf)
       );
 
-      expect([...efforts].sort()).toEqual(['high', 'low', 'ultra', 'xhigh']);
-      expect([...contributorEfforts].sort()).toEqual(['high', 'low', 'ultra', 'xhigh']);
+      expect([...efforts].sort()).toEqual(['high', 'low', 'max', 'xhigh']);
+      expect([...contributorEfforts].sort()).toEqual(['high', 'low', 'max', 'xhigh']);
       expect(models).toHaveLength(8);
     });
 
@@ -245,27 +254,27 @@ describe('MuseProvider', () => {
       // Display order, and the invariant getFastTierModel() depends on: the
       // non-data-sharing model always comes first within a pairing.
       expect(MuseProvider.getModels().map(m => m.id)).toEqual([
-        'muse-spark-1.2-ultra',
-        'muse-spark-1.2-contributor-ultra',
-        'muse-spark-1.2-xhigh',
-        'muse-spark-1.2-contributor-xhigh',
-        'muse-spark-1.2-high',
-        'muse-spark-1.2-contributor-high',
-        'muse-spark-1.2-low',
-        'muse-spark-1.2-contributor-low'
+        'muse-spark-1.3-max',
+        'muse-spark-1.3-contributor-max',
+        'muse-spark-1.3-xhigh',
+        'muse-spark-1.3-contributor-xhigh',
+        'muse-spark-1.3-high',
+        'muse-spark-1.3-contributor-high',
+        'muse-spark-1.3-low',
+        'muse-spark-1.3-contributor-low'
       ]);
     });
 
     it('gives the new thorough contributor variants the thorough tier and shares-data badge', () => {
       const byId = Object.fromEntries(MuseProvider.getModels().map(m => [m.id, m]));
 
-      for (const id of ['muse-spark-1.2-contributor-ultra', 'muse-spark-1.2-contributor-xhigh']) {
+      for (const id of ['muse-spark-1.3-contributor-max', 'muse-spark-1.3-contributor-xhigh']) {
         expect(byId[id].tier).toBe('thorough');
         expect(byId[id].badge).toBe('Shares Data');
         expect(byId[id].badgeClass).toBe('badge-power');
       }
-      expect(byId['muse-spark-1.2-contributor-ultra'].extra_args).toEqual(['--reasoning-effort', 'ultra']);
-      expect(byId['muse-spark-1.2-contributor-xhigh'].extra_args).toEqual(['--reasoning-effort', 'xhigh']);
+      expect(byId['muse-spark-1.3-contributor-max'].extra_args).toEqual(['--reasoning-effort', 'max']);
+      expect(byId['muse-spark-1.3-contributor-xhigh'].extra_args).toEqual(['--reasoning-effort', 'xhigh']);
     });
 
     it('provides real install instructions naming the launcher and muse login', () => {
@@ -283,13 +292,13 @@ describe('MuseProvider', () => {
     });
 
     it('prefers the config command over the default', () => {
-      expect(new MuseProvider('muse-spark-1.2-high', { command: '/opt/muse' }).museCmd)
+      expect(new MuseProvider('muse-spark-1.3-high', { command: '/opt/muse' }).museCmd)
         .toBe('/opt/muse');
     });
 
     it('prefers PAIR_REVIEW_MUSE_CMD over the config command', () => {
       process.env.PAIR_REVIEW_MUSE_CMD = '/env/muse';
-      expect(new MuseProvider('muse-spark-1.2-high', { command: '/opt/muse' }).museCmd)
+      expect(new MuseProvider('muse-spark-1.3-high', { command: '/opt/muse' }).museCmd)
         .toBe('/env/muse');
     });
 
@@ -302,13 +311,13 @@ describe('MuseProvider', () => {
       // configured as `muse exec` would spawn `muse exec exec --json …`, which
       // muse rejects. Normalizing in the constructor is what keeps the analysis
       // and extraction paths from disagreeing about whether it is already there.
-      const provider = new MuseProvider('muse-spark-1.2-high', { command: 'muse exec' });
+      const provider = new MuseProvider('muse-spark-1.3-high', { command: 'muse exec' });
 
       expect(provider.museCmd).toBe('muse');
       expect(provider.baseArgs.filter(a => a === 'exec')).toHaveLength(1);
-      expect(provider.buildArgsForModel('muse-spark-1.2-low').filter(a => a === 'exec')).toHaveLength(1);
+      expect(provider.buildArgsForModel('muse-spark-1.3-low').filter(a => a === 'exec')).toHaveLength(1);
 
-      const extraction = provider.getExtractionConfig('muse-spark-1.2-low');
+      const extraction = provider.getExtractionConfig('muse-spark-1.3-low');
       expect(extraction.command).toBe('muse');
       expect(extraction.args.filter(a => a === 'exec')).toHaveLength(1);
 
@@ -319,7 +328,7 @@ describe('MuseProvider', () => {
     it('stops a stripped command from needlessly going through a shell', () => {
       // `useShell` is derived AFTER stripping, so `muse exec` is single-word
       // again by the time the flag is computed.
-      expect(new MuseProvider('muse-spark-1.2-high', { command: 'muse exec' }).useShell).toBe(false);
+      expect(new MuseProvider('muse-spark-1.3-high', { command: 'muse exec' }).useShell).toBe(false);
     });
 
     it('strips a trailing exec from the environment override too', () => {
@@ -333,7 +342,7 @@ describe('MuseProvider', () => {
     ])('leaves the container-exec wrapper %s untouched', (command) => {
       // Only a bare TRAILING `exec` is removed. A container-exec invocation can
       // never end with `exec` — the container and the command to run follow it.
-      const provider = new MuseProvider('muse-spark-1.2-high', { command });
+      const provider = new MuseProvider('muse-spark-1.3-high', { command });
       expect(provider.museCmd).toBe(command);
       expect(provider.useShell).toBe(true);
     });
@@ -341,27 +350,27 @@ describe('MuseProvider', () => {
     it('does not strip an exec that sits inside a quoted path', () => {
       // A quoted trailing token ends with the quote character, so the pattern
       // cannot reach inside it.
-      const provider = new MuseProvider('muse-spark-1.2-high', { command: '"/opt/my exec"' });
+      const provider = new MuseProvider('muse-spark-1.3-high', { command: '"/opt/my exec"' });
       expect(provider.museCmd).toBe('"/opt/my exec"');
-      expect(provider.getExtractionConfig('muse-spark-1.2-low').command).toBe('/opt/my exec');
+      expect(provider.getExtractionConfig('muse-spark-1.3-low').command).toBe('/opt/my exec');
     });
 
     it('uses shell mode for a multi-word command', () => {
-      expect(new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' }).useShell)
+      expect(new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' }).useShell)
         .toBe(true);
     });
 
     it('builds baseArgs with exec, --json, --model, the safety flag and the reasoning effort', () => {
-      expect(new MuseProvider('muse-spark-1.2-high').baseArgs).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--reasoning-effort', 'high'
+      expect(new MuseProvider('muse-spark-1.3-high').baseArgs).toEqual([
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'high'
       ]);
     });
 
     it('maps each effort variant onto the right cli model', () => {
-      expect(new MuseProvider('muse-spark-1.2-ultra').baseArgs)
-        .toEqual(['exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--reasoning-effort', 'ultra']);
-      expect(new MuseProvider('muse-spark-1.2-contributor-low').baseArgs)
-        .toEqual(['exec', '--json', '--model', 'muse-spark-1.2-contributor', '--disable-write', '--reasoning-effort', 'low']);
+      expect(new MuseProvider('muse-spark-1.3-max').baseArgs)
+        .toEqual(['exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'max']);
+      expect(new MuseProvider('muse-spark-1.3-contributor-low').baseArgs)
+        .toEqual(['exec', '--json', '--model', 'muse-spark-1.3-contributor', '--disable-write', '--reasoning-effort', 'low']);
     });
 
     it('never bakes a --prompt-file pair into baseArgs', () => {
@@ -376,12 +385,80 @@ describe('MuseProvider', () => {
     });
 
     it.each([
+      ['muse-spark-1.3'],
+      ['muse-spark'],
       ['muse-spark-1.2'],
-      ['muse-spark']
+      ['muse-spark-1.2-high']
     ])('resolves the alias %s to the high-effort variant', (alias) => {
       expect(new MuseProvider(alias).baseArgs).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--reasoning-effort', 'high'
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'high'
       ]);
+    });
+
+    it.each([
+      ['muse-spark-1.3-contributor'],
+      ['muse-spark-1.2-contributor'],
+      ['muse-spark-1.2-contributor-high']
+    ])('resolves the contributor alias %s to the contributor high-effort variant', (alias) => {
+      expect(new MuseProvider(alias).baseArgs).toEqual([
+        'exec', '--json', '--model', 'muse-spark-1.3-contributor', '--disable-write', '--reasoning-effort', 'high'
+      ]);
+    });
+
+    it.each([
+      ['muse-spark-1.2-max', 'muse-spark-1.3', 'max'],
+      ['muse-spark-1.2-ultra', 'muse-spark-1.3', 'max'],
+      ['muse-spark-1.2-xhigh', 'muse-spark-1.3', 'xhigh'],
+      ['muse-spark-1.2-low', 'muse-spark-1.3', 'low'],
+      ['muse-spark-1.2-contributor-max', 'muse-spark-1.3-contributor', 'max'],
+      ['muse-spark-1.2-contributor-ultra', 'muse-spark-1.3-contributor', 'max'],
+      ['muse-spark-1.2-contributor-xhigh', 'muse-spark-1.3-contributor', 'xhigh'],
+      ['muse-spark-1.2-contributor-low', 'muse-spark-1.3-contributor', 'low']
+    ])('upgrades the 1.2 id %s in place to %s at effort %s', (legacyId, cliModel, effort) => {
+      // 1.3 is priced identically to 1.2 and strictly better, so saved councils
+      // and configs upgrade to the 1.3 twin at the same reasoning effort.
+      expect(new MuseProvider(legacyId).baseArgs).toEqual([
+        'exec', '--json', '--model', cliModel, '--disable-write', '--reasoning-effort', effort
+      ]);
+    });
+
+    it.each([
+      ['muse-spark-1.3-ultra', 'muse-spark-1.3-max'],
+      ['muse-spark-1.3-contributor-ultra', 'muse-spark-1.3-contributor-max'],
+      ['muse-spark-1.2-ultra', 'muse-spark-1.3-max'],
+      ['muse-spark-1.2-contributor-ultra', 'muse-spark-1.3-contributor-max']
+    ])('resolves the gate-closed ultra id %s to %s', (ultraId, maxId) => {
+      // `--reasoning-effort ultra` silently degrades to xhigh behind a closed
+      // feature gate; `max` actually runs, so ultra ids resolve to the max entry.
+      const resolved = MuseProvider.getModels().find(
+        m => m.id === ultraId || m.aliases?.includes(ultraId)
+      );
+      expect(resolved?.id).toBe(maxId);
+      expect(new MuseProvider(ultraId).baseArgs).toContain('max');
+      expect(new MuseProvider(ultraId).baseArgs).not.toContain('ultra');
+    });
+
+    it('resolves every 1.2 built-in id to a 1.3 twin at the same reasoning effort', () => {
+      // Every id the provider previously shipped must still resolve, and to the
+      // same effort it used to run at (ultra excepted — see above).
+      const models = MuseProvider.getModels();
+      const resolve = (id) => models.find(m => m.id === id || m.aliases?.includes(id));
+      for (const model of models) {
+        const legacyId = model.id.replace('muse-spark-1.3', 'muse-spark-1.2');
+        const twin = resolve(legacyId);
+        expect(twin?.id).toBe(model.id);
+        expect(twin.extra_args).toEqual(model.extra_args);
+      }
+    });
+
+    it('keeps every alias unique across the built-in ids and aliases', () => {
+      const seen = new Set();
+      for (const model of MuseProvider.getModels()) {
+        for (const key of [model.id, ...(model.aliases || [])]) {
+          expect(seen.has(key)).toBe(false);
+          seen.add(key);
+        }
+      }
     });
 
     it('passes --disable-write but no approval or sandbox flags outside yolo mode', () => {
@@ -390,7 +467,7 @@ describe('MuseProvider', () => {
       // (no tool runs, no terminal record emitted), so it must never appear.
       // `--disable-write` blocks the write_file tool; shell stays enabled because
       // analysis needs grep/find and the bundled git-diff-lines helper.
-      const args = new MuseProvider('muse-spark-1.2-high').baseArgs;
+      const args = new MuseProvider('muse-spark-1.3-high').baseArgs;
       expect(args).toContain('--disable-write');
       expect(args).not.toContain('--yolo');
       expect(args).not.toContain('--approval-mode');
@@ -400,9 +477,9 @@ describe('MuseProvider', () => {
     });
 
     it('passes --yolo instead of --disable-write in yolo mode', () => {
-      const args = new MuseProvider('muse-spark-1.2-high', { yolo: true }).baseArgs;
+      const args = new MuseProvider('muse-spark-1.3-high', { yolo: true }).baseArgs;
       expect(args).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--yolo', '--reasoning-effort', 'high'
+        'exec', '--json', '--model', 'muse-spark-1.3', '--yolo', '--reasoning-effort', 'high'
       ]);
       expect(args).not.toContain('--disable-write');
     });
@@ -410,7 +487,7 @@ describe('MuseProvider', () => {
     it('fully locks down the extraction path, which needs no tools', () => {
       // Unlike analysis, extraction only reformats captured text into JSON, so it
       // gets no filesystem and no shell — mirroring Codex's read-only extraction.
-      const args = new MuseProvider('muse-spark-1.2-high').buildArgsForModel('muse-spark-1.2-low');
+      const args = new MuseProvider('muse-spark-1.3-high').buildArgsForModel('muse-spark-1.3-low');
       expect(args).toContain('--disable-write');
       expect(args).toContain('--disable-shell');
     });
@@ -432,39 +509,39 @@ describe('MuseProvider', () => {
     it('appends provider-level extra_args exactly once', () => {
       // Regression: _resolveModelConfig already merges provider extra_args, so
       // splicing configOverrides.extra_args separately duplicated every flag.
-      const provider = new MuseProvider('muse-spark-1.2-high', {
+      const provider = new MuseProvider('muse-spark-1.3-high', {
         extra_args: ['--disable-web-tools']
       });
       const occurrences = provider.baseArgs.filter(a => a === '--disable-web-tools');
       expect(occurrences).toHaveLength(1);
       expect(provider.baseArgs).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write',
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write',
         '--reasoning-effort', 'high', '--disable-web-tools'
       ]);
     });
 
     it('merges extra_args from built-in, provider config, and per-model config in order', () => {
-      const provider = new MuseProvider('muse-spark-1.2-high', {
+      const provider = new MuseProvider('muse-spark-1.3-high', {
         extra_args: ['--provider-flag'],
-        models: [{ id: 'muse-spark-1.2-high', tier: 'balanced', extra_args: ['--model-flag'] }]
+        models: [{ id: 'muse-spark-1.3-high', tier: 'balanced', extra_args: ['--model-flag'] }]
       });
       expect(provider.baseArgs).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write',
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write',
         '--reasoning-effort', 'high', '--provider-flag', '--model-flag'
       ]);
     });
 
     it('lets a per-model cli_model override the built-in one', () => {
-      const provider = new MuseProvider('muse-spark-1.2-high', {
-        models: [{ id: 'muse-spark-1.2-high', tier: 'balanced', cli_model: 'muse-spark-1.2-contributor' }]
+      const provider = new MuseProvider('muse-spark-1.3-high', {
+        models: [{ id: 'muse-spark-1.3-high', tier: 'balanced', cli_model: 'muse-spark-1.3-contributor' }]
       });
-      expect(provider.baseArgs).toContain('muse-spark-1.2-contributor');
+      expect(provider.baseArgs).toContain('muse-spark-1.3-contributor');
     });
 
     it('merges env with per-model config winning over provider config', () => {
-      const provider = new MuseProvider('muse-spark-1.2-high', {
+      const provider = new MuseProvider('muse-spark-1.3-high', {
         env: { SHARED: 'provider', ONLY_PROVIDER: 'yes' },
-        models: [{ id: 'muse-spark-1.2-high', tier: 'balanced', env: { SHARED: 'model' } }]
+        models: [{ id: 'muse-spark-1.3-high', tier: 'balanced', env: { SHARED: 'model' } }]
       });
       expect(provider.extraEnv).toEqual({ SHARED: 'model', ONLY_PROVIDER: 'yes' });
     });
@@ -472,13 +549,47 @@ describe('MuseProvider', () => {
     it('defaults extraEnv to an empty object', () => {
       expect(new MuseProvider().extraEnv).toEqual({});
     });
+
+    it('applies a per-model override keyed under a retired 1.2 alias when constructed with the 1.3 id', () => {
+      // Regression: the override lookup used to be exact-id only, so a config
+      // written against muse-spark-1.2-high was silently dropped once the
+      // built-in id moved to 1.3.
+      const provider = new MuseProvider('muse-spark-1.3-high', {
+        models: [{
+          id: 'muse-spark-1.2-high',
+          tier: 'balanced',
+          cli_model: 'muse-spark-custom',
+          extra_args: ['--legacy-flag'],
+          env: { LEGACY: 'yes' }
+        }]
+      });
+      expect(provider.baseArgs).toContain('muse-spark-custom');
+      expect(provider.baseArgs).not.toContain('muse-spark-1.3');
+      expect(provider.baseArgs).toContain('--legacy-flag');
+      expect(provider.extraEnv).toEqual({ LEGACY: 'yes' });
+    });
+
+    it('applies a per-model override keyed under the 1.3 id when constructed with a retired 1.2 alias', () => {
+      const provider = new MuseProvider('muse-spark-1.2-high', {
+        models: [{
+          id: 'muse-spark-1.3-high',
+          tier: 'balanced',
+          cli_model: 'muse-spark-custom',
+          extra_args: ['--new-flag'],
+          env: { CURRENT: 'yes' }
+        }]
+      });
+      expect(provider.baseArgs).toContain('muse-spark-custom');
+      expect(provider.baseArgs).toContain('--new-flag');
+      expect(provider.extraEnv).toEqual({ CURRENT: 'yes' });
+    });
   });
 
   describe('getAnalysisSpawnConfig', () => {
     it('returns the bare command and args in non-shell mode', () => {
-      expect(new MuseProvider('muse-spark-1.2-high').getAnalysisSpawnConfig()).toEqual({
+      expect(new MuseProvider('muse-spark-1.3-high').getAnalysisSpawnConfig()).toEqual({
         command: 'muse',
-        args: ['exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--reasoning-effort', 'high'],
+        args: ['exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'high'],
         useShell: false
       });
     });
@@ -488,10 +599,10 @@ describe('MuseProvider', () => {
       // `[...baseArgs, ...trailingArgs]` trivially satisfies the invariant even
       // if merged args could land after the pair. These are the args that could
       // realistically be appended too late.
-      const provider = new MuseProvider('muse-spark-1.2-high', {
+      const provider = new MuseProvider('muse-spark-1.3-high', {
         extra_args: ['--provider-flag', 'pv'],
         models: [{
-          id: 'muse-spark-1.2-high',
+          id: 'muse-spark-1.3-high',
           tier: 'balanced',
           extra_args: ['--model-flag', 'mv']
         }]
@@ -516,25 +627,25 @@ describe('MuseProvider', () => {
     });
 
     it('folds args into the command string in shell mode', () => {
-      const result = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
+      const result = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
         .getAnalysisSpawnConfig(['--prompt-file', '/tmp/x/prompt.txt']);
       expect(result.useShell).toBe(true);
       expect(result.args).toEqual([]);
       // quoteShellArgs only quotes args carrying shell-special characters, so a
       // plain path stays bare; the space-bearing case is covered below.
       expect(result.command).toBe(
-        'devx muse -- exec --json --model muse-spark-1.2 --disable-write --reasoning-effort high --prompt-file /tmp/x/prompt.txt'
+        'devx muse -- exec --json --model muse-spark-1.3 --disable-write --reasoning-effort high --prompt-file /tmp/x/prompt.txt'
       );
     });
 
     it('shell-quotes paths containing spaces', () => {
-      const { command } = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
+      const { command } = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
         .getAnalysisSpawnConfig(['--prompt-file', '/tmp/a b/prompt.txt']);
       expect(command).toContain("'/tmp/a b/prompt.txt'");
     });
 
     it('shell-quotes a positional prompt containing an apostrophe', () => {
-      const { command } = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
+      const { command } = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
         .getAnalysisSpawnConfig(["it's a prompt"]);
       expect(command).toContain("'it'\\''s a prompt'");
     });
@@ -552,27 +663,27 @@ describe('MuseProvider', () => {
       // Identical model, deliberately different safety posture: analysis keeps
       // shell so the model can run grep/find and git-diff-lines, while
       // extraction only reformats captured text and so gets no tools at all.
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       expect(provider.baseArgs).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--reasoning-effort', 'high'
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'high'
       ]);
-      expect(provider.buildArgsForModel('muse-spark-1.2-high')).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--disable-shell', '--reasoning-effort', 'high'
+      expect(provider.buildArgsForModel('muse-spark-1.3-high')).toEqual([
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--disable-shell', '--reasoning-effort', 'high'
       ]);
     });
 
     it('resolves a different extraction model', () => {
-      expect(new MuseProvider('muse-spark-1.2-ultra').buildArgsForModel('muse-spark-1.2-low'))
-        .toEqual(['exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--disable-shell', '--reasoning-effort', 'low']);
+      expect(new MuseProvider('muse-spark-1.3-max').buildArgsForModel('muse-spark-1.3-low'))
+        .toEqual(['exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--disable-shell', '--reasoning-effort', 'low']);
     });
 
     it('carries yolo through to extraction', () => {
-      expect(new MuseProvider('muse-spark-1.2-high', { yolo: true }).buildArgsForModel('muse-spark-1.2-low'))
+      expect(new MuseProvider('muse-spark-1.3-high', { yolo: true }).buildArgsForModel('muse-spark-1.3-low'))
         .toContain('--yolo');
     });
 
     it('never appends a prompt marker', () => {
-      const args = new MuseProvider().buildArgsForModel('muse-spark-1.2-low');
+      const args = new MuseProvider().buildArgsForModel('muse-spark-1.3-low');
       expect(args).not.toContain('--prompt-file');
       expect(args).not.toContain('-');
     });
@@ -584,18 +695,18 @@ describe('MuseProvider', () => {
       // one fails the spawn with E2BIG. `muse exec` never reads stdin (exits 2
       // with "missing prompt"), and the helper's promptViaFile mode appends
       // Pi's `@<path>` syntax, which muse would read as literal prompt text.
-      const config = new MuseProvider().getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider().getExtractionConfig('muse-spark-1.3-low');
       expect(config.promptFileArg).toBe('--prompt-file');
       expect(config.promptViaStdin).toBe(false);
       expect(config.promptViaFile).toBeUndefined();
     });
 
     it('returns the command and args for non-shell mode', () => {
-      const config = new MuseProvider().getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider().getExtractionConfig('muse-spark-1.3-low');
       expect(config.command).toBe('muse');
       expect(config.useShell).toBe(false);
       expect(config.args).toEqual([
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--disable-shell', '--reasoning-effort', 'low'
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--disable-shell', '--reasoning-effort', 'low'
       ]);
     });
 
@@ -606,14 +717,14 @@ describe('MuseProvider', () => {
       // re-parsed as shell syntax. The prompt now goes via --prompt-file, but
       // shell mode must STAY off: this spawn is not detached, so a cancel would
       // kill only the shell wrapper and orphan the CLI.
-      const config = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
-        .getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
+        .getExtractionConfig('muse-spark-1.3-low');
 
       expect(config.useShell).toBe(false);
       expect(config.command).toBe('devx');
       expect(config.args).toEqual([
         'muse', '--',
-        'exec', '--json', '--model', 'muse-spark-1.2', '--disable-write', '--disable-shell',
+        'exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--disable-shell',
         '--reasoning-effort', 'low'
       ]);
       expect(config.promptViaStdin).toBe(false);
@@ -625,8 +736,8 @@ describe('MuseProvider', () => {
     });
 
     it('splits a plain multi-word command into a leading command plus argv words', () => {
-      const config = new MuseProvider('muse-spark-1.2-high', { command: 'docker exec container muse' })
-        .getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider('muse-spark-1.3-high', { command: 'docker exec container muse' })
+        .getExtractionConfig('muse-spark-1.3-low');
       expect(config.useShell).toBe(false);
       expect(config.command).toBe('docker');
       expect(config.args.slice(0, 3)).toEqual(['exec', 'container', 'muse']);
@@ -638,9 +749,9 @@ describe('MuseProvider', () => {
       // installed-app path survives as one word rather than three. The trailing
       // word is deliberately NOT `exec`: the constructor strips that, which
       // would leave `args[0] === 'exec'` true no matter how the split behaved.
-      const config = new MuseProvider('muse-spark-1.2-high', {
+      const config = new MuseProvider('muse-spark-1.3-high', {
         command: '"/Applications/My Tools/muse" --workspace-trust'
-      }).getExtractionConfig('muse-spark-1.2-low');
+      }).getExtractionConfig('muse-spark-1.3-low');
       expect(config.command).toBe('/Applications/My Tools/muse');
       expect(config.args[0]).toBe('--workspace-trust');
       expect(config.args[1]).toBe('exec');
@@ -650,8 +761,8 @@ describe('MuseProvider', () => {
     it('drops empty quoted words instead of emitting them as argv elements', () => {
       // An empty argv element reaches muse as an empty positional prompt, and a
       // leading one would become spawn('').
-      const config = new MuseProvider('muse-spark-1.2-high', { command: 'devx "" muse' })
-        .getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider('muse-spark-1.3-high', { command: 'devx "" muse' })
+        .getExtractionConfig('muse-spark-1.3-low');
       expect(config.command).toBe('devx');
       expect(config.args.slice(0, 2)).toEqual(['muse', 'exec']);
       expect(config.args).not.toContain('');
@@ -661,33 +772,33 @@ describe('MuseProvider', () => {
       ['devx "muse --', 'double'],
       ["devx 'muse --", 'single']
     ])('throws a named error for the unterminated %s quote rather than gluing the words together', (command, kind) => {
-      const provider = new MuseProvider('muse-spark-1.2-high', { command });
-      expect(() => provider.getExtractionConfig('muse-spark-1.2-low'))
+      const provider = new MuseProvider('muse-spark-1.3-high', { command });
+      expect(() => provider.getExtractionConfig('muse-spark-1.3-low'))
         .toThrow(new RegExp(`unterminated ${kind} quote`));
     });
 
     it('throws rather than spawning an empty command name when only quotes were configured', () => {
-      const provider = new MuseProvider('muse-spark-1.2-high', { command: '""' });
-      expect(() => provider.getExtractionConfig('muse-spark-1.2-low'))
+      const provider = new MuseProvider('muse-spark-1.3-high', { command: '""' });
+      expect(() => provider.getExtractionConfig('muse-spark-1.3-low'))
         .toThrow(/Muse command is empty/);
     });
 
     it('still spawns a single-word command directly, with no argv prefix', () => {
-      const config = new MuseProvider('muse-spark-1.2-high', { command: '/opt/muse' })
-        .getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider('muse-spark-1.3-high', { command: '/opt/muse' })
+        .getExtractionConfig('muse-spark-1.3-low');
       expect(config.command).toBe('/opt/muse');
       expect(config.args[0]).toBe('exec');
     });
 
     it('surfaces the merged env for the extraction model', () => {
-      const config = new MuseProvider('muse-spark-1.2-high', { env: { TOKEN: 'x' } })
-        .getExtractionConfig('muse-spark-1.2-low');
+      const config = new MuseProvider('muse-spark-1.3-high', { env: { TOKEN: 'x' } })
+        .getExtractionConfig('muse-spark-1.3-low');
       expect(config.env).toEqual({ TOKEN: 'x' });
     });
 
     it('honours a custom command from the environment', () => {
       process.env.PAIR_REVIEW_MUSE_CMD = '/env/muse';
-      expect(new MuseProvider().getExtractionConfig('muse-spark-1.2-low').command).toBe('/env/muse');
+      expect(new MuseProvider().getExtractionConfig('muse-spark-1.3-low').command).toBe('/env/muse');
     });
 
     // End to end through the shared helper: config fields alone can't prove the
@@ -708,7 +819,7 @@ describe('MuseProvider', () => {
       // The prompt text itself never becomes an argv word — that is the E2BIG fix.
       expect(args.some(a => a.includes('Extract the JSON object'))).toBe(false);
       // Extraction runs on the fast, non-data-sharing model.
-      expect(args[args.indexOf('--model') + 1]).toBe('muse-spark-1.2');
+      expect(args[args.indexOf('--model') + 1]).toBe('muse-spark-1.3');
 
       child.stdout.emit('data', Buffer.from('{"findings": []}'));
       child.emit('close', 0);
@@ -932,7 +1043,7 @@ describe('MuseProvider', () => {
       // were the review — turning a failed run into a false success.
       const stdout = [
         record('run.lifecycle.started', { kind: 'run_started', run_id: 'r1' }),
-        record('run.model.configured', { model_id: 'muse-spark-1.2' }),
+        record('run.model.configured', { model_id: 'muse-spark-1.3' }),
         terminalRecord('failed', '', 'server_error: The model failed to generate a response.')
       ].join('\n');
 
@@ -995,6 +1106,12 @@ describe('MuseProvider', () => {
       expect(new MuseProvider().isUnknownModelError('model is hidden in the catalog')).toBe(true);
     });
 
+    it('detects the current CLI wording: does not exist or you lack access', () => {
+      expect(new MuseProvider().isUnknownModelError(
+        'model `muse-spark-9` does not exist or you lack access'
+      )).toBe(true);
+    });
+
     it('ignores unrelated errors', () => {
       expect(new MuseProvider().isUnknownModelError('some other failure')).toBe(false);
       expect(new MuseProvider().isUnknownModelError(undefined)).toBe(false);
@@ -1011,11 +1128,20 @@ describe('MuseProvider', () => {
     });
 
     it('produces an actionable message for an unknown model', () => {
-      const error = new MuseProvider('muse-spark-1.2-high').createExitError(
+      const error = new MuseProvider('muse-spark-1.3-high').createExitError(
         1, 'model `totally-not-a-model` is not in the catalog', '[Level 1]'
       );
-      expect(error.message).toContain('unknown');
-      expect(error.message).toContain('muse-spark-1.2-high');
+      expect(error.message).toContain('unknown or inaccessible');
+      expect(error.message).toContain('muse-spark-1.3-high');
+    });
+
+    it('produces the same actionable message for the current "does not exist or you lack access" wording', () => {
+      const error = new MuseProvider('muse-spark-1.3-high').createExitError(
+        1, 'model `totally-not-a-model` does not exist or you lack access', '[Level 1]'
+      );
+      expect(error.message).toContain('unknown or inaccessible');
+      expect(error.message).toContain('muse-spark-1.3-high');
+      expect(error.message).toContain('does not exist or you lack access');
     });
 
     it('surfaces the terminal reason when stderr is unhelpful', () => {
@@ -1142,10 +1268,10 @@ describe('MuseProvider', () => {
     it('logs the configured model', () => {
       logger.setStreamDebugEnabled(true);
       new MuseProvider().logStreamLine(
-        record('run.model.configured', { model_id: 'muse-spark-1.2', display_label: 'muse-spark-1.2' }),
+        record('run.model.configured', { model_id: 'muse-spark-1.3', display_label: 'muse-spark-1.3' }),
         6, '[Level 1]'
       );
-      expect(logger.streamDebug).toHaveBeenCalledWith(expect.stringContaining('muse-spark-1.2'));
+      expect(logger.streamDebug).toHaveBeenCalledWith(expect.stringContaining('muse-spark-1.3'));
     });
 
     it('logs a tool result with its outcome', () => {
@@ -1198,7 +1324,7 @@ describe('MuseProvider', () => {
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
 
-      const promise = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
+      const promise = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
         .testAvailability(10000);
 
       const [command, args, options] = mockSpawn.mock.lastCall;
@@ -1217,9 +1343,9 @@ describe('MuseProvider', () => {
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
 
-      const promise = new MuseProvider('muse-spark-1.2-high', {
+      const promise = new MuseProvider('muse-spark-1.3-high', {
         env: { META_API_KEY: 'provider-key' },
-        models: [{ id: 'muse-spark-1.2-high', tier: 'balanced', env: { MUSE_ENDPOINT: 'internal' } }]
+        models: [{ id: 'muse-spark-1.3-high', tier: 'balanced', env: { MUSE_ENDPOINT: 'internal' } }]
       }).testAvailability(10000);
 
       const [, , options] = mockSpawn.mock.lastCall;
@@ -1323,7 +1449,7 @@ describe('MuseProvider', () => {
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
 
-      const promise = new MuseProvider('muse-spark-1.2-high')
+      const promise = new MuseProvider('muse-spark-1.3-high')
         .execute('analyse this diff', { level: 1, timeout: 300000 });
 
       expect(promptDirs).toHaveLength(1);
@@ -1345,7 +1471,7 @@ describe('MuseProvider', () => {
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
 
-      const promise = new MuseProvider('muse-spark-1.2-high').execute('prompt', { level: 1, timeout: 300000 });
+      const promise = new MuseProvider('muse-spark-1.3-high').execute('prompt', { level: 1, timeout: 300000 });
 
       // muse's stderr only says the run failed; the reason lives in the JSONL.
       child.stderr.emit('data', 'run ended with Failed\n');
@@ -1367,7 +1493,7 @@ describe('MuseProvider', () => {
 
       vi.useFakeTimers();
       try {
-        const promise = new MuseProvider('muse-spark-1.2-high').execute('prompt', { level: 1, timeout: 1000 });
+        const promise = new MuseProvider('muse-spark-1.3-high').execute('prompt', { level: 1, timeout: 1000 });
         // Attach the rejection handler BEFORE advancing, so the rejection is
         // never momentarily unhandled.
         const failure = settledError(promise);
@@ -1387,7 +1513,7 @@ describe('MuseProvider', () => {
     it('reports install instructions and cleans up the temp file when the CLI is missing', async () => {
       const promptDirs = trackPromptDirs();
       // Deliberately a real spawn: this exercises Node's own ENOENT path.
-      const provider = new MuseProvider('muse-spark-1.2-high', {
+      const provider = new MuseProvider('muse-spark-1.3-high', {
         command: '/nonexistent/definitely-not-muse'
       });
 
@@ -1417,7 +1543,7 @@ describe('MuseProvider', () => {
       mockSpawn.mockReturnValue(child);
 
       const error = await settledError(
-        new MuseProvider('muse-spark-1.2-high').execute('prompt', {
+        new MuseProvider('muse-spark-1.3-high').execute('prompt', {
           level: 1,
           timeout: 300000,
           abortSignal: AbortSignal.abort()
@@ -1447,7 +1573,7 @@ describe('MuseProvider', () => {
       });
 
       const error = await settledError(
-        new MuseProvider('muse-spark-1.2-high').execute('prompt', { level: 1, timeout: 300000 })
+        new MuseProvider('muse-spark-1.3-high').execute('prompt', { level: 1, timeout: 300000 })
       );
 
       expect(error.message).toMatch(/Failed to write Muse prompt file/);
@@ -1460,13 +1586,13 @@ describe('MuseProvider', () => {
       const promptDirs = trackPromptDirs();
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       const llmFallback = vi.spyOn(provider, 'extractJSONWithLLM');
 
       const promise = provider.execute('prompt', { level: 1, timeout: 300000 });
       const stdout = [
         record('run.lifecycle.started', { kind: 'run_started', run_id: 'r1' }),
-        record('run.model.configured', { model_id: 'muse-spark-1.2' }),
+        record('run.model.configured', { model_id: 'muse-spark-1.3' }),
         terminalRecord('completed', '')
       ].join('\n') + '\n';
       child.stdout.emit('data', stdout);
@@ -1501,7 +1627,7 @@ describe('MuseProvider', () => {
       const promptDirs = trackPromptDirs();
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       const llmFallback = vi.spyOn(provider, 'extractJSONWithLLM')
         .mockResolvedValue({ success: true, data: { suggestions: [] } });
       const controller = new AbortController();
@@ -1529,7 +1655,7 @@ describe('MuseProvider', () => {
       const promptDirs = trackPromptDirs();
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       const controller = new AbortController();
       vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
         controller.abort();
@@ -1556,7 +1682,7 @@ describe('MuseProvider', () => {
       const promptDirs = trackPromptDirs();
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       const controller = new AbortController();
       vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
         controller.abort();
@@ -1581,7 +1707,7 @@ describe('MuseProvider', () => {
       const promptDirs = trackPromptDirs();
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
-      const provider = new MuseProvider('muse-spark-1.2-high');
+      const provider = new MuseProvider('muse-spark-1.3-high');
       vi.spyOn(provider, 'extractJSONWithLLM').mockRejectedValue(new Error('extraction CLI blew up'));
 
       const promise = provider.execute('prompt', { level: 1, timeout: 300000 });
@@ -1627,7 +1753,7 @@ describe('MuseProvider', () => {
       const child = makeFakeChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' });
+      const provider = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' });
       expect(provider.useShell).toBe(true);
 
       vi.useFakeTimers();
@@ -1666,7 +1792,7 @@ describe('MuseProvider', () => {
       // Deliberately NOT a pre-aborted signal: execute() returns before spawning
       // for that, so no kill of any kind would be dispatched.
       const controller = new AbortController();
-      const promise = new MuseProvider('muse-spark-1.2-high', { command: 'devx muse --' })
+      const promise = new MuseProvider('muse-spark-1.3-high', { command: 'devx muse --' })
         .execute('prompt', { level: 1, timeout: 300000, abortSignal: controller.signal });
       const failure = settledError(promise);
 
@@ -1693,7 +1819,7 @@ describe('MuseProvider', () => {
       mockSpawn.mockReturnValue(child);
 
       const controller = new AbortController();
-      const promise = new MuseProvider('muse-spark-1.2-high')
+      const promise = new MuseProvider('muse-spark-1.3-high')
         .execute('prompt', { level: 1, timeout: 300000, abortSignal: controller.signal });
       const failure = settledError(promise);
 

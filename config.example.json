@@ -147,12 +147,12 @@
     },
 
     "antigravity": {
-      "_comment": "Override Antigravity's built-in configuration. Antigravity drives the 'agy' CLI as an agentic reviewer. Built-in model IDs: gemini-3.5-flash-low, gemini-3.5-flash-high, gemini-3.1-pro-low (default), gemini-3.1-pro-high. Run 'agy models' to list everything agy exposes (Claude and GPT-OSS models included). Use 'command' for a custom path/wrapper, 'env' for environment variables, 'default_model'/'disabled_models' to shape the picker, and — on a custom model — 'cli_model' to set the exact string the 'agy --model' flag receives (agy silently uses its default for an unknown name).",
+      "_comment": "Override Antigravity's built-in configuration. Antigravity drives the 'agy' CLI as an agentic reviewer. Built-in model IDs: gemini-3.8-flash-high (default, thorough), gemini-3.1-pro-high, gemini-3.1-pro-low, gemini-3.8-flash-low. Run 'agy models' to list everything agy exposes (Claude and GPT-OSS models included). Use 'command' for a custom path/wrapper, 'env' for environment variables, 'default_model'/'disabled_models' to shape the picker, and — on a custom model — 'cli_model' to set the exact string the 'agy --model' flag receives (an unknown name makes agy exit 1 with its model listing rather than fall back to a default).",
       "command": "agy",
       "extra_args": [],
       "env": {},
       "installInstructions": "Install the Antigravity CLI: curl -fsSL https://antigravity.google/cli/install.sh | bash",
-      "default_model": "gemini-3.1-pro-low",
+      "default_model": "gemini-3.8-flash-high",
       "models": [
         {
           "_comment": "Example: define a custom model id backed by an exact 'agy --model' string. 'cli_model' is the display string printed by 'agy models' (a built-in Gemini string is shown here; agy also lists Claude and GPT-OSS models you can target the same way). The clean 'id' is what the UI and config keys use.",
@@ -174,7 +174,7 @@
     },
 
     "muse": {
-      "_comment": "Override Muse's built-in configuration. Muse drives Meta's 'muse' CLI (Muse Code) headlessly via 'muse exec --json'. Built-in model IDs: muse-spark-1.2-ultra, muse-spark-1.2-contributor-ultra, muse-spark-1.2-xhigh, muse-spark-1.2-contributor-xhigh, muse-spark-1.2-high (default; aliases 'muse-spark-1.2' and 'muse-spark'), muse-spark-1.2-contributor-high (alias 'muse-spark-1.2-contributor'), muse-spark-1.2-low, muse-spark-1.2-contributor-low. Each built-in maps to one of two real CLI models plus a --reasoning-effort level (none|minimal|low|medium|high|xhigh|ultra). NOTE: the 'contributor' models are cheaper because Meta may use their content for product improvement; pair-review defaults to the non-contributor model so that tradeoff is always an explicit opt-in. Naming the bare CLI model 'muse-spark-1.2-contributor' resolves to the contributor variant, so it opts into that data sharing too. Run 'muse login' once to authenticate.",
+      "_comment": "Override Muse's built-in configuration. Muse drives Meta's 'muse' CLI (Muse Code) headlessly via 'muse exec --json'. Built-in model IDs: muse-spark-1.3-max, muse-spark-1.3-contributor-max, muse-spark-1.3-xhigh, muse-spark-1.3-contributor-xhigh, muse-spark-1.3-high (default; aliases 'muse-spark-1.3' and 'muse-spark'), muse-spark-1.3-contributor-high (alias 'muse-spark-1.3-contributor'), muse-spark-1.3-low, muse-spark-1.3-contributor-low. Every muse-spark-1.2-* id is an alias of its 1.3 twin (same price, better model), and the former -ultra ids alias to -max because 'ultra' is gate-closed and silently runs at xhigh. Each built-in maps to one of two real CLI models plus a --reasoning-effort level (minimal|low|medium|high|xhigh|max|ultra; 'none' is rejected). NOTE: the 'contributor' models are cheaper because Meta may use their content for product improvement; pair-review defaults to the non-contributor model so that tradeoff is always an explicit opt-in. Naming the bare CLI model 'muse-spark-1.3-contributor' resolves to the contributor variant, so it opts into that data sharing too. Run 'muse login' once to authenticate.",
       "command": "muse",
       "extra_args": [],
       "env": {},

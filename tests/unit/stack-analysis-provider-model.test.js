@@ -17,7 +17,7 @@ describe('_resolveStackProviderModel', () => {
     const result = _resolveStackProviderModel({
       reqProvider: 'claude',
       reqModel: 'opus',
-      cliOverrides: { provider: 'antigravity', model: 'gemini-3.5-flash-low' },
+      cliOverrides: { provider: 'antigravity', model: 'gemini-3.8-flash-low' },
       repoSettings: { default_provider: 'codex', default_model: 'gpt-5.5' },
       config: { default_provider: 'copilot', default_model: 'gpt-5' }
     });
@@ -28,7 +28,7 @@ describe('_resolveStackProviderModel', () => {
     const result = _resolveStackProviderModel({
       cliOverrides: { provider: 'codex', model: 'gpt-5.5' },
       repoSettings: { default_provider: 'claude', default_model: 'opus' },
-      config: { default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' }
+      config: { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-low' }
     });
     expect(result).toEqual({ provider: 'codex', model: 'gpt-5.5' });
   });
@@ -43,10 +43,10 @@ describe('_resolveStackProviderModel', () => {
 
   it('falls back to repo settings when there is no request body or CLI override', () => {
     const result = _resolveStackProviderModel({
-      repoSettings: { default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' },
+      repoSettings: { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-low' },
       config: {}
     });
-    expect(result).toEqual({ provider: 'antigravity', model: 'gemini-3.5-flash-low' });
+    expect(result).toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-low' });
   });
 
   it('falls back to config default, then the legacy config key', () => {

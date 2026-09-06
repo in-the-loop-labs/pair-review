@@ -66,8 +66,55 @@ describe('ClaudeProvider', () => {
       expect(ClaudeProvider.getProviderId()).toBe('claude');
     });
 
-    it('should return opus-4.8-xhigh as default model', () => {
-      expect(ClaudeProvider.getDefaultModel()).toBe('opus-4.8-xhigh');
+    it('should return opus-5-high as default model', () => {
+      expect(ClaudeProvider.getDefaultModel()).toBe('opus-5-high');
+    });
+
+    it('default entry is opus-5-high: claude-opus-5 at high effort, flagged default, no aliases', () => {
+      const models = ClaudeProvider.getModels();
+      const defaults = models.filter(m => m.default === true);
+      // Exactly one entry carries default:true, and it is the one getDefaultModel() names
+      expect(defaults).toHaveLength(1);
+      expect(defaults[0].id).toBe(ClaudeProvider.getDefaultModel());
+      expect(defaults[0]).toMatchObject({
+        id: 'opus-5-high',
+        cli_model: 'claude-opus-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+        tier: 'thorough',
+        badge: 'Recommended',
+        badgeClass: 'badge-recommended',
+        default: true
+      });
+      // The default moved, but the generation alias did not: 'opus' stays on 4.8
+      expect(defaults[0].aliases).toBeUndefined();
+    });
+
+    it('keeps opus-4.8-xhigh as a non-default entry that the bare "opus" alias still resolves to', () => {
+      const models = ClaudeProvider.getModels();
+      const opus48 = models.find(m => m.id === 'opus-4.8-xhigh');
+      expect(opus48).toMatchObject({
+        id: 'opus-4.8-xhigh',
+        cli_model: 'claude-opus-4-8',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+        tier: 'thorough',
+        badge: 'Previous Gen'
+      });
+      expect(opus48.default).toBeUndefined();
+      expect(opus48.aliases).toEqual(['opus']);
+      expect(models.filter(m => (m.aliases || []).includes('opus'))).toHaveLength(1);
+      // The alias resolves to the 4.8 entry, not the new default
+      const provider = new ClaudeProvider('opus');
+      const modelIdx = provider.args.indexOf('--model');
+      expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-8');
+      expect(provider.model).not.toBe(ClaudeProvider.getDefaultModel());
+    });
+
+    it('does not make Fable 5.1 the default (higher price tier stays an explicit pick)', () => {
+      const models = ClaudeProvider.getModels();
+      for (const id of ['fable-5.1-xhigh', 'fable-5.1-high', 'fable-5-xhigh', 'fable-5-high']) {
+        expect(models.find(m => m.id === id).default).toBeUndefined();
+      }
+      expect(ClaudeProvider.getDefaultModel()).not.toMatch(/fable/);
     });
 
     it('should return array of models with expected structure', () => {
@@ -106,17 +153,18 @@ describe('ClaudeProvider', () => {
       // Fable 5.1 is a standalone generation, not an alias target
       expect(modelIds).not.toContain('fable-5.1');
 
-      // Check model structure - 'opus-4.8-xhigh' is the canonical default, aliased by 'opus'
-      const defaultModel = models.find(m => m.id === 'opus-4.8-xhigh');
-      expect(defaultModel).toMatchObject({
+      // Check model structure - 'opus-4.8-xhigh' is the canonical alias target of
+      // 'opus' but no longer the default (that moved to opus-5-high)
+      const opusAliasTarget = models.find(m => m.id === 'opus-4.8-xhigh');
+      expect(opusAliasTarget).toMatchObject({
         id: 'opus-4.8-xhigh',
         name: 'Opus 4.8 XHigh',
-        tier: 'thorough',
-        default: true
+        tier: 'thorough'
       });
-      expect(defaultModel.aliases).toContain('opus');
-      // Exactly one model is the default
-      expect(models.filter(m => m.default).length).toBe(1);
+      expect(opusAliasTarget.default).toBeUndefined();
+      expect(opusAliasTarget.aliases).toContain('opus');
+      // Exactly one model is the default, and it is opus-5-high
+      expect(models.filter(m => m.default).map(m => m.id)).toEqual(['opus-5-high']);
 
       // opus-4.6-1m is balanced
       expect(models.find(m => m.id === 'opus-4.6-1m').tier).toBe('balanced');
@@ -150,7 +198,8 @@ describe('ClaudeProvider', () => {
       expect(models.find(m => m.id === 'opus-4.8-high').env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
 
       // Opus 5 variants mirror the 4.8 shape: thorough tier, pinned to claude-opus-5,
-      // effort carried on the env var. They are NOT the default and hold no aliases —
+      // effort carried on the env var. opus-5-high IS the default (same price as
+      // 4.8); opus-5-xhigh is an explicit non-default pick. Neither holds aliases —
       // the bare 'opus' alias intentionally stays on opus-4.8-xhigh.
       const opus5XHigh = models.find(m => m.id === 'opus-5-xhigh');
       expect(opus5XHigh).toMatchObject({
@@ -161,6 +210,7 @@ describe('ClaudeProvider', () => {
       });
       expect(opus5XHigh.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
       expect(opus5XHigh.default).toBeUndefined();
+      expect(opus5XHigh.badgeClass).toBe('badge-power');
       expect(opus5XHigh.aliases).toBeUndefined();
       const opus5High = models.find(m => m.id === 'opus-5-high');
       expect(opus5High).toMatchObject({
@@ -170,7 +220,10 @@ describe('ClaudeProvider', () => {
         cli_model: 'claude-opus-5'
       });
       expect(opus5High.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
-      expect(opus5High.default).toBeUndefined();
+      expect(opus5High.default).toBe(true);
+      expect(opus5High.badge).toBe('Recommended');
+      expect(opus5High.badgeClass).toBe('badge-recommended');
+      expect(opus5High.aliases).toBeUndefined();
 
       // Opus 4.8 is no longer the newest — its copy must not claim latest/newest.
       for (const id of ['opus-4.8-xhigh', 'opus-4.8-high']) {
@@ -320,7 +373,7 @@ describe('ClaudeProvider', () => {
     it('should create instance with default model', () => {
       const provider = new ClaudeProvider();
       // No-arg constructor falls back to getDefaultModel() (single source of truth)
-      expect(provider.model).toBe('opus-4.8-xhigh');
+      expect(provider.model).toBe('opus-5-high');
     });
 
     it('should create instance with specified model', () => {

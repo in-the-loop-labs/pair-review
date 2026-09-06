@@ -1097,7 +1097,7 @@ async function testProviderAvailability(providerId, timeoutMs) {
  * model IDs (e.g. `gpt-5.4` before reasoning-effort variants were introduced)
  * still resolve their tier for historical analysis runs.
  * @param {string} providerId - Provider ID (e.g., 'claude', 'antigravity')
- * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-3.1-pro-low')
+ * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-3.8-flash-high')
  * @returns {string|null} Tier name or null if provider or model not found
  */
 function getTierForModel(providerId, modelId) {
