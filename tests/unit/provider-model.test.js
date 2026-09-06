@@ -21,8 +21,8 @@ const PROVIDERS = [
   },
   {
     id: 'antigravity',
-    defaultModel: 'gemini-3.1-pro-low',
-    models: [{ id: 'gemini-3.1-pro-low' }, { id: 'gemini-3.5-flash-low' }]
+    defaultModel: 'gemini-3.8-flash-high',
+    models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.1-pro-low' }, { id: 'gemini-3.8-flash-low' }]
   }
 ];
 
@@ -34,13 +34,13 @@ describe('resolveProviderModelPair', () => {
 
   it('derives the model from the provider when the scope omits the model', () => {
     expect(resolveProviderModelPair([{ provider: 'antigravity', model: null }], PROVIDERS))
-      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-high' });
   });
 
   it('replaces a foreign model with the provider default instead of mixing halves', () => {
     // antigravity provider paired with an Anthropic model — must not be returned as-is.
     expect(resolveProviderModelPair([{ provider: 'antigravity', model: 'opus' }], PROVIDERS))
-      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-high' });
   });
 
   it('does not mix a provider from one scope with a model from another', () => {
@@ -50,12 +50,12 @@ describe('resolveProviderModelPair', () => {
       { provider: 'claude', model: 'opus' }
     ];
     expect(resolveProviderModelPair(scopes, PROVIDERS))
-      .toEqual({ provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-high' });
   });
 
   it('attributes a model-only scope to whichever provider owns the model', () => {
-    expect(resolveProviderModelPair([{ provider: null, model: 'gemini-3.5-flash-low' }], PROVIDERS))
-      .toEqual({ provider: 'antigravity', model: 'gemini-3.5-flash-low' });
+    expect(resolveProviderModelPair([{ provider: null, model: 'gemini-3.8-flash-low' }], PROVIDERS))
+      .toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-low' });
   });
 
   it('keeps a model named by an alias rather than falling back to the default', () => {

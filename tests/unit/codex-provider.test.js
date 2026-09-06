@@ -70,40 +70,63 @@ describe('CodexProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(11);
+      expect(models.length).toBe(9);
 
-      // Check that we have the expected model IDs
+      // Check that we have the expected model IDs, ordered thorough → balanced → fast
       const modelIds = models.map(m => m.id);
-      expect(modelIds.slice(0, 4)).toEqual([
+      expect(modelIds).toEqual([
+        'gpt-6-astra-high',
+        'gpt-6-astra-xhigh',
         'gpt-5.6-sol-high',
         'gpt-5.6-sol-xhigh',
+        'gpt-5.5-high',
+        'gpt-5.5-xhigh',
         'gpt-5.6-terra-xhigh',
-        'gpt-5.6-luna-max'
+        'gpt-5.6-luna-max',
+        'gpt-5.4-mini'
       ]);
-      expect(modelIds).toContain('gpt-5.6-sol-high');
-      expect(modelIds).toContain('gpt-5.6-sol-xhigh');
-      expect(modelIds).toContain('gpt-5.6-terra-xhigh');
-      expect(modelIds).toContain('gpt-5.6-luna-max');
-      expect(modelIds).toContain('gpt-5.4-nano');
-      expect(modelIds).toContain('gpt-5.4-mini');
-      expect(modelIds).toContain('gpt-5.3-codex');
-      expect(modelIds).toContain('gpt-5.4-high');
-      expect(modelIds).toContain('gpt-5.4-xhigh');
-      expect(modelIds).toContain('gpt-5.5-high');
-      expect(modelIds).toContain('gpt-5.5-xhigh');
-      // Bare GPT-5.6 / gpt-5.4 / gpt-5.5 (unspecified reasoning effort) are not
+      // Bare GPT-6 / GPT-5.6 / gpt-5.5 (unspecified reasoning effort) are not
       // exposed as picker entries — users pick an explicit reasoning variant
-      // instead. `gpt-5.4` is kept as an alias of gpt-5.4-high so previously
-      // saved results/councils still resolve.
-      expect(modelIds).not.toContain('gpt-5.4');
+      // instead.
+      expect(modelIds).not.toContain('gpt-6-astra');
       expect(modelIds).not.toContain('gpt-5.5');
       expect(modelIds).not.toContain('gpt-5.6-sol');
       expect(modelIds).not.toContain('gpt-5.6-terra');
       expect(modelIds).not.toContain('gpt-5.6-luna');
 
-      const high54 = models.find(m => m.id === 'gpt-5.4-high');
-      expect(high54.aliases).toContain('gpt-5.4');
-      expect(high54.badge).toBe('Previous Gen');
+      // Retired by OpenAI (Aug 2026) — Codex rejects them with a 400. They must
+      // be gone from the picker AND not aliased onto any surviving model, so a
+      // saved council fails loudly instead of silently running another model.
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-xhigh', 'gpt-5.4-nano', 'gpt-5.3-codex']) {
+        expect(modelIds, `${retired} should be removed`).not.toContain(retired);
+        expect(models.some(m => m.aliases?.includes(retired)), `${retired} should not be aliased`).toBe(false);
+      }
+
+      // GPT-6 Astra is the new flagship but NOT the default (several times Sol's cost)
+      const astraHigh = models.find(m => m.id === 'gpt-6-astra-high');
+      expect(astraHigh).toMatchObject({
+        cli_model: 'gpt-6-astra',
+        extra_args: ['-c', 'model_reasoning_effort="high"'],
+        name: 'GPT-6 Astra High',
+        tier: 'thorough',
+        badge: 'Most Capable',
+        badgeClass: 'badge-power'
+      });
+      expect(astraHigh.default).toBeUndefined();
+      const astraXhigh = models.find(m => m.id === 'gpt-6-astra-xhigh');
+      expect(astraXhigh).toMatchObject({
+        cli_model: 'gpt-6-astra',
+        extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+        tier: 'thorough',
+        badge: 'Extra High'
+      });
+
+      // gpt-5.4-mini is the sole fast-tier model (nano was retired)
+      const fastModels = models.filter(m => m.tier === 'fast').map(m => m.id);
+      expect(fastModels).toEqual(['gpt-5.4-mini']);
+      const mini = models.find(m => m.id === 'gpt-5.4-mini');
+      expect(mini.cli_model).toBeUndefined();
+      expect(mini.description).not.toContain('400k');
 
       // Check model structure — default is GPT-5.6 Sol with explicit high reasoning
       const defaultModel = models.find(m => m.default === true);
@@ -124,8 +147,8 @@ describe('CodexProvider', () => {
         { id: 'gpt-5.6-sol-xhigh', cliModel: 'gpt-5.6-sol', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-5.6-terra-xhigh', cliModel: 'gpt-5.6-terra', effort: 'xhigh', tier: 'balanced' },
         { id: 'gpt-5.6-luna-max', cliModel: 'gpt-5.6-luna', effort: 'max', tier: 'balanced' },
-        { id: 'gpt-5.4-high', cliModel: 'gpt-5.4', effort: 'high', tier: 'thorough' },
-        { id: 'gpt-5.4-xhigh', cliModel: 'gpt-5.4', effort: 'xhigh', tier: 'thorough' },
+        { id: 'gpt-6-astra-high', cliModel: 'gpt-6-astra', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-6-astra-xhigh', cliModel: 'gpt-6-astra', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-5.5-high', cliModel: 'gpt-5.5', effort: 'high', tier: 'thorough' },
         { id: 'gpt-5.5-xhigh', cliModel: 'gpt-5.5', effort: 'xhigh', tier: 'thorough' }
       ];
@@ -186,10 +209,10 @@ describe('CodexProvider', () => {
     });
 
     it('should configure base args correctly', () => {
-      const provider = new CodexProvider('gpt-5.4-nano');
+      const provider = new CodexProvider('gpt-5.4-mini');
       expect(provider.args).toContain('exec');
       expect(provider.args).toContain('-m');
-      expect(provider.args).toContain('gpt-5.4-nano');
+      expect(provider.args).toContain('gpt-5.4-mini');
       expect(provider.args).toContain('--json');
       expect(provider.args).toContain('--sandbox');
       expect(provider.args).toContain('workspace-write');
@@ -216,13 +239,13 @@ describe('CodexProvider', () => {
     });
 
     describe('reasoning-effort variants', () => {
-      it('should pass cli_model to -m and append -c model_reasoning_effort for gpt-5.4-high', () => {
-        const provider = new CodexProvider('gpt-5.4-high');
+      it('should pass cli_model to -m and append -c model_reasoning_effort for gpt-6-astra-high', () => {
+        const provider = new CodexProvider('gpt-6-astra-high');
         // -m should receive the base cli_model, not the variant id
         const mIdx = provider.args.indexOf('-m');
         expect(mIdx).toBeGreaterThanOrEqual(0);
-        expect(provider.args[mIdx + 1]).toBe('gpt-5.4');
-        expect(provider.args).not.toContain('gpt-5.4-high');
+        expect(provider.args[mIdx + 1]).toBe('gpt-6-astra');
+        expect(provider.args).not.toContain('gpt-6-astra-high');
 
         // -c 'model_reasoning_effort="high"' must appear as adjacent args
         const effortIdx = provider.args.indexOf('model_reasoning_effort="high"');
@@ -230,10 +253,10 @@ describe('CodexProvider', () => {
         expect(provider.args[effortIdx - 1]).toBe('-c');
       });
 
-      it('should use xhigh effort for gpt-5.4-xhigh', () => {
-        const provider = new CodexProvider('gpt-5.4-xhigh');
+      it('should use xhigh effort for gpt-6-astra-xhigh', () => {
+        const provider = new CodexProvider('gpt-6-astra-xhigh');
         const mIdx = provider.args.indexOf('-m');
-        expect(provider.args[mIdx + 1]).toBe('gpt-5.4');
+        expect(provider.args[mIdx + 1]).toBe('gpt-6-astra');
         const effortIdx = provider.args.indexOf('model_reasoning_effort="xhigh"');
         expect(effortIdx).toBeGreaterThanOrEqual(1);
         expect(provider.args[effortIdx - 1]).toBe('-c');
@@ -270,7 +293,7 @@ describe('CodexProvider', () => {
         // Regression: `-` is the positional stdin marker for `codex exec`.
         // It must appear after `-c model_reasoning_effort="..."` or the
         // reasoning override is silently ignored.
-        const provider = new CodexProvider('gpt-5.4-high');
+        const provider = new CodexProvider('gpt-6-astra-high');
         const dashIdx = provider.args.lastIndexOf('-');
         const effortIdx = provider.args.indexOf('model_reasoning_effort="high"');
         expect(dashIdx).toBe(provider.args.length - 1);
@@ -279,7 +302,7 @@ describe('CodexProvider', () => {
 
       it('should place stdin marker `-` AFTER reasoning extra_args in shell mode', () => {
         process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex';
-        const provider = new CodexProvider('gpt-5.4-high');
+        const provider = new CodexProvider('gpt-6-astra-high');
         // In shell mode, args are baked into the command string
         expect(provider.useShell).toBe(true);
         const effortPos = provider.command.indexOf('model_reasoning_effort=');
@@ -289,14 +312,16 @@ describe('CodexProvider', () => {
         expect(provider.command.endsWith(' -')).toBe(true);
       });
 
-      it('should treat legacy "gpt-5.4" model ID as an alias of gpt-5.4-high', () => {
+      it('should NOT alias the retired "gpt-5.4" model ID onto another model', () => {
+        // gpt-5.4 was retired by OpenAI (Aug 2026). The former alias onto
+        // gpt-6-astra-high is gone on purpose: the id passes through verbatim so
+        // Codex returns its explicit unknown-model error rather than a
+        // saved council silently running a different model.
         const provider = new CodexProvider('gpt-5.4');
-        // this.model reflects what the caller asked for (unchanged)
         expect(provider.model).toBe('gpt-5.4');
-        // but the resolved CLI args match the gpt-5.4-high variant
         const mIdx = provider.args.indexOf('-m');
         expect(provider.args[mIdx + 1]).toBe('gpt-5.4');
-        expect(provider.args).toContain('model_reasoning_effort="high"');
+        expect(provider.args.some(a => a.startsWith('model_reasoning_effort='))).toBe(false);
       });
 
       it('getExtractionConfig should also apply cli_model + reasoning effort', () => {
@@ -332,6 +357,27 @@ describe('CodexProvider', () => {
       expect(provider.extraEnv).toEqual({ CUSTOM_VAR: 'value' });
     });
 
+    it('should honor a per-model override matched through its own declared aliases', () => {
+      // CODEX_MODELS has no built-in aliases, so the override's own `aliases`
+      // is the only way a config keyed under a different name can apply.
+      // Regression: the lookup used to be exact-id only.
+      const provider = new CodexProvider('gpt-6-astra-high', {
+        models: [
+          {
+            id: 'my-astra',
+            aliases: ['gpt-6-astra-high'],
+            cli_model: 'gpt-6-astra-custom',
+            extra_args: ['--alias-flag'],
+            env: { VIA_ALIAS: 'yes' }
+          }
+        ]
+      });
+      const mIdx = provider.args.indexOf('-m');
+      expect(provider.args[mIdx + 1]).toBe('gpt-6-astra-custom');
+      expect(provider.args).toContain('--alias-flag');
+      expect(provider.extraEnv.VIA_ALIAS).toBe('yes');
+    });
+
     it('should merge model-specific env over provider env', () => {
       const provider = new CodexProvider('gpt-5.4-mini', {
         env: { VAR1: 'provider' },
@@ -345,7 +391,7 @@ describe('CodexProvider', () => {
 
     describe('yolo mode', () => {
       it('should include sandbox restrictions by default and no dangerously-bypass flag', () => {
-        const provider = new CodexProvider('gpt-5.4-nano');
+        const provider = new CodexProvider('gpt-5.4-mini');
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).not.toContain('--full-auto');
@@ -353,7 +399,7 @@ describe('CodexProvider', () => {
       });
 
       it('should use --dangerously-bypass-approvals-and-sandbox when yolo is true', () => {
-        const provider = new CodexProvider('gpt-5.4-nano', { yolo: true });
+        const provider = new CodexProvider('gpt-5.4-mini', { yolo: true });
         expect(provider.args).toContain('--dangerously-bypass-approvals-and-sandbox');
         expect(provider.args).not.toContain('--sandbox');
         expect(provider.args).not.toContain('workspace-write');
@@ -361,7 +407,7 @@ describe('CodexProvider', () => {
       });
 
       it('should include sandbox restrictions when yolo is explicitly false', () => {
-        const provider = new CodexProvider('gpt-5.4-nano', { yolo: false });
+        const provider = new CodexProvider('gpt-5.4-mini', { yolo: false });
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).not.toContain('--full-auto');
@@ -744,29 +790,31 @@ describe('CodexProvider', () => {
   });
 
   describe('buildArgsForModel', () => {
-    it('should resolve cli_model for gpt-5.4-high variant', () => {
+    it('should resolve cli_model for gpt-6-astra-high variant', () => {
       // Reasoning variants pass the base model to `-m` and add effort via
       // `-c model_reasoning_effort="..."`, with the stdin marker `-` last.
       const provider = new CodexProvider('gpt-5.4-mini');
-      const args = provider.buildArgsForModel('gpt-5.4-high');
+      const args = provider.buildArgsForModel('gpt-6-astra-high');
       const mIdx = args.indexOf('-m');
       expect(mIdx).toBeGreaterThanOrEqual(0);
-      expect(args[mIdx + 1]).toBe('gpt-5.4');
+      expect(args[mIdx + 1]).toBe('gpt-6-astra');
       const effortIdx = args.indexOf('model_reasoning_effort="high"');
       expect(effortIdx).toBeGreaterThanOrEqual(1);
       expect(args[effortIdx - 1]).toBe('-c');
       expect(args[args.length - 1]).toBe('-');
     });
 
-    it('should resolve legacy `gpt-5.4` alias to the high-effort variant shape', () => {
-      // Alias keeps historical analysis runs recorded under bare `gpt-5.4`
-      // executable against the canonical gpt-5.4-high configuration.
+    it('should pass retired ids (gpt-5.4, gpt-5.4-high, gpt-5.4-nano, gpt-5.3-codex) through unaliased', () => {
+      // Retired models are deliberately not aliased: the id goes to `-m`
+      // verbatim with no reasoning-effort override, so Codex fails loudly.
       const provider = new CodexProvider('gpt-5.4-mini');
-      const args = provider.buildArgsForModel('gpt-5.4');
-      const mIdx = args.indexOf('-m');
-      expect(args[mIdx + 1]).toBe('gpt-5.4');
-      expect(args).toContain('model_reasoning_effort="high"');
-      expect(args[args.length - 1]).toBe('-');
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-nano', 'gpt-5.3-codex']) {
+        const args = provider.buildArgsForModel(retired);
+        const mIdx = args.indexOf('-m');
+        expect(args[mIdx + 1], retired).toBe(retired);
+        expect(args.some(a => a.startsWith('model_reasoning_effort=')), retired).toBe(false);
+        expect(args[args.length - 1]).toBe('-');
+      }
     });
 
     it('should use read-only sandbox for extraction (distinct from workspace-write)', () => {
@@ -783,17 +831,17 @@ describe('CodexProvider', () => {
     it('should respect config cli_model override (config > built-in > modelId)', () => {
       // Documents the precedence chain in _resolveModelConfig: a per-model
       // config `cli_model` beats the built-in `cli_model` (which is
-      // `gpt-5.4` for the high variant).
-      const provider = new CodexProvider('gpt-5.4-high', {
+      // `gpt-6-astra` for the high variant).
+      const provider = new CodexProvider('gpt-6-astra-high', {
         models: [
-          { id: 'gpt-5.4-high', cli_model: 'custom-model' }
+          { id: 'gpt-6-astra-high', cli_model: 'custom-model' }
         ]
       });
-      const args = provider.buildArgsForModel('gpt-5.4-high');
+      const args = provider.buildArgsForModel('gpt-6-astra-high');
       const mIdx = args.indexOf('-m');
       expect(mIdx).toBeGreaterThanOrEqual(0);
       expect(args[mIdx + 1]).toBe('custom-model');
-      expect(args).not.toContain('gpt-5.4');
+      expect(args).not.toContain('gpt-6-astra');
     });
 
     it('should NOT add reasoning effort args for bare gpt-5.5 (no alias by design)', () => {
@@ -811,12 +859,12 @@ describe('CodexProvider', () => {
   describe('getExtractionConfig', () => {
     it('should return correct config for default command', () => {
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.4-nano');
+      const config = provider.getExtractionConfig('gpt-5.4-mini');
 
       expect(config.command).toBe('codex');
       expect(config.args).toContain('exec');
       expect(config.args).toContain('-m');
-      expect(config.args).toContain('gpt-5.4-nano');
+      expect(config.args).toContain('gpt-5.4-mini');
       expect(config.args).toContain('--sandbox');
       expect(config.args).toContain('read-only');
       expect(config.useShell).toBe(false);
@@ -826,7 +874,7 @@ describe('CodexProvider', () => {
     it('should use shell mode for multi-word command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'docker run codex';
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.4-nano');
+      const config = provider.getExtractionConfig('gpt-5.4-mini');
 
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run codex');
@@ -840,10 +888,10 @@ describe('CodexProvider', () => {
       const provider = new CodexProvider('gpt-5.4-mini', {
         env: { PROVIDER_VAR: 'p' },
         models: [
-          { id: 'gpt-5.4-nano', env: { MODEL_VAR: 'm' } }
+          { id: 'gpt-5.4-mini', env: { MODEL_VAR: 'm' } }
         ]
       });
-      const config = provider.getExtractionConfig('gpt-5.4-nano');
+      const config = provider.getExtractionConfig('gpt-5.4-mini');
       expect(config.env).toEqual({ PROVIDER_VAR: 'p', MODEL_VAR: 'm' });
     });
 
@@ -852,7 +900,7 @@ describe('CodexProvider', () => {
       const provider = new CodexProvider('gpt-5.4-mini', {
         env: { FROM_PROVIDER: '1' }
       });
-      const config = provider.getExtractionConfig('gpt-5.4-nano');
+      const config = provider.getExtractionConfig('gpt-5.4-mini');
       expect(config.useShell).toBe(true);
       expect(config.env).toEqual({ FROM_PROVIDER: '1' });
     });

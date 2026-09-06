@@ -235,7 +235,7 @@ OPTIONS:
                                   opus-4.7-xhigh, opus-4.7-high, opus-4.6-high,
                                   opus-4.6-1m, sonnet-5-xhigh, sonnet-5-high,
                                   sonnet-4.6
-                            (opus is Opus 4.8 XHigh, the default)
+                            (default is opus-5-high; opus is Opus 4.8 XHigh)
                             or use provider-specific models with Antigravity/Codex
     --provider <name>       Override the AI provider for headless modes
                             (--ai-draft / --ai-review). Defaults to the

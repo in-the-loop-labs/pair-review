@@ -402,7 +402,7 @@ function hasSchemaKeys(obj) {
 class Analyzer {
   /**
    * @param {Object} database - Database instance
-   * @param {string} model - Model to use (e.g., 'opus', 'gemini-3.1-pro-low')
+   * @param {string} model - Model to use (e.g., 'opus', 'gemini-3.8-flash-high')
    * @param {string} provider - Provider ID (e.g., 'claude', 'antigravity'). Defaults to 'claude'.
    * @param {Object} providerOverrides - Per-call config overrides passed to createProvider (optional)
    * @param {Object|null} providerOverridesMap - Per-provider overrides map for council mode (provider ID → overrides)

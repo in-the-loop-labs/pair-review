@@ -21,24 +21,58 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 /**
  * Codex model definitions with tier mappings
  *
- * Based on OpenAI's GPT-5.6 launch and Models guide
- * (openai.com/index/gpt-5-6 and developers.openai.com/api/docs/models)
- * - gpt-5.6-sol: Flagship frontier model for complex professional work
+ * Based on OpenAI's GPT-6 Astra launch (Sept 2026), the GPT-5.6 launch, and the
+ * Models guide (developers.openai.com/api/docs/models). Verified against the
+ * Codex CLI 0.144.0 model catalog.
+ * - gpt-6-astra: GPT-6 flagship, the most capable model for complex, demanding
+ *   work (272k context). Priced several times above Sol, so it is offered as an
+ *   opt-in thorough choice rather than the default.
+ * - gpt-5.6-sol: Strong frontier model for complex professional work (default)
  * - gpt-5.6-terra: Balances intelligence and cost for everyday work
  * - gpt-5.6-luna: Fast, affordable model for cost-sensitive, high-volume work
- * - gpt-5.4-nano: Cheapest model ($0.20/$1.25 per MTok), good for surface scans
- * - gpt-5.4-mini: Fast with 400k context ($0.75/$4.50 per MTok)
- * - gpt-5.3-codex: Industry-leading coding model for complex engineering tasks
- * - GPT-5.6, gpt-5.4, and gpt-5.5 models are exposed only through the requested
- *   explicit reasoning-effort variants.
+ * - gpt-5.5: Previous-generation frontier model
+ * - gpt-5.4-mini: Small, fast, cost-efficient model for simpler coding tasks
+ *   (272k context) — the sole fast-tier model
+ * - GPT-6, GPT-5.6, and GPT-5.5 models are exposed only through explicit
+ *   reasoning-effort variants.
+ *
+ * Tiers: thorough (Astra, Sol, GPT-5.5), balanced (Terra, Luna), fast (Mini).
+ * Entries are ordered thorough → balanced → fast; the first `fast` entry is the
+ * extraction model (see AIProvider.getFastTierModel).
  *
  * Reasoning-effort variants (-high / -xhigh / -max) use `cli_model` to pass the base
  * model ID to `codex exec -m` and add `-c model_reasoning_effort="..."` via
  * extra_args so Codex picks up the effort level through its config override.
  *
  * Deprecated (April 2026): gpt-5.1-codex-mini, gpt-5.1-codex-max, gpt-5.1-codex
+ * Deprecated (August 2026): gpt-5.4 (gpt-5.4-high / gpt-5.4-xhigh), gpt-5.4-nano,
+ *   gpt-5.3-codex — retired by OpenAI; Codex rejects them with a 400. They are
+ *   intentionally NOT aliased onto other models so saved councils fail loudly
+ *   instead of silently running a different model.
  */
 const CODEX_MODELS = [
+  {
+    id: 'gpt-6-astra-high',
+    cli_model: 'gpt-6-astra',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-6 Astra High',
+    tier: 'thorough',
+    tagline: 'Most Capable',
+    description: 'OpenAI\'s GPT-6 flagship with high reasoning effort for the hardest reviews: deep cross-file analysis, subtle regressions, and demanding architectural work. Costs several times more than Sol.',
+    badge: 'Most Capable',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6-astra-xhigh',
+    cli_model: 'gpt-6-astra',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-6 Astra XHigh',
+    tier: 'thorough',
+    tagline: 'Maximum Depth',
+    description: 'GPT-6 Astra with extra-high reasoning effort for the most difficult reviews: concurrency, security-sensitive changes, and large codebase context. Premium pricing.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
   {
     id: 'gpt-5.6-sol-high',
     cli_model: 'gpt-5.6-sol',
@@ -46,7 +80,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.6 Sol High',
     tier: 'thorough',
     tagline: 'Frontier Review',
-    description: 'OpenAI flagship and best coding model yet, with high reasoning effort for demanding PR reviews, complex professional work, and cross-file analysis.',
+    description: 'Strong frontier reviewer at a fraction of Astra\'s cost, with high reasoning effort for demanding PR reviews, complex professional work, and cross-file analysis.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
@@ -60,6 +94,28 @@ const CODEX_MODELS = [
     tagline: 'Frontier Depth',
     description: 'GPT-5.6 Sol with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes.',
     badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.5-high',
+    cli_model: 'gpt-5.5',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-5.5 High',
+    tier: 'thorough',
+    tagline: 'Previous Flagship',
+    description: 'Previous-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.5-xhigh',
+    cli_model: 'gpt-5.5',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-5.5 XHigh',
+    tier: 'thorough',
+    tagline: 'Frontier Depth',
+    description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context.',
+    badge: 'Max Reasoning',
     badgeClass: 'badge-power'
   },
   {
@@ -85,77 +141,12 @@ const CODEX_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gpt-5.5-high',
-    cli_model: 'gpt-5.5',
-    extra_args: ['-c', 'model_reasoning_effort="high"'],
-    name: 'GPT-5.5 High',
-    tier: 'thorough',
-    tagline: 'Previous Flagship',
-    description: 'Previous-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.5-xhigh',
-    cli_model: 'gpt-5.5',
-    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
-    name: 'GPT-5.5 XHigh',
-    tier: 'thorough',
-    tagline: 'Frontier Depth',
-    description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context.',
-    badge: 'Max Reasoning',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.4-high',
-    // Alias keeps results/councils saved under the previous bare `gpt-5.4`
-    // model ID resolving to the now-explicit high-effort variant.
-    aliases: ['gpt-5.4'],
-    cli_model: 'gpt-5.4',
-    extra_args: ['-c', 'model_reasoning_effort="high"'],
-    name: 'GPT-5.4 High',
-    tier: 'thorough',
-    tagline: 'Deep Review',
-    description: 'GPT-5.4 with high reasoning effort for complex multi-file reviews, architectural consistency, and subtle behavioral regressions.',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.4-xhigh',
-    cli_model: 'gpt-5.4',
-    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
-    name: 'GPT-5.4 XHigh',
-    tier: 'thorough',
-    tagline: 'Max Depth',
-    description: 'GPT-5.4 with extra-high reasoning effort for difficult reviews that need broad context, careful tradeoff analysis, and deeper issue validation.',
-    badge: 'Extra High',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.3-codex',
-    name: 'GPT-5.3 Codex',
-    tier: 'thorough',
-    tagline: 'Deep Review',
-    description: 'Industry-leading coding model—frontier performance with strong reasoning for cross-file analysis.',
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
     id: 'gpt-5.4-mini',
     name: 'GPT-5.4 Mini',
-    tier: 'balanced',
-    tagline: 'Best Balance',
-    description: 'Fast reviews with 400k context—good balance of speed and capability for everyday PR review.',
-    badge: 'Fast',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'gpt-5.4-nano',
-    name: 'GPT-5.4 Nano',
     tier: 'fast',
-    tagline: 'Cheapest',
-    description: 'Ultra-low-cost surface scans for style issues, obvious bugs, and lint-level feedback.',
-    badge: 'Cheapest',
+    tagline: 'Quick Scan',
+    description: 'Small, fast, cost-efficient model for surface scans: obvious bugs, style issues, and lint-level feedback.',
+    badge: 'Fastest',
     badgeClass: 'badge-speed'
   }
 ];
@@ -222,7 +213,7 @@ class CodexProvider extends AIProvider {
 
     // Resolve cli_model + extra_args + env from built-in model, provider config,
     // and per-model config. This is what lets reasoning variants like
-    // gpt-5.4-high pass `-m gpt-5.4` plus `-c model_reasoning_effort="high"`.
+    // gpt-6-astra-high pass `-m gpt-6-astra` plus `-c model_reasoning_effort="high"`.
     const { cliModel, extraArgs, env } = this._resolveModelConfig(model);
 
     // IMPORTANT: `-` (stdin marker) must come LAST, after any extra_args.
@@ -249,8 +240,8 @@ class CodexProvider extends AIProvider {
    * Produces the CLI model ID (for `-m`), merged extra_args, and merged env.
    *
    * Precedence for cli_model: config model > built-in model > modelId.
-   * `cli_model` lets reasoning-effort variants (e.g. `gpt-5.4-high`) pass the
-   * base model (`gpt-5.4`) to `codex exec -m` while adding reasoning overrides
+   * `cli_model` lets reasoning-effort variants (e.g. `gpt-6-astra-high`) pass the
+   * base model (`gpt-6-astra`) to `codex exec -m` while adding reasoning overrides
    * via extra_args.
    *
    * @param {string} modelId
@@ -261,7 +252,12 @@ class CodexProvider extends AIProvider {
     const configOverrides = this.configOverrides || {};
 
     const builtIn = CODEX_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
-    const configModel = configOverrides.models?.find(m => m.id === modelId);
+    // A config override may target the built-in by any of its ids/aliases, or
+    // declare its own aliases; match on the union so no lookup diverges.
+    const modelKeys = new Set([modelId, builtIn?.id, ...(builtIn?.aliases || [])].filter(Boolean));
+    const configModel = configOverrides.models?.find(
+      m => modelKeys.has(m.id) || (m.aliases || []).some(a => modelKeys.has(a))
+    );
 
     const cliModel = configModel?.cli_model !== undefined
       ? configModel.cli_model

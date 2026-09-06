@@ -259,15 +259,25 @@ describe('Provider Configuration', () => {
     });
 
     it('should resolve tier by canonical model id', () => {
-      expect(getTierForModel('codex', 'gpt-5.4-high')).toBe('thorough');
+      expect(getTierForModel('codex', 'gpt-6-astra-high')).toBe('thorough');
+      expect(getTierForModel('codex', 'gpt-5.4-mini')).toBe('fast');
     });
 
     it('should resolve tier via aliases for legacy model ids', () => {
-      // Regression: `gpt-5.4` was the pre-migration model ID stored in the
-      // analysis_runs table before reasoning-effort variants existed.
-      // It must keep resolving to 'thorough' via the alias on `gpt-5.4-high`
-      // so historical runs get their tier backfilled correctly.
-      expect(getTierForModel('codex', 'gpt-5.4')).toBe('thorough');
+      // Claude keeps `opus` as an alias of its canonical opus variant so
+      // historical analysis_runs rows get their tier backfilled correctly.
+      const models = getProviderClass('claude').getModels();
+      const aliased = models.find(m => m.aliases?.includes('opus'));
+      expect(aliased).toBeDefined();
+      expect(getTierForModel('claude', 'opus')).toBe(aliased.tier);
+    });
+
+    it('should return null for retired codex ids (no alias by design)', () => {
+      // gpt-5.4 / gpt-5.4-high / gpt-5.3-codex were retired by OpenAI (Aug
+      // 2026) and are intentionally not aliased onto surviving models.
+      expect(getTierForModel('codex', 'gpt-5.4')).toBeNull();
+      expect(getTierForModel('codex', 'gpt-5.4-high')).toBeNull();
+      expect(getTierForModel('codex', 'gpt-5.3-codex')).toBeNull();
     });
 
     it('should return null for unknown models', () => {
@@ -1522,23 +1532,23 @@ describe('Provider Configuration', () => {
     });
 
     it('moves the default off a disabled model', () => {
-      // claude's built-in default is 'opus-4.8-xhigh'; disable it and the resolver picks another
+      // claude's built-in default is 'opus-5-high'; disable it and the resolver picks another
       applyConfigOverrides({
-        providers: { claude: { disabled_models: ['opus-4.8-xhigh'] } }
+        providers: { claude: { disabled_models: ['opus-5-high'] } }
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeUndefined();
-      expect(claude.defaultModel).not.toBe('opus-4.8-xhigh');
+      expect(claude.models.find(m => m.id === 'opus-5-high')).toBeUndefined();
+      expect(claude.defaultModel).not.toBe('opus-5-high');
       // The resolved default must be one of the still-available models
       expect(claude.models.find(m => m.id === claude.defaultModel)).toBeDefined();
     });
 
     it('does not pick a disabled model as the default in createProvider', () => {
       applyConfigOverrides({
-        providers: { claude: { disabled_models: ['opus-4.8-xhigh'] } }
+        providers: { claude: { disabled_models: ['opus-5-high'] } }
       });
       const provider = createProvider('claude');
-      expect(provider.model).not.toBe('opus-4.8-xhigh');
+      expect(provider.model).not.toBe('opus-5-high');
     });
 
     it('wires disabled_models and default_model onto executable provider overrides', () => {
@@ -1612,8 +1622,8 @@ describe('Provider Configuration', () => {
         providers: { claude: { default_model: 'no-such-model' } }
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      // Falls back to the built-in default ('opus-4.8-xhigh')
-      expect(claude.defaultModel).toBe('opus-4.8-xhigh');
+      // Falls back to the built-in default ('opus-5-high')
+      expect(claude.defaultModel).toBe('opus-5-high');
     });
 
     it('falls back to automatic default when default_model is also disabled', () => {
@@ -1647,7 +1657,7 @@ describe('Provider Configuration', () => {
 
     it('normalizes per-model default flags so models.find(m => m.default) agrees with default_model', () => {
       // 'sonnet-4.6' does not carry a legacy default:true flag; the built-in
-      // default ('opus-4.8-xhigh') does. After resolving default_model, exactly one model
+      // default ('opus-5-high') does. After resolving default_model, exactly one model
       // — the targeted one — should be flagged default:true.
       applyConfigOverrides({
         providers: { claude: { default_model: 'sonnet-4.6' } }

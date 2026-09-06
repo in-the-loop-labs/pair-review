@@ -1664,7 +1664,7 @@ describe('resolveProviderModel', () => {
   it('request body wins over CLI override, repo settings, and config', () => {
     const req = makeReq(
       { default_provider: 'copilot', default_model: 'gpt-5' },
-      { provider: 'antigravity', model: 'gemini-3.5-flash-low' }
+      { provider: 'antigravity', model: 'gemini-3.8-flash-low' }
     );
     const repoSettings = { default_provider: 'codex', default_model: 'gpt-5.5' };
     const result = resolveProviderModel(req, {
@@ -1677,7 +1677,7 @@ describe('resolveProviderModel', () => {
 
   it('CLI flag override outranks saved repo settings (per-run intent wins)', () => {
     const req = makeReq(
-      { default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' },
+      { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-low' },
       { provider: 'codex', model: 'gpt-5.5' }
     );
     const repoSettings = { default_provider: 'claude', default_model: 'opus' };
@@ -1686,16 +1686,16 @@ describe('resolveProviderModel', () => {
   });
 
   it('falls back to repo settings when there is no request body and no CLI override', () => {
-    const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' });
+    const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.8-flash-low' });
     const repoSettings = { default_provider: 'claude', default_model: 'opus' };
     const result = resolveProviderModel(req, { repoSettings });
     expect(result).toEqual({ provider: 'claude', model: 'opus' });
   });
 
   it('falls back to config/legacy defaults when no request body, CLI override, or repo settings', () => {
-    const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.5-flash-low' });
+    const req = makeReq({ default_provider: 'antigravity', default_model: 'gemini-3.8-flash-low' });
     const result = resolveProviderModel(req, { repoSettings: null });
-    expect(result).toEqual({ provider: 'antigravity', model: 'gemini-3.5-flash-low' });
+    expect(result).toEqual({ provider: 'antigravity', model: 'gemini-3.8-flash-low' });
   });
 
   it('falls back to hard defaults (claude/opus) when nothing is configured', () => {
