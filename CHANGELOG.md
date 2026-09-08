@@ -1,5 +1,30 @@
 # Changelog
 
+## 5.2.3
+
+### Patch Changes
+
+- c637068: Antigravity: replace the retired Gemini 3.5 Flash models with Gemini 3.8 Flash (Low/High) in the fast tier. The old `gemini-3.5-flash-low`, `gemini-3.5-flash`, and `gemini-3.5-flash-high` ids are kept as aliases that resolve to the matching 3.8 Flash effort level, so saved councils and configs keep working instead of falling through to agy's default model. Gemini 3.8 Flash (High) moves to the thorough tier and becomes the provider's default model — it is now the strongest Gemini that agy exposes (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4, on par with GPT-6 Astra and Muse 1.3), so "Flash" describes latency rather than capability. Gemini 3.1 Pro (Low/High) is demoted to the previous-generation Pro line: it keeps its balanced/thorough tiers but is no longer the default. Gemini 3.8 Flash (Low) stays the sole fast-tier model and the JSON-extraction fallback.
+- c637068: Claude: make `opus-5-high` (Claude Opus 5, high effort) the provider's
+  default model, replacing `opus-4.8-xhigh`. Opus 5 is priced the same as Opus
+  4.8, so the default picks up the newer generation at no extra cost; `opus-5-xhigh`
+  and Fable 5.1 stay explicit thorough-tier picks. `opus-5-high` now carries the
+  "Recommended" badge and `opus-4.8-xhigh` reads as previous generation.
+
+  All Opus 4.8 entries (`opus-4.8-xhigh`, `opus-4.8-high`) remain available and
+  the bare `opus` alias still resolves to `opus-4.8-xhigh`, so existing configs,
+  saved councils, and `--model opus` invocations are unchanged. Only the
+  no-model-specified path and the picker's preselected entry move to Opus 5.
+
+- c637068: Refresh the built-in Codex model list for the GPT-6 launch.
+
+  - Add GPT-6 Astra as `gpt-6-astra-high` and `gpt-6-astra-xhigh` (thorough tier). Astra is OpenAI's new flagship but costs several times more than Sol, so `gpt-5.6-sol-high` remains the default.
+  - Remove the retired `gpt-5.4-high`, `gpt-5.4-xhigh`, `gpt-5.4-nano`, and `gpt-5.3-codex` entries (OpenAI retired these models on Aug 31 2026; Codex now rejects them with a 400). They are intentionally not aliased onto other models, so saved councils that reference them fail with an explicit unknown-model error instead of silently running a different model. The legacy `gpt-5.4` alias is gone with them.
+  - Move `gpt-5.4-mini` to the fast tier — it is now the model used for lightweight extraction steps.
+
+- 5f3f415: Increase external provider output mapping timeout from one minute to five minutes.
+- c637068: Muse: move the built-in models from Muse Spark 1.2 to Muse Spark 1.3 (`muse-spark-1.3-max`, `-xhigh`, `-high`, `-low` and their `-contributor` twins; default `muse-spark-1.3-high`). 1.3 is priced identically to 1.2 and strictly better, so every `muse-spark-1.2-*` id is kept as an alias that resolves to its 1.3 twin at the same reasoning effort — saved councils and configs upgrade in place. The top effort is now `max` (which actually runs) instead of `ultra`, which the CLI gate-closes and silently degrades to `xhigh`; the former `-ultra` ids resolve to the `-max` entries. Docs no longer list the rejected `none` effort.
+
 ## 5.2.2
 
 ### Patch Changes
