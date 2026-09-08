@@ -1044,6 +1044,21 @@ describe('createExecutableProviderClass', () => {
       expect(result.summary).toBe('Sum');
     });
 
+    it('allows five minutes for mapping provider execution', async () => {
+      mockConfigDefault('claude');
+      actualMockGetProviderClass.mockReturnValue({ isExecutable: false });
+      const execute = vi.fn().mockResolvedValue({ suggestions: [], summary: '' });
+      actualMockCreateProvider.mockReturnValue({ execute });
+
+      await new (createExecutableProviderClass('t', { command: 't' }))().mapOutputToSchema('{}');
+
+      expect(execute).toHaveBeenCalledWith(expect.any(String), {
+        cwd: process.cwd(),
+        timeout: 300000,
+        level: 'mapping'
+      });
+    });
+
     it('skips configured default when it is an executable provider', async () => {
       mockConfigDefault('my-exec');
       actualMockGetProviderClass.mockImplementation((pid) => {

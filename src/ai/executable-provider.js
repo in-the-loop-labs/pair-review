@@ -22,6 +22,8 @@ const { killChildSafely } = require('./abort-signal-wiring');
 const jsonExtractor = require('../utils/json-extractor');
 const configModule = require('../config');
 
+const MAPPING_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
  * Convert a snake_case string to camelCase
  * @param {string} str - snake_case string
@@ -422,7 +424,7 @@ function createExecutableProviderClass(id, config) {
       const provider = providerModule.createProvider(mappingProviderId);
       const result = await provider.execute(mappingPrompt, {
         cwd: process.cwd(),
-        timeout: 60000,
+        timeout: MAPPING_TIMEOUT_MS,
         level: 'mapping'
       });
 
