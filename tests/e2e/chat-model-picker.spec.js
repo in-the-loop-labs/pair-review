@@ -17,7 +17,9 @@
  *      model while the original tab stays put.
  *   3. Ticking "Don't ask again" before confirming writes the ack key, and the
  *      next switch on a messaged tab opens a new tab with NO dialog at all.
- *   4. Switching provider on a fresh tab resets the model label to "Default"
+ *   4. The last model PICKED for a provider is remembered per browser and seeds
+ *      the next new tab; picking "Provider default" clears it again.
+ *   5. Switching provider on a fresh tab resets the model label to "Default"
  *      (a selector only means something under its own provider's catalog).
  *
  * The catalog is stubbed via `page.route('**\/api/chat/providers')` so the rows
@@ -27,7 +29,8 @@
  * the whole point of scenario 1.
  *
  * Isolation: the per-worker DB and localStorage are shared across the file, so
- * every test wipes the chat-tab state AND the model-switch ack key, and always
+ * every test wipes the chat-tab state, the model-switch ack key AND the
+ * per-provider remembered-model keys, and always
  * works on a tab it opened itself via "+" rather than a restored one.
  */
 
@@ -36,6 +39,13 @@ import { waitForDiffToRender } from './helpers.js';
 
 /** localStorage flag written by "Don't ask again" (ChatPanel.MODEL_SWITCH_ACK_KEY). */
 const ACK_KEY = 'pair-review:chat-model-switch-ack';
+
+/**
+ * Prefix of the per-provider "last model picked" keys
+ * (ChatPanel.LAST_MODEL_KEY_PREFIX). Wiped alongside the ack key so a test
+ * never inherits a preference written by an earlier one.
+ */
+const LAST_MODEL_PREFIX = 'pair-review:chat-model:';
 
 /**
  * Deterministic stub for GET /api/chat/providers. Two providers so the provider
@@ -109,14 +119,14 @@ async function bootReview(page, url) {
   );
 
   await page.goto('/');
-  await page.evaluate((ackKey) => {
+  await page.evaluate(({ ackKey, modelPrefix }) => {
     try {
       Object.keys(localStorage)
-        .filter((k) => k.startsWith('pair-review:chat-tabs:'))
+        .filter((k) => k.startsWith('pair-review:chat-tabs:') || k.startsWith(modelPrefix))
         .forEach((k) => localStorage.removeItem(k));
       localStorage.removeItem(ackKey);
     } catch { /* noop */ }
-  }, ACK_KEY);
+  }, { ackKey: ACK_KEY, modelPrefix: LAST_MODEL_PREFIX });
 
   await page.goto(url);
   await waitForDiffToRender(page);
@@ -345,6 +355,33 @@ for (const mode of MODES) {
       await expect(tabs).toHaveCount(countBefore + 2);
       await expect(modelLabel(page)).toHaveText('Model C');
       await expect(dialog).toBeHidden();
+    });
+
+    test('the last picked model seeds the next new tab, and picking Default sticks too', async ({ page }) => {
+      await openChatPanel(page);
+      await openFreshTab(page);
+
+      // Pick Model B — the pick is what gets remembered.
+      await pickModel(page, 'model-b');
+      await expect(modelLabel(page)).toHaveText('Model B');
+      await expect
+        .poll(() => page.evaluate((k) => localStorage.getItem(k), `${LAST_MODEL_PREFIX}pi`))
+        .toBe('model-b');
+
+      // A brand-new tab starts on it instead of the provider default.
+      await openFreshTab(page);
+      await expect(modelLabel(page)).toHaveText('Model B');
+
+      // Picking "Provider default" is an explicit choice: it clears the memory.
+      await pickModel(page, '');
+      await expect(modelLabel(page)).toHaveText('Default');
+      await expect
+        .poll(() => page.evaluate((k) => localStorage.getItem(k), `${LAST_MODEL_PREFIX}pi`))
+        .toBeNull();
+
+      // ...so the tab after that starts on the default again.
+      await openFreshTab(page);
+      await expect(modelLabel(page)).toHaveText('Default');
     });
 
     test('switching provider on a fresh tab resets the model label to Default', async ({ page }) => {

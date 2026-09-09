@@ -6678,6 +6678,368 @@ describe('ChatPanel', () => {
     });
 
     // ---------------------------------------------------------------------
+    // Remembered model per provider (pair-review:chat-model:<provider>)
+    // ---------------------------------------------------------------------
+    describe('remembered model per provider', () => {
+      const KEY_CLAUDE = 'pair-review:chat-model:claude';
+      const KEY_PI = 'pair-review:chat-model:pi';
+
+      /**
+       * Swap window.localStorage for one whose named methods throw, and restore
+       * the real stub afterwards. Storage can be disabled or quota-full in a
+       * real browser; every read/write must survive it.
+       */
+      async function withThrowingStorage(methods, fn) {
+        const real = global.window.localStorage;
+        const throwing = { ...real };
+        for (const m of methods) {
+          throwing[m] = () => { throw new Error(`localStorage.${m} blocked`); };
+        }
+        global.window.localStorage = throwing;
+        try {
+          await fn();
+        } finally {
+          global.window.localStorage = real;
+        }
+      }
+
+      // ── Writes ───────────────────────────────────────────────────────────
+
+      it('remembers the model picked on a fresh tab', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('REMOVES the key when the provider-default row is picked', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectModel(null);
+
+        expect(global.localStorage.removeItem).toHaveBeenCalledWith(KEY_CLAUDE);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      it('remembers the model picked from the zero-tab state', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        clearActiveTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+      });
+
+      it('remembers the model on confirm of the switch dialog', async () => {
+        await loadCatalog(chatPanel);
+        stubConfirmDialog('confirm');
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('leaves the remembered model untouched when the dialog is cancelled', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        stubConfirmDialog('cancel');
+        chatPanel._openNewTab = vi.fn();
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+        expect(global.localStorage.setItem)
+          .not.toHaveBeenCalledWith(KEY_CLAUDE, 'claude-sonnet-4-5-20250929');
+      });
+
+      it('does not write from the server-adopted model path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 3, status: 'active', model: 'opus-5' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('opus-5');
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      // ── Reads: seeding a new tab ─────────────────────────────────────────
+
+      it('seeds a new tab from the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'claude-sonnet-4-5-20250929';
+
+        await chatPanel._openNewTab();
+
+        const tab = chatPanel._getActiveTab();
+        expect(tab.model).toBe('claude-sonnet-4-5-20250929');
+        // Header label follows the seeded model, by catalog NAME.
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+      });
+
+      it('honours an explicit null init (provider default) over the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'claude', model: null });
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('honours an explicit model init over the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'claude', model: 'claude-sonnet-4-5-20250929' });
+
+        expect(chatPanel._getActiveTab().model).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('seeds per provider, not globally', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'pi' });
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('seeds the lazy tab created by sendMessage on an empty strip', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        clearActiveTab(chatPanel);
+        // Stop the send after the tab exists — session creation is not the point.
+        chatPanel._createSessionForTab = vi.fn().mockResolvedValue(null);
+        chatPanel.inputEl.value = 'hello';
+
+        await chatPanel.sendMessage();
+
+        expect(chatPanel.tabs).toHaveLength(1);
+        expect(chatPanel.tabs[0].model).toBe('opus-5');
+      });
+
+      it('seeds the lazy tab created by the legacy createSession path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        clearActiveTab(chatPanel);
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 12, status: 'active' } }),
+        });
+
+        await chatPanel.createSession();
+
+        const body = JSON.parse(
+          global.fetch.mock.calls.find(c => c[0] === '/api/chat/session')[1].body
+        );
+        expect(body.model).toBe('opus-5');
+      });
+
+      // ── Reads: provider switch ───────────────────────────────────────────
+
+      it('seeds the NEW provider\'s remembered model on a provider switch', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_PI] = 'pi-turbo';
+        // The pi catalog in the fixture is empty (hasCatalog: false), so nothing
+        // can validate it away — an unlisted provider seeds optimistically.
+        chatPanel._chatCatalog.delete('pi');
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectProvider('pi');
+
+        expect(tab.provider).toBe('pi');
+        expect(tab.model).toBe('pi-turbo');
+        expect(chatPanel.modelTextEl.textContent).toBe('Pi Turbo');
+      });
+
+      it('falls back to the provider default when the new provider has no remembered model', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectProvider('pi');
+
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      // ── Validation ───────────────────────────────────────────────────────
+
+      it('ignores AND deletes a remembered id the catalog no longer lists', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-4-retired';
+
+        await chatPanel._openNewTab();
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+        expect(global.localStorage.removeItem).toHaveBeenCalledWith(KEY_CLAUDE);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      it('waits for a cold catalog before seeding, so a stale id cannot slip through', async () => {
+        // Nothing loaded yet: _openNewTab must resolve the catalog first.
+        stubCatalogFetch();
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-4-retired';
+
+        await chatPanel._openNewTab();
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/providers');
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('does not fetch the catalog when there is nothing remembered', async () => {
+        stubCatalogFetch();
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+
+        await chatPanel._openNewTab();
+
+        expect(global.fetch).not.toHaveBeenCalledWith('/api/chat/providers');
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('seeds optimistically when the catalog never answers', async () => {
+        global.fetch.mockRejectedValue(new Error('offline'));
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab();
+
+        expect(chatPanel._getActiveTab().model).toBe('opus-5');
+        // A catalog that never answered proves nothing — keep the preference.
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+      });
+
+      // ── Throwing storage ─────────────────────────────────────────────────
+
+      it('treats a throwing getItem as nothing remembered', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+
+        await withThrowingStorage(['getItem'], async () => {
+          await chatPanel._openNewTab();
+          expect(chatPanel._getActiveTab().model).toBeNull();
+          expect(chatPanel._rememberedModelFor('claude')).toBeNull();
+        });
+      });
+
+      it('survives a throwing setItem when a model is picked', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+
+        await withThrowingStorage(['setItem'], async () => {
+          await chatPanel._selectModel('opus-5');
+        });
+
+        expect(tab.model).toBe('opus-5');
+        expect(chatPanel.modelTextEl.textContent).toBe('Opus 5');
+      });
+
+      it('survives a throwing removeItem when the default row is picked', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await withThrowingStorage(['removeItem'], async () => {
+          await chatPanel._selectModel(null);
+        });
+
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('survives storage that throws while pruning a stale id', async () => {
+        await loadCatalog(chatPanel);
+        const real = global.window.localStorage;
+        global.window.localStorage = {
+          getItem: () => 'opus-4-retired',
+          setItem: () => {},
+          removeItem: () => { throw new Error('blocked'); },
+        };
+        try {
+          expect(chatPanel._rememberedModelFor('claude')).toBeNull();
+        } finally {
+          global.window.localStorage = real;
+        }
+      });
+
+      // ── Restore paths never write ────────────────────────────────────────
+
+      it('does not remember a model restored from the sessions list', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.fetch.mockImplementation((url) => {
+          if (typeof url === 'string' && url.includes('/chat/sessions')) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({
+                data: {
+                  sessions: [
+                    { id: 41, provider: 'claude', model: 'opus-5', message_count: 0, first_message: null },
+                  ],
+                },
+              }),
+            });
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+        });
+
+        await chatPanel._restoreTabs({ tabs: [41], activeSessionId: 41 });
+
+        expect(chatPanel.tabs.some(t => t.model === 'opus-5')).toBe(true);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+    });
+
+    // ---------------------------------------------------------------------
     // Request body
     // ---------------------------------------------------------------------
     describe('_sessionRequestBody', () => {

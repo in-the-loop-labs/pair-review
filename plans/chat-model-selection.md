@@ -352,7 +352,6 @@ specs or the picker will render the real catalog. Never run two E2E suites concu
 
 ## Follow-ups (out of scope)
 
-- Sticky last-used model per provider in `localStorage`.
 - "Reset dismissed dialogs" on the settings page (clears the model-switch ack).
 - A global `chat_model` setting on the settings page (would need a per-provider shape;
   `chat_providers` is read-only there today).
@@ -380,3 +379,17 @@ Deviations from the design above, all deliberate:
 - **Claude bridge now honours `chat_providers.claude.args`** (append semantics, same as Pi/OMP).
 - **Escape guard.** `_onKeydown` yields to `window.confirmDialog.isVisible` before its ladder.
 - **Zero-tab model pick** opens a new tab, mirroring the provider picker.
+- **Sticky last-picked model per provider** (`pair-review:chat-model:<providerId>` in
+  `localStorage`, not scoped by review). Written ONLY by an explicit pick in `_selectModel`
+  (fresh-tab swap, zero-tab pick, and the confirmed dialog switch); a cancelled dialog, a
+  restore/MRU hydrate and `_adoptServerModel` never write. Picking "Provider default" removes
+  the key, so the choice sticks. Read by `_openNewTab` (only when `init.model` is absent — an
+  explicit `null` still means default), by `_selectProvider`'s fresh-tab reset (for the NEW
+  provider), and by the four synchronous `_createTab` placeholders (`open`, `_lateBindReview`,
+  the legacy `createSession`, `sendMessage`). Validation: a remembered id the loaded catalog
+  does not list is dropped and the key deleted; an unloaded catalog seeds optimistically.
+  `_openNewTab` awaits `_ensureChatCatalog` before seeding, but only when there is a remembered
+  id AND the provider is missing from the map — after `open()` warms the catalog that is zero
+  awaits, so a `+` tab still appears in the same task. `_loadMRUSession` now overwrites
+  `tab.model` unconditionally (not only when the row carries a provider), because the
+  placeholder tab it adopts onto may carry a seed describing a conversation that never ran.

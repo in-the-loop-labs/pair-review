@@ -17,6 +17,16 @@ const NEAR_BOTTOM_THRESHOLD = 80;
  */
 const MODEL_SWITCH_ACK_KEY = 'pair-review:chat-model-switch-ack';
 
+/**
+ * localStorage key prefix for the last model the user picked for a chat
+ * provider. One key per provider id (`pair-review:chat-model:claude`), holding
+ * the canonical catalog id. Deliberately NOT scoped by reviewId: this is a
+ * preference ("I work in Sonnet"), not session state. Absent means "provider
+ * default", which is also what an explicit pick of the default row writes
+ * (by removing the key).
+ */
+const LAST_MODEL_KEY_PREFIX = 'pair-review:chat-model:';
+
 /** Checkmark used by both the provider and model dropdown rows. */
 const DROPDOWN_CHECK_ICON = `<svg class="chat-panel__model-check" viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`;
 
@@ -702,7 +712,9 @@ class ChatPanel {
    *     sees the card before they ever type a message.
    * @param {Object} [init]
    * @param {string} [init.provider] - Provider for the new tab (defaults to the active one)
-   * @param {string|null} [init.model] - Model selector for the new tab
+   * @param {string|null} [init.model] - Model selector for the new tab. OMIT the key
+   *   to start from the provider's remembered model; pass `null` explicitly to
+   *   force the provider default.
    * @returns {Promise<void>}
    */
   async _openNewTab(init = {}) {
@@ -710,9 +722,17 @@ class ChatPanel {
       console.warn('[ChatPanel] _openNewTab: no reviewId yet');
       return;
     }
+    const providerId = init.provider || this._activeProvider;
+    // `undefined` = the caller has no opinion, so the provider's remembered
+    // model seeds the tab. An explicit `null` (the "Provider default" row, and
+    // the provider picker's new-tab path) is an opinion and must not be
+    // overridden.
+    const model = init.model !== undefined
+      ? (init.model ?? null)
+      : await this._seedModelFor(providerId);
     const tab = this._createTab({
-      provider: init.provider || this._activeProvider,
-      model: init.model ?? null,
+      provider: providerId,
+      model,
     });
     this._appendTab(tab, { focus: true });
     // No session yet, so _showAnalysisContextIfPresent gets a null sessionData.
@@ -1379,6 +1399,107 @@ class ChatPanel {
     return this._prettifyModelId(modelId);
   }
 
+  // ── Remembered model per provider ──────────────────────────────────────
+  //
+  // The last model the user PICKED for a provider is remembered per browser and
+  // seeds every new tab on that provider. Only explicit picks write (see
+  // _selectModel); restore, MRU and server-adoption paths never do — they
+  // describe a session that already exists, not a preference.
+
+  /**
+   * Raw remembered selector for a provider, straight out of storage. No catalog
+   * validation. A throwing/absent storage reads as "nothing remembered".
+   * @param {string} providerId
+   * @returns {string|null}
+   */
+  _readRememberedModel(providerId) {
+    if (!providerId) return null;
+    try {
+      const raw = window.localStorage?.getItem(LAST_MODEL_KEY_PREFIX + providerId);
+      return raw || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist (or clear) the remembered model for a provider. `null` REMOVES the
+   * key: choosing "Provider default" is an explicit choice and must stick, so a
+   * previously remembered id cannot come back on the next tab.
+   * @param {string} providerId
+   * @param {string|null} modelId
+   */
+  _rememberModel(providerId, modelId) {
+    if (!providerId) return;
+    const key = LAST_MODEL_KEY_PREFIX + providerId;
+    try {
+      if (modelId) {
+        window.localStorage?.setItem(key, modelId);
+      } else {
+        window.localStorage?.removeItem(key);
+      }
+    } catch { /* per-browser convenience only; a throwing storage just forgets */ }
+  }
+
+  /** Drop a remembered selector that no longer names anything. */
+  _forgetRememberedModel(providerId) {
+    try {
+      window.localStorage?.removeItem(LAST_MODEL_KEY_PREFIX + providerId);
+    } catch { /* noop */ }
+  }
+
+  /**
+   * Remembered model for a provider, validated against the catalog that is
+   * loaded RIGHT NOW. Synchronous — callers that can afford to wait for a cold
+   * catalog should use _seedModelFor instead.
+   *
+   * Validation rules:
+   *   - provider has a catalog entry and it lists the id  → honour it
+   *   - provider has a catalog entry and it does NOT      → stale: forget it
+   *   - no entry at all (catalog not loaded, or an unknown/unavailable
+   *     provider)                                          → honour optimistically
+   *
+   * The optimistic branch matters: it is the only reason a seeded label can
+   * appear before /api/chat/providers answers, and the id came from a pick the
+   * user made against this very catalog, so it is almost always still valid.
+   *
+   * @param {string} providerId
+   * @returns {string|null}
+   */
+  _rememberedModelFor(providerId) {
+    const raw = this._readRememberedModel(providerId);
+    if (!raw) return null;
+    const entry = this._getCatalogEntry(providerId);
+    if (!entry) return raw;
+    const models = Array.isArray(entry.models) ? entry.models : [];
+    if (models.some(m => m && m.id === raw)) return raw;
+    // The catalog answered and does not know this id (config change, provider
+    // upgrade, disabled_models). Seeding it would spawn a session on a model
+    // the CLI rejects.
+    this._forgetRememberedModel(providerId);
+    return null;
+  }
+
+  /**
+   * Remembered model for a provider, waiting for the catalog when it has not
+   * arrived yet. Used by _openNewTab, the one seeding path that can afford an
+   * await: its callers already await it, and open() warms the catalog on every
+   * panel open, so in practice the map is populated and this adds no await at
+   * all. A cold panel joins the in-flight request rather than issuing a new one.
+   *
+   * @param {string} providerId
+   * @returns {Promise<string|null>}
+   */
+  async _seedModelFor(providerId) {
+    if (!this._readRememberedModel(providerId)) return null;
+    if (!this._chatCatalog?.has(providerId)) {
+      try {
+        await this._ensureChatCatalog();
+      } catch { /* _ensureChatCatalog already degrades; fall through to optimistic */ }
+    }
+    return this._rememberedModelFor(providerId);
+  }
+
   /**
    * Get display name for a provider ID from the _chatProviders array.
    * Falls back to capitalized provider ID if not found.
@@ -1558,7 +1679,13 @@ class ChatPanel {
         }
       }
       if (!restored) {
-        const tab = this._createTab({ provider: this._activeProvider });
+        // Seeded like any other fresh tab. If _loadMRUSession then adopts an
+        // existing session it overwrites provider AND model from that row, so
+        // the seed only survives when this really is a brand-new conversation.
+        const tab = this._createTab({
+          provider: this._activeProvider,
+          model: this._rememberedModelFor(this._activeProvider),
+        });
         this._appendTab(tab, { focus: true });
         if (!hasExplicitContext) {
           await this._loadMRUSession();
@@ -1780,16 +1907,25 @@ class ChatPanel {
       this._persistOpenTabs();
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
+      // The adopted session's model is authoritative — unconditionally, even
+      // for a row with no provider. The placeholder tab this runs on was seeded
+      // with the provider's remembered model, and that seed describes a NEW
+      // conversation; leaving it on a tab now bound to an existing session
+      // would label the session with a model it never ran on.
+      tab.model = mru.model ?? null;
       if (mru.provider) {
         tab.provider = mru.provider;
-        tab.model = mru.model;
         // Only update the global header/active provider when this tab is in the
         // foreground; otherwise a stale MRU load would yank the header out from
         // under the user's currently focused tab.
         if (this._getActiveTab() === tab) {
           this._activeProvider = mru.provider;
-          this._updateTitle(mru.provider, mru.model);
+          this._updateTitle(mru.provider, tab.model);
         }
+      } else if (this._getActiveTab() === tab) {
+        // No provider on the row, but the model still changed out from under
+        // the seeded label.
+        this._updateTitle(tab.provider, tab.model);
       }
 
       // Title heuristic: prefer first user message preview if available
@@ -2076,9 +2212,14 @@ class ChatPanel {
     }
 
     tab.provider = id;
-    // A model selector only means something under its own provider's catalog.
-    tab.model = null;
-    this._updateTitle(id, null);
+    // A model selector only means something under its own provider's catalog,
+    // so the old one is dropped. The NEW provider's remembered pick takes its
+    // place — same starting point a brand-new tab on that provider would get.
+    // Read synchronously (no await): this handler mutates the active tab in
+    // place, and an await here would let the user swap tab/provider underneath
+    // it. On a cold catalog the remembered id seeds optimistically.
+    tab.model = this._rememberedModelFor(id);
+    this._updateTitle(id, tab.model);
     this._discardEmptySession(tab);
     this._renderTabStrip();
   }
@@ -2314,6 +2455,7 @@ class ChatPanel {
       // send would start on the provider default. Mirror _selectProvider and
       // open a tab carrying the choice.
       this._hideModelDropdown();
+      this._rememberModel(this._activeProvider, normalized);
       await this._openNewTab({ provider: this._activeProvider, model: normalized });
       return;
     }
@@ -2324,6 +2466,7 @@ class ChatPanel {
 
     if (this._isTabFresh(tab)) {
       tab.model = normalized;
+      this._rememberModel(tab.provider || this._activeProvider, normalized);
       this._discardEmptySession(tab);
       this._updateTitle(tab.provider, tab.model);
       this._renderTabStrip();
@@ -2337,10 +2480,13 @@ class ChatPanel {
     this._hideModelDropdown();
 
     const confirmed = await this._confirmModelSwitch(tab, normalized);
+    // A cancelled switch is not a pick: the preference must stay exactly as it
+    // was, or backing out of the dialog would silently re-aim every later tab.
     if (!confirmed) return;
     // The tab may have been closed while the dialog was up.
     if (!this.tabs.includes(tab)) return;
 
+    this._rememberModel(capturedProvider, normalized);
     await this._openNewTab({ provider: capturedProvider, model: normalized });
   }
 
@@ -3040,7 +3186,12 @@ class ChatPanel {
       }
       if (!restored) {
         if (this.tabs.length === 0) {
-          const tab = this._createTab({ provider: this._activeProvider });
+          // Same seeding as open()'s placeholder; _loadMRUSession overwrites it
+          // when it adopts an existing session.
+          const tab = this._createTab({
+            provider: this._activeProvider,
+            model: this._rememberedModelFor(this._activeProvider),
+          });
           this._appendTab(tab, { focus: true });
         }
         await this._loadMRUSession();
@@ -3058,7 +3209,12 @@ class ChatPanel {
     // Ensure there is an active tab to bind the new session to. This happens
     // for lazy-creation paths (first sendMessage on an empty panel).
     if (!this._getActiveTab()) {
-      const tab = this._createTab({ provider: this._activeProvider });
+      // Lazy tab for a session about to be created — seed it so the POST body
+      // carries the remembered model, exactly like a "+" tab would.
+      const tab = this._createTab({
+        provider: this._activeProvider,
+        model: this._rememberedModelFor(this._activeProvider),
+      });
       this._appendTab(tab, { focus: true });
     }
     if (!this.reviewId) {
@@ -3139,7 +3295,12 @@ class ChatPanel {
     // Capture the originating tab BEFORE any awaits. Bail if no tab.
     let tab = this._getActiveTab();
     if (!tab) {
-      tab = this._createTab({ provider: this._activeProvider });
+      // Lazy tab (send with an empty strip). Seeded synchronously — sendMessage
+      // must not gain an await before it captures its tab.
+      tab = this._createTab({
+        provider: this._activeProvider,
+        model: this._rememberedModelFor(this._activeProvider),
+      });
       this._appendTab(tab, { focus: true });
     }
     if (tab.isStreaming) return;
