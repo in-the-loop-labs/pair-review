@@ -1435,6 +1435,7 @@
 
 .d2h-file-header {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   background: var(--color-bg-secondary);
@@ -1445,13 +1446,17 @@
   position: sticky;
   top: var(--toolbar-height, 0px);
   z-index: 4;
+  /* Keep long paths and header actions usable when the review and chat panels
+     leave the diff column narrow. The header scrolls as one unbroken row
+     instead of squeezing the filename down to an ellipsis. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .d2h-file-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  min-width: max-content;
   white-space: nowrap;
 }
 
@@ -6082,6 +6087,7 @@ div.external-comment-row {
 .generated-badge {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 500;

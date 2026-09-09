@@ -112,6 +112,89 @@ test.describe('Panel Group - PR Mode', () => {
     await expect(layoutBtn).toBeVisible();
   });
 
+  test('file header scrolls horizontally instead of squishing a long filename when both panels are open', async ({ page }) => {
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
+    const header = page.locator('.d2h-file-wrapper .d2h-file-header').first();
+    const fileName = header.locator('.d2h-file-name');
+    await fileName.evaluate((element) => {
+      element.textContent = 'packages/review-interface/src/components/file-header/rendered-review-controller.js';
+    });
+    const beforePanels = await header.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(beforePanels.scrollWidth).toBeLessThanOrEqual(beforePanels.clientWidth);
+
+    await page.locator('#ai-panel-toggle').click();
+    await page.locator('#chat-toggle-btn').click();
+
+    const layout = await header.evaluate((element) => {
+      const name = element.querySelector('.d2h-file-name');
+      const nameStyle = window.getComputedStyle(name);
+      const headerStyle = window.getComputedStyle(element);
+      return {
+        headerClientWidth: element.clientWidth,
+        headerScrollWidth: element.scrollWidth,
+        nameClientWidth: name.clientWidth,
+        nameScrollWidth: name.scrollWidth,
+        nameRightEdge: name.offsetLeft + name.offsetWidth,
+        nameFlexShrink: nameStyle.flexShrink,
+        nameWhiteSpace: nameStyle.whiteSpace,
+        overflowX: headerStyle.overflowX,
+        flexWrap: headerStyle.flexWrap,
+        position: headerStyle.position,
+        childrenDoNotShrink: Array.from(element.children).every((child) => (
+          window.getComputedStyle(child).flexShrink === '0'
+        )),
+      };
+    });
+
+    expect(layout.headerClientWidth).toBeLessThan(beforePanels.clientWidth);
+    expect(layout.headerScrollWidth).toBeGreaterThan(layout.headerClientWidth);
+    expect(layout.nameClientWidth).toBe(layout.nameScrollWidth);
+    expect(layout.nameRightEdge).toBeLessThanOrEqual(layout.headerScrollWidth);
+    expect(layout.nameFlexShrink).toBe('0');
+    expect(layout.nameWhiteSpace).toBe('nowrap');
+    expect(layout.overflowX).toBe('auto');
+    expect(layout.flexWrap).toBe('nowrap');
+    expect(layout.position).toBe('sticky');
+    expect(layout.childrenDoNotShrink).toBe(true);
+
+    // Exercise the same horizontal wheel/trackpad interaction a user would use,
+    // then confirm the trailing Rendered/Diff control can be brought onscreen.
+    await header.hover();
+    await page.mouse.wheel(2000, 0);
+    await expect.poll(() => header.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+
+    const trailingControlIsInsideHeader = await header.evaluate((element) => {
+      const control = element.querySelector('.file-header-view-toggle');
+      const headerRect = element.getBoundingClientRect();
+      const controlRect = control.getBoundingClientRect();
+      return controlRect.left >= headerRect.left && controlRect.right <= headerRect.right
+        && controlRect.top >= headerRect.top && controlRect.bottom <= headerRect.bottom;
+    });
+    expect(trailingControlIsInsideHeader).toBe(true);
+
+    // Horizontal overflow must not break the header's existing sticky contract.
+    const diffScrollTop = await page.locator('.diff-view').evaluate((element) => {
+      element.scrollTop = 180;
+      return element.scrollTop;
+    });
+    expect(diffScrollTop).toBeGreaterThan(0);
+    const toolbar = page.locator('.diff-toolbar');
+    await expect.poll(async () => {
+      const [headerBox, toolbarBox] = await Promise.all([
+        header.boundingBox(),
+        toolbar.boundingBox(),
+      ]);
+      return Math.abs(headerBox.y - (toolbarBox.y + toolbarBox.height));
+    }).toBeLessThanOrEqual(1);
+  });
+
   test('popover opens on layout toggle click and selects layout', async ({ page }) => {
     // Enable chat for this test (Pi not available in E2E environment)
     await page.evaluate(() => {
