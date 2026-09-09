@@ -105,6 +105,7 @@ function applyDefaultMocks() {
   resetSpy(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
   resetSpy(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
   resetSpy(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
+  resetSpy(GitHubClient.prototype, 'markFilesAsViewed').mockResolvedValue();
   resetSpy(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
   resetSpy(GitHubClient.prototype, 'getReviewById').mockResolvedValue(null);
   resetSpy(GitHubClient.prototype, 'addCommentsInBatches').mockResolvedValue({ successCount: 1, failed: false });
@@ -2942,6 +2943,49 @@ describe('Review Submission Endpoint', () => {
         // Should not be a 400 validation error
         expect(response.status).not.toBe(400);
       }
+    });
+
+    it('should sync filtered viewed files after a review succeeds', async () => {
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({
+          event: 'COMMENT',
+          body: 'Test review',
+          viewedFiles: [
+            'file.js',
+            'file.js',
+            'context:file.js',
+            'not-in-this-pr.js',
+            '',
+            null
+          ]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      expect(GitHubClient.prototype.markFilesAsViewed).toHaveBeenCalledWith(
+        'PR_node123',
+        ['file.js']
+      );
+    });
+
+    it('should keep review submission successful when viewed-file sync throws', async () => {
+      GitHubClient.prototype.markFilesAsViewed.mockRejectedValueOnce(
+        new Error('GraphQL unavailable')
+      );
+
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({
+          event: 'COMMENT',
+          body: 'Review submitted before viewed sync',
+          viewedFiles: ['file.js']
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
     });
 
     it('should validate that comments are collected for submission', async () => {
