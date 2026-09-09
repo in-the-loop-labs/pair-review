@@ -63,6 +63,125 @@ async function deleteComments(page, reviewId, commentIds) {
   }, { id: reviewId, targets: ids });
 }
 
+/**
+ * Force a concrete theme on the page without persisting a preference (the
+ * shared review DB and the browser context are reused across tests in this
+ * file, so a persisted preference would leak). `applyResolved` writes the
+ * resolved value to `<html data-theme>`, which is exactly what every theme
+ * CSS rule keys off.
+ */
+async function setTheme(page, theme) {
+  await page.evaluate((t) => window.PairReviewTheme.applyResolved(t), theme);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+}
+
+/**
+ * Disable CSS transitions/animations for the rest of the test.
+ *
+ * The comment action buttons carry `transition: var(--transition-ui)` on
+ * `color`, so a computed-style read taken shortly after a theme switch can
+ * catch an interpolated colour mid-flight (observed: `rgb(95, 104, 114)`
+ * between the light `#57606a` and the dark `#c9d1d9`) and report a
+ * difference that does not exist at rest. Freezing transitions makes the
+ * steady-state palette the only thing these assertions can see; it changes
+ * nothing about WHAT is being compared.
+ *
+ * NOT redundant with the reset in `tests/e2e/fixtures.js`, despite appearances.
+ * That one runs in an `addInitScript` at document-start, where BOTH
+ * `document.head` and `document.documentElement` are still null, so it dies
+ * on `null.appendChild` before it can insert anything. Measured on this
+ * page: zero `transition-duration: 0s` style elements in the document and a
+ * `TypeError: Cannot read properties of null (reading 'appendChild')` on the
+ * page-error channel. Removing this helper on the assumption the fixture
+ * covers it reintroduces the mid-flight read above — reproduced under
+ * `--repeat-each=3`. (The fixture itself is shared by every E2E spec and is
+ * left alone here rather than changing animation timing suite-wide.)
+ */
+async function freezeTransitions(page) {
+  await page.addStyleTag({
+    content: '*, *::before, *::after { transition: none !important; animation: none !important; }'
+  });
+}
+
+/**
+ * Computed presentation of the canonical `.user-comment` fragment inside a
+ * placement element (a Diff `.user-comment-row` or a Rendered
+ * `.rendered-markdown-comment-card`).
+ *
+ * Deliberately property-based rather than a pixel screenshot: screenshots of
+ * a shared, order-dependent review are fragile and tell you nothing about
+ * WHICH property drifted. These are the properties that made the two
+ * surfaces read as different objects — shell palette/accent/shadow/padding,
+ * body typography, the line badge, and the icon action controls.
+ */
+function cardPresentation(locator) {
+  return locator.evaluate((root) => {
+    const pick = (el, props) => {
+      const cs = getComputedStyle(el);
+      const out = {};
+      props.forEach((p) => { out[p] = cs[p]; });
+      return out;
+    };
+    const shell = root.querySelector('.user-comment');
+    if (!shell) return { missing: ['.user-comment'], placement: root.className };
+    const body = shell.querySelector('.user-comment-body');
+    const lineInfo = shell.querySelector('.user-comment-line-info');
+    const originIcon = shell.querySelector('.comment-origin-icon');
+    const actionButtons = Array.from(shell.querySelectorAll('.user-comment-actions > button'));
+    // A missing canonical sub-element IS the parity failure. Report it as
+    // data the assertion can print, instead of letting `pick(null, ...)`
+    // throw an opaque in-page TypeError that says nothing about which
+    // surface lost which part of the card.
+    const missing = [
+      [body, '.user-comment-body'],
+      [lineInfo, '.user-comment-line-info'],
+      [originIcon, '.comment-origin-icon']
+    ].filter(([el]) => !el).map(([, sel]) => sel);
+    if (actionButtons.length === 0) missing.push('.user-comment-actions > button');
+    if (actionButtons.some((b) => !b.querySelector('svg'))) missing.push('action button <svg>');
+    if (missing.length > 0) {
+      return { missing, placement: root.className, shellHtml: shell.innerHTML.slice(0, 500) };
+    }
+    // The canonical action classes, identified BY the shared contract rather
+    // than by "whichever class happens to be first": the Rendered surface
+    // appends its own behaviour-hook class with `classList.add` after
+    // `innerHTML`, so a change in class ordering must not silently turn this
+    // into a comparison of hook classes.
+    const canonicalActions = (window.UserCommentView && window.UserCommentView.ACTION_ORDER)
+      || ['btn-chat-comment', 'btn-edit-comment', 'btn-delete-comment'];
+    return {
+      shell: pick(shell, [
+        'backgroundColor', 'borderTopColor', 'borderLeftColor',
+        'borderTopWidth', 'borderLeftWidth', 'borderTopLeftRadius',
+        'boxShadow', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'
+      ]),
+      body: pick(body, ['color', 'fontSize', 'fontFamily', 'lineHeight']),
+      lineInfo: pick(lineInfo, [
+        'backgroundColor', 'color', 'fontSize', 'fontWeight', 'borderTopLeftRadius'
+      ]),
+      lineInfoText: lineInfo.textContent,
+      originIconColor: getComputedStyle(originIcon).color,
+      hasOriginIconSvg: !!originIcon.querySelector('svg'),
+      // Canonical classes only: the Rendered surface adds a behaviour-hook
+      // class to the same button, which is not a presentation difference.
+      actionOrder: actionButtons.map((b) => Array.from(b.classList)
+        .filter((c) => canonicalActions.includes(c)).join(' ')),
+      actionTitles: actionButtons.map((b) => b.getAttribute('title')),
+      // Icon-only controls: the accessible name must be explicit and must
+      // match the tooltip on every surface.
+      actionAriaLabels: actionButtons.map((b) => b.getAttribute('aria-label')),
+      actionStyles: actionButtons.map((b) => pick(b, [
+        'display', 'color', 'paddingTop', 'paddingLeft', 'borderTopLeftRadius'
+      ])),
+      actionIconSizes: actionButtons.map((b) => {
+        const svg = b.querySelector('svg');
+        const cs = getComputedStyle(svg);
+        return `${cs.width}x${cs.height}`;
+      })
+    };
+  });
+}
+
 for (const { label, url, reviewApiBase } of [
   { label: 'PR mode', url: '/pr/test-owner/test-repo/1', reviewApiBase: '/api/pr/test-owner/test-repo/1' },
   { label: 'Local mode', url: '/local/2', reviewApiBase: '/api/local/2' }
@@ -280,7 +399,7 @@ for (const { label, url, reviewApiBase } of [
         await expect(card).toBeVisible();
         await expect(card).toContainText('Comment on a blank separator line.');
         // Honest repository line metadata...
-        await expect(card.locator('.rendered-markdown-comment-lines')).toHaveText('Line 8');
+        await expect(card.locator('.user-comment-line-info')).toHaveText('Line 8');
         // ...in its own gap container at the true source position...
         await expect(fileWrapper.locator('.rendered-markdown-gap[data-start-line="8"]')).toBeVisible();
         // ...and NOT silently reattached to a neighbouring heading/paragraph.
@@ -614,6 +733,213 @@ for (const { label, url, reviewApiBase } of [
       await expect(
         setupWrapper.locator('.rendered-markdown-block-content', { hasText: 'Follow these steps to set up the project.' })
       ).toBeVisible();
+    });
+
+    for (const theme of ['light', 'dark']) {
+      test(`one saved comment presents identically in Diff and Rendered mode (${theme} theme)`, async ({ page }) => {
+        // Line 7 (the "Usage" paragraph) is inside the fixture's only hunk,
+        // so this ONE stored comment has a card on BOTH surfaces at once —
+        // which is exactly the condition the reviewer sees when toggling.
+        const reviewId = await getReviewId(page, reviewApiBase);
+        const created = await page.evaluate(async (id) => {
+          const res = await fetch(`/api/reviews/${id}/comments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              file: 'docs/guide.md',
+              line_start: 7,
+              line_end: 7,
+              side: 'RIGHT',
+              body: 'Presentation parity check.'
+            })
+          });
+          return res.json();
+        }, reviewId);
+
+        try {
+          await page.reload();
+          await waitForDiffToRender(page);
+          // Must come BEFORE setTheme: it is the theme switch that starts
+          // the colour transitions this test would otherwise read mid-flight.
+          await freezeTransitions(page);
+          await setTheme(page, theme);
+
+          const fileWrapper = page.locator('.d2h-file-wrapper[data-file-name="docs/guide.md"]');
+          await fileWrapper.scrollIntoViewIfNeeded();
+
+          const diffRow = page.locator(`.user-comment-row[data-comment-id="${created.commentId}"]`);
+          await expect(diffRow).toHaveCount(1);
+          await expect(diffRow).toBeVisible();
+          const diffPresentation = await cardPresentation(diffRow);
+          // `missing` names the canonical parts a surface failed to emit, so
+          // a structural regression reads as data instead of a TypeError.
+          expect(diffPresentation.missing).toBeUndefined();
+
+          await toggleRendered(page, 'docs/guide.md');
+          const renderedCard = fileWrapper.locator(
+            `.rendered-markdown-comment-card[data-comment-id="${created.commentId}"]`
+          );
+          await expect(renderedCard).toBeVisible();
+          const renderedPresentation = await cardPresentation(renderedCard);
+          expect(renderedPresentation.missing).toBeUndefined();
+
+          // The whole point: same object, same computed presentation.
+          expect(renderedPresentation).toEqual(diffPresentation);
+          expect(renderedPresentation.actionOrder).toEqual([
+            'btn-chat-comment', 'btn-edit-comment', 'btn-delete-comment'
+          ]);
+          // Icon-only controls need an explicit accessible name on BOTH
+          // surfaces; `title` alone is exposed inconsistently and is
+          // invisible to touch users.
+          expect(renderedPresentation.actionAriaLabels).toEqual(
+            renderedPresentation.actionTitles
+          );
+          expect(renderedPresentation.actionAriaLabels).toEqual([
+            'Chat about comment', 'Edit comment', 'Dismiss comment'
+          ]);
+          expect(renderedPresentation.hasOriginIconSvg).toBe(true);
+          expect(renderedPresentation.lineInfoText).toBe('Line 7');
+
+          // Sanity: the theme really did change the palette, so an
+          // all-defaults false pass is impossible.
+          if (theme === 'dark') {
+            expect(renderedPresentation.body.color).not.toBe('rgb(31, 35, 40)');
+          } else {
+            expect(renderedPresentation.body.color).toBe('rgb(31, 35, 40)');
+          }
+
+          // The Rendered placement adapter must stay a placement adapter: no
+          // Diff row identity (which would double-count the comment) and no
+          // second card shell of its own.
+          expect(await renderedCard.evaluate((el) => ({
+            isDiffRow: el.classList.contains('user-comment-row'),
+            adapterBackground: getComputedStyle(el).backgroundColor,
+            adapterBorder: getComputedStyle(el).borderLeftWidth,
+            shells: el.querySelectorAll('.user-comment').length
+          }))).toEqual({
+            isDiffRow: false,
+            adapterBackground: 'rgba(0, 0, 0, 0)',
+            adapterBorder: '0px',
+            shells: 1
+          });
+
+          // Guard against a false pass: the comparison above is only
+          // meaningful if the Diff row and the Rendered card are genuinely
+          // two different elements that are BOTH present right now.
+          expect(await page.evaluate((id) => {
+            const wanted = String(id);
+            const diffRows = Array.from(document.querySelectorAll('.user-comment-row'))
+              .filter((el) => el.dataset.commentId === wanted).length;
+            const cards = Array.from(document.querySelectorAll('.rendered-markdown-comment-card'))
+              .filter((el) => el.dataset.commentId === wanted).length;
+            return { diffRows, cards };
+          }, created.commentId)).toEqual({ diffRows: 1, cards: 1 });
+        } finally {
+          await deleteComments(page, reviewId, [created.commentId]);
+        }
+      });
+    }
+
+    test('the Rendered card\'s canonical chat, edit and dismiss controls drive the rendered lifecycle', async ({ page }) => {
+      const reviewId = await getReviewId(page, reviewApiBase);
+      const fileWrapper = await toggleRendered(page, 'docs/guide.md');
+      const countBefore = await page.evaluate(() => window.CommentCount.countDraftComments(document).total);
+
+      let commentId = null;
+      let chatPanelInstrumented = false;
+      try {
+        const usageBlock = fileWrapper.locator('.rendered-markdown-block', { hasText: 'This paragraph explains usage' });
+        await usageBlock.hover();
+        await usageBlock.locator('.rendered-markdown-add-comment-btn').click();
+        await usageBlock.locator('.rendered-markdown-comment-textarea').fill('Canonical controls check.');
+        const response = page.waitForResponse(
+          (r) => r.url().includes('/comments') && r.request().method() === 'POST'
+        );
+        await usageBlock.locator('.rendered-markdown-comment-btn.submit').click();
+        ({ commentId } = await (await response).json());
+
+        const card = fileWrapper.locator(`.rendered-markdown-comment-card[data-comment-id="${commentId}"]`);
+        await expect(card).toBeVisible();
+
+        // --- chat: exactly one open, with this comment's own context ------
+        await page.evaluate(() => {
+          document.documentElement.setAttribute('data-chat', 'available');
+          window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+        });
+        // Instrument the real panel rather than counting rendered context
+        // cards: "opened twice" is the regression, and a second open with
+        // identical context could otherwise be invisible in the DOM.
+        // The original is stashed on `window` and put back in the `finally`
+        // below: this page/context is reused by later tests in the file, and
+        // a leaked wrapper would keep pushing into a stale array.
+        await page.evaluate(() => {
+          window.__chatOpens = [];
+          window.__chatOpenOriginal = window.chatPanel.open;
+          const original = window.chatPanel.open.bind(window.chatPanel);
+          window.chatPanel.open = (opts) => {
+            window.__chatOpens.push(opts);
+            return original(opts);
+          };
+        });
+        chatPanelInstrumented = true;
+        await card.locator('.btn-chat-comment').click();
+        const opens = await page.evaluate(() => window.__chatOpens);
+        expect(opens).toHaveLength(1);
+        expect(opens[0].commentContext).toMatchObject({
+          commentId: String(commentId),
+          body: 'Canonical controls check.',
+          file: 'docs/guide.md',
+          line_start: 7,
+          line_end: 7,
+          source: 'user'
+        });
+        await expect(page.locator('.chat-panel')).toBeVisible();
+        await page.locator('.chat-panel__close-btn').click();
+
+        // --- edit: in-place, actions hidden while editing -----------------
+        await card.locator('.btn-edit-comment').click();
+        await expect(card.locator('.user-comment')).toHaveClass(/editing-mode/);
+        await expect(card.locator('.user-comment-actions')).toBeHidden();
+        await card.locator('.user-comment-body textarea').fill('Edited through the canonical controls.');
+        await card.locator('.user-comment-body .submit').click();
+        await expect(card.locator('.user-comment-body')).toContainText('Edited through the canonical controls.');
+        await expect(card.locator('.user-comment')).not.toHaveClass(/editing-mode/);
+        await expect(card.locator('.user-comment-actions')).toBeVisible();
+        // The edit reached the Diff surface too.
+        await expect(page.locator(`.user-comment-row[data-comment-id="${commentId}"]`))
+          .toContainText('Edited through the canonical controls.');
+
+        // --- dismiss: removes the comment from both surfaces --------------
+        await card.locator('.btn-delete-comment').click();
+        await expect(page.locator(`.rendered-markdown-comment-card[data-comment-id="${commentId}"]`)).toHaveCount(0);
+        await expect(page.locator(`.user-comment-row[data-comment-id="${commentId}"]`)).toHaveCount(0);
+        commentId = null; // deleted through the UI; nothing left to clean up
+        expect(await page.evaluate(() => window.CommentCount.countDraftComments(document).total))
+          .toBe(countBefore);
+      } finally {
+        // Un-instrument the chat panel before anything else, so the page is
+        // handed back to later tests exactly as it was found. Guarded by a
+        // flag AND a try/catch: a navigation between here and the patch
+        // would have discarded `window.__chatOpenOriginal`, and a cleanup
+        // failure must not mask the assertion failure that got us here.
+        if (chatPanelInstrumented) {
+          try {
+            await page.evaluate(() => {
+              if (window.chatPanel && window.__chatOpenOriginal) {
+                window.chatPanel.open = window.__chatOpenOriginal;
+              }
+              delete window.__chatOpenOriginal;
+              delete window.__chatOpens;
+            });
+          } catch {
+            // Page already gone; nothing to restore.
+          }
+        }
+        // `deleteComments` filters out null ids, so the success path (which
+        // sets `commentId = null` after deleting through the UI) is a no-op
+        // here rather than a DELETE for `/comments/null`.
+        await deleteComments(page, reviewId, [commentId]);
+      }
     });
   });
 }

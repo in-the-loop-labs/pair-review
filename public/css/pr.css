@@ -4123,6 +4123,14 @@ tr.line-range-start .d2h-code-line-ctn {
   background: rgba(139, 92, 246, 0.05);
   border-radius: 4px;
   margin-left: 4px;
+  /* The canonical line badge is a fixed-size anchor, not slack. Without
+     these it is a shrinkable flex item, so a long sibling in the header-left
+     track (the Rendered surface's nested-target chip, e.g. "Table cell, row
+     12, column 7") squeezes "Lines 11-13" until it wraps or clips — the same
+     comment then reads differently in Rendered and Diff mode. No effect on a
+     header that fits, which is every header the Diff surfaces produce. */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 [data-theme="dark"] .user-comment-line-info {
@@ -4139,6 +4147,9 @@ tr.line-range-start .d2h-code-line-ctn {
   margin-left: 6px;
   color: #bf8700;
   cursor: help;
+  /* Fixed-size canonical icon, like the origin icon and the line badge: a
+     long secondary chip beside it must not squash the warning glyph. */
+  flex-shrink: 0;
 }
 
 .expanded-context-indicator svg {
@@ -4178,6 +4189,17 @@ tr.line-range-start .d2h-code-line-ctn {
   margin-left: 8px;
   background: rgba(163, 113, 247, 0.15);
   color: var(--color-praise, #a371f7);
+  /* Adopted metadata is a fixed-size identity marker, not slack — the same
+     contract `.user-comment-line-info` above has, and for the same reason.
+     "Nice Work" is two words in a bordered pill: as a shrinkable flex item it
+     wraps to "Nice / Work" and the pill grows a second line, breaking the
+     header's alignment. This is newly reachable on the Rendered surface,
+     where an adopted comment can also carry the unbounded nested-target chip
+     in the SAME header-left track (the Diff surfaces have no chip, so their
+     track never runs out of room). The chip is the designated flexible item;
+     it ellipses, this does not. */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .adopted-praise-badge svg {
@@ -4192,6 +4214,9 @@ tr.line-range-start .d2h-code-line-ctn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Keep the existing title behavior: it may shrink and ellipse before it can
+     push the canonical line badge or action buttons out of the header. The
+     fixed-size praise badge remains non-shrinking above. */
 }
 
 /* Eye icon toggle button */
@@ -14152,14 +14177,29 @@ diffs-container {
   display: none;
 }
 
-.rendered-markdown-comment-form,
-.rendered-markdown-comment-card {
+.rendered-markdown-comment-form {
   margin: 6px 0 10px;
   padding: 10px 12px;
   background-color: var(--color-bg-secondary);
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
   font-size: 13px;
+}
+
+/* PLACEMENT ADAPTER ONLY.
+
+   A saved Rendered-Markdown comment is the SAME visual object as a Diff
+   comment: its single child is the canonical `.user-comment` shell (purple
+   card, left accent, shadow, header, icon actions, body typography), built
+   by modules/user-comment-view.js and styled entirely by the `.user-comment*`
+   rules above. This wrapper exists only to place that shell in a block /
+   gap / orphan comment list and to carry `data-comment-id` for navigation
+   and de-duplicated counting, so it must declare no palette, border,
+   padding or type of its own — a second approximation of the Diff card is
+   exactly the drift this replaced. `.user-comment` already brings its own
+   `margin: 6px auto`. */
+.rendered-markdown-comment-card {
+  display: block;
 }
 
 .rendered-markdown-context-note {
@@ -14211,35 +14251,13 @@ diffs-container {
   cursor: not-allowed;
 }
 
-.rendered-markdown-comment-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.rendered-markdown-comment-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.rendered-markdown-comment-edit,
-.rendered-markdown-comment-delete {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-.rendered-markdown-comment-body {
-  color: var(--color-text-primary);
-}
-
-.rendered-markdown-comment-card.comment-ai-origin {
-  border-left: 3px solid var(--color-accent-primary);
+/* Rendered Markdown edits a comment IN PLACE inside the canonical
+   `.user-comment-body` (there is no separate `.user-comment-edit-form` row
+   as on the Diff surface), so the body must stay visible while
+   `editing-mode` hides the icon actions — the same exception the
+   file-comment card needs. Placement/behaviour only: no colours here. */
+.rendered-markdown-comment-card .user-comment.editing-mode .user-comment-body {
+  display: block;
 }
 
 /* Off-block comment containers.
@@ -14276,17 +14294,6 @@ diffs-container {
 .rendered-markdown-gap-note {
   font-size: 11px;
   font-style: italic;
-  color: var(--color-text-tertiary);
-}
-
-/* Real repository line range, shown only on cards that sit outside a
-   rendered block (see above) — there the line number is the reviewer's only
-   anchor, so it must be visible and honest. */
-.rendered-markdown-comment-lines {
-  margin-right: auto;
-  padding-left: 6px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
   color: var(--color-text-tertiary);
 }
 
@@ -14402,8 +14409,25 @@ tr.rendered-markdown-target.is-target-active > th {
   margin-bottom: 6px;
 }
 
-.rendered-markdown-comment-header .rendered-markdown-comment-target {
-  margin-right: auto;
+/* Secondary header metadata inside the canonical header: it names the exact
+   nested target (list item / row / cell) a comment belongs to WITHOUT
+   replacing the canonical line badge next to it.
+
+   The chip and an optional adopted title are the flexible metadata items:
+   fixed-size `.comment-origin-icon`, `.user-comment-line-info`,
+   `.expanded-context-indicator` and `.adopted-praise-badge` do not shrink,
+   while `.user-comment-actions` is fixed outside the metadata track. A long
+   descriptor can therefore ellipse without wrapping or clipping the canonical
+   line badge, and can never push chat/edit/dismiss actions off the card.
+   `min-width: 0` lets the chip reach ellipsis instead of stopping at its text's
+   min-content width; `.user-comment-header-left` applies the same constraint
+   one level up. */
+.user-comment-header-left .rendered-markdown-comment-target {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rendered-markdown-comment-target.is-stale {

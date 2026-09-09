@@ -236,6 +236,106 @@ describe('RenderedDocumentView', () => {
       expect(view.container.querySelector('.rendered-markdown-context-note')).toBeTruthy();
     });
 
+    describe('diff-position memoization', () => {
+      const HUNK = '@@ -1,4 +1,4 @@\n context one\n context two\n-old three\n+new three\n context four\n';
+
+      /**
+       * Count how many times the patch is actually PARSED while a document
+       * full of comments is built. Spying on HunkParser (the expensive step)
+       * rather than on the memo itself keeps the assertion about the real
+       * cost, not about an implementation detail of the cache.
+       */
+      function spyOnPatchParsing() {
+        const HunkParser = window.HunkParser;
+        const original = HunkParser.parseDiffIntoBlocks.bind(HunkParser);
+        const spy = vi.fn(original);
+        HunkParser.parseDiffIntoBlocks = spy;
+        return { spy, restore: () => { HunkParser.parseDiffIntoBlocks = original; } };
+      }
+
+      it('parses the patch once for a whole batch of comment cards, not once per card', () => {
+        const view = makeView({ source: 'one\ntwo\nnew three\nfour\n', patch: HUNK });
+        view.render();
+        const { spy, restore } = spyOnPatchParsing();
+        try {
+          view.setComments([1, 2, 3, 4, 5, 6].map((n) => ({
+            id: 100 + n, line_start: 3, line_end: 3, body: `comment ${n}`
+          })));
+          expect(view.container.querySelectorAll('.rendered-markdown-comment-card')).toHaveLength(6);
+          expect(spy).toHaveBeenCalledTimes(1);
+        } finally {
+          restore();
+        }
+      });
+
+      it('gives the same in/out-of-hunk answer cached as uncached, including for CONTEXT lines', () => {
+        // The discriminating input class: line 4 is an unchanged CONTEXT
+        // line INSIDE the hunk. It is addressable in the diff, so it must
+        // NOT get the "posted as a file-level comment" indicator — the same
+        // answer the Diff surface's hunk-membership check gives.
+        const view = makeView({ source: 'one\ntwo\nnew three\nfour\n', patch: HUNK });
+        view.render();
+        view.setComments([
+          { id: 201, line_start: 3, line_end: 3, body: 'changed line' },
+          { id: 202, line_start: 4, line_end: 4, body: 'context line inside the hunk' },
+          { id: 203, line_start: 40, line_end: 40, body: 'far outside every hunk' }
+        ]);
+        const indicator = (id) => !!view.container.querySelector(
+          `.rendered-markdown-comment-card[data-comment-id="${id}"] .expanded-context-indicator`
+        );
+        expect(indicator(201)).toBe(false);
+        expect(indicator(202)).toBe(false);
+        expect(indicator(203)).toBe(true);
+
+        // Byte-for-byte the same verdicts from a view that never reuses a
+        // cached map (one comment per fresh view).
+        for (const c of [
+          { id: 201, line_start: 3 }, { id: 202, line_start: 4 }, { id: 203, line_start: 40 }
+        ]) {
+          const fresh = makeView({ source: 'one\ntwo\nnew three\nfour\n', patch: HUNK });
+          fresh.render();
+          fresh.setComments([{ ...c, line_end: c.line_start, body: 'x' }]);
+          expect(!!fresh.container.querySelector('.expanded-context-indicator')).toBe(indicator(c.id));
+        }
+      });
+
+      it('memoizes a NULL patch instead of handing back the empty cache slot', () => {
+        // This is the whole job of the `_NO_PATCH_CACHED` key sentinel, and
+        // the only input class that discriminates it: `null` is a legitimate
+        // `this.patch` (a file with no diff at all), so a nullish "nothing
+        // cached yet" key would compare EQUAL to it on the very first call
+        // and return the still-empty cache slot. Callers pass the result
+        // straight into `RenderedMarkdown.resolveCommentTarget({ positions })`,
+        // so that would be a `undefined`/`null` map reaching a `.get`.
+        const view = makeView({ source: 'one\ntwo\n', patch: null });
+        view.render();
+
+        const first = view._diffPositions();
+        expect(first).toBeInstanceOf(Map);
+        expect(first.size).toBe(0);
+        // Second call is the memoized hit, not a second empty map.
+        expect(view._diffPositions()).toBe(first);
+
+        // And the verdict a card actually renders from is unaffected: with no
+        // patch, every line is outside every hunk.
+        view.setComments([{ id: 220, line_start: 1, line_end: 1, body: 'x' }]);
+        expect(view.container.querySelector('.expanded-context-indicator')).toBeTruthy();
+      });
+
+      it('recomputes when the host swaps the patch, so a stale map can never answer', () => {
+        const view = makeView({ source: 'one\ntwo\nnew three\nfour\n', patch: HUNK });
+        view.render();
+        view.setComments([{ id: 210, line_start: 3, line_end: 3, body: 'x' }]);
+        expect(view.container.querySelector('.expanded-context-indicator')).toBeNull();
+
+        // A patch that no longer covers line 3 at all.
+        view.patch = '@@ -80,1 +80,1 @@\n-old\n+new\n';
+        view.setComments([]);
+        view.setComments([{ id: 210, line_start: 3, line_end: 3, body: 'x' }]);
+        expect(view.container.querySelector('.expanded-context-indicator')).toBeTruthy();
+      });
+    });
+
     it('restores focus to the "Add comment" button when the form is cancelled', () => {
       const view = makeView({ source: 'Some paragraph.\n' });
       view.render();
@@ -296,6 +396,172 @@ describe('RenderedDocumentView', () => {
       expect(document.activeElement).toBe(editBtn);
     });
 
+    it('hides the icon actions while an in-place edit is open, and restores them on cancel', () => {
+      const view = makeView({ source: 'text\n' });
+      view.render();
+      document.body.appendChild(view.container);
+      view.addComment({ id: 7, line_start: 1, body: 'original text' });
+
+      const shell = view.container.querySelector('.user-comment');
+      expect(shell.classList.contains('editing-mode')).toBe(false);
+
+      view.container.querySelector('.rendered-markdown-comment-edit').click();
+      // Same `editing-mode` state the Diff surface uses to hide the actions.
+      expect(shell.classList.contains('editing-mode')).toBe(true);
+
+      view.container.querySelector('.rendered-markdown-comment-body .cancel').click();
+      expect(shell.classList.contains('editing-mode')).toBe(false);
+      // Focus restoration still works, which it could not if the button
+      // were still hidden when focus() ran.
+      expect(document.activeElement).toBe(
+        view.container.querySelector('.rendered-markdown-comment-edit')
+      );
+    });
+
+    it('leaves editing mode after a successful save, and stays in it after a failed one so the retry is reachable', async () => {
+      let fail = true;
+      const view = makeView({
+        source: 'text\n',
+        callbacks: {
+          onEditComment: async () => {
+            if (fail) throw new Error('boom');
+          }
+        }
+      });
+      view.render();
+      document.body.appendChild(view.container);
+      view.addComment({ id: 8, line_start: 1, body: 'original' });
+      const shell = view.container.querySelector('.user-comment');
+
+      view.container.querySelector('.rendered-markdown-comment-edit').click();
+      const textarea = view.container.querySelector('.rendered-markdown-comment-body textarea');
+      textarea.value = 'edited';
+      view.container.querySelector('.rendered-markdown-comment-body .submit').click();
+      await vi.waitFor(() => {
+        expect(view.container.querySelector('.rendered-markdown-comment-body textarea')).toBeTruthy();
+      });
+      // Failed save: the textarea is still on screen, so the card stays in
+      // editing mode rather than showing actions over a live edit form.
+      expect(shell.classList.contains('editing-mode')).toBe(true);
+
+      fail = false;
+      view.container.querySelector('.rendered-markdown-comment-body .submit').click();
+      await vi.waitFor(() => {
+        expect(view.container.querySelector('.rendered-markdown-comment-body').textContent)
+          .toContain('edited');
+      });
+      expect(shell.classList.contains('editing-mode')).toBe(false);
+    });
+
+    it('a failed save keeps the reviewer\'s typed text and re-enables Save so the retry is real', async () => {
+      const attempts = [];
+      let fail = true;
+      const view = makeView({
+        source: 'text\n',
+        callbacks: {
+          onEditComment: async (id, body) => {
+            attempts.push(body);
+            if (fail) throw new Error('network down');
+          }
+        }
+      });
+      view.render();
+      document.body.appendChild(view.container);
+      view.addComment({ id: 80, line_start: 1, body: 'original' });
+
+      view.container.querySelector('.rendered-markdown-comment-edit').click();
+      const textarea = view.container.querySelector('.rendered-markdown-comment-body textarea');
+      textarea.value = 'a carefully typed retry';
+      const submit = view.container.querySelector('.rendered-markdown-comment-body .submit');
+      submit.click();
+      await vi.waitFor(() => expect(submit.disabled).toBe(false));
+
+      // The whole point of "retryable": the text the reviewer typed is still
+      // in the box (not reset to the stored markdown), the control is live
+      // again, and the failed body was sent exactly once.
+      expect(view.container.querySelector('.rendered-markdown-comment-body textarea').value)
+        .toBe('a carefully typed retry');
+      expect(attempts).toEqual(['a carefully typed retry']);
+
+      fail = false;
+      submit.click();
+      await vi.waitFor(() => {
+        expect(view.container.querySelector('.rendered-markdown-comment-body').textContent)
+          .toContain('a carefully typed retry');
+      });
+      expect(attempts).toEqual(['a carefully typed retry', 'a carefully typed retry']);
+    });
+
+    it('a double-clicked Save only issues one edit request', async () => {
+      let resolveEdit;
+      const calls = [];
+      const view = makeView({
+        source: 'text\n',
+        callbacks: {
+          onEditComment: (id, body) => {
+            calls.push(body);
+            return new Promise((resolve) => { resolveEdit = resolve; });
+          }
+        }
+      });
+      view.render();
+      document.body.appendChild(view.container);
+      view.addComment({ id: 81, line_start: 1, body: 'original' });
+
+      view.container.querySelector('.rendered-markdown-comment-edit').click();
+      view.container.querySelector('.rendered-markdown-comment-body textarea').value = 'edited once';
+      const submit = view.container.querySelector('.rendered-markdown-comment-body .submit');
+      submit.click();
+      submit.click();
+      expect(calls).toEqual(['edited once']);
+
+      resolveEdit();
+      await vi.waitFor(() => {
+        expect(view.container.querySelector('.rendered-markdown-comment-body').textContent)
+          .toContain('edited once');
+      });
+      expect(calls).toEqual(['edited once']);
+    });
+
+    it('a second Edit click while the form is open returns to it instead of discarding typed text', () => {
+      const view = makeView({ source: 'text\n' });
+      view.render();
+      document.body.appendChild(view.container);
+      view.addComment({ id: 82, line_start: 1, body: 'original' });
+
+      const editBtn = view.container.querySelector('.rendered-markdown-comment-edit');
+      editBtn.click();
+      const textarea = view.container.querySelector('.rendered-markdown-comment-body textarea');
+      textarea.value = 'half-written thought';
+
+      // Re-entry (double-click, Enter+click, or a click landing while the
+      // actions are still hittable) must not rebuild the form from the
+      // stored markdown.
+      editBtn.click();
+      const after = view.container.querySelector('.rendered-markdown-comment-body textarea');
+      expect(after).toBe(textarea);
+      expect(after.value).toBe('half-written thought');
+      expect(view.container.querySelectorAll('.rendered-markdown-comment-body textarea')).toHaveLength(1);
+      expect(document.activeElement).toBe(after);
+    });
+
+    it('fails closed with a named error if the canonical action hooks are ever missing', () => {
+      const view = makeView({ source: 'text\n' });
+      view.render();
+      // Simulate the shared view regressing (renamed hook, defaulted
+      // actionMode, stale cached bundle). Previously this was a bare
+      // `Cannot read properties of null` from inside the setComments loop.
+      const UCV = window.UserCommentView || require('../../public/js/modules/user-comment-view.js');
+      const original = UCV.buildCommentHtml;
+      UCV.buildCommentHtml = (comment, options) => original(comment, { ...options, actionMode: 'diff' });
+      try {
+        expect(() => view.addComment({ id: 83, line_start: 1, body: 'x' }))
+          .toThrow(/canonical comment actions missing/);
+      } finally {
+        UCV.buildCommentHtml = original;
+      }
+    });
+
     it('setComments puts in-block comments in their block and never drops an out-of-file comment', () => {
       const view = makeView({ source: '# Title\n\nParagraph one.\n\nParagraph two.\n' });
       view.render();
@@ -316,7 +582,7 @@ describe('RenderedDocumentView', () => {
       expect(orphanZone.hidden).toBe(false);
       const orphanCard = orphanZone.querySelector('.rendered-markdown-comment-card');
       expect(orphanCard.dataset.commentId).toBe('2');
-      expect(orphanCard.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line 999');
+      expect(orphanCard.querySelector('.user-comment-line-info').textContent).toBe('Line 999');
       expect(orphanCard.closest('.rendered-markdown-block')).toBeNull();
 
       // Both comments are represented exactly once each.
@@ -737,7 +1003,7 @@ describe('RenderedDocumentView', () => {
       expect(gap.dataset.startLine).toBe('4');
       expect(gap.dataset.endLine).toBe('4');
       // Honest repository line metadata on the card itself.
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line 4');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 4');
       // And honest, non-misleading framing on the container.
       expect(gap.querySelector('.rendered-markdown-gap-note').textContent).toContain('4');
     });
@@ -783,7 +1049,7 @@ describe('RenderedDocumentView', () => {
       const gap = card.closest('.rendered-markdown-gap');
       expect(gap.dataset.startLine).toBe('4');
       expect(gap.dataset.endLine).toBe('5');
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line 5');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 5');
     });
 
     it('renders a multi-line range label for a multi-line off-block comment', () => {
@@ -791,7 +1057,7 @@ describe('RenderedDocumentView', () => {
       view.render();
       view.setComments([{ id: 46, line_start: 2, line_end: 4, body: 'spans the gap' }]);
       const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="46"]');
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Lines 2–4');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Lines 2-4');
     });
 
     it('keeps gap containers hidden when they hold no comments, so an ordinary document is visually unchanged', () => {
@@ -802,8 +1068,17 @@ describe('RenderedDocumentView', () => {
       expect(gaps.length).toBeGreaterThan(0);
       Array.from(gaps).forEach((gap) => expect(gap.hidden).toBe(true));
       expect(view.container.querySelector('.rendered-markdown-orphan-comments').hidden).toBe(true);
-      // No block card carries the off-block line label.
-      expect(view.container.querySelector('.rendered-markdown-comment-lines')).toBeNull();
+      // The canonical line badge is now on EVERY card (Diff parity), so the
+      // "is this card off-block?" signal is the gap/orphan container itself,
+      // asserted above — never a missing line label. Scoped to THIS
+      // comment's own card: a document-wide "first match" would keep passing
+      // if the card moved to a gap container, or if block ordering changed
+      // so the first badge in the document belonged to something else.
+      const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="47"]');
+      expect(card).not.toBeNull();
+      expect(card.closest('.rendered-markdown-gap')).toBeNull();
+      expect(card.closest('.rendered-markdown-orphan-comments')).toBeNull();
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 3');
     });
 
     it('re-hides a gap container once its last comment is removed', () => {
@@ -853,7 +1128,7 @@ describe('RenderedDocumentView', () => {
       expect(view.container.querySelector('.rendered-markdown-empty')).toBeTruthy();
       const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="51"]');
       expect(card).toBeTruthy();
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line 1');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 1');
     });
 
     it('labels a comment with an unusable stored line without inventing a number', () => {
@@ -862,7 +1137,48 @@ describe('RenderedDocumentView', () => {
       view.setComments([{ id: 52, line_start: null, body: 'no anchor' }]);
       const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="52"]');
       expect(card.closest('.rendered-markdown-orphan-comments')).toBeTruthy();
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line unknown');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line unknown');
+    });
+
+    describe('line badge text comes from the canonical formatter', () => {
+      const UCV = () => require('../../public/js/modules/user-comment-view.js');
+
+      /**
+       * Every stored range that is not "a plain single line" — including the
+       * shapes only a corrupted/legacy row can produce. The badge on a
+       * Rendered card and on a Diff row are the same string for a reason:
+       * the same comment must not read as two different anchors depending on
+       * which view the reviewer is in.
+       */
+      it.each([
+        ['a plain single line', { line_start: 3, line_end: 3 }],
+        ['a real multi-line range', { line_start: 2, line_end: 4 }],
+        ['a missing end line', { line_start: 3, line_end: null }],
+        ['an INVERTED range (end before start)', { line_start: 9, line_end: 3 }]
+      ])('matches UserCommentView.formatLineInfo for %s', (_label, range) => {
+        const view = makeView({ source: SOURCE });
+        view.render();
+        view.setComments([{ id: 60, body: 'x', ...range }]);
+        const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="60"]');
+        expect(card.querySelector('.user-comment-line-info').textContent)
+          .toBe(UCV().formatLineInfo(range));
+      });
+
+      it('keeps "Line unknown" — never a canonical "Line null" — for an unusable start', () => {
+        const view = makeView({ source: SOURCE });
+        view.render();
+        view.setComments([{ id: 61, line_start: 0, line_end: 4, body: 'x' }]);
+        const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="61"]');
+        expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line unknown');
+      });
+
+      it('normalizes an unusable END line instead of printing "Lines 3-null"', () => {
+        const view = makeView({ source: SOURCE });
+        view.render();
+        view.setComments([{ id: 62, line_start: 3, line_end: 'nonsense', body: 'x' }]);
+        const card = view.container.querySelector('.rendered-markdown-comment-card[data-comment-id="62"]');
+        expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 3');
+      });
     });
 
     it('gap containers offer no "Add comment" button — Rendered mode never creates a gap-anchored comment', () => {
@@ -1352,9 +1668,49 @@ describe('RenderedDocumentView', () => {
       expect(label.textContent).toContain('this target changed or is unavailable');
       expect(label.textContent).toContain('shown at its original line 9');
       expect(label.textContent).not.toMatch(/no longer in this file/);
-      expect(card.querySelector('.rendered-markdown-comment-lines').textContent).toBe('Line 9');
+      expect(card.querySelector('.user-comment-line-info').textContent).toBe('Line 9');
       // Critically: no existing cell was given the comment instead.
       expect(view.container.querySelectorAll('.rendered-markdown-target-badge:not([hidden])')).toHaveLength(0);
+    });
+
+    it('exposes the WHOLE stale explanation as a tooltip, because the chip ellipses', () => {
+      // The chip is the one shrinkable item in the canonical header-left flex
+      // track (pr.css `.user-comment-header-left
+      // .rendered-markdown-comment-target`: `white-space: nowrap;
+      // text-overflow: ellipsis`). The stale label is not a short descriptor
+      // but a full sentence — the tail of it ("shown at its original line 9")
+      // is the part that tells the reviewer where the comment actually is, and
+      // it is the first part to be truncated. Without `title` that sentence is
+      // only recoverable with dev tools.
+      const view = makeView({ source: SOURCE });
+      view.render();
+      view.setComments([{
+        id: 15,
+        line_start: 9,
+        line_end: 9,
+        body: 'target vanished',
+        rendered_anchor: { v: 1, kind: 'table-cell', startLine: 9, endLine: 9, ordinal: 4 }
+      }]);
+
+      const label = view.container.querySelector('.rendered-markdown-comment-target');
+      // Not "some tooltip" — the SAME string, so the two can never drift and
+      // the tooltip can never be a truncated copy of its own text.
+      expect(label.getAttribute('title')).toBe(label.textContent);
+      expect(label.getAttribute('title')).toContain('this target changed or is unavailable');
+      expect(label.getAttribute('title')).toContain('shown at its original line 9');
+      // Long enough that the CSS above will in fact truncate it.
+      expect(label.getAttribute('title').length).toBeGreaterThan(60);
+    });
+
+    it('gives a resolved (non-stale) target chip the same full-text tooltip', () => {
+      const view = makeView({ source: SOURCE });
+      view.render();
+      view.setComments([{ id: 16, line_start: 9, line_end: 9, body: 'x', rendered_anchor: CELL_2 }]);
+
+      const label = view.container.querySelector('.rendered-markdown-comment-target');
+      expect(label.classList.contains('is-stale')).toBe(false);
+      expect(label.getAttribute('title')).toBe(label.textContent);
+      expect(label.getAttribute('title')).toContain('column 2');
     });
 
     it('an unreadable descriptor (unknown version/kind/garbage) behaves exactly like no descriptor', () => {

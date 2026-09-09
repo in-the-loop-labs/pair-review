@@ -32,6 +32,31 @@
     return require('./rendered-markdown.js');
   }
 
+  /**
+   * The shared saved-comment presentation contract — the single definition
+   * of the `.user-comment` shell, header metadata order, origin icon, line
+   * badge and chat/edit/dismiss action buttons that the two Diff engines
+   * also emit. See `public/js/modules/user-comment-view.js`.
+   *
+   * FAIL CLOSED IN THE BROWSER: `require` does not exist there, so a missing
+   * `<script src="/js/modules/user-comment-view.js">` used to surface as
+   * `ReferenceError: require is not defined` from deep inside card building.
+   * Throw a message that names the actual problem instead.
+   * @returns {object}
+   */
+  function getUserCommentView() {
+    if (isBrowser && window.UserCommentView) return window.UserCommentView;
+    // CommonJS (unit tests / any non-browser consumer).
+    if (typeof module !== 'undefined' && typeof require === 'function') {
+      // eslint-disable-next-line global-require
+      return require('./user-comment-view.js');
+    }
+    throw new Error(
+      '[RenderedDocumentView] UserCommentView is unavailable: load '
+      + 'public/js/modules/user-comment-view.js before rendered-document-view.js'
+    );
+  }
+
   // Plain plus glyph. Deliberately NOT the filled-circle "plus in a disc"
   // icon this view first shipped with: a filled dark circle reads as a
   // status dot / avatar placeholder rather than an action, and gave no hint
@@ -133,6 +158,20 @@
   }
 
   /**
+   * Cache-key sentinel meaning "nothing cached yet", and the SOLE
+   * discriminator `_diffPositions()` uses for a cache miss.
+   *
+   * It has to be a value no `this.patch` can ever be. `null`/`undefined` are
+   * both legitimate patch values ("this file has no patch"), and for those
+   * the memoized map is a perfectly valid empty result worth keeping — so a
+   * nullish initial key would report a HIT before anything was computed. A
+   * frozen unique object is never `===` a patch string or a nullish patch,
+   * so the first call always misses and every later call is decided purely
+   * by patch identity.
+   */
+  const _NO_PATCH_CACHED = Object.freeze({ noPatchCached: true });
+
+  /**
    * Intrinsically-safe fallback for the `escapeHtmlAttribute` constructor
    * option (used only when a caller omits it — see the constructor).
    * Escapes the five characters that matter for a double-quoted HTML
@@ -204,6 +243,16 @@
 
       this.blocks = [];
       this.outline = [];
+      // Memoized `SIDE:line -> diffPosition` map for `this.patch`.
+      // Building it means parsing the whole unified diff (HunkParser has no
+      // cache of its own), and EVERY comment card asks whether its line is
+      // in the diff — so an un-memoized lookup is O(comments x patch) on
+      // each `setComments`. Keyed by the patch STRING that produced it, so
+      // a host that swaps `view.patch` (hunk expansion, a refetched file)
+      // invalidates it automatically; `render()` clears it outright.
+      // See _diffPositions().
+      this._diffPositionsCache = null;
+      this._diffPositionsCacheKey = _NO_PATCH_CACHED;
       // Line ranges of the source that belong to NO top-level block —
       // blank separator lines between blocks, plus any leading/trailing
       // blank lines, plus source markdown-it consumes without emitting a
@@ -279,6 +328,13 @@
       this._activeTargetEl = null;
       this._orphanZone = null;
       this._orphanList = null;
+      // Drop the memoized diff-position map: a re-render is the one moment
+      // the host is guaranteed to have finished mutating `this.patch`, and
+      // holding the previous document's map alive buys nothing. (The
+      // patch-keyed check in `_diffPositions()` is what makes this safe
+      // rather than necessary.)
+      this._diffPositionsCache = null;
+      this._diffPositionsCacheKey = _NO_PATCH_CACHED;
       this.container.innerHTML = '';
 
       this._totalSourceLines = this._countSourceLines();
@@ -874,7 +930,9 @@
       const RM = getRenderedMarkdown();
       const startLine = targetRecord ? targetRecord.anchor.startLine : block.startLine;
       const endLine = targetRecord ? targetRecord.anchor.endLine : block.endLine;
-      const target = RM.resolveCommentTarget({ patch: this.patch, startLine, endLine });
+      const target = RM.resolveCommentTarget({
+        patch: this.patch, startLine, endLine, positions: this._diffPositions()
+      });
 
       const form = document.createElement('div');
       form.className = 'rendered-markdown-comment-form';
@@ -1187,17 +1245,13 @@
         console.warn('[RenderedDocumentView] comment line is outside this document\'s source:', comment);
       }
 
-      // Off-block cards carry their real line range in the card itself:
-      // without the surrounding prose to give them context, the line
-      // number is the only honest anchor the reviewer has. A card whose
-      // nested anchor no longer resolves shows it too, alongside the
-      // "target changed or is unavailable" note — its line is exactly what
-      // it fell back to.
+      // Every card carries its real repository line range in the canonical
+      // `.user-comment-line-info` badge, exactly as the Diff surface does —
+      // including off-block (gap/orphan) cards, where the line number is the
+      // only honest anchor the reviewer has, and cards whose nested anchor no
+      // longer resolves, which show it alongside the "target changed or is
+      // unavailable" note.
       const card = this._buildCommentCard(comment, {
-        // An unresolved-anchor card ALWAYS shows its line range, even
-        // inside a block: the target the reviewer picked can't be
-        // identified, so the line is the only anchor left that is true.
-        showLineMeta: (target.kind !== 'block' && target.kind !== 'target') || !!target.staleAnchor,
         targetLabel: target.targetLabel || null,
         staleTarget: !!target.staleAnchor
       });
@@ -1277,12 +1331,83 @@
     }
 
     /**
+     * Is this comment's line range outside every changed line of the patch?
+     *
+     * Mirrors the Diff surface's expanded-context check (CommentManager's
+     * `isLineInDiffHunk`) using the SAME patch this view already resolves
+     * new-comment targets against, so a card and the create form above it
+     * can never disagree about whether the target is in the diff. A comment
+     * with no usable line at all (the orphan zone) counts as outside, which
+     * is exactly what it is.
+     *
+     * NOTE: rendered targets are always `RIGHT`-side, so a comment stored
+     * against a deleted (`LEFT`) line is evaluated on the RIGHT side here —
+     * such a line does not exist in the rendered document either, and the
+     * comment is already displayed in the gap/orphan fallback.
+     * @param {object} comment
+     * @returns {boolean}
+     * @private
+     */
+    _isOutsideChangedLines(comment) {
+      const start = _toSourceLine(comment ? comment.line_start : null);
+      if (start == null) return true;
+      const end = _toSourceLine(comment ? comment.line_end : null) || start;
+      const RM = getRenderedMarkdown();
+      return !RM.resolveCommentTarget({
+        patch: this.patch,
+        startLine: start,
+        endLine: end,
+        positions: this._diffPositions()
+      }).inDiff;
+    }
+
+    /**
+     * The memoized `SIDE:line -> diffPosition` map for the CURRENT patch.
+     *
+     * A pure memoization of `RenderedMarkdown.computeDiffPositions(this.patch)`:
+     * same map, same context-line semantics (a context line inside a hunk is
+     * addressable from both sides and therefore still "in the diff"), same
+     * comment coordinates. Only the number of times the patch is parsed
+     * changes. Recomputed whenever `this.patch` is not the string the cached
+     * map was built from, so a caller that reassigns `view.patch` cannot get
+     * a stale answer.
+     *
+     * The key comparison is the WHOLE hit test — there is deliberately no
+     * additional truthiness check on the cached map. `_NO_PATCH_CACHED` (see
+     * above) already guarantees the key cannot match before a map exists, and
+     * a second, redundant condition would make it impossible to tell which
+     * one is actually invalidating the cache.
+     * @returns {Map<string, number>}
+     * @private
+     */
+    _diffPositions() {
+      if (this._diffPositionsCacheKey === this.patch) {
+        return this._diffPositionsCache;
+      }
+      const RM = getRenderedMarkdown();
+      this._diffPositionsCache = RM.computeDiffPositions(this.patch);
+      this._diffPositionsCacheKey = this.patch;
+      return this._diffPositionsCache;
+    }
+
+    /**
+     * Build one saved comment's card.
+     *
+     * The outer `.rendered-markdown-comment-card` is a PLACEMENT ADAPTER, not
+     * a second visual component: it carries `data-comment-id` (navigation,
+     * de-duplicated counting — see public/js/utils/comment-count.js) and the
+     * optional `data-rendered-target-key`, and nothing else. Its single child
+     * is the canonical `.user-comment` fragment every Diff surface emits (see
+     * modules/user-comment-view.js), so the same stored comment is visually
+     * and structurally the same object in Rendered and Diff mode.
+     *
+     * It deliberately does NOT get `.user-comment-row`: that class is the
+     * Diff surface's row identity, used by
+     * `PRManager.editUserComment`/`deleteUserComment`/`_syncDiffComment*` to
+     * locate a Diff row, and by CommentCount as the Diff-surface selector.
+     *
      * @param {object} comment
      * @param {object} [opts]
-     * @param {boolean} [opts.showLineMeta] - render the comment's real
-     *   repository line range in the card header. Used for cards that sit
-     *   outside any rendered block (gap / orphan containers), where the
-     *   line number is the reviewer's only anchor.
      * @param {string|null} [opts.targetLabel] - the nested target this
      *   comment belongs to (or why its target could not be found).
      * @param {boolean} [opts.staleTarget] - the label above describes a
@@ -1290,55 +1415,134 @@
      * @private
      */
     _buildCommentCard(comment, opts = {}) {
+      const UCV = getUserCommentView();
       const card = document.createElement('div');
-      const isAIOrigin = !!comment.parent_id;
-      card.className = `rendered-markdown-comment-card ${isAIOrigin ? 'comment-ai-origin' : 'comment-user-origin'}`;
+      card.className = `rendered-markdown-comment-card ${UCV.originModifierClass(comment)}`;
       card.dataset.commentId = String(comment.id);
 
-      const icon = isAIOrigin
-        ? (isBrowser && window.CommentManager ? window.CommentManager.AI_ICON_SVG : '')
-        : (isBrowser && window.CommentManager ? window.CommentManager.PERSON_ICON_SVG : '');
-
-      const renderedBody = this.renderMarkdown(comment.body);
-      // Escaped, never interpolated raw: comment.line_start/line_end come
-      // from the API, but this string lands in innerHTML like every other
-      // value here, so it goes through the same attribute escaper.
-      const lineMetaHtml = opts.showLineMeta
-        ? `<span class="rendered-markdown-comment-lines">${this.escapeHtmlAttribute(this._formatLineRange(comment))}</span>`
-        : '';
       // Target labels are built by this module from validated descriptors,
       // never from stored free text — but they go through the same escaper
-      // as everything else that lands in innerHTML here.
+      // as everything else that lands in innerHTML here. Placed as SECONDARY
+      // header metadata: it sits after the canonical line badge rather than
+      // replacing it, so a cell/item comment stays distinguishable without
+      // losing its repository anchor.
+      //
+      // `title` carries the FULL label. The chip is the one shrinkable item
+      // in the header-left flex track (see pr.css
+      // `.user-comment-header-left .rendered-markdown-comment-target`), so a
+      // long descriptor — and especially the stale-anchor sentence, which is
+      // a full explanation ending in "...shown at its original line 9" —
+      // ellipses once the track is narrower than the text. Without a tooltip
+      // the tail of that explanation is unreachable without dev tools. Same
+      // escaper as the text node: the label is application-generated, but it
+      // now lands in a quoted attribute as well as in a text position, and
+      // this path must not depend on the source staying trusted.
+      const targetLabelAttr = opts.targetLabel
+        ? this.escapeHtmlAttribute(opts.targetLabel)
+        : '';
       const targetHtml = opts.targetLabel
-        ? `<span class="rendered-markdown-comment-target${opts.staleTarget ? ' is-stale' : ''}">${this.escapeHtmlAttribute(opts.targetLabel)}</span>`
+        ? `<span class="rendered-markdown-comment-target${opts.staleTarget ? ' is-stale' : ''}" title="${targetLabelAttr}">${targetLabelAttr}</span>`
         : '';
 
-      card.innerHTML = `
-        <div class="rendered-markdown-comment-header">
-          <span class="comment-origin-icon">${icon}</span>
-          ${targetHtml}
-          ${lineMetaHtml}
-          <div class="rendered-markdown-comment-actions">
-            <button type="button" class="rendered-markdown-comment-edit" title="Edit comment">Edit</button>
-            <button type="button" class="rendered-markdown-comment-delete" title="Delete comment">Delete</button>
-          </div>
-        </div>
-        <div class="rendered-markdown-comment-body" data-original-markdown="${this.escapeHtmlAttribute(comment.body)}">${renderedBody}</div>
-      `;
+      card.innerHTML = UCV.buildCommentHtml(comment, {
+        // NEVER 'diff': the Diff action mode emits inline handlers that
+        // resolve the comment through a `.user-comment-row` this surface
+        // does not have. Rendered edit/delete run through this view's own
+        // host callbacks, wired below.
+        actionMode: 'callback',
+        lineInfo: this._formatLineRange(comment),
+        isExpandedContext: this._isOutsideChangedLines(comment),
+        secondaryMetaHtml: targetHtml,
+        // `secondaryMetaHtml` is the only value UserCommentView interpolates
+        // without escaping, so it fails closed unless the caller presents
+        // this token. THIS view is the one legitimate caller: `targetHtml`
+        // above is markup this module writes, whose only variable part is a
+        // descriptor from `this._targetsByKey` run through
+        // `escapeHtmlAttribute`. Never pass repository or comment text here.
+        secondaryMetaTrust: UCV.TRUSTED_SECONDARY_META,
+        // Behavioural hook only — all typography comes from
+        // `.user-comment-body`.
+        extraBodyClasses: 'rendered-markdown-comment-body',
+        escapeHtml: this.escapeHtmlAttribute,
+        escapeHtmlAttribute: this.escapeHtmlAttribute,
+        renderMarkdown: this.renderMarkdown
+      });
 
-      card.querySelector('.rendered-markdown-comment-edit').addEventListener('click', () => this._editComment(card, comment));
-      card.querySelector('.rendered-markdown-comment-delete').addEventListener('click', () => this._deleteComment(card, comment));
+      // Surface-owned behaviour hooks on the canonical buttons. The extra
+      // classes carry no styling; they exist so this view's own lookups
+      // (and its tests) can name a rendered control unambiguously.
+      const editBtn = card.querySelector('[data-comment-action="edit"]');
+      const deleteBtn = card.querySelector('[data-comment-action="delete"]');
+      // FAIL CLOSED, and say why. These hooks exist only because
+      // `actionMode: 'callback'` is requested above; if UserCommentView ever
+      // stops emitting them (renamed hook, a defaulted mode, a stale cached
+      // bundle) the next line would throw `Cannot read properties of null`
+      // from inside a loop over every comment — an opaque failure that takes
+      // the whole file's comment list with it. A named error at least
+      // identifies the contract that broke.
+      if (!editBtn || !deleteBtn) {
+        throw new Error(
+          '[RenderedDocumentView] canonical comment actions missing: UserCommentView '
+          + 'did not emit [data-comment-action="edit"]/[data-comment-action="delete"] '
+          + "for actionMode 'callback'"
+        );
+      }
+      editBtn.classList.add('rendered-markdown-comment-edit');
+      deleteBtn.classList.add('rendered-markdown-comment-delete');
+      editBtn.addEventListener('click', () => this._editComment(card, comment));
+      deleteBtn.addEventListener('click', () => this._deleteComment(card, comment));
 
       return card;
     }
 
     /**
+     * Open the in-place edit form on a saved comment's card.
+     *
+     * Guarded on three fronts, all of which cost the reviewer typed text
+     * when they are missing:
+     *  - RE-ENTRY: a second activation of Edit while a form is already open
+     *    (double-click, Enter+click, or a click that lands while pr.css has
+     *    not hidden the actions) must NOT rebuild the textarea from the
+     *    stored markdown — that silently discards whatever is typed. It
+     *    returns the reviewer to the open form instead. Tracked on the card
+     *    dataset rather than only on the `editing-mode` class, so the guard
+     *    survives a missing `.user-comment` shell.
+     *  - DOUBLE SAVE: the submit button is disabled for the whole in-flight
+     *    `onEditComment`, so one edit can never issue two PATCHes.
+     *  - FAILED SAVE: stays in editing mode with the reviewer's text intact
+     *    and the submit button re-enabled, so the save is retryable. The
+     *    card is never rebuilt out from under them.
      * @private
      */
     _editComment(card, comment) {
+      const shell = card.querySelector('.user-comment');
       const editTriggerBtn = card.querySelector('.rendered-markdown-comment-edit');
       const bodyEl = card.querySelector('.rendered-markdown-comment-body');
+      if (!bodyEl) {
+        // eslint-disable-next-line no-console
+        console.error('[RenderedDocumentView] cannot edit: canonical comment body missing', comment?.id);
+        return;
+      }
+
+      // Re-entry guard (see above). `editing-mode` is the visual state; the
+      // dataset flag is the authoritative one because it does not depend on
+      // the shell existing.
+      if (card.dataset.editing === 'true' || shell?.classList.contains('editing-mode')) {
+        bodyEl.querySelector('textarea')?.focus();
+        return;
+      }
+
       const original = bodyEl.dataset.originalMarkdown || comment.body;
+      // Same `editing-mode` state the Diff surface uses, so the icon actions
+      // are hidden while an edit is open. Unlike Diff (which swaps in a
+      // separate `.user-comment-edit-form` and hides the body), this surface
+      // edits IN PLACE inside the canonical body — pr.css keeps the body
+      // visible for a rendered card, the same exception the file-comment
+      // card already needs. Cleared on every path that ends the edit; a
+      // FAILED save deliberately stays in editing mode, because the textarea
+      // is still on screen and the reviewer can retry.
+      card.dataset.editing = 'true';
+      shell?.classList.add('editing-mode');
       bodyEl.innerHTML = `
         <textarea class="rendered-markdown-comment-textarea">${this._escapeForTextarea(original)}</textarea>
         <div class="rendered-markdown-comment-form-footer">
@@ -1347,33 +1551,55 @@
         </div>
       `;
       const textarea = bodyEl.querySelector('textarea');
+      const submitBtn = bodyEl.querySelector('.submit');
       textarea.focus();
-      // Restore both the rendered body AND keyboard focus to the "Edit"
-      // button that opened this form — otherwise a keyboard-only reviewer
-      // who cancels/Escapes loses their place (the textarea it was on no
-      // longer exists once bodyEl.innerHTML is replaced back to rendered
-      // markdown).
+
+      /**
+       * End the edit: leave editing mode and hand keyboard focus back to the
+       * "Edit" button that opened the form — otherwise a keyboard-only
+       * reviewer loses their place, because the textarea they were on no
+       * longer exists once `bodyEl.innerHTML` is replaced.
+       * Order matters: the actions are `display: none` while `editing-mode`
+       * is set, and `focus()` on a hidden element is a no-op.
+       */
+      const endEditing = () => {
+        delete card.dataset.editing;
+        shell?.classList.remove('editing-mode');
+        editTriggerBtn?.focus();
+      };
       const restore = () => {
         bodyEl.innerHTML = this.renderMarkdown(original);
         bodyEl.dataset.originalMarkdown = original;
-        editTriggerBtn?.focus();
+        endEditing();
       };
       textarea.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') restore();
       });
       bodyEl.querySelector('.cancel').addEventListener('click', restore);
-      bodyEl.querySelector('.submit').addEventListener('click', async () => {
+      submitBtn.addEventListener('click', async () => {
+        // Double-submit guard. `disabled` alone is not enough: the click
+        // that disables the button and the one already queued behind it can
+        // both be dispatched before the first handler awaits.
+        if (submitBtn.dataset.saving === 'true') return;
         const newBody = textarea.value.trim();
         if (!newBody) return;
+        submitBtn.dataset.saving = 'true';
+        submitBtn.disabled = true;
         try {
           await this.callbacks.onEditComment?.(comment.id, newBody);
           comment.body = newBody;
           bodyEl.innerHTML = this.renderMarkdown(newBody);
           bodyEl.dataset.originalMarkdown = newBody;
+          endEditing();
         } catch (error) {
           // eslint-disable-next-line no-console
           console.error('Error editing rendered-markdown comment:', error);
           if (isBrowser && window.toast) window.toast.showError('Failed to update comment');
+          // Retry state: the form, the reviewer's typed text and editing
+          // mode all stay exactly as they were, and Save works again.
+          delete submitBtn.dataset.saving;
+          submitBtn.disabled = false;
+          submitBtn.focus();
         }
       });
     }
@@ -1440,8 +1666,23 @@
 
     /**
      * Human-readable repository line range for a comment, e.g. `Line 11` or
-     * `Lines 11–13`. Falls back to a clearly-unknown label rather than
-     * inventing a number when the stored range is unusable.
+     * `Lines 11-13`.
+     *
+     * This string IS the card's canonical `.user-comment-line-info` badge,
+     * so the wording comes from `UserCommentView.formatLineInfo` — the one
+     * definition both Diff engines use — rather than a second local
+     * implementation. A second implementation used to disagree with the
+     * canonical one at exactly the edges the fallback exists for: an
+     * inverted stored range (`line_end < line_start`) read `Lines 9-3` in
+     * Diff and `Line 9` here.
+     *
+     * The ONE thing this adds is the unusable-start fallback. Rendered mode
+     * places a card by its source line, so a comment with no usable
+     * `line_start` (null, 0, non-integer) lands in the orphan zone; the
+     * canonical formatter would label it `Line null`. `Line unknown` says
+     * what is actually true instead of printing a number that is not one.
+     * `line_end` is normalized through the same guard so a garbage end never
+     * produces `Lines 5-null`.
      * @param {object} comment
      * @returns {string}
      * @private
@@ -1450,7 +1691,7 @@
       const start = _toSourceLine(comment?.line_start);
       if (start == null) return 'Line unknown';
       const end = _toSourceLine(comment?.line_end);
-      return end != null && end > start ? `Lines ${start}–${end}` : `Line ${start}`;
+      return getUserCommentView().formatLineInfo({ line_start: start, line_end: end });
     }
 
     /** @private */

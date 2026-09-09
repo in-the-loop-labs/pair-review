@@ -4,6 +4,39 @@
  * Handles comment forms, editing, saving, deletion, and display.
  */
 
+/**
+ * The shared saved-comment presentation contract (see
+ * `public/js/modules/user-comment-view.js`). Resolved lazily so this file
+ * works both as a classic browser script (where user-comment-view.js is
+ * loaded first and installs `window.UserCommentView`) and under CommonJS in
+ * unit tests.
+ *
+ * Declared as a file-unique `const`, NOT a plain `function`: a top-level
+ * `function` declaration in a classic script becomes a property of `window`,
+ * so a second module declaring the same helper name would silently shadow
+ * this one (load order decides which definition every caller here gets).
+ * The name is namespaced to this file for the same reason — pierre-bridge.js
+ * needs the identical lookup and must not collide with it.
+ *
+ * FAIL CLOSED IN THE BROWSER: `require` does not exist there, so a missing
+ * `<script src="/js/modules/user-comment-view.js">` used to surface as
+ * `ReferenceError: require is not defined` from deep inside comment
+ * rendering. Throw a message that names the actual problem instead.
+ * @returns {object}
+ */
+const _commentManagerUserCommentView = () => {
+  if (typeof window !== 'undefined' && window.UserCommentView) return window.UserCommentView;
+  // CommonJS (unit tests / any non-browser consumer).
+  if (typeof module !== 'undefined' && typeof require === 'function') {
+    // eslint-disable-next-line no-undef, global-require
+    return require('./user-comment-view.js');
+  }
+  throw new Error(
+    '[CommentManager] UserCommentView is unavailable: load '
+    + 'public/js/modules/user-comment-view.js before comment-manager.js'
+  );
+};
+
 class CommentManager {
   /**
    * Shared SVG icon for the suggestion button.
@@ -13,18 +46,46 @@ class CommentManager {
     <path d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V4.664a.25.25 0 0 0-.073-.177l-2.914-2.914a.25.25 0 0 0-.177-.073ZM8 3.25a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0V7h-1.5a.75.75 0 0 1 0-1.5h1.5V4A.75.75 0 0 1 8 3.25Zm-3 8a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"></path>
   </svg>`;
 
+  /**
+   * The saved-comment shells whose `.btn-chat-comment` this manager's
+   * delegated handler owns. `.user-comment-row` is the Diff surface (both
+   * engines); `.rendered-markdown-comment-card` is the Rendered Markdown
+   * placement adapter, which carries the same canonical `.user-comment`
+   * fragment but no Diff row. Deliberately explicit — see the constructor.
+   */
+  static CHAT_SCOPE_SELECTORS = ['.user-comment-row', '.rendered-markdown-comment-card'];
+
   constructor(prManagerRef) {
     // Reference to parent PRManager for API calls and state access
     this.prManager = prManagerRef;
     // Current comment form element
     this.currentCommentForm = null;
 
-    // Event delegation for "Ask about this" chat button on user comments
+    // Event delegation for "Ask about this" chat button on user comments.
+    //
+    // Scoped to the two SAVED-comment shells that carry the canonical
+    // `.user-comment` fragment: the Diff row (legacy `<tr>` or the
+    // light-DOM div PierreBridge slots into @pierre/diffs) and the Rendered
+    // Markdown placement card. Both are listed explicitly rather than
+    // matching a bare `.btn-chat-comment`, because FileCommentManager runs
+    // its own delegated handler for `.file-comments-zone .btn-chat-comment`
+    // and ExternalCommentManager wires its buttons directly — a broader
+    // selector here would open the chat panel twice for one click.
+    // The two scopes are mutually exclusive containers (a Rendered card is
+    // never inside a `.user-comment-row`, and vice versa), so exactly one
+    // matches per click.
     document.addEventListener('click', (e) => {
-      const chatBtn = e.target.closest('.user-comment-row .btn-chat-comment');
+      // One `<scope> .btn-chat-comment` clause per scope, built by mapping
+      // the scopes rather than by joining them with a separator that has to
+      // repeat the descendant suffix — with a join the LAST scope's suffix is
+      // written separately from the others', so adding a third scope, or
+      // changing the button class, silently leaves one clause behind.
+      const chatBtn = e.target.closest(
+        CommentManager.CHAT_SCOPE_SELECTORS.map((scope) => `${scope} .btn-chat-comment`).join(', ')
+      );
       if (chatBtn && window.chatPanel) {
         e.stopPropagation();
-        const commentRow = chatBtn.closest('.user-comment-row');
+        const commentRow = chatBtn.closest(CommentManager.CHAT_SCOPE_SELECTORS.join(', '));
         const bodyEl = commentRow?.querySelector('.user-comment-body');
         const originalMarkdown = bodyEl?.dataset?.originalMarkdown || bodyEl?.textContent || '';
         window.chatPanel.open({
@@ -563,11 +624,6 @@ class CommentManager {
     td.colSpan = 4;
     td.className = 'user-comment-cell';
 
-    // Format line info
-    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
-      ? `Lines ${comment.line_start}-${comment.line_end}`
-      : `Line ${comment.line_start}`;
-
     // WORKAROUND: Comments on expanded context lines (outside diff hunks) will be
     // submitted as file-level comments since GitHub's API doesn't support line-level
     // comments on these lines. Show an indicator to inform the user.
@@ -578,74 +634,18 @@ class CommentManager {
     const isExpandedContext = isRange
       ? !this.isLineInDiffHunk(comment.file, comment.line_start, commentSide) || !this.isLineInDiffHunk(comment.file, comment.line_end, commentSide)
       : !this.isLineInDiffHunk(comment.file, comment.line_start, commentSide);
-    const expandedContextIndicator = isExpandedContext
-      ? `<span class="expanded-context-indicator" title="This expanded context comment will be posted to GitHub as a file-level comment">
-           <svg viewBox="0 0 16 16" width="14" height="14">
-             <path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v11.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V6H9.75A1.75 1.75 0 018 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v8.086A1.75 1.75 0 0112.25 15h-8.5A1.75 1.75 0 012 13.25V1.75z"></path>
-           </svg>
-         </span>`
-      : '';
 
-    // Build metadata display for adopted comments
-    // Only show "Nice Work" badge for praise - skip "AI Suggestion" badge since collapsed original is visible above
-    let metadataHTML = '';
-    if (comment.parent_id && comment.type && comment.type !== 'comment') {
-      const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
-      const badgeHTML = comment.type === 'praise'
-        ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-        : '';
-      metadataHTML = `
-        ${badgeHTML}
-        ${comment.title ? `<span class="adopted-title">${escapeHtml(comment.title)}</span>` : ''}
-      `;
-    }
-
-    const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
-
-    // Choose icon based on comment origin (AI-adopted vs user-originated)
-    const commentIcon = comment.parent_id
-      ? CommentManager.AI_ICON_SVG
-      : CommentManager.PERSON_ICON_SVG;
-
-    // Build class list for comment styling
-    const baseClasses = ['user-comment'];
-    if (comment.parent_id) {
-      baseClasses.push('adopted-comment', 'comment-ai-origin');
-    } else {
-      baseClasses.push('comment-user-origin');
-    }
-    const commentClasses = baseClasses.join(' ');
-
-    const commentHTML = `
-      <div class="${commentClasses}">
-        <div class="user-comment-header">
-          <div class="user-comment-header-left">
-            <span class="comment-origin-icon">
-              ${commentIcon}
-            </span>
-            <span class="user-comment-line-info">${lineInfo}</span>
-            ${expandedContextIndicator}
-            ${metadataHTML}
-          </div>
-          <div class="user-comment-actions">
-            <button class="btn-chat-comment" title="Chat about comment" data-chat-comment-id="${comment.id}" data-chat-file="${escapeHtml(comment.file || '')}" data-chat-line-start="${comment.line_start ?? ''}" data-chat-line-end="${comment.line_end || comment.line_start || ''}" data-chat-parent-id="${comment.parent_id || ''}">
-              <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
-            </button>
-            <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
-              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
-                <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>
-              </svg>
-            </button>
-            <button class="btn-delete-comment" onclick="prManager.deleteUserComment(${comment.id})" title="Dismiss comment">
-              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
-                <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
-      </div>
-    `;
+    // Canonical presentation: the shared `.user-comment` fragment every
+    // surface emits (see modules/user-comment-view.js). This surface keeps
+    // the Diff action mode, whose edit/dismiss handlers resolve the comment
+    // through the `.user-comment-row` created above.
+    const commentHTML = _commentManagerUserCommentView().buildCommentHtml(comment, {
+      actionMode: 'diff',
+      isExpandedContext,
+      escapeHtml: this.prManager?.escapeHtml?.bind(this.prManager),
+      escapeHtmlAttribute: window.escapeHtmlAttribute,
+      renderMarkdown: window.renderMarkdown
+    });
 
     td.innerHTML = commentHTML;
     commentRow.appendChild(td);
@@ -654,14 +654,23 @@ class CommentManager {
     targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
   }
 
-  /** SVG icons for comment origin display */
-  static AI_ICON_SVG = `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
-    <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-  </svg>`;
+  /**
+   * SVG icons for comment origin display.
+   *
+   * Getters (not static fields) so they resolve through the shared
+   * `UserCommentView.ICONS` at ACCESS time rather than at class-definition
+   * time — this file is a classic script and must not depend on
+   * user-comment-view.js having executed first. Kept on CommentManager
+   * because FileCommentManager and RenderedDocumentView already read them
+   * from here; there is still exactly one definition of each glyph.
+   */
+  static get AI_ICON_SVG() {
+    return _commentManagerUserCommentView().ICONS.ai;
+  }
 
-  static PERSON_ICON_SVG = `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-    <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-  </svg>`;
+  static get PERSON_ICON_SVG() {
+    return _commentManagerUserCommentView().ICONS.person;
+  }
 
   /**
    * Shared builder for comment/suggestion edit form rows.
@@ -694,7 +703,7 @@ class CommentManager {
               ${iconHtml}
             </span>
             <span class="user-comment-line-info">${lineInfo}</span>
-            ${type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>` : ''}
+            ${type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work">${_commentManagerUserCommentView().ICONS.praise}Nice Work</span>` : ''}
             ${title ? `<span class="adopted-title">${escapeHtml(title)}</span>` : ''}
           </div>
         </div>

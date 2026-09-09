@@ -366,13 +366,25 @@ function computeDiffPositions(patch, HunkParserRef) {
  * @param {number} opts.startLine
  * @param {number} [opts.endLine]
  * @param {object} [opts.HunkParser] - injectable for tests
+ * @param {Map<string,number>} [opts.positions] - a `computeDiffPositions`
+ *   result the caller has ALREADY computed for exactly this `patch`.
+ *   Purely a memoization seam: parsing the patch is the expensive part and a
+ *   caller that resolves many targets against one unchanged patch (a
+ *   Rendered document building N comment cards) would otherwise re-parse it
+ *   N times. Passing a map computed from a DIFFERENT patch is a caller bug —
+ *   the result is identical to what `computeDiffPositions(patch)` returns,
+ *   never a different rule.
  * @returns {{side:string, line_start:number, line_end:number, diff_position:(number|null), inDiff:boolean}}
  */
-function resolveCommentTarget({ patch, startLine, endLine, HunkParser } = {}) {
+function resolveCommentTarget({ patch, startLine, endLine, HunkParser, positions: precomputed } = {}) {
   const side = 'RIGHT';
   const line_start = startLine;
   const line_end = endLine != null ? endLine : startLine;
-  const positions = computeDiffPositions(patch, HunkParser);
+  // Duck-typed rather than `instanceof Map` so a map built in another realm
+  // (a JSDOM window in tests) is still accepted.
+  const positions = precomputed && typeof precomputed.get === 'function'
+    ? precomputed
+    : computeDiffPositions(patch, HunkParser);
   const startPos = positions.get(`${side}:${line_start}`);
   const endPos = positions.get(`${side}:${line_end}`);
   const inDiff = startPos != null && endPos != null;
