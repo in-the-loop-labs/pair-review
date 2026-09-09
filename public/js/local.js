@@ -1095,6 +1095,7 @@ class LocalManager {
           onToggleWhitespace: (hide) => manager.handleWhitespaceToggle(hide),
           onToggleMinimize: (minimized) => manager.handleMinimizeToggle(minimized),
           onScopeChange: (start, end) => this._handleScopeChange(start, end),
+          onBaseBranchChange: (baseBranch) => this._handleBaseBranchChange(baseBranch),
           // Diff view (Unified / Split) — the handler lives on PRManager and is
           // shared with PR mode (no re-fetch, so local mode needs no override).
           onDiffViewChange: (mode) => manager.handleDiffViewChange(mode),
@@ -1105,6 +1106,7 @@ class LocalManager {
           // can apply the swap (see pr.js construction site).
           diffViewAvailable: Boolean(manager.pierreBridge && !manager.pierreBridge._disabled),
           initialScope: { start: scopeStart, end: scopeEnd },
+          initialBaseBranch: reviewData.baseBranch || null,
           branchAvailable
         });
       }
@@ -1704,6 +1706,63 @@ class LocalManager {
     if (manager?.diffOptionsDropdown) {
       const current = manager.diffOptionsDropdown.scope;
       if (current.start === scopeStart && current.end === scopeEnd) {
+        if (result.baseBranch) {
+          manager.diffOptionsDropdown.baseBranch = result.baseBranch;
+        }
+        manager.diffOptionsDropdown.clearScopeStatus();
+      }
+    }
+  }
+
+  /**
+   * Handle base branch change from DiffOptionsDropdown.
+   * POSTs the current scope with the new base branch, reloads diff on success.
+   * @param {string} baseBranch - New base branch (e.g. 'origin/main')
+   */
+  async _handleBaseBranchChange(baseBranch) {
+    const manager = window.prManager;
+    const LS = window.LocalScope;
+    const oldBase = this.localData?.baseBranch || null;
+    const scopeStart = this.scopeStart;
+    const scopeEnd = this.scopeEnd;
+
+    try {
+      const resp = await fetch(`/api/local/${this.reviewId}/set-scope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scopeStart, scopeEnd, baseBranch })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.error || 'Failed to set base branch');
+      }
+
+      const result = await resp.json();
+      await this._applyScopeResult(scopeStart, scopeEnd, result);
+
+      const newBase = result.baseBranch || baseBranch;
+
+      // Notify chat agent about the base change
+      if (window.chatPanel) {
+        const hints = LS ? LS.scopeGitHints(scopeStart, scopeEnd, newBase) : null;
+        const notification = this._buildScopeNotification(
+          `Diff base branch changed to ${newBase}. The set of reviewed files has changed.`, hints
+        );
+        window.chatPanel.queueDiffStateNotification(notification);
+      }
+
+      if (window.toast) {
+        window.toast.showSuccess(`Base branch: ${newBase}`);
+      }
+    } catch (error) {
+      console.error('Failed to change base branch:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to change base branch: ' + error.message);
+      }
+      // Rollback the input to the previous base branch
+      if (manager?.diffOptionsDropdown) {
+        manager.diffOptionsDropdown.baseBranch = oldBase;
         manager.diffOptionsDropdown.clearScopeStatus();
       }
     }
