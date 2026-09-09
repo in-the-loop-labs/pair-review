@@ -381,6 +381,69 @@ describe('CodexBridge', () => {
       expect(spawnCall[1]).not.toContain('--model');
     });
 
+    it('should append extraArgs after the configured codexArgs', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        model: 'gpt-6-astra',
+        codexArgs: ['app-server', '-c', 'allow_login_shell=false'],
+        // `-c key=value` is a global Codex flag, the same mechanism as the
+        // built-in config args above it.
+        extraArgs: ['-c', 'model_reasoning_effort="high"'],
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn.mock.calls[0][1]).toEqual([
+        'app-server',
+        '-c', 'allow_login_shell=false',
+        '-c', 'model_reasoning_effort="high"',
+      ]);
+    });
+
+    it('should keep the model in thread params when extraArgs are present', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const { messages, rl } = collectStdinMessages(fakeProc);
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        model: 'gpt-6-astra',
+        extraArgs: ['-c', 'model_reasoning_effort="high"'],
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      rl.close();
+      const threadStart = messages.find((m) => m.method === 'thread/start');
+      expect(threadStart.params.model).toBe('gpt-6-astra');
+    });
+
+    it('should quote extraArgs in shell mode', async () => {
+      const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
+      handshakeRl = setupHandshake(fakeProc);
+
+      const bridge = new CodexBridge({
+        codexCommand: 'devx codex',
+        codexArgs: ['app-server'],
+        extraArgs: ['-c', 'model_reasoning_effort="high"'],
+        useShell: true,
+        _deps: mockDeps,
+      });
+      await bridge.start();
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'devx codex app-server -c \'model_reasoning_effort="high"\'',
+        [],
+        expect.objectContaining({ shell: true })
+      );
+    });
+
+    it('should default extraArgs to an empty list', () => {
+      const bridge = new CodexBridge();
+      expect(bridge.extraArgs).toEqual([]);
+    });
+
     it('should not include --model in shell command when useShell and model are set', async () => {
       const { mockDeps, mockSpawn, fakeProc } = createMockDeps();
       handshakeRl = setupHandshake(fakeProc);

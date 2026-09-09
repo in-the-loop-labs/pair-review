@@ -7,7 +7,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs, resolveCliModelConfig } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -350,17 +350,13 @@ class ClaudeProvider extends AIProvider {
   _resolveModelConfig(modelId) {
     const configOverrides = this.configOverrides || {};
 
-    // Resolve cli_model: config model > built-in model > id
+    // Resolve cli_model via the shared ladder (config model > built-in model > id).
     // cli_model decouples the app-level model ID from the CLI --model argument.
-    // - undefined: fall through the resolution chain
-    // - string: use this exact value for --model
-    // - null: explicitly suppress --model (for tools that want the model set via env instead)
+    // See resolveCliModelConfig in provider.js for the undefined/null/'' contract.
     const builtIn = CLAUDE_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
     const modelKeys = new Set([modelId, builtIn?.id, ...(builtIn?.aliases || [])].filter(Boolean));
     const configModel = configOverrides.models?.find(m => modelKeys.has(m.id));
-    const resolvedCliModel = configModel?.cli_model !== undefined
-      ? configModel.cli_model
-      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+    const resolvedCliModel = resolveCliModelConfig(builtIn, configModel, modelId);
 
     // Conditionally include --model in base args (null = suppress, empty string passes through to surface CLI error)
     const cliModelArgs = resolvedCliModel !== null ? ['--model', resolvedCliModel] : [];

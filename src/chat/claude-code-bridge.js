@@ -38,11 +38,14 @@ class ClaudeCodeBridge extends EventEmitter {
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeSessionId] - Session ID for resumption
+   * @param {string[]} [options.extraArgs] - Extra CLI args appended after --model
+   *   (e.g. model-level catalog flags). Empty by default.
    * @param {Object} [options._deps] - { spawn, createInterface } for testing
    */
   constructor(options = {}) {
     super();
     this.model = options.model || null;
+    this.extraArgs = options.extraArgs || [];
     this.cwd = options.cwd || process.cwd();
     this.systemPrompt = options.systemPrompt || null;
     this.claudeCommand = options.claudeCommand || process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
@@ -336,6 +339,12 @@ class ClaudeCodeBridge extends EventEmitter {
 
     if (this.model) {
       args.push('--model', this.model);
+    }
+
+    // Model-level catalog args (effort flags etc.) go last so they can override
+    // anything set above.
+    if (this.extraArgs.length > 0) {
+      args.push(...this.extraArgs);
     }
 
     return args;

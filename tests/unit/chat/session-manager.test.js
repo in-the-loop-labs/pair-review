@@ -177,6 +177,17 @@ require.cache[chatProvidersPath].exports = mockChatProviders;
 // Now import session-manager (it will use our mocks)
 const ChatSessionManager = require('../../../src/chat/session-manager');
 
+// Real review-provider catalogs back the chat model resolver. Fixtures are picked by
+// shape (an entry with `env`, an entry with `extra_args`) rather than by id so the
+// suite survives the model-catalog refreshes the update-provider-models skill makes.
+const { getProviderClass, applyConfigOverrides: applyProviderConfigOverrides } = require('../../../src/ai');
+
+function reviewModel(reviewProviderId, predicate) {
+  const model = getProviderClass(reviewProviderId).getModels().find(predicate);
+  if (!model) throw new Error(`No ${reviewProviderId} model matched the fixture predicate`);
+  return model;
+}
+
 describe('ChatSessionManager', () => {
   let db;
   let manager;
@@ -674,7 +685,7 @@ describe('ChatSessionManager', () => {
     it('should return immediately if session is already active', async () => {
       const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
       const result = await manager.resumeSession(session.id);
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
     });
 
     it('should throw when session does not exist', async () => {
@@ -716,7 +727,7 @@ describe('ChatSessionManager', () => {
         await manager.closeSession(session.id);
 
         const result = await manager.resumeSession(session.id, { systemPrompt: 'test', cwd: '/tmp' });
-        expect(result).toEqual({ id: session.id, status: 'active' });
+        expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
         expect(manager.isSessionActive(session.id)).toBe(true);
 
         // DB should show active status
@@ -773,7 +784,7 @@ describe('ChatSessionManager', () => {
         await manager.closeSession(session.id);
 
         const result = await manager.resumeSession(session.id, { systemPrompt: 'test', cwd: tmpDir });
-        expect(result).toEqual({ id: session.id, status: 'active' });
+        expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
 
         // Resume must create an OmpBridge (not a PiBridge) with sessionPath set
         const resumedBridge = _createdOmpBridges[_createdOmpBridges.length - 1];
@@ -1264,7 +1275,7 @@ describe('ChatSessionManager', () => {
 
       // Resume should succeed without fs.existsSync check
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
       expect(manager.isSessionActive(session.id)).toBe(true);
 
       // Should pass resumeSessionId to bridge constructor
@@ -1278,7 +1289,7 @@ describe('ChatSessionManager', () => {
 
       // ACP sessions without stored sessionId create a fresh session
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
 
       // Should NOT have resumeSessionId
       const resumedBridge = _createdAcpBridges[_createdAcpBridges.length - 1];
@@ -1330,7 +1341,7 @@ describe('ChatSessionManager', () => {
 
       // Resume should succeed without fs.existsSync check (opaque session ID, not a file path)
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
       expect(manager.isSessionActive(session.id)).toBe(true);
 
       // Should pass resumeSessionId to bridge constructor
@@ -1344,7 +1355,7 @@ describe('ChatSessionManager', () => {
 
       // Claude Code sessions without stored sessionId create a fresh session
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
 
       // Should NOT have resumeSessionId
       const resumedBridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
@@ -1409,7 +1420,7 @@ describe('ChatSessionManager', () => {
 
       // Resume should succeed without fs.existsSync check
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
       expect(manager.isSessionActive(session.id)).toBe(true);
 
       // Should pass resumeThreadId to bridge constructor
@@ -1423,11 +1434,289 @@ describe('ChatSessionManager', () => {
 
       // Codex sessions without stored threadId create a fresh thread
       const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
-      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(result).toEqual({ id: session.id, status: 'active', model: null, cliModel: null });
 
       // Should NOT have resumeThreadId
       const resumedBridge = _createdCodexBridges[_createdCodexBridges.length - 1];
       expect(resumedBridge._constructorOptions.resumeThreadId).toBeUndefined();
+    });
+  });
+
+  // ── Model resolution through _createBridge ────────────────────
+
+  describe('model resolution', () => {
+    // Some cases below register `providers.<id>.models` overrides; clear them so the
+    // next test (and the next file) sees the untouched built-in catalogs.
+    afterEach(() => {
+      applyProviderConfigOverrides({});
+    });
+
+    it('passes the catalog cli_model and effort env to ClaudeCodeBridge', async () => {
+      const model = reviewModel('claude', m => m.env && Object.keys(m.env).length > 0);
+
+      await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.model).toBe(model.cli_model);
+      expect(bridge._constructorOptions.env).toMatchObject(model.env);
+      expect(bridge._constructorOptions.env).toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
+      expect(bridge._constructorOptions.extraArgs).toEqual(model.extra_args || []);
+    });
+
+    it('stores the selector, not the cli_model, on the session row', async () => {
+      const model = reviewModel('claude', m => typeof m.cli_model === 'string' && m.cli_model !== m.id);
+
+      const session = await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBe(model.id);
+      expect(session.model).toBe(model.id);
+      expect(session.cliModel).toBe(model.cli_model);
+    });
+
+    it('canonicalises an aliased request model before storing it', async () => {
+      // The picker checkmark, the sessions list and the hook payload all read the
+      // stored value, so an alias must be resolved to its catalog id at INSERT time.
+      const model = reviewModel('claude', m => Array.isArray(m.aliases) && m.aliases.length > 0);
+      const alias = model.aliases[0];
+      expect(alias).not.toBe(model.id);
+
+      const session = await manager.createSession({ provider: 'claude', model: alias, reviewId: 1 });
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBe(model.id);
+      expect(session.model).toBe(model.id);
+      expect(session.cliModel).toBe(model.cli_model);
+      // Re-resolving the stored canonical id is idempotent — the bridge still gets
+      // the same CLI model it would have got from the alias.
+      expect(_createdClaudeCodeBridges[0]._constructorOptions.model).toBe(model.cli_model);
+    });
+
+    it('canonicalises an aliased chat_providers.<id>.model default before storing it', async () => {
+      const model = reviewModel('claude', m => Array.isArray(m.aliases) && m.aliases.length > 0);
+      const alias = model.aliases[0];
+      mockChatProviders.getChatProvider.mockImplementationOnce(() => ({
+        id: 'claude',
+        type: 'claude',
+        command: 'claude',
+        model: alias,
+      }));
+
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBe(model.id);
+      expect(session.model).toBe(model.id);
+      expect(session.cliModel).toBe(model.cli_model);
+    });
+
+    it('stores an unknown selector verbatim', async () => {
+      const session = await manager.createSession({
+        provider: 'claude',
+        model: 'anthropic/claude-something-unlisted',
+        reviewId: 1,
+      });
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBe('anthropic/claude-something-unlisted');
+      expect(session.model).toBe('anthropic/claude-something-unlisted');
+      expect(session.cliModel).toBe('anthropic/claude-something-unlisted');
+    });
+
+    it('stores null when neither the request nor the provider def names a model', async () => {
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBeNull();
+      expect(session.model).toBeNull();
+      expect(session.cliModel).toBeNull();
+    });
+
+    it('passes the catalog extra_args to CodexBridge', async () => {
+      const model = reviewModel('codex', m => Array.isArray(m.extra_args) && m.extra_args.length > 0);
+
+      await manager.createSession({ provider: 'codex', model: model.id, reviewId: 1 });
+
+      const bridge = _createdCodexBridges[0];
+      expect(bridge._constructorOptions.model).toBe(model.cli_model);
+      expect(bridge._constructorOptions.extraArgs).toEqual(model.extra_args);
+      // codexArgs stays the provider's own arg list — extra args are a separate channel.
+      expect(bridge._constructorOptions.codexArgs).toEqual(['app-server']);
+    });
+
+    it('merges catalog env over provider def env', async () => {
+      const model = reviewModel('claude', m => m.env && m.env.CLAUDE_CODE_EFFORT_LEVEL);
+      mockChatProviders.getChatProvider.mockImplementationOnce(() => ({
+        id: 'claude',
+        type: 'claude',
+        command: 'claude',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'from-provider-def', PROVIDER_ONLY: '1' },
+      }));
+
+      await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.env).toEqual({
+        PROVIDER_ONLY: '1',
+        ...model.env,
+      });
+      expect(bridge._constructorOptions.env.CLAUDE_CODE_EFFORT_LEVEL).toBe(model.env.CLAUDE_CODE_EFFORT_LEVEL);
+    });
+
+    it('appends catalog args after the provider def args for Pi', async () => {
+      // Model-level catalog args must land after the provider-level args so a
+      // model-level flag wins. Pi's only built-in entries carrying args are
+      // analysis-only (supports_chat: false), so this uses a config-defined model.
+      applyProviderConfigOverrides({
+        providers: {
+          pi: {
+            models: [{
+              id: 'chat-pi',
+              tier: 'balanced',
+              cli_model: 'anthropic/some-model',
+              extra_args: ['--thinking', 'high'],
+            }],
+          },
+        },
+      });
+      mockChatProviders.getChatProvider.mockImplementationOnce(() => ({
+        id: 'pi',
+        type: 'pi',
+        args: ['--provider-level'],
+      }));
+
+      await manager.createSession({ provider: 'pi', model: 'chat-pi', reviewId: 1 });
+
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.extraArgs).toEqual(['--provider-level', '--thinking', 'high']);
+    });
+
+    it('passes chat_providers.claude.args through to the Claude bridge', async () => {
+      // Regression: the Claude branch dropped def.args entirely, so
+      // `chat_providers.claude.args` / `extra_args` were silently ignored.
+      const model = reviewModel('claude', m => Array.isArray(m.extra_args) && m.extra_args.length > 0);
+      mockChatProviders.getChatProvider.mockImplementationOnce(() => ({
+        id: 'claude',
+        type: 'claude',
+        command: 'claude',
+        args: ['--provider-level'],
+      }));
+
+      await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.extraArgs).toEqual(['--provider-level', ...model.extra_args]);
+    });
+
+    it('keeps built-in cli_model and env when a config override renames the model', async () => {
+      // Regression: mergeModels replaces a matched built-in wholesale, so resolving
+      // runtime fields off the merged entry spawned `--model <catalog id>` with no
+      // effort env. Chat must run the same field-level ladder analysis does.
+      const model = reviewModel('claude', m => m.cli_model && m.env && m.env.CLAUDE_CODE_EFFORT_LEVEL);
+      applyProviderConfigOverrides({
+        providers: {
+          claude: { models: [{ id: model.id, tier: 'thorough', name: 'Team Opus' }] },
+        },
+      });
+
+      await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.model).toBe(model.cli_model);
+      expect(bridge._constructorOptions.env.CLAUDE_CODE_EFFORT_LEVEL)
+        .toBe(model.env.CLAUDE_CODE_EFFORT_LEVEL);
+    });
+
+    it('stores null and runs the provider default for an analysis-only model', async () => {
+      const model = reviewModel('pi', m => m.supports_chat === false);
+
+      const session = await manager.createSession({ provider: 'pi', model: model.id, reviewId: 1 });
+
+      expect(session.model).toBeNull();
+      expect(session.cliModel).toBeNull();
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.model).toBeNull();
+      expect(bridge._constructorOptions.extraArgs).toEqual([]);
+      expect(bridge._constructorOptions.env).not.toHaveProperty('PI_TASK_MAX_DEPTH');
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.model).toBeNull();
+    });
+
+    it('maps a cli_model: null catalog entry to no model at all', async () => {
+      const model = reviewModel('pi', m => m.cli_model === null);
+
+      const session = await manager.createSession({ provider: 'pi', model: model.id, reviewId: 1 });
+
+      const bridge = _createdBridges[0];
+      expect(bridge._constructorOptions.model).toBeNull();
+      // The selector is still what gets stored and reported.
+      expect(session.model).toBe(model.id);
+      expect(session.cliModel).toBeNull();
+    });
+
+    it('forwards an unknown (raw CLI) model verbatim', async () => {
+      await manager.createSession({ provider: 'claude', model: 'claude-sonnet-4-6', reviewId: 1 });
+
+      const bridge = _createdClaudeCodeBridges[0];
+      expect(bridge._constructorOptions.model).toBe('claude-sonnet-4-6');
+      expect(bridge._constructorOptions.extraArgs).toEqual([]);
+      expect(bridge._constructorOptions.env).toEqual({});
+    });
+
+    it('resolves an ACP model through models_from and still passes extraArgs', async () => {
+      const model = reviewModel('codex', m => Array.isArray(m.extra_args) && m.extra_args.length > 0);
+      mockChatProviders.getChatProvider.mockImplementationOnce(() => ({
+        id: 'copilot-acp',
+        type: 'acp',
+        models_from: 'codex',
+        command: 'copilot',
+        args: ['--acp', '--stdio'],
+        env: {},
+      }));
+
+      await manager.createSession({ provider: 'copilot-acp', model: model.id, reviewId: 1 });
+
+      const bridge = _createdAcpBridges[0];
+      expect(bridge._constructorOptions.model).toBe(model.cli_model);
+      expect(bridge._constructorOptions.extraArgs).toEqual(model.extra_args);
+      // acpArgs is untouched — extraArgs is handed over separately and ignored there.
+      expect(bridge._constructorOptions.acpArgs).toEqual(['--acp', '--stdio']);
+    });
+
+    it('re-resolves the stored selector on resume', async () => {
+      const model = reviewModel('claude', m => m.env && Object.keys(m.env).length > 0);
+
+      const session = await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+      _createdClaudeCodeBridges[0].emit('session', { sessionId: 'claude-session-resume' });
+      await manager.closeSession(session.id);
+
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+
+      expect(result).toEqual({
+        id: session.id,
+        status: 'active',
+        model: model.id,
+        cliModel: model.cli_model,
+      });
+
+      const resumedBridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
+      // Not `--model <canonical id>` — the CLI would reject that.
+      expect(resumedBridge._constructorOptions.model).toBe(model.cli_model);
+      expect(resumedBridge._constructorOptions.env).toMatchObject(model.env);
+    });
+
+    it('returns the stored resolution when resuming an already-active session', async () => {
+      const model = reviewModel('claude', m => typeof m.cli_model === 'string');
+      const session = await manager.createSession({ provider: 'claude', model: model.id, reviewId: 1 });
+
+      const result = await manager.resumeSession(session.id);
+
+      expect(result).toEqual({
+        id: session.id,
+        status: 'active',
+        model: model.id,
+        cliModel: model.cli_model,
+      });
     });
   });
 });

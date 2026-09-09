@@ -21,6 +21,8 @@ const ws = require('../ws');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, getCachedUser } = require('../hooks/payloads');
 const { resolveFormat } = require('../utils/comment-formatter');
+const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
+const { getChatModelCatalog, canonicalChatModel } = require('../chat/chat-models');
 const { resolveLoadSkills } = require('../config');
 
 /**
@@ -31,16 +33,17 @@ const { resolveLoadSkills } = require('../config');
  * @param {Object} opts.review - Review record
  * @param {number} opts.sessionId - Chat session ID
  * @param {string} opts.provider - AI provider
- * @param {string} opts.model - AI model
+ * @param {string} opts.model - Model selector stored on the session
+ * @param {string|null} [opts.cliModel] - Model string actually passed to the CLI
  */
-function fireChatHook(event, { req, review, sessionId, provider, model }) {
+function fireChatHook(event, { req, review, sessionId, provider, model, cliModel }) {
   const config = req.app.get('config') || {};
   if (!hasHooks(event, config)) return;
 
   const buildPayload = event === 'chat.started' ? buildChatStartedPayload : buildChatResumedPayload;
   getCachedUser(config).then(user => {
     const payload = buildPayload({
-      reviewId: review.id, sessionId, provider, model,
+      reviewId: review.id, sessionId, provider, model, cliModel,
       ...buildChatHookContext(review), user,
     });
     fireHooks(event, payload, config);
@@ -244,6 +247,38 @@ async function getRepoLoadSkillsForChat(db, review, config, provider) {
 }
 
 /**
+ * List chat providers with their model catalogs.
+ *
+ * Kept separate from GET /api/config (which is fetched inline in the page head and
+ * should stay light). The response is picker-facing only: catalog entries are built by
+ * getChatModelCatalog, which whitelists display fields, so cli_model / env / extra_args
+ * never reach the browser.
+ */
+router.get('/api/chat/providers', (req, res) => {
+  try {
+    const availability = getAllCachedChatAvailability();
+    const providers = getAllChatProviders().map((def) => {
+      const { models, configuredModel, hasCatalog } = getChatModelCatalog(def.id, def);
+      return {
+        id: def.id,
+        name: def.name,
+        type: def.type,
+        available: availability[def.id]?.available || false,
+        models,
+        configuredModel,
+        // Defined at the source as "there is something to pick from" (models.length > 0),
+        // so a provider that maps to a review provider with an empty list reports false.
+        hasCatalog,
+      };
+    });
+    res.json({ data: { providers } });
+  } catch (error) {
+    logger.error(`Error listing chat providers: ${error.message}`);
+    res.status(500).json({ error: 'Failed to list chat providers' });
+  }
+});
+
+/**
  * Create a new chat session
  */
 router.post('/api/chat/session', async (req, res) => {
@@ -255,6 +290,15 @@ router.post('/api/chat/session', async (req, res) => {
     if (!provider || !reviewId || isNaN(reviewId)) {
       return res.status(400).json({
         error: 'Missing required fields: provider, reviewId'
+      });
+    }
+
+    // `model` is optional. Absent/null both mean "provider default"; anything else must
+    // be a string. Unknown ids are allowed on purpose — chat_providers.<id>.model has
+    // always accepted raw CLI strings, and the resolver passes them through.
+    if (model !== undefined && model !== null && typeof model !== 'string') {
+      return res.status(400).json({
+        error: 'Invalid model: must be a string or null'
       });
     }
 
@@ -353,9 +397,19 @@ router.post('/api/chat/session', async (req, res) => {
     // Register broadcast listeners so events reach all connected clients
     registerChatBroadcast(chatSessionManager, session.id, serverPort);
 
-    fireChatHook('chat.started', { req, review, sessionId: session.id, provider, model });
+    fireChatHook('chat.started', {
+      req, review, sessionId: session.id, provider,
+      // The manager resolved the effective selector (request model > provider config
+      // default); fall back to the request value if a caller returns the legacy shape.
+      model: session.model !== undefined ? session.model : (model ?? null),
+      cliModel: session.cliModel ?? null,
+    });
 
-    const responseData = { id: session.id, status: session.status };
+    // `model` is the canonicalised selector the session actually runs (an alias resolves
+    // to its catalog id, and a "Provider default" pick that config pinned to a concrete
+    // model comes back as that model). The client adopts it so its tab state matches the
+    // DB without waiting for a reload. Contract: string | null (null = provider default).
+    const responseData = { id: session.id, status: session.status, model: session.model ?? null };
 
     // Include analysis context metadata so the frontend can show a context indicator
     if (initialContext && suggestions && suggestions.length > 0) {
@@ -423,12 +477,16 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       const loadSkills = await getRepoLoadSkillsForChat(db, review, config, session.provider);
 
       try {
-        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
+        const resumed = await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
 
-        fireChatHook('chat.resumed', { req, review, sessionId, provider: session.provider, model: session.model });
+        fireChatHook('chat.resumed', {
+          req, review, sessionId, provider: session.provider,
+          model: resumed?.model !== undefined ? resumed.model : session.model,
+          cliModel: resumed?.cliModel ?? null,
+        });
 
         // Inject port correction so the agent knows the current server address,
         // even if the conversational history has a stale port from session creation.
@@ -535,7 +593,14 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     // Already active
     if (chatSessionManager.isSessionActive(sessionId)) {
-      return res.json({ data: { id: sessionId, status: 'active' } });
+      const active = chatSessionManager.getSession(sessionId);
+      return res.json({
+        data: {
+          id: sessionId,
+          status: 'active',
+          model: active ? canonicalChatModel(active.provider, active.model) : null,
+        },
+      });
     }
 
     const session = chatSessionManager.getSession(sessionId);
@@ -565,7 +630,7 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const cwd = await resolveReviewCwd(db, review);
     const loadSkills = await getRepoLoadSkillsForChat(db, review, config, session.provider);
 
-    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
+    const resumed = await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd, loadSkills });
     unregisterChatBroadcast(sessionId);
     const serverPort = req.socket.localPort;
     registerChatBroadcast(chatSessionManager, sessionId, serverPort);
@@ -580,9 +645,13 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
 
-    fireChatHook('chat.resumed', { req, review, sessionId, provider: session.provider, model: session.model });
+    fireChatHook('chat.resumed', {
+      req, review, sessionId, provider: session.provider,
+      model: resumed?.model !== undefined ? resumed.model : session.model,
+      cliModel: resumed?.cliModel ?? null,
+    });
 
-    res.json({ data: { id: sessionId, status: 'active' } });
+    res.json({ data: { id: sessionId, status: 'active', model: resumed?.model ?? null } });
   } catch (error) {
     logger.error(`Error resuming chat session: ${error.message}`);
     res.status(500).json({ error: 'Failed to resume session: ' + error.message });
@@ -620,8 +689,11 @@ router.get('/api/review/:reviewId/chat/sessions', (req, res) => {
     const sessions = chatSessionManager.getSessionsWithMessageCount(parseInt(reviewId, 10));
 
     // Annotate each session with live state
+    // `model` is canonicalised on read (rows are never rewritten): a session stored
+    // under an alias by an older build must report the id the picker renders.
     const annotated = sessions.map((s) => ({
       ...s,
+      model: canonicalChatModel(s.provider, s.model),
       isActive: chatSessionManager.isSessionActive(s.id),
       isResumable: !chatSessionManager.isSessionActive(s.id) && !!s.agent_session_id
     }));

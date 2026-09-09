@@ -51,7 +51,7 @@ describe('chat-providers', () => {
   describe('getChatProvider', () => {
     it('should return pi provider', () => {
       const pi = getChatProvider('pi');
-      expect(pi).toEqual({ id: 'pi', name: 'Pi (RPC)', type: 'pi' });
+      expect(pi).toEqual({ id: 'pi', name: 'Pi (RPC)', type: 'pi', models_from: 'pi' });
     });
 
     it('should return omp provider with no default command', () => {
@@ -60,6 +60,7 @@ describe('chat-providers', () => {
         id: 'omp',
         name: 'OMP (RPC)',
         type: 'omp',
+        models_from: 'omp',
       });
     });
 
@@ -69,6 +70,7 @@ describe('chat-providers', () => {
         id: 'copilot-acp',
         name: 'Copilot (ACP)',
         type: 'acp',
+        models_from: 'copilot',
         command: 'copilot',
         args: ['--acp', '--stdio'],
         env: {},
@@ -81,6 +83,7 @@ describe('chat-providers', () => {
         id: 'opencode-acp',
         name: 'OpenCode (ACP)',
         type: 'acp',
+        models_from: 'opencode',
         command: 'opencode',
         args: ['acp'],
         env: {},
@@ -93,6 +96,7 @@ describe('chat-providers', () => {
         id: 'cursor-acp',
         name: 'Cursor (ACP)',
         type: 'acp',
+        models_from: 'cursor-agent',
         command: 'agent',
         args: ['acp'],
         env: {},

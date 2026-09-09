@@ -11,6 +11,14 @@ class ConfirmDialog {
     this.onSecondary = null;
     this.onCancel = null;
     this.escapeHandler = null;
+    /**
+     * Opt-in checkbox input (see `options.checkboxLabel`). Null whenever the
+     * current dialog has no checkbox. Rebuilt on every show() and torn down on
+     * every hide() so one caller's checked state can never leak into the next
+     * dialog — the instance is a shared singleton.
+     * @type {HTMLInputElement|null}
+     */
+    this.checkboxEl = null;
     this.createModal();
     this.setupEventListeners();
   }
@@ -112,7 +120,10 @@ class ConfirmDialog {
    * @param {string} options.confirmClass - Confirm button class (default: "btn-danger")
    * @param {string} options.secondaryText - Secondary button text (optional - if provided, shows 3rd button)
    * @param {string} options.secondaryClass - Secondary button class (default: "btn-secondary")
-   * @param {Function} options.onConfirm - Callback when confirmed
+   * @param {string} options.checkboxLabel - When set, renders a checkbox between the message and
+   *   the buttons (e.g. "Don't ask again"). Opt-in: omit it and no checkbox exists.
+   * @param {Function} options.onConfirm - Callback when confirmed. Receives
+   *   `{ checkboxChecked: boolean }` (always false when no checkboxLabel was given).
    * @param {Function} options.onSecondary - Callback when secondary clicked (optional)
    * @param {Function} options.onCancel - Callback when cancelled (optional)
    * @returns {Promise<string>} Promise that resolves to 'confirm', 'secondary', or 'cancel'
@@ -131,6 +142,13 @@ class ConfirmDialog {
       const messageElement = this.modal.querySelector('#confirm-dialog-message');
       if (messageElement) {
         messageElement.textContent = options.message || 'Are you sure?';
+      }
+
+      // Opt-in checkbox. Always torn down first so a previous caller's checked
+      // state can never leak into this dialog.
+      this._removeCheckbox();
+      if (options.checkboxLabel) {
+        this._renderCheckbox(options.checkboxLabel);
       }
 
       // Helper: set button label + optional description subtitle
@@ -179,8 +197,11 @@ class ConfirmDialog {
 
       // Store callbacks with promise resolution
       this.onConfirm = () => {
+        // Read the checkbox BEFORE hide() tears it down (handleConfirm calls
+        // this callback first, then hide()).
+        const checkboxChecked = !!this.checkboxEl?.checked;
         if (options.onConfirm) {
-          options.onConfirm();
+          options.onConfirm({ checkboxChecked });
         }
         resolve('confirm');
       };
@@ -203,6 +224,47 @@ class ConfirmDialog {
       this.modal.style.display = 'flex';
       this.isVisible = true;
     });
+  }
+
+  /**
+   * Render the opt-in checkbox row between the message and the buttons.
+   * @param {string} label - Visible label text (rendered via textContent)
+   */
+  _renderCheckbox(label) {
+    if (!this.modal) return;
+    const body = this.modal.querySelector('.modal-body');
+    if (!body) return;
+
+    const wrapper = document.createElement('label');
+    wrapper.className = 'confirm-dialog__checkbox';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = false;
+
+    const text = document.createElement('span');
+    text.textContent = label;
+
+    wrapper.appendChild(input);
+    wrapper.appendChild(document.createTextNode(' '));
+    wrapper.appendChild(text);
+    body.appendChild(wrapper);
+
+    this.checkboxEl = input;
+  }
+
+  /**
+   * Remove the checkbox row (if any) and drop the cached input reference.
+   * Idempotent — safe to call when no checkbox is present.
+   */
+  _removeCheckbox() {
+    if (this.checkboxEl) this.checkboxEl.checked = false;
+    this.checkboxEl = null;
+    if (!this.modal) return;
+    const existing = this.modal.querySelector('.confirm-dialog__checkbox');
+    if (existing && existing.parentNode) {
+      existing.parentNode.removeChild(existing);
+    }
   }
 
   /**
@@ -246,6 +308,7 @@ class ConfirmDialog {
     this.onConfirm = null;
     this.onSecondary = null;
     this.onCancel = null;
+    this._removeCheckbox();
   }
 }
 
@@ -258,4 +321,9 @@ if (typeof window !== 'undefined' && !window.confirmDialog) {
   } else {
     window.confirmDialog = new ConfirmDialog();
   }
+}
+
+// Export for CommonJS testing environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { ConfirmDialog };
 }

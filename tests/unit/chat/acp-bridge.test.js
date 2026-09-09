@@ -88,6 +88,21 @@ describe('AcpBridge', () => {
       expect(bridge.acpCommand).toBe('copilot');
       expect(bridge.acpArgs).toEqual(['--acp', '--stdio']);
       expect(bridge.env).toEqual({});
+      expect(bridge.extraArgs).toEqual([]);
+    });
+
+    it('should accept extraArgs without putting them on the command line', async () => {
+      const { mockDeps, mockSpawn } = createMockDeps();
+      const bridge = new AcpBridge({
+        // ACP has no argv model surface; model-level catalog args are accepted
+        // (so the session manager can pass them uniformly) and ignored.
+        extraArgs: ['-c', 'model_reasoning_effort="high"'],
+        _deps: mockDeps,
+      });
+      expect(bridge.extraArgs).toEqual(['-c', 'model_reasoning_effort="high"']);
+
+      await bridge.start();
+      expect(mockSpawn.mock.calls[0][1]).toEqual(['--acp', '--stdio']);
     });
 
     it('should accept custom options', () => {

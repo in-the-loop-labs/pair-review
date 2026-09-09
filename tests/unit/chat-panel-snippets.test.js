@@ -179,6 +179,10 @@ function createPanel() {
     '.chat-panel__provider-picker': createMockElement('div'),
     '.chat-panel__provider-picker-btn': createMockElement('button'),
     '.chat-panel__provider-dropdown': createMockElement('div'),
+    '.chat-panel__model-picker': createMockElement('div'),
+    '.chat-panel__model-picker-btn': createMockElement('button'),
+    '.chat-panel__model-dropdown': createMockElement('div'),
+    '.chat-panel__model-text': createMockElement('span'),
     '.chat-panel__session-picker': createMockElement('div'),
     '.chat-panel__session-dropdown': createMockElement('div'),
     '.chat-panel__history-btn': createMockElement('button'),
@@ -187,6 +191,7 @@ function createPanel() {
   // markup (our mock innerHTML doesn't parse inline styles).
   refs['.chat-panel__snippet-dropdown'].style.display = 'none';
   refs['.chat-panel__provider-dropdown'].style.display = 'none';
+  refs['.chat-panel__model-dropdown'].style.display = 'none';
   refs['.chat-panel__session-dropdown'].style.display = 'none';
 
   const container = buildContainer(refs);
@@ -392,6 +397,19 @@ describe('ChatPanel prompt-snippet picker', () => {
       vi.spyOn(panel, '_fetchSessions').mockResolvedValue([]);
       await panel._showSessionDropdown();
       expect(panel.snippetDropdown.style.display).toBe('none');
+    });
+
+    it('the session dropdown also bails when it was dismissed mid-fetch', async () => {
+      let resolveSessions;
+      vi.spyOn(panel, '_fetchSessions').mockReturnValue(new Promise(r => { resolveSessions = r; }));
+
+      const showPromise = panel._showSessionDropdown();
+      panel._hideSessionDropdown();
+      resolveSessions([]);
+      await showPromise;
+
+      expect(panel.sessionDropdown.style.display).toBe('none');
+      expect(documentClickListeners.length).toBe(0);
     });
 
     it('bails after the fetch await if the dropdown was dismissed meanwhile', async () => {

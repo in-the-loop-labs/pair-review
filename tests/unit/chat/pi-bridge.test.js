@@ -209,6 +209,38 @@ describe('PiBridge', () => {
       expect(args).toContain('You are a reviewer');
     });
 
+    it('should split a provider/model string into --provider and --model', () => {
+      const bridge = new PiBridge({ model: 'google/gemini-2.5-pro' });
+      const args = bridge._buildArgs();
+      expect(args).toContain('--provider');
+      expect(args).toContain('google');
+      expect(args).toContain('--model');
+      expect(args).toContain('gemini-2.5-pro');
+      expect(args).not.toContain('google/gemini-2.5-pro');
+    });
+
+    it('should split on the FIRST slash only', () => {
+      const bridge = new PiBridge({ model: 'openrouter/vendor/model-x' });
+      const args = bridge._buildArgs();
+      expect(args[args.indexOf('--provider') + 1]).toBe('openrouter');
+      expect(args[args.indexOf('--model') + 1]).toBe('vendor/model-x');
+    });
+
+    it('should not split when an explicit provider is given', () => {
+      const bridge = new PiBridge({ provider: 'anthropic', model: 'google/gemini-2.5-pro' });
+      const args = bridge._buildArgs();
+      expect(args[args.indexOf('--provider') + 1]).toBe('anthropic');
+      expect(args[args.indexOf('--model') + 1]).toBe('google/gemini-2.5-pro');
+      expect(args.filter(a => a === '--provider').length).toBe(1);
+    });
+
+    it('should not treat a leading slash as a provider', () => {
+      const bridge = new PiBridge({ model: '/weird-model' });
+      const args = bridge._buildArgs();
+      expect(args).not.toContain('--provider');
+      expect(args[args.indexOf('--model') + 1]).toBe('/weird-model');
+    });
+
     it('should not include --provider when not specified', () => {
       const bridge = new PiBridge();
       const args = bridge._buildArgs();

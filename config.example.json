@@ -95,7 +95,7 @@
     },
 
     "claude": {
-      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in model IDs: fable-5.1-xhigh, fable-5.1-high, fable-5-xhigh, fable-5-high, opus-5-xhigh, opus-5-high, opus-4.8-xhigh, opus-4.8-high, opus-4.7-xhigh, opus-4.7-high, opus-4.6-high, sonnet-5-xhigh, sonnet-5-high, sonnet-4.6, opus-4.6-1m, and haiku ('opus' and 'fable' are convenience aliases for opus-4.8-xhigh and fable-5-xhigh). Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables.",
+      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in model IDs: fable-5.1-xhigh, fable-5.1-high, fable-5-xhigh, fable-5-high, opus-5-xhigh, opus-5-high, opus-4.8-xhigh, opus-4.8-high, opus-4.7-xhigh, opus-4.7-high, opus-4.6-high, sonnet-5-xhigh, sonnet-5-high, sonnet-4.6, opus-4.6-1m, and haiku ('opus' and 'fable' are convenience aliases for opus-4.8-xhigh and fable-5-xhigh). Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables. A model override only replaces the fields it names — 'cli_model', 'extra_args', and 'env' fall back to the built-in definition, so renaming a built-in keeps its effort settings for both analysis and chat. Set 'supports_chat': false on a model that only makes sense for analysis (it stays in the analysis picker but is hidden from the chat model picker).",
       "_comment_default_model": "Provider-level 'default_model' selects which model is the default in the picker and when no model is specified. Preferred over the per-model 'default: true' flag (which is deprecated). If it names an unknown or disabled model, the provider falls back to automatic selection.",
       "_comment_disabled_models": "'disabled_models' hides specific models (built-in or config-defined) from the picker for this provider. A list that would hide every model is ignored. disabled_models matches by model id or alias, so either a canonical id or a convenience alias works. Example below removes the fast-tier 'haiku' model and the thorough-tier Fable 5 model (named here by its 'fable' alias).",
       "command": "claude",
@@ -317,10 +317,11 @@
   },
 
   "chat_providers": {
-    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, omp, claude, codex, copilot-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), 'env', 'load_skills' (Pi/OMP: false suppresses skill auto-discovery), and 'app_extensions' (Pi: false omits pair-review task extension; OMP never loads it) overrides. Codex also supports 'sandbox' ('workspace-write' or 'read-only'). 'availability_command' overrides the startup availability probe and 'availability_timeout_seconds' bounds it (default 10; raise for slow build commands).",
+    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, omp, claude, codex, copilot-acp, opencode-acp, cursor-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), 'env', 'load_skills' (Pi/OMP: false suppresses skill auto-discovery), and 'app_extensions' (Pi: false omits pair-review task extension; OMP never loads it) overrides. Codex also supports 'sandbox' ('workspace-write' or 'read-only'). 'availability_command' overrides the startup availability probe and 'availability_timeout_seconds' bounds it (default 10; raise for slow build commands). 'model' sets the default model the chat picker starts on for that provider (a catalog id, alias, or raw CLI model string, passed through verbatim if unrecognized). 'models_from' picks which review provider's model catalog (from 'providers' above) feeds the chat picker; built-ins map automatically (copilot-acp->copilot, opencode-acp->opencode, cursor-acp->cursor-agent, others use their own id), and a config-defined chat provider falls back to its 'type'.",
     "claude": {
-      "_comment": "Example: use a wrapper script for Claude chat",
-      "command": "claude"
+      "_comment": "Example: use a wrapper script for Claude chat, and default new conversations to the opus-5-high effort tier",
+      "command": "claude",
+      "model": "opus-5-high"
     },
     "codex": {
       "_comment": "Example: use a wrapper script for Codex chat. Use sandbox='read-only' for discussion-only sessions.",

@@ -4,6 +4,14 @@
  *
  * Defines named chat providers (Pi, OMP, Copilot, OpenCode, Claude, Codex, Cursor) with
  * their default commands/args, config overrides, and availability checks.
+ *
+ * `models_from` names the **review** provider (`src/ai/*-provider.js`, e.g. `claude`,
+ * `cursor-agent`) whose model catalog this chat provider borrows for the chat model
+ * picker. Chat ids and review ids overlap but are not identical, so the mapping is
+ * explicit. A config override may set `models_from` to point a custom chat provider at
+ * any registered review provider's catalog. When it is absent, `type` is used if it names
+ * a registered review provider; otherwise the provider simply has no catalog and the
+ * picker offers only "Provider default". See `src/chat/chat-models.js`.
  */
 
 const { spawn } = require('child_process');
@@ -23,6 +31,7 @@ const CHAT_PROVIDERS = {
     id: 'pi',
     name: 'Pi (RPC)',
     type: 'pi',
+    models_from: 'pi',
   },
   // OMP (Oh My Pi) is a Pi fork that speaks the same RPC protocol with a
   // slightly different CLI surface (see OmpBridge). Like the built-in Pi
@@ -34,11 +43,13 @@ const CHAT_PROVIDERS = {
     id: 'omp',
     name: 'OMP (RPC)',
     type: 'omp',
+    models_from: 'omp',
   },
   'copilot-acp': {
     id: 'copilot-acp',
     name: 'Copilot (ACP)',
     type: 'acp',
+    models_from: 'copilot',
     command: 'copilot',
     args: ['--acp', '--stdio'],
     env: {},
@@ -47,6 +58,7 @@ const CHAT_PROVIDERS = {
     id: 'opencode-acp',
     name: 'OpenCode (ACP)',
     type: 'acp',
+    models_from: 'opencode',
     command: 'opencode',
     args: ['acp'],
     env: {},
@@ -55,6 +67,7 @@ const CHAT_PROVIDERS = {
     id: 'cursor-acp',
     name: 'Cursor (ACP)',
     type: 'acp',
+    models_from: 'cursor-agent',
     command: 'agent',
     args: ['acp'],
     env: {},
@@ -63,6 +76,7 @@ const CHAT_PROVIDERS = {
     id: 'claude',
     name: 'Claude (NDJSON)',
     type: 'claude',
+    models_from: 'claude',
     command: 'claude',
     args: [],
     env: {},
@@ -71,6 +85,7 @@ const CHAT_PROVIDERS = {
     id: 'codex',
     name: 'Codex (JSON-RPC)',
     type: 'codex',
+    models_from: 'codex',
     command: 'codex',
     sandbox: 'workspace-write',
     // Shell environment config prevents zsh -l from reconstructing PATH,
@@ -122,6 +137,7 @@ function getChatProvider(id) {
       env: overrides.env || {},
     };
     if (overrides.model) provider.model = overrides.model;
+    if (overrides.models_from) provider.models_from = overrides.models_from;
     if (overrides.provider) provider.provider = overrides.provider;
     if (overrides.availability_command !== undefined) {
       provider.availability_command = overrides.availability_command;
@@ -149,6 +165,7 @@ function getChatProvider(id) {
   if (overrides.name || overrides.label) merged.name = overrides.name || overrides.label;
   if (overrides.command) merged.command = overrides.command;
   if (overrides.model) merged.model = overrides.model;
+  if (overrides.models_from) merged.models_from = overrides.models_from;
   if (overrides.provider) merged.provider = overrides.provider;
   if (overrides.availability_command !== undefined) {
     merged.availability_command = overrides.availability_command;

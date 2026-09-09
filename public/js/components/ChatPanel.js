@@ -10,6 +10,16 @@ const DISMISS_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" he
 /** Pixel threshold for considering the user "near the bottom" of the messages container. */
 const NEAR_BOTTOM_THRESHOLD = 80;
 
+/**
+ * localStorage key recording that the user has seen (and dismissed) the
+ * "a conversation keeps one model" explainer. Per-browser convenience only —
+ * losing it just means the dialog is shown once more.
+ */
+const MODEL_SWITCH_ACK_KEY = 'pair-review:chat-model-switch-ack';
+
+/** Checkmark used by both the provider and model dropdown rows. */
+const DROPDOWN_CHECK_ICON = `<svg class="chat-panel__model-check" viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`;
+
 const LOOP_SPINNER_HTML = `<span class="chat-panel__loop-spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/></svg></span>`;
 const DOTS_SPINNER_HTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
 
@@ -64,6 +74,25 @@ class ChatPanel {
     this._activeProvider = window.__pairReview?.chatProvider || 'pi';
     this._chatProviders = window.__pairReview?.chatProviders || [];
     this._enterToSend = window.__pairReview?.chatEnterToSend ?? true;
+
+    /**
+     * providerId -> { models, configuredModel, hasCatalog }, populated by
+     * _ensureChatCatalog. Empty until the first successful fetch; every reader
+     * degrades to "Provider default only".
+     * @type {Map<string, {models: Array<Object>, configuredModel: string|null, hasCatalog: boolean}>}
+     */
+    this._chatCatalog = new Map();
+    /** In-flight/settled catalog fetch, so open() + the dropdown share one request. */
+    this._chatCatalogPromise = null;
+
+    /**
+     * Generation counters for the two dropdowns that await before showing themselves.
+     * Bumped by every show AND every hide, so an open that was superseded (a second
+     * open, or a hide that landed while the fetch was in flight) can tell it is stale
+     * and leave the DOM alone instead of un-hiding itself.
+     */
+    this._modelDropdownOpenToken = 0;
+    this._sessionDropdownOpenToken = 0;
 
     /** @type {ChatTab[]} Open tabs, in display order (left to right). */
     this.tabs = [];
@@ -671,14 +700,20 @@ class ChatPanel {
    *   - Appends it to the strip and focuses it.
    *   - Surfaces analysis context (when one is available locally) so the user
    *     sees the card before they ever type a message.
+   * @param {Object} [init]
+   * @param {string} [init.provider] - Provider for the new tab (defaults to the active one)
+   * @param {string|null} [init.model] - Model selector for the new tab
    * @returns {Promise<void>}
    */
-  async _openNewTab() {
+  async _openNewTab(init = {}) {
     if (!this.reviewId) {
       console.warn('[ChatPanel] _openNewTab: no reviewId yet');
       return;
     }
-    const tab = this._createTab({ provider: this._activeProvider });
+    const tab = this._createTab({
+      provider: init.provider || this._activeProvider,
+      model: init.model ?? null,
+    });
     this._appendTab(tab, { focus: true });
     // No session yet, so _showAnalysisContextIfPresent gets a null sessionData.
     // We still want the auto-detected analysis card surfaced on the fresh tab
@@ -686,6 +721,61 @@ class ChatPanel {
     // captured tab so a focus change can't bleed the card elsewhere.
     this._ensureAnalysisContext(tab);
     if (this.isOpen) this.inputEl?.focus();
+  }
+
+  /**
+   * Build the POST /api/chat/session request body for a tab. Single source of
+   * truth for BOTH creation paths (_createSessionForTab and the legacy public
+   * createSession) so a field cannot be added to one and forgotten in the
+   * other. Purely synchronous — callers that capture state before an await
+   * must call this before awaiting.
+   *
+   * @param {ChatTab|null} tab
+   * @returns {Object} Request body ({ provider, reviewId, model, skipAnalysisContext? })
+   */
+  _sessionRequestBody(tab) {
+    const body = {
+      provider: tab?.provider || this._activeProvider,
+      reviewId: this.reviewId,
+      // null means "provider default" — the backend resolves it from config.
+      model: tab?.model ?? null,
+    };
+    if (tab?.analysisContextRemoved) body.skipAnalysisContext = true;
+    return body;
+  }
+
+  /**
+   * Adopt the model the server actually bound the session to.
+   *
+   * A tab that asked for "Provider default" (null) can come back pinned to a
+   * concrete canonical id — the backend resolves `chat_providers.<id>.model`
+   * when the request carries none. The header must show that id, otherwise
+   * re-picking the very same model from the dropdown looks like a change and
+   * fires the switch dialog for nothing.
+   *
+   * Shared by BOTH creation paths (_createSessionForTab and the legacy public
+   * createSession) so they cannot drift. Callers MUST invoke this only after
+   * their in-flight identity guards have passed — adopting a model onto a tab
+   * whose session is about to be DELETEd would write the abandoned session's
+   * model onto the tab.
+   *
+   * @param {ChatTab} tab
+   * @param {Object} sessionData - `data` from POST /api/chat/session
+   */
+  _adoptServerModel(tab, sessionData) {
+    if (!tab || !sessionData) return;
+    // Absent field (older server, or a response that does not report it) means
+    // "no opinion" — keep what the tab already has.
+    if (sessionData.model === undefined || sessionData.model === null) return;
+    if ((tab.model ?? null) === sessionData.model) return;
+    tab.model = sessionData.model;
+    // Both call sites run us between assigning tab.sessionId and re-keying
+    // activeTabKey off tab._localKey, so _getActiveTab() cannot find the tab
+    // yet. Accept either key. _localKey counts down from 0 while session ids
+    // are positive, so the two spaces never collide across tabs.
+    const isActive = this.activeTabKey === tab.sessionId
+      || this.activeTabKey === tab._localKey;
+    if (isActive) this._updateTitle(tab.provider, tab.model);
   }
 
   /**
@@ -697,16 +787,16 @@ class ChatPanel {
   async _createSessionForTab(tab) {
     if (!this.reviewId) return null;
     if (!tab) return null;
-    // Capture the provider at entry. If the user swaps providers on this tab
-    // while the POST is in flight, the response describes a session for the
-    // wrong provider — we must abandon it and let the next send (with the new
-    // provider) start fresh.
+    // Capture the provider AND model at entry. If the user swaps either on this
+    // tab while the POST is in flight, the response describes a session for the
+    // wrong provider/model — we must abandon it and let the next send (with the
+    // new selection) start fresh.
     const capturedProvider = tab.provider;
+    const capturedModel = tab.model ?? null;
     const isAcp = this._getProviderType(capturedProvider) === 'acp';
     if (isAcp) this._showStatusFlash('Starting Agent Client Protocol');
     try {
-      const body = { provider: capturedProvider, reviewId: this.reviewId };
-      if (tab.analysisContextRemoved) body.skipAnalysisContext = true;
+      const body = this._sessionRequestBody(tab);
       const response = await fetch('/api/chat/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -732,7 +822,14 @@ class ChatPanel {
         fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
         return null;
       }
+      // Same treatment for the model: the DB row was created with
+      // capturedModel, so a late DELETE is the only correct cleanup.
+      if ((tab.model ?? null) !== capturedModel) {
+        fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
+        return null;
+      }
       tab.sessionId = result.data.id;
+      this._adoptServerModel(tab, result.data);
       tab.sessionWarm = true;
       if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(tab.sessionId);
       // Re-key the active marker if this is the focused tab (so getters work)
@@ -789,6 +886,15 @@ class ChatPanel {
               </svg>
             </button>
             <div class="chat-panel__provider-dropdown" style="display: none;"></div>
+          </div>
+          <div class="chat-panel__model-picker">
+            <button class="chat-panel__model-picker-btn" title="Model for this conversation">
+              <span class="chat-panel__model-text">Default</span>
+              <svg class="chat-panel__model-chevron" viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
+                <path d="M4.427 7.427l3.396 3.396a.25.25 0 0 0 .354 0l3.396-3.396A.25.25 0 0 0 11.396 7H4.604a.25.25 0 0 0-.177.427Z"/>
+              </svg>
+            </button>
+            <div class="chat-panel__model-dropdown" style="display: none;"></div>
           </div>
           <div class="chat-panel__session-picker">
             <div class="chat-panel__session-dropdown" style="display: none;"></div>
@@ -913,6 +1019,10 @@ class ChatPanel {
     this.providerPickerEl = this.container.querySelector('.chat-panel__provider-picker');
     this.providerPickerBtn = this.container.querySelector('.chat-panel__provider-picker-btn');
     this.providerDropdown = this.container.querySelector('.chat-panel__provider-dropdown');
+    this.modelPickerEl = this.container.querySelector('.chat-panel__model-picker');
+    this.modelPickerBtn = this.container.querySelector('.chat-panel__model-picker-btn');
+    this.modelDropdown = this.container.querySelector('.chat-panel__model-dropdown');
+    this.modelTextEl = this.container.querySelector('.chat-panel__model-text');
     this.sessionPickerEl = this.container.querySelector('.chat-panel__session-picker');
     this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
     this.historyBtn = this.container.querySelector('.chat-panel__history-btn');
@@ -936,6 +1046,9 @@ class ChatPanel {
 
     // Provider picker button
     this.providerPickerBtn.addEventListener('click', () => this._toggleProviderDropdown());
+
+    // Model picker button
+    this.modelPickerBtn?.addEventListener('click', () => this._toggleModelDropdown());
 
     // Session history button
     this.historyBtn.addEventListener('click', () => this._toggleSessionDropdown());
@@ -997,14 +1110,27 @@ class ChatPanel {
     // Escape: close dropdown if open, stop agent if streaming, blur textarea if focused, otherwise close panel
     this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
-        // Escape ladder (first match wins): save-snippet pill → provider
-        // dropdown → session dropdown → snippet dropdown → stop streaming →
-        // blur input → close panel. The pill goes first so dismissing it
-        // never falls through to closing the panel.
+        // Escape ladder (first match wins): confirm dialog → save-snippet pill
+        // → provider dropdown → model dropdown → session dropdown → snippet
+        // dropdown → stop streaming → blur input → close panel. The pill goes
+        // first among our own rungs so dismissing it never falls through to
+        // closing the panel.
+        //
+        // ConfirmDialog's own Escape handler is a bubble-phase document
+        // listener that cancels without stopPropagation, so its Escape reaches
+        // us too. The model-switch dialog is opened *after* the model dropdown
+        // is hidden, meaning every dropdown rung is false and Escape would fall
+        // through to _stopAgent()/close() on exactly the tabs routed into that
+        // dialog. Yield while any confirm dialog is up. (Repo pattern:
+        // SnippetManager.js, TextInputDialog.js.)
+        if (window.confirmDialog?.isVisible) return;
+
         if (this._saveSnippetPill) {
           this._hideSaveSnippetPill();
         } else if (this._isProviderDropdownOpen()) {
           this._hideProviderDropdown();
+        } else if (this._isModelDropdownOpen()) {
+          this._hideModelDropdown();
         } else if (this._isSessionDropdownOpen()) {
           this._hideSessionDropdown();
         } else if (this._isSnippetDropdownOpen()) {
@@ -1149,19 +1275,108 @@ class ChatPanel {
   }
 
   /**
-   * Update the chat panel title with provider and model info.
+   * Update the chat panel header: provider text on the provider button, model
+   * label on the model button. The model is deliberately NOT appended to the
+   * provider text any more \u2014 it has its own picker.
+   *
    * @param {string} [providerId] - Provider ID (looked up in _chatProviders for display name)
-   * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
+   * @param {string|null} [model] - Model selector for this conversation. Omit the
+   *   argument entirely to keep showing the active tab's model; pass `null`
+   *   explicitly to render "Default".
    */
   _updateTitle(providerId, model) {
-    if (!this.titleTextEl) return;
-    const providerName = this._getProviderDisplayName(providerId || this._activeProvider);
-    const modelDisplay = model
-      ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-      : null;
-    const parts = ['Chat', providerName];
-    if (modelDisplay) parts.push(modelDisplay);
-    this.titleTextEl.textContent = parts.join(' \u00b7 ');
+    const resolvedProvider = providerId || this._activeProvider;
+    if (this.titleTextEl) {
+      const providerName = this._getProviderDisplayName(resolvedProvider);
+      this.titleTextEl.textContent = `Chat \u00b7 ${providerName}`;
+    }
+    if (this.modelTextEl) {
+      const resolvedModel = model !== undefined
+        ? model
+        : (this._getActiveTab()?.model ?? null);
+      this.modelTextEl.textContent = this._getModelDisplayName(resolvedProvider, resolvedModel);
+    }
+  }
+
+  // \u2500\u2500 Chat model catalog \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+  /**
+   * Fetch the chat model catalog (`GET /api/chat/providers`) at most once per
+   * panel lifetime, caching the promise so open() and the model dropdown share
+   * one request. Failure degrades gracefully: the map stays empty, every model
+   * label falls back to a prettified id and the dropdown shows only the
+   * "Provider default" row. The cached promise is dropped on failure so a
+   * later open/dropdown can retry.
+   *
+   * @returns {Promise<Map<string, Object>>} providerId -> catalog entry
+   */
+  _ensureChatCatalog() {
+    if (this._chatCatalogPromise) return this._chatCatalogPromise;
+
+    this._chatCatalogPromise = (async () => {
+      try {
+        const response = await fetch('/api/chat/providers');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        const providers = Array.isArray(result?.data?.providers) ? result.data.providers : [];
+        const map = new Map();
+        for (const p of providers) {
+          if (!p || !p.id) continue;
+          map.set(p.id, {
+            models: Array.isArray(p.models) ? p.models : [],
+            configuredModel: p.configuredModel ?? null,
+            hasCatalog: !!p.hasCatalog,
+          });
+        }
+        this._chatCatalog = map;
+        return map;
+      } catch (err) {
+        console.warn('[ChatPanel] Failed to load chat model catalog:', err);
+        // Drop the cached promise so the next open/dropdown retries.
+        this._chatCatalogPromise = null;
+        return this._chatCatalog;
+      }
+    })();
+
+    return this._chatCatalogPromise;
+  }
+
+  /**
+   * Catalog entry for a provider, or null when the catalog has not loaded (or
+   * the provider has none).
+   * @param {string} [providerId]
+   * @returns {{models: Array<Object>, configuredModel: string|null, hasCatalog: boolean}|null}
+   */
+  _getCatalogEntry(providerId) {
+    const id = providerId || this._activeProvider;
+    return this._chatCatalog?.get(id) || null;
+  }
+
+  /**
+   * Title-case a raw model id so an uncatalogued selector still reads as a name.
+   * @param {string} modelId
+   * @returns {string}
+   */
+  _prettifyModelId(modelId) {
+    return String(modelId)
+      .split('-')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+
+  /**
+   * Display label for a model selector: the catalog name when known, a
+   * prettified id when not, "Default" for the provider default (null).
+   * @param {string} providerId
+   * @param {string|null} modelId
+   * @returns {string}
+   */
+  _getModelDisplayName(providerId, modelId) {
+    if (!modelId) return 'Default';
+    const entry = this._getCatalogEntry(providerId);
+    const match = entry?.models?.find(m => m && m.id === modelId);
+    if (match?.name) return match.name;
+    return this._prettifyModelId(modelId);
   }
 
   /**
@@ -1305,6 +1520,14 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
+    // Warm the model catalog so the header can show real model names. Never
+    // blocks the open; the header is re-rendered if/when it lands.
+    this._ensureChatCatalog().then(() => {
+      if (!this.isOpen) return;
+      const active = this._getActiveTab();
+      this._updateTitle(active?.provider, active?.model ?? null);
+    }).catch(() => { /* _ensureChatCatalog already degrades */ });
+
     // Ensure review-scope subscription is active. Per-tab subscriptions are
     // attached as tabs are created/restored.
     this._ensureSubscriptions();
@@ -1420,6 +1643,7 @@ class ChatPanel {
    */
   close() {
     this._hideProviderDropdown();
+    this._hideModelDropdown();
     this._hideSessionDropdown();
     this._hideSnippetDropdown();
     this._hideSaveSnippetPill();
@@ -1468,6 +1692,7 @@ class ChatPanel {
    */
   async _startNewConversation() {
     this._hideProviderDropdown();
+    this._hideModelDropdown();
     this._hideSessionDropdown();
     this._hideSnippetDropdown();
     // Multi-chat replaces the legacy in-place reset with a fresh tab; the
@@ -1740,7 +1965,8 @@ class ChatPanel {
 
   _showProviderDropdown() {
     if (!this.providerDropdown) return;
-    // Close session + snippet dropdowns if open
+    // Close model + session + snippet dropdowns if open
+    this._hideModelDropdown();
     this._hideSessionDropdown();
     this._hideSnippetDropdown();
 
@@ -1832,31 +2058,346 @@ class ChatPanel {
   async _selectProvider(id) {
     if (id === this._activeProvider) return;
     this._activeProvider = id;
-    this._updateTitle();
+    // The model catalog belongs to the provider, so any open model dropdown is
+    // now rendering a stale list.
+    this._hideModelDropdown();
 
     const tab = this._getActiveTab();
-    const isFresh = tab
-      && tab.messages.length === 0
-      && !tab.isStreaming
-      && !tab.streamingContent
-      && !tab.titleFromUser;
 
-    if (!isFresh) {
+    if (!this._isTabFresh(tab)) {
+      // The new tab starts on the new provider at its default model, and
+      // _openNewTab -> _activateTab renders exactly that. Set it here too so an
+      // early bail (no reviewId) still leaves the header agreeing with
+      // _activeProvider instead of showing the old tab's model under the new
+      // provider name.
+      this._updateTitle(id, null);
       await this._openNewTab();
       return;
     }
 
     tab.provider = id;
-    if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
-    if (tab.sessionId != null) {
-      const staleId = tab.sessionId;
-      tab.sessionId = null;
-      tab.sessionWarm = false;
-      // Restore the active marker so getter delegation still finds this tab.
-      if (this.activeTabKey === staleId) this.activeTabKey = tab._localKey;
-      fetch(`/api/chat/session/${staleId}`, { method: 'DELETE' }).catch(() => {});
-    }
+    // A model selector only means something under its own provider's catalog.
+    tab.model = null;
+    this._updateTitle(id, null);
+    this._discardEmptySession(tab);
     this._renderTabStrip();
+  }
+
+  /**
+   * Detach a fresh tab from a session that was already created for it: unbind the
+   * WebSocket, clear the session id (re-keying the active marker so getter
+   * delegation still finds the tab), and tell the server to drop the row.
+   *
+   * Only ever called for a tab that passed `_isTabFresh` — the session has no
+   * messages, so the DELETE is a cleanup, not a data loss. Shared by the provider
+   * picker and the model picker; the two used to carry byte-identical copies.
+   *
+   * @param {ChatTab} tab
+   */
+  _discardEmptySession(tab) {
+    if (!tab) return;
+    if (tab.wsUnsub) { try { tab.wsUnsub(); } catch { /* noop */ } tab.wsUnsub = null; }
+    if (tab.sessionId == null) return;
+    const staleId = tab.sessionId;
+    tab.sessionId = null;
+    tab.sessionWarm = false;
+    // Restore the active marker so getter delegation still finds this tab.
+    if (this.activeTabKey === staleId) this.activeTabKey = tab._localKey;
+    fetch(`/api/chat/session/${staleId}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  /**
+   * True when a tab can still have its provider/model swapped in place: no
+   * messages exchanged, nothing streaming, and the title is still the
+   * auto-generated one. Shared by the provider picker and the model picker so
+   * the two gates cannot drift.
+   * @param {ChatTab|null} tab
+   * @returns {boolean}
+   */
+  _isTabFresh(tab) {
+    return !!tab
+      && Array.isArray(tab.messages)
+      && tab.messages.length === 0
+      && !tab.isStreaming
+      && !tab.streamingContent
+      && !tab.titleFromUser;
+  }
+
+  // ── Model picker dropdown ──────────────────────────────────────────────
+
+  _isModelDropdownOpen() {
+    return !!this.modelDropdown && this.modelDropdown.style.display !== 'none';
+  }
+
+  _toggleModelDropdown() {
+    if (this._isModelDropdownOpen()) {
+      this._hideModelDropdown();
+    } else {
+      this._showModelDropdown();
+    }
+  }
+
+  async _showModelDropdown() {
+    if (!this.modelDropdown) return;
+    // Close the sibling dropdowns — exclusion is pairwise/hand-maintained.
+    this._hideProviderDropdown();
+    this._hideSessionDropdown();
+    this._hideSnippetDropdown();
+
+    // Claim this open. Every hide bumps the same counter, so a _hideModelDropdown
+    // that lands while the catalog fetch is in flight (or a second open) makes this
+    // one stale — it must not un-hide the dropdown or register a second listener.
+    const token = ++this._modelDropdownOpenToken;
+
+    // The catalog is what the rows are built from; a failure degrades to the
+    // "Provider default" row only.
+    await this._ensureChatCatalog();
+    if (!this.modelDropdown) return;
+    if (token !== this._modelDropdownOpenToken) return;
+
+    this._renderModelDropdown();
+    this.modelDropdown.style.display = '';
+    this.modelPickerBtn?.classList.add('chat-panel__model-picker-btn--open');
+
+    // The dropdown is position:fixed (it must escape the chat panel's
+    // overflow:hidden), so it has to be placed after it is displayed.
+    this._positionModelDropdown();
+
+    // Bind outside-click-to-close (one-shot). Drop any handler still installed by a
+    // previous open before replacing the reference, or it can never be removed.
+    if (this._modelOutsideClickHandler) {
+      document.removeEventListener('click', this._modelOutsideClickHandler);
+      this._modelOutsideClickHandler = null;
+    }
+    const handler = (e) => {
+      if (this.modelPickerEl && !this.modelPickerEl.contains(e.target)) {
+        this._hideModelDropdown();
+      }
+    };
+    this._modelOutsideClickHandler = handler;
+    setTimeout(() => {
+      // A hide (or another open) between here and the tick already cleared/replaced
+      // the reference; adding it now would leak a listener nothing removes.
+      if (this._modelOutsideClickHandler !== handler) return;
+      document.addEventListener('click', handler);
+    }, 0);
+  }
+
+  /**
+   * Place the fixed-position model dropdown under the picker button, anchored to
+   * the button's RIGHT edge (it is wider than the button and grows leftwards).
+   * Clamped so a dropdown wider than the space to its left cannot run off the
+   * left of the viewport — reachable with a narrow window or a narrow panel.
+   */
+  _positionModelDropdown() {
+    if (!this.modelDropdown || !this.modelPickerBtn) return;
+    const margin = 8;
+    const rect = this.modelPickerBtn.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+    const width = this.modelDropdown.getBoundingClientRect().width;
+
+    // Offset from the viewport's right edge; a LARGER value pushes it further left.
+    let right = viewportWidth - rect.right;
+    const maxRight = viewportWidth - width - margin;
+    if (right > maxRight) right = maxRight;
+    if (right < margin) right = margin;
+
+    this.modelDropdown.style.top = `${rect.bottom + 4}px`;
+    this.modelDropdown.style.right = `${right}px`;
+  }
+
+  _hideModelDropdown() {
+    // Bumped before the element guard so a hide always invalidates a pending open,
+    // even on a panel whose DOM is not built yet.
+    this._modelDropdownOpenToken += 1;
+    if (!this.modelDropdown) return;
+    this.modelDropdown.style.display = 'none';
+    this.modelPickerBtn?.classList.remove('chat-panel__model-picker-btn--open');
+    if (this._modelOutsideClickHandler) {
+      document.removeEventListener('click', this._modelOutsideClickHandler);
+      this._modelOutsideClickHandler = null;
+    }
+  }
+
+  /**
+   * Render the model dropdown for the ACTIVE tab's provider: a "Provider
+   * default" row first (subtitled with the configured model, or "CLI default"),
+   * then one row per catalog model.
+   */
+  _renderModelDropdown() {
+    if (!this.modelDropdown) return;
+
+    const tab = this._getActiveTab();
+    const providerId = tab?.provider || this._activeProvider;
+    const entry = this._getCatalogEntry(providerId);
+    const models = Array.isArray(entry?.models) ? entry.models : [];
+    const activeModel = tab ? (tab.model ?? null) : null;
+
+    const defaultSubtitle = entry?.configuredModel
+      ? this._getModelDisplayName(providerId, entry.configuredModel)
+      : 'CLI default';
+
+    const rows = [];
+    rows.push(`
+      <button class="chat-panel__model-item${activeModel == null ? ' chat-panel__model-item--active' : ''}"
+              data-model-id=""
+              data-default="true">
+        <span class="chat-panel__model-item-body">
+          <span class="chat-panel__model-item-name">Provider default</span>
+          <span class="chat-panel__model-item-subtitle">${this._escapeHtml(defaultSubtitle)}</span>
+        </span>
+        ${activeModel == null ? DROPDOWN_CHECK_ICON : ''}
+      </button>
+    `);
+
+    for (const model of models) {
+      if (!model || !model.id) continue;
+      const isActive = activeModel === model.id;
+      const badgeLabel = model.badge || model.tier || '';
+      const badgeClasses = ['chat-panel__model-badge'];
+      if (model.tier) {
+        badgeClasses.push(`chat-panel__model-badge--${String(model.tier).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
+      }
+      const badge = badgeLabel
+        ? `<span class="${badgeClasses.join(' ')}">${this._escapeHtml(badgeLabel)}</span>`
+        : '';
+      const tagline = model.tagline
+        ? `<span class="chat-panel__model-item-subtitle">${this._escapeHtml(model.tagline)}</span>`
+        : '';
+
+      rows.push(`
+        <button class="chat-panel__model-item${isActive ? ' chat-panel__model-item--active' : ''}"
+                data-model-id="${this._escapeAttr(model.id)}">
+          <span class="chat-panel__model-item-body">
+            <span class="chat-panel__model-item-head">
+              <span class="chat-panel__model-item-name">${this._escapeHtml(model.name || model.id)}</span>
+              ${badge}
+            </span>
+            ${tagline}
+          </span>
+          ${isActive ? DROPDOWN_CHECK_ICON : ''}
+        </button>
+      `);
+    }
+
+    if (models.length === 0) {
+      rows.push(`<div class="chat-panel__model-empty">No model catalog for this provider</div>`);
+    }
+
+    this.modelDropdown.innerHTML = rows.join('');
+
+    this.modelDropdown.querySelectorAll('.chat-panel__model-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const raw = btn.dataset.modelId;
+        this._selectModel(raw ? raw : null);
+      });
+    });
+  }
+
+  /**
+   * Select a model for the conversation.
+   *
+   * A fresh tab (see _isTabFresh) swaps in place — exactly like the provider
+   * picker, including DELETEing an already-created empty session so the next
+   * send starts one under the new model. A tab that has a conversation keeps
+   * the model it started with: the user is offered a new tab instead, after a
+   * one-time explainer (_confirmModelSwitch).
+   *
+   * @param {string|null} modelId - Catalog model id, or null for "provider default"
+   */
+  async _selectModel(modelId) {
+    const normalized = modelId || null;
+    const tab = this._getActiveTab();
+    if (!tab) {
+      // The picker stays live in the zero-tab state (reachable by closing the
+      // last tab), so a selection here must not be silently dropped — the next
+      // send would start on the provider default. Mirror _selectProvider and
+      // open a tab carrying the choice.
+      this._hideModelDropdown();
+      await this._openNewTab({ provider: this._activeProvider, model: normalized });
+      return;
+    }
+    if ((tab.model ?? null) === normalized) {
+      this._hideModelDropdown();
+      return;
+    }
+
+    if (this._isTabFresh(tab)) {
+      tab.model = normalized;
+      this._discardEmptySession(tab);
+      this._updateTitle(tab.provider, tab.model);
+      this._renderTabStrip();
+      this._hideModelDropdown();
+      return;
+    }
+
+    // Capture identity BEFORE the await: the dialog can sit open while the
+    // stream finishes, the tab is closed, or the provider is swapped.
+    const capturedProvider = tab.provider || this._activeProvider;
+    this._hideModelDropdown();
+
+    const confirmed = await this._confirmModelSwitch(tab, normalized);
+    if (!confirmed) return;
+    // The tab may have been closed while the dialog was up.
+    if (!this.tabs.includes(tab)) return;
+
+    await this._openNewTab({ provider: capturedProvider, model: normalized });
+  }
+
+  /**
+   * One-time explainer for "a conversation keeps one model". Resolves true when
+   * the caller should open a new tab.
+   *
+   * Short-circuits to true when the user has ticked "Don't ask again" (a
+   * localStorage flag; a throwing storage means "not acknowledged"), and also
+   * when no ConfirmDialog is loaded on the page — the switch itself is not
+   * destructive, so a missing dialog must not block it.
+   *
+   * @param {ChatTab} tab - Tab being switched away from (captured by the caller)
+   * @param {string|null} modelId - Target model selector
+   * @returns {Promise<boolean>}
+   */
+  async _confirmModelSwitch(tab, modelId) {
+    const providerId = tab?.provider || this._activeProvider;
+    const providerName = this._getProviderDisplayName(providerId);
+    const targetLabel = this._getModelDisplayName(providerId, modelId);
+    const currentLabel = this._getModelDisplayName(providerId, tab?.model ?? null);
+
+    let acknowledged = false;
+    try {
+      acknowledged = window.localStorage?.getItem(MODEL_SWITCH_ACK_KEY) === '1';
+    } catch {
+      acknowledged = false;
+    }
+    if (acknowledged) return true;
+
+    const dialog = window.confirmDialog;
+    if (!dialog || typeof dialog.show !== 'function') return true;
+
+    let checkboxChecked = false;
+    const choice = await dialog.show({
+      title: 'Start a new conversation?',
+      message:
+        `Choosing ${targetLabel} opens a new tab with ${providerName} · ${targetLabel}. `
+        + 'This conversation stays open.\n\n'
+        + 'pair-review does not switch models mid-conversation. Each chat keeps the model it '
+        + 'started with. Chats are meant to be lightweight, so starting a new one is the intended '
+        + 'way to try a different model.',
+      confirmText: 'New conversation',
+      confirmClass: 'btn-primary',
+      cancelText: `Keep ${currentLabel}`,
+      checkboxLabel: "Don't ask again",
+      onConfirm: (result) => { checkboxChecked = !!result?.checkboxChecked; },
+    });
+
+    if (choice !== 'confirm') return false;
+
+    if (checkboxChecked) {
+      try {
+        window.localStorage?.setItem(MODEL_SWITCH_ACK_KEY, '1');
+      } catch { /* per-browser convenience only; losing it just re-shows the dialog */ }
+    }
+    return true;
   }
 
   // ── Prompt-snippet picker dropdown ─────────────────────────────────────
@@ -1880,6 +2421,7 @@ class ChatPanel {
     if (!this.snippetDropdown) return;
     // Close the sibling dropdowns — exclusion is pairwise/hand-maintained.
     this._hideProviderDropdown();
+    this._hideModelDropdown();
     this._hideSessionDropdown();
 
     // In-flight guard so a double-click doesn't fire two overlapping fetches.
@@ -2177,11 +2719,19 @@ class ChatPanel {
 
   async _showSessionDropdown() {
     if (!this.sessionDropdown) return;
-    // Close provider + snippet dropdowns if open
+    // Close provider + model + snippet dropdowns if open
     this._hideProviderDropdown();
+    this._hideModelDropdown();
     this._hideSnippetDropdown();
 
+    // Same generation guard as the model dropdown: a hide (or a second open) that
+    // lands while the session list is in flight must win.
+    const token = ++this._sessionDropdownOpenToken;
+
     const sessions = await this._fetchSessions();
+    if (!this.sessionDropdown) return;
+    if (token !== this._sessionDropdownOpenToken) return;
+
     this._renderSessionDropdown(sessions);
     this.sessionDropdown.style.display = '';
     this.historyBtn.classList.add('chat-panel__history-btn--open');
@@ -2189,15 +2739,22 @@ class ChatPanel {
     // Position the fixed dropdown relative to the history button
     this._positionSessionDropdown();
 
-    // Bind outside-click-to-close (one-shot)
-    this._sessionOutsideClickHandler = (e) => {
+    // Bind outside-click-to-close (one-shot). Remove a handler left over from a
+    // previous open first — overwriting the reference orphans the listener.
+    if (this._sessionOutsideClickHandler) {
+      document.removeEventListener('click', this._sessionOutsideClickHandler);
+      this._sessionOutsideClickHandler = null;
+    }
+    const handler = (e) => {
       if (!this.sessionPickerEl.contains(e.target) && !this.historyBtn.contains(e.target)) {
         this._hideSessionDropdown();
       }
     };
+    this._sessionOutsideClickHandler = handler;
     // Use setTimeout so the current click event doesn't immediately trigger close
     setTimeout(() => {
-      document.addEventListener('click', this._sessionOutsideClickHandler);
+      if (this._sessionOutsideClickHandler !== handler) return;
+      document.addEventListener('click', handler);
     }, 0);
   }
 
@@ -2209,6 +2766,8 @@ class ChatPanel {
   }
 
   _hideSessionDropdown() {
+    // Bumped before the element guard so a hide always invalidates a pending open.
+    this._sessionDropdownOpenToken += 1;
     if (!this.sessionDropdown) return;
     this.sessionDropdown.style.display = 'none';
     this.historyBtn.classList.remove('chat-panel__history-btn--open');
@@ -2509,16 +3068,18 @@ class ChatPanel {
     const tab = this._getActiveTab();
     if (!tab) return null;
 
+    // Same in-flight capture as _createSessionForTab: the user can swap provider or
+    // model on this tab while the POST is out, and the row the server just created
+    // belongs to the captured pair, not the current one.
+    const capturedProvider = tab.provider;
+    const capturedModel = tab.model ?? null;
+
     const isAcp = this._isAcpProvider();
     if (isAcp) this._showStatusFlash('Starting Agent Client Protocol');
 
     try {
-      const body = {
-        provider: tab.provider || this._activeProvider,
-        reviewId: this.reviewId
-      };
+      const body = this._sessionRequestBody(tab);
       if (contextCommentId) body.contextCommentId = contextCommentId;
-      if (tab.analysisContextRemoved) body.skipAnalysisContext = true;
 
       console.debug('[ChatPanel] Creating session for review', this.reviewId);
       const response = await fetch('/api/chat/session', {
@@ -2539,7 +3100,15 @@ class ChatPanel {
         fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
         return null;
       }
+      // Provider or model swapped between the captured snapshot and the response:
+      // the session was created for the old selection, so drop it and let the next
+      // send start one under the new selection.
+      if (tab.provider !== capturedProvider || (tab.model ?? null) !== capturedModel) {
+        fetch(`/api/chat/session/${result.data.id}`, { method: 'DELETE' }).catch(() => {});
+        return null;
+      }
       tab.sessionId = result.data.id;
+      this._adoptServerModel(tab, result.data);
       this.activeTabKey = result.data.id;
       tab.sessionWarm = true;
       if (tab.messagesEl) tab.messagesEl.dataset.tabKey = String(tab.sessionId);
@@ -5346,6 +5915,7 @@ class ChatPanel {
     // container is cleared (each open dropdown holds a one-shot handler;
     // these hide methods safely no-op when their dropdown is already closed).
     this._hideProviderDropdown();
+    this._hideModelDropdown();
     this._hideSessionDropdown();
     this._hideSnippetDropdown();
     this._hideSaveSnippetPill();

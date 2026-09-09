@@ -25,7 +25,8 @@ const DIALOG_METHODS = new Set(['select', 'confirm', 'input', 'editor']);
 class PiBridge extends EventEmitter {
   /**
    * @param {Object} options
-   * @param {string} [options.model] - Model ID (e.g., 'claude-sonnet-4')
+   * @param {string} [options.model] - Model ID (e.g., 'claude-sonnet-4'). A `provider/model`
+   *   string is split into --provider/--model unless `options.provider` is set.
    * @param {string} [options.provider] - Provider name (e.g., 'anthropic')
    * @param {string} [options.cwd] - Working directory for Pi process
    * @param {string} [options.systemPrompt] - System prompt text
@@ -62,6 +63,11 @@ class PiBridge extends EventEmitter {
     this.logName = 'PiBridge';
     this.cliName = 'Pi';
     this.sessionFlag = '--session';
+    // Pi's CLI accepts a `provider/model` model string only as two flags
+    // (--provider <p> --model <m>), mirroring _resolveCliModelArgs in
+    // src/ai/pi-provider.js. OmpBridge turns this off: OMP's review provider
+    // never splits, so its CLI must keep receiving the raw string.
+    this._splitProviderModel = true;
 
     this._process = null;
     this._readline = null;
@@ -278,12 +284,21 @@ class PiBridge extends EventEmitter {
       args.push(this.sessionFlag, this.sessionPath);
     }
 
+    // An explicit provider always wins: the model string is then passed through
+    // untouched, even if it contains a slash.
     if (this.provider) {
       args.push('--provider', this.provider);
-    }
-
-    if (this.model) {
-      args.push('--model', this.model);
+      if (this.model) {
+        args.push('--model', this.model);
+      }
+    } else if (this.model) {
+      const slash = this._splitProviderModel ? this.model.indexOf('/') : -1;
+      if (slash > 0) {
+        args.push('--provider', this.model.slice(0, slash));
+        args.push('--model', this.model.slice(slash + 1));
+      } else {
+        args.push('--model', this.model);
+      }
     }
 
     if (this.systemPrompt) {

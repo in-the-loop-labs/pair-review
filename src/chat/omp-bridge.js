@@ -48,6 +48,11 @@ class OmpBridge extends PiBridge {
     this.logName = 'OmpBridge';
     this.cliName = 'OMP';
     this.sessionFlag = '--resume';
+    // OMP takes the model string verbatim. Its review provider (omp-provider.js)
+    // never splits `provider/model` into two flags, so the chat bridge must not
+    // either — otherwise the same config value would mean different things in
+    // analysis and chat.
+    this._splitProviderModel = false;
   }
 
   /**

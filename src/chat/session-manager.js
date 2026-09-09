@@ -15,6 +15,7 @@ const AcpBridge = require('./acp-bridge');
 const ClaudeCodeBridge = require('./claude-code-bridge');
 const CodexBridge = require('./codex-bridge');
 const { getChatProvider, isAcpProvider, isOmpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
+const { resolveChatModel } = require('./chat-models');
 const logger = require('../utils/logger');
 
 const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
@@ -46,14 +47,27 @@ class ChatSessionManager {
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.cwd] - Working directory for agent
    * @param {string} [options.initialContext] - Initial context to prepend to the first user message
-   * @returns {Promise<{id: number, status: string}>}
+   * @returns {Promise<{id: number, status: string, model: string|null, cliModel: string|null}>}
+   *   `model` is the stored selector (canonical catalog id or raw string); `cliModel` is
+   *   what was actually handed to the CLI.
    */
   async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext, loadSkills }) {
     // Resolve provider definition once — used for model fallback and bridge construction
     const providerDef = getChatProvider(provider);
 
     // Resolve model: explicit request value > provider config default
-    const resolvedModel = model || providerDef?.model || null;
+    const selector = model || providerDef?.model || null;
+
+    // Canonicalise BEFORE the INSERT. Both the request and `chat_providers.<id>.model`
+    // may name a model by alias (`opus` -> `opus-4.8-xhigh`); storing the alias would
+    // leave the sessions list, the hook payload, and the picker's checkmark disagreeing
+    // with the catalog. `resolution.id` is exactly what to store: the canonical id when
+    // known, the raw selector for a passthrough (raw CLI strings are supported), and
+    // null when the selector resolves to nothing — absent, or an analysis-only model,
+    // both of which run the provider's own default. Re-resolving the stored value in
+    // `_createBridge` is idempotent: a canonical id matches itself.
+    const selectorResolution = resolveChatModel(provider, selector, providerDef);
+    const resolvedModel = selectorResolution.id;
 
     // Insert session record into DB
     const stmt = this._db.prepare(`
@@ -72,7 +86,7 @@ class ChatSessionManager {
 
     // Create and start the bridge
     // Chat sessions get bash for git commands; review analysis uses the safe default
-    const bridge = this._createBridge(provider, {
+    const { bridge, resolved } = this._createBridge(provider, {
       provider,
       model: resolvedModel,
       cwd,
@@ -88,8 +102,16 @@ class ChatSessionManager {
       error: new Set()
     };
 
-    // Store in map before starting so event handlers can find it
-    this._sessions.set(sessionId, { bridge, listeners, initialContext: initialContext || null });
+    // Store in map before starting so event handlers can find it.
+    // model/cliModel are kept alongside so callers (hook payloads) can report both the
+    // stored selector and the model string actually handed to the CLI.
+    this._sessions.set(sessionId, {
+      bridge,
+      listeners,
+      initialContext: initialContext || null,
+      model: resolvedModel,
+      cliModel: resolved.cliModel,
+    });
 
     // Wire up bridge events
     this._wireBridgeEvents(sessionId, bridge, listeners);
@@ -109,7 +131,7 @@ class ChatSessionManager {
     }
 
     logger.info(`[ChatSession] Session ${sessionId} active`);
-    return { id: sessionId, status: 'active' };
+    return { id: sessionId, status: 'active', model: resolvedModel, cliModel: resolved.cliModel };
   }
 
   /**
@@ -420,12 +442,18 @@ class ChatSessionManager {
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.cwd] - Working directory for agent
    * @param {boolean} [options.loadSkills] - Resolved load_skills override for the session
-   * @returns {Promise<{id: number, status: string}>}
+   * @returns {Promise<{id: number, status: string, model: string|null, cliModel: string|null}>}
    */
   async resumeSession(sessionId, { systemPrompt, cwd, loadSkills } = {}) {
     // Already active — return immediately
     if (this._sessions.has(sessionId)) {
-      return { id: sessionId, status: 'active' };
+      const active = this._sessions.get(sessionId);
+      return {
+        id: sessionId,
+        status: 'active',
+        model: active.model ?? null,
+        cliModel: active.cliModel ?? null,
+      };
     }
 
     // Load session row from DB
@@ -461,7 +489,10 @@ class ChatSessionManager {
       resumeOptions = { sessionPath: row.agent_session_id };
     }
 
-    const bridge = this._createBridge(row.provider, {
+    // Resume re-resolves the stored selector: a session created on a canonical catalog
+    // id (e.g. `opus-5-high`) must get its cli_model and effort env back after a restart,
+    // not `--model opus-5-high`, which the CLI would reject.
+    const { bridge, resolved } = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
@@ -478,7 +509,16 @@ class ChatSessionManager {
       error: new Set()
     };
 
-    this._sessions.set(sessionId, { bridge, listeners, initialContext: null });
+    this._sessions.set(sessionId, {
+      bridge,
+      listeners,
+      initialContext: null,
+      // Canonical, not the raw stored value: a row written before an alias was
+      // canonicalised (or one whose model now comes from `chat_providers.<id>.model`)
+      // must report the same id the picker shows. See `resolveChatModel`'s `id` contract.
+      model: resolved.id ?? null,
+      cliModel: resolved.cliModel,
+    });
     this._wireBridgeEvents(sessionId, bridge, listeners);
 
     // Start the bridge process
@@ -501,7 +541,7 @@ class ChatSessionManager {
     `).run(sessionId);
 
     logger.info(`[ChatSession] Session ${sessionId} resumed`);
-    return { id: sessionId, status: 'active' };
+    return { id: sessionId, status: 'active', model: resolved.id ?? null, cliModel: resolved.cliModel };
   }
 
   /**
@@ -544,42 +584,77 @@ class ChatSessionManager {
    * ACP providers get an AcpBridge, Claude gets a ClaudeCodeBridge, Codex gets
    * a CodexBridge, OMP gets an OmpBridge; everything else gets a PiBridge with
    * tools/skills.
+   * This is also the single choke point for model resolution: `options.model` (or the
+   * provider's configured default) is run through `resolveChatModel` exactly once, and
+   * the resulting CLI model, effort args, and env are what reach the bridge.
+   *
    * @param {string} provider
    * @param {Object} options - Bridge constructor options
    * @param {Object} [providerDef] - Pre-resolved provider definition (avoids redundant getChatProvider calls)
-   * @returns {PiBridge|OmpBridge|AcpBridge|ClaudeCodeBridge|CodexBridge}
+   * @returns {{bridge: PiBridge|OmpBridge|AcpBridge|ClaudeCodeBridge|CodexBridge, resolved: {id: string|null, cliModel: string|null, extraArgs: string[], env: Object, known: boolean}}}
    */
   _createBridge(provider, options, providerDef) {
     const def = providerDef || getChatProvider(provider);
+
+    // Single resolution point for both createSession and resumeSession. The stored
+    // selector (canonical catalog id, or a raw CLI string from config) is translated
+    // here into the CLI model plus any effort flags/env the catalog entry carries.
+    const selector = options.model || def?.model || null;
+    const resolved = resolveChatModel(provider, selector, def);
+    logger.debug(
+      `[ChatSession] Model resolution for ${provider}: selector=${selector ?? '(provider default)'} ` +
+      `-> id=${resolved.id ?? '(none)'}, cliModel=${resolved.cliModel ?? '(none)'}, known=${resolved.known}`
+    );
+
+    // Env merge order matches the review providers: provider-level def.env first,
+    // then the model-level catalog env (e.g. CLAUDE_CODE_EFFORT_LEVEL).
+    const env = { ...(def?.env || {}), ...resolved.env };
+
     if (isAcpProvider(provider)) {
-      return new AcpBridge({
-        ...options,
-        model: options.model || def?.model,
-        acpCommand: def?.command,
-        acpArgs: def?.args,
-        env: def?.env,
-        useShell: def?.useShell,
-      });
+      return {
+        resolved,
+        bridge: new AcpBridge({
+          ...options,
+          model: resolved.cliModel,
+          acpCommand: def?.command,
+          acpArgs: def?.args,
+          extraArgs: resolved.extraArgs,
+          env,
+          useShell: def?.useShell,
+        }),
+      };
     }
     if (isClaudeCodeProvider(provider)) {
-      return new ClaudeCodeBridge({
-        ...options,
-        model: options.model || def?.model,
-        claudeCommand: def?.command,
-        env: def?.env,
-        useShell: def?.useShell,
-      });
+      return {
+        resolved,
+        bridge: new ClaudeCodeBridge({
+          ...options,
+          model: resolved.cliModel,
+          claudeCommand: def?.command,
+          // ClaudeCodeBridge builds its own structural flags, so there is no slot for
+          // `args` to replace — the configured args are appended alongside the catalog
+          // args, exactly as in the Pi/OMP branches. Without this,
+          // `chat_providers.claude.args`/`extra_args` were silently dropped.
+          extraArgs: [...(def?.args || []), ...resolved.extraArgs],
+          env,
+          useShell: def?.useShell,
+        }),
+      };
     }
     if (isCodexProvider(provider)) {
-      return new CodexBridge({
-        ...options,
-        model: options.model || def?.model,
-        codexCommand: def?.command,
-        codexArgs: def?.args,
-        env: def?.env,
-        useShell: def?.useShell,
-        sandbox: def?.sandbox,
-      });
+      return {
+        resolved,
+        bridge: new CodexBridge({
+          ...options,
+          model: resolved.cliModel,
+          codexCommand: def?.command,
+          codexArgs: def?.args,
+          extraArgs: resolved.extraArgs,
+          env,
+          useShell: def?.useShell,
+          sandbox: def?.sandbox,
+        }),
+      };
     }
     if (isOmpProvider(provider)) {
       // OMP — same RPC protocol as Pi, so the option mapping below mirrors the
@@ -588,17 +663,22 @@ class ChatSessionManager {
       // - No task extension: pair-review's bundled extension is Pi-specific
       //   (it spawns `pi` subagents via PI_CMD), matching the AI provider,
       //   which also omits it for OMP.
-      return new OmpBridge({
-        ...options,
-        provider: def?.provider || null,
-        model: options.model || def?.model,
-        piCommand: def?.command,
-        extraArgs: def?.args,
-        env: def?.env,
-        useShell: def?.useShell,
-        tools: OMP_CHAT_TOOLS,
-        loadSkills: options.loadSkills ?? def?.load_skills,
-      });
+      return {
+        resolved,
+        bridge: new OmpBridge({
+          ...options,
+          provider: def?.provider || null,
+          model: resolved.cliModel,
+          piCommand: def?.command,
+          // Catalog args come AFTER the provider's configured args so a model-level
+          // flag wins over a provider-level one.
+          extraArgs: [...(def?.args || []), ...resolved.extraArgs],
+          env,
+          useShell: def?.useShell,
+          tools: OMP_CHAT_TOOLS,
+          loadSkills: options.loadSkills ?? def?.load_skills,
+        }),
+      };
     }
     // Pi provider — resolve config overrides (command, model, env) from provider def.
     // options.provider is the chat provider ID (e.g. "pi") — do NOT pass it to PiBridge,
@@ -608,18 +688,23 @@ class ChatSessionManager {
     // app_extensions (default true): when false, omit pair-review's task extension.
     // load_skills (default true): when false, suppress Pi's skill auto-discovery.
     const appExtensions = def?.app_extensions !== false;
-    return new PiBridge({
-      ...options,
-      provider: def?.provider || null,
-      model: options.model || def?.model,
-      piCommand: def?.command,
-      extraArgs: def?.args,
-      env: def?.env,
-      useShell: def?.useShell,
-      tools: CHAT_TOOLS,
-      extensions: appExtensions ? [taskExtensionDir] : [],
-      loadSkills: options.loadSkills ?? def?.load_skills,
-    });
+    return {
+      resolved,
+      bridge: new PiBridge({
+        ...options,
+        provider: def?.provider || null,
+        model: resolved.cliModel,
+        piCommand: def?.command,
+        // Catalog args come AFTER the provider's configured args so a model-level
+        // flag wins over a provider-level one.
+        extraArgs: [...(def?.args || []), ...resolved.extraArgs],
+        env,
+        useShell: def?.useShell,
+        tools: CHAT_TOOLS,
+        extensions: appExtensions ? [taskExtensionDir] : [],
+        loadSkills: options.loadSkills ?? def?.load_skills,
+      }),
+    };
   }
 
   /**

@@ -29,7 +29,7 @@
  */
 
 const path = require('path');
-const { registerProvider } = require('./provider');
+const { registerProvider, resolveCliModelConfig } = require('./provider');
 const { PiStyleProvider } = require('./pi-style-provider');
 
 // Config overlay that disables the advisor runtime for review runs.
@@ -207,9 +207,8 @@ class OmpProvider extends PiStyleProvider {
   _resolveCliModelArgs(modelId) {
     const builtIn = OMP_MODELS.find(m => m.id === modelId);
     const configModel = this.configOverrides?.models?.find(m => m.id === modelId);
-    const resolvedCliModel = configModel?.cli_model !== undefined
-      ? configModel.cli_model
-      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+    // Shared cli_model ladder (config model > built-in > id); see provider.js.
+    const resolvedCliModel = resolveCliModelConfig(builtIn, configModel, modelId);
     if (resolvedCliModel === null) return [];
     return ['--model', resolvedCliModel];
   }

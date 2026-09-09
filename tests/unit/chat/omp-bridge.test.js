@@ -241,6 +241,15 @@ describe('OmpBridge', () => {
       expect(args).toContain('You are a reviewer');
     });
 
+    it('should NOT split a provider/model string (OMP takes it verbatim)', () => {
+      // omp-provider.js never splits provider/model, so the chat bridge must not
+      // either — the same config value has to mean the same thing in both.
+      const bridge = new OmpBridge({ model: 'google/gemini-2.5-pro' });
+      const args = bridge._buildArgs();
+      expect(args).not.toContain('--provider');
+      expect(args[args.indexOf('--model') + 1]).toBe('google/gemini-2.5-pro');
+    });
+
     it('should append extraArgs at the end of the args list', () => {
       const bridge = new OmpBridge({ extraArgs: ['--advisor'] });
       const args = bridge._buildArgs();

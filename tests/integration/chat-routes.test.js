@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { EventEmitter } from 'events';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema.js';
 import { listenOnLoopback, closeServer } from '../utils/loopback-server.js';
 
@@ -21,10 +22,42 @@ const hookRunnerModule = require('../../src/hooks/hook-runner');
 vi.spyOn(hookRunnerModule, 'fireHooks');
 vi.spyOn(hookRunnerModule, 'hasHooks');
 
+// One test below needs the REAL ChatSessionManager (the canonical-model INSERT lives
+// there, not in the route), but must never spawn a CLI. Replace the Claude bridge in
+// require.cache BEFORE session-manager is loaded — the CJS pattern the chat unit suites
+// use. Nothing else in this file touches a bridge.
+const claudeCodeBridgePath = require.resolve('../../src/chat/claude-code-bridge');
+const originalClaudeCodeBridgeExport = require(claudeCodeBridgePath);
+function StubClaudeCodeBridge(options) {
+  const bridge = new EventEmitter();
+  bridge.start = () => Promise.resolve();
+  bridge.close = () => Promise.resolve();
+  bridge.sendMessage = () => Promise.resolve();
+  bridge.isReady = () => true;
+  bridge.isBusy = () => false;
+  bridge.abort = () => {};
+  bridge._constructorOptions = options || {};
+  return bridge;
+}
+require.cache[claudeCodeBridgePath].exports = StubClaudeCodeBridge;
+const ChatSessionManager = require('../../src/chat/session-manager');
+
 const chatRouter = require('../../src/routes/chat');
 const { _broadcastUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
 const ws = require('../../src/ws');
 const { _resetUserCache } = require('../../src/hooks/payloads');
+const {
+  applyConfigOverrides: applyChatConfigOverrides,
+  clearConfigOverrides: clearChatConfigOverrides,
+  checkAllChatProviders,
+  clearChatAvailabilityCache,
+} = require('../../src/chat/chat-providers');
+const { getProviderClass } = require('../../src/ai');
+
+/** Fields GET /api/chat/providers may expose per model. */
+const CATALOG_FIELDS = ['badge', 'badgeClass', 'description', 'id', 'name', 'tagline', 'tier'];
+/** Fields it must never expose. */
+const CLI_FIELDS = ['cli_model', 'cliName', 'extra_args', 'env', 'aliases'];
 
 /**
  * Creates a mock ChatSessionManager with controllable behavior.
@@ -103,6 +136,10 @@ describe('Chat Routes', () => {
     closeTestDatabase(db);
   });
 
+  afterAll(() => {
+    require.cache[claudeCodeBridgePath].exports = originalClaudeCodeBridgeExport;
+  });
+
   describe('POST /api/chat/session', () => {
     it('should create a session', async () => {
       const res = await request(server)
@@ -151,6 +188,51 @@ describe('Chat Routes', () => {
         .send({ provider: 'pi', reviewId: 'abc' });
 
       expect(res.status).toBe(400);
+    });
+
+    it.each([
+      ['a number', 42],
+      ['an object', { id: 'opus' }],
+      ['an array', ['opus']],
+      ['a boolean', true],
+    ])('should return 400 when model is %s', async (_label, model) => {
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, model });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Invalid model');
+      expect(mockManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it('should accept a null model (provider default)', async () => {
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, model: null, systemPrompt: 'x' });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: null })
+      );
+    });
+
+    it('should accept an omitted model', async () => {
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, systemPrompt: 'x' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('should accept an unknown model string (passthrough)', async () => {
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, model: 'google/gemini-2.5-pro', systemPrompt: 'x' });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'google/gemini-2.5-pro' })
+      );
     });
 
     it('should build system prompt from review when not provided', async () => {
@@ -617,7 +699,7 @@ describe('Chat Routes', () => {
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ id: 1, status: 'active' });
+      expect(res.body.data).toEqual({ id: 1, status: 'active', model: null });
       expect(mockManager.resumeSession).not.toHaveBeenCalled();
     });
 
@@ -634,7 +716,7 @@ describe('Chat Routes', () => {
         .post('/api/chat/session/1/resume');
 
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ id: 1, status: 'active' });
+      expect(res.body.data).toEqual({ id: 1, status: 'active', model: null });
       expect(mockManager.resumeSession).toHaveBeenCalledWith(1, expect.any(Object));
       // Port correction should use setResumeContext (consumed on next sendMessage),
       // NOT saveContextMessage (which only writes to DB and never reaches the agent).
@@ -1452,6 +1534,280 @@ describe('Chat Routes', () => {
       expect(payload.mode).toBe('local');
       expect(payload.local).toEqual({ path: '/tmp/code', branch: 'feat-x', headSha: 'abc123' });
       expect(payload).not.toHaveProperty('pr');
+    });
+
+    it('includes cli_model resolved by the session manager', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+      mockManager.createSession.mockResolvedValue({
+        id: 1, status: 'active', model: 'opus-5-high', cliModel: 'claude-opus-5',
+      });
+
+      await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: 'opus-5-high', reviewId: 1, systemPrompt: 'test' });
+
+      await flushHooks();
+
+      const [, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(payload.model).toBe('opus-5-high');
+      expect(payload.cli_model).toBe('claude-opus-5');
+    });
+
+    it('reports the canonical catalog id when the model was named by alias', async () => {
+      // End to end through the REAL session manager: the alias is canonicalised at
+      // INSERT time, so the stored row, the API response and the hook payload agree.
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+      const model = getProviderClass('claude').getModels().find(m => m.aliases?.length > 0);
+      expect(model).toBeDefined();
+      app.chatSessionManager = new ChatSessionManager(db);
+
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: model.aliases[0], reviewId: 1, systemPrompt: 'test' });
+      expect(res.status).toBe(200);
+
+      await flushHooks();
+
+      const [eventName, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(eventName).toBe('chat.started');
+      expect(payload.model).toBe(model.id);
+      expect(payload.cli_model).toBe(model.cli_model);
+
+      const row = db.prepare('SELECT model FROM chat_sessions WHERE id = ?').get(res.body.data.id);
+      expect(row.model).toBe(model.id);
+    });
+
+    it('reports cli_model: null when the provider default was used', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+      mockManager.createSession.mockResolvedValue({
+        id: 1, status: 'active', model: null, cliModel: null,
+      });
+
+      await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', reviewId: 1, systemPrompt: 'test' });
+
+      await flushHooks();
+
+      const [, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(payload).toHaveProperty('model', null);
+      expect(payload).toHaveProperty('cli_model', null);
+    });
+
+    it('includes cli_model on chat.resumed', async () => {
+      hookRunnerModule.hasHooks.mockImplementation(() => true);
+      db.prepare(`
+        INSERT INTO chat_sessions (id, review_id, provider, model, agent_session_id, status)
+        VALUES (1, 1, 'codex', 'gpt-6-astra-high', 'thread-1', 'active')
+      `).run();
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.resumeSession.mockResolvedValue({
+        id: 1, status: 'active', model: 'gpt-6-astra-high', cliModel: 'gpt-6-astra',
+      });
+
+      await request(server).post('/api/chat/session/1/resume').send();
+
+      await flushHooks();
+
+      const [eventName, payload] = hookRunnerModule.fireHooks.mock.calls[0];
+      expect(eventName).toBe('chat.resumed');
+      expect(payload.model).toBe('gpt-6-astra-high');
+      expect(payload.cli_model).toBe('gpt-6-astra');
+    });
+  });
+
+  // The client pins a tab to whatever model the server actually chose. A "Provider
+  // default" pick that config resolved to a concrete id must come back in the response,
+  // not stay null until the next reload.
+  describe('canonical model in chat session responses', () => {
+    it('returns the canonical model on create when the request named an alias', async () => {
+      const model = getProviderClass('claude').getModels().find(m => m.aliases?.length > 0);
+      app.chatSessionManager = new ChatSessionManager(db);
+
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', model: model.aliases[0], reviewId: 1, systemPrompt: 'test' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.model).toBe(model.id);
+    });
+
+    it('returns model: null on create when no model was requested or configured', async () => {
+      mockManager.createSession.mockResolvedValue({ id: 1, status: 'active', model: null, cliModel: null });
+
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', reviewId: 1, systemPrompt: 'test' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('model', null);
+    });
+
+    it('returns the canonical model on resume', async () => {
+      db.prepare(`
+        INSERT INTO chat_sessions (id, review_id, provider, model, agent_session_id, status)
+        VALUES (1, 1, 'codex', 'gpt-6-astra-high', 'thread-1', 'closed')
+      `).run();
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 1, review_id: 1, provider: 'codex', model: 'gpt-6-astra-high',
+        agent_session_id: 'thread-1', status: 'closed',
+      });
+      mockManager.resumeSession.mockResolvedValue({
+        id: 1, status: 'active', model: 'gpt-6-astra-high', cliModel: 'gpt-6-astra',
+      });
+
+      const res = await request(server).post('/api/chat/session/1/resume').send();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.model).toBe('gpt-6-astra-high');
+    });
+
+    it('returns the canonical model when resume short-circuits on an active session', async () => {
+      const model = getProviderClass('claude').getModels().find(m => m.aliases?.length > 0);
+      mockManager.isSessionActive.mockReturnValue(true);
+      mockManager.getSession.mockReturnValue({
+        id: 1, review_id: 1, provider: 'claude', model: model.aliases[0], status: 'active',
+      });
+
+      const res = await request(server).post('/api/chat/session/1/resume').send();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.model).toBe(model.id);
+    });
+
+    it('canonicalises the model on every row of the sessions list', async () => {
+      const model = getProviderClass('claude').getModels().find(m => m.aliases?.length > 0);
+      mockManager.getSessionsWithMessageCount.mockReturnValue([
+        // Pre-canonicalisation row, as an older build would have written it.
+        { id: 1, review_id: 1, provider: 'claude', model: model.aliases[0], status: 'closed', agent_session_id: null },
+        { id: 2, review_id: 1, provider: 'claude', model: null, status: 'closed', agent_session_id: null },
+        { id: 3, review_id: 1, provider: 'claude', model: 'raw-cli-string', status: 'closed', agent_session_id: null },
+      ]);
+      mockManager.isSessionActive.mockReturnValue(false);
+
+      const res = await request(server).get('/api/review/1/chat/sessions');
+
+      expect(res.status).toBe(200);
+      const [a, b, c] = res.body.data.sessions;
+      expect(a.model).toBe(model.id);
+      expect(b.model).toBeNull();
+      expect(c.model).toBe('raw-cli-string');
+    });
+  });
+
+  // ── GET /api/chat/providers ───────────────────────────────────
+
+  describe('GET /api/chat/providers', () => {
+    afterEach(() => {
+      clearChatConfigOverrides();
+      clearChatAvailabilityCache();
+    });
+
+    it('returns every chat provider with its model catalog', async () => {
+      const res = await request(server).get('/api/chat/providers');
+
+      expect(res.status).toBe(200);
+      const providers = res.body.data.providers;
+      expect(Array.isArray(providers)).toBe(true);
+
+      const claude = providers.find(p => p.id === 'claude');
+      expect(Object.keys(claude).sort()).toEqual(
+        ['available', 'configuredModel', 'hasCatalog', 'id', 'models', 'name', 'type']
+      );
+      expect(claude.name).toBe('Claude (NDJSON)');
+      expect(claude.type).toBe('claude');
+      expect(claude.hasCatalog).toBe(true);
+      expect(claude.configuredModel).toBeNull();
+      expect(typeof claude.available).toBe('boolean');
+      expect(claude.models.map(m => m.id)).toEqual(
+        getProviderClass('claude').getModels().map(m => m.id)
+      );
+    });
+
+    it('never leaks CLI-facing model fields', async () => {
+      const res = await request(server).get('/api/chat/providers');
+
+      const allModels = res.body.data.providers.flatMap(p => p.models);
+      expect(allModels.length).toBeGreaterThan(0);
+      for (const model of allModels) {
+        expect(Object.keys(model).sort()).toEqual(CATALOG_FIELDS);
+        for (const banned of CLI_FIELDS) {
+          expect(model).not.toHaveProperty(banned);
+        }
+      }
+      // Belt and braces: no CLI field name anywhere in the serialized payload.
+      expect(JSON.stringify(res.body)).not.toContain('cli_model');
+      expect(JSON.stringify(res.body)).not.toContain('extra_args');
+    });
+
+    it('maps an ACP chat provider onto its models_from catalog', async () => {
+      const res = await request(server).get('/api/chat/providers');
+
+      const cursor = res.body.data.providers.find(p => p.id === 'cursor-acp');
+      expect(cursor.type).toBe('acp');
+      expect(cursor.hasCatalog).toBe(true);
+      expect(cursor.models.map(m => m.id)).toEqual(
+        getProviderClass('cursor-agent').getModels().map(m => m.id)
+      );
+    });
+
+    it('reports hasCatalog: false with an empty list for a provider with no catalog', async () => {
+      applyChatConfigOverrides({ mystery: { type: 'acp', command: 'mystery-agent' } });
+
+      const res = await request(server).get('/api/chat/providers');
+
+      const mystery = res.body.data.providers.find(p => p.id === 'mystery');
+      expect(mystery.hasCatalog).toBe(false);
+      expect(mystery.models).toEqual([]);
+      expect(mystery.configuredModel).toBeNull();
+    });
+
+    it('reports hasCatalog: false when the mapped review provider ships no models', async () => {
+      // opencode-acp maps to a registered review provider with an empty catalog: the
+      // mapping resolves, but there is nothing for the picker to list.
+      expect(getProviderClass('opencode').getModels()).toEqual([]);
+
+      const res = await request(server).get('/api/chat/providers');
+
+      const opencode = res.body.data.providers.find(p => p.id === 'opencode-acp');
+      expect(opencode.models).toEqual([]);
+      expect(opencode.hasCatalog).toBe(false);
+    });
+
+    it('surfaces the configured model resolved to its canonical id', async () => {
+      const model = getProviderClass('claude').getModels()[0];
+      applyChatConfigOverrides({ claude: { model: model.id } });
+
+      const res = await request(server).get('/api/chat/providers');
+
+      const claude = res.body.data.providers.find(p => p.id === 'claude');
+      expect(claude.configuredModel).toBe(model.id);
+    });
+
+    it('surfaces a raw configured model string verbatim', async () => {
+      applyChatConfigOverrides({ claude: { model: 'claude-sonnet-4-6' } });
+
+      const res = await request(server).get('/api/chat/providers');
+
+      const claude = res.body.data.providers.find(p => p.id === 'claude');
+      expect(claude.configuredModel).toBe('claude-sonnet-4-6');
+      expect(claude.models.map(m => m.id)).not.toContain('claude-sonnet-4-6');
+    });
+
+    it('reflects cached availability', async () => {
+      // Deterministic fake spawn: every probe exits 0, so nothing touches the OS.
+      const fakeSpawn = () => {
+        const proc = new EventEmitter();
+        setImmediate(() => proc.emit('close', 0, null));
+        return proc;
+      };
+      await checkAllChatProviders({ spawn: fakeSpawn });
+
+      const res = await request(server).get('/api/chat/providers');
+
+      const claude = res.body.data.providers.find(p => p.id === 'claude');
+      expect(claude.available).toBe(true);
     });
   });
 });

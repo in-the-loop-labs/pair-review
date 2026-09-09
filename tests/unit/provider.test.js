@@ -84,3 +84,37 @@ describe('resolveNonExecutableProviderId', () => {
     expect(cls.isExecutable).toBeFalsy();
   });
 });
+
+describe('resolveCliModelConfig', () => {
+  const { resolveCliModelConfig } = providerModule;
+
+  it('prefers the config override cli_model', () => {
+    expect(resolveCliModelConfig({ cli_model: 'built-in' }, { cli_model: 'from-config' }, 'the-id'))
+      .toBe('from-config');
+  });
+
+  it('falls back to the built-in cli_model', () => {
+    expect(resolveCliModelConfig({ cli_model: 'built-in' }, { name: 'Renamed' }, 'the-id'))
+      .toBe('built-in');
+  });
+
+  it('falls back to the model id when neither defines cli_model', () => {
+    expect(resolveCliModelConfig({}, {}, 'the-id')).toBe('the-id');
+    expect(resolveCliModelConfig(undefined, undefined, 'the-id')).toBe('the-id');
+    expect(resolveCliModelConfig(null, null, 'the-id')).toBe('the-id');
+  });
+
+  it('preserves an explicit null (suppress the model flag) at either rung', () => {
+    expect(resolveCliModelConfig({ cli_model: 'built-in' }, { cli_model: null }, 'the-id')).toBeNull();
+    expect(resolveCliModelConfig({ cli_model: null }, undefined, 'the-id')).toBeNull();
+  });
+
+  it('preserves an empty string so the CLI surfaces its own error', () => {
+    expect(resolveCliModelConfig({ cli_model: 'built-in' }, { cli_model: '' }, 'the-id')).toBe('');
+  });
+
+  it('does not let a falsy-but-defined built-in value fall through to the id', () => {
+    // Regression guard: a truthiness-based ladder would return 'the-id' here.
+    expect(resolveCliModelConfig({ cli_model: '' }, undefined, 'the-id')).toBe('');
+  });
+});

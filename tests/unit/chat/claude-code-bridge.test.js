@@ -291,6 +291,40 @@ describe('ClaudeCodeBridge', () => {
       expect(args).toContain('claude-opus-4-6');
     });
 
+    it('should append extraArgs after --model', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({
+        model: 'claude-opus-5',
+        extraArgs: ['--thinking', 'adaptive'],
+        _deps: mockDeps,
+      });
+      await startBridge(bridge, rlEmitter);
+
+      const args = mockSpawn.mock.calls[0][1];
+      expect(args.slice(-4)).toEqual(['--model', 'claude-opus-5', '--thinking', 'adaptive']);
+    });
+
+    it('should append extraArgs even when no model is set', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({
+        extraArgs: ['--thinking', 'adaptive'],
+        _deps: mockDeps,
+      });
+      await startBridge(bridge, rlEmitter);
+
+      const args = mockSpawn.mock.calls[0][1];
+      expect(args).not.toContain('--model');
+      expect(args.slice(-2)).toEqual(['--thinking', 'adaptive']);
+    });
+
+    it('should default extraArgs to an empty list', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      expect(bridge.extraArgs).toEqual([]);
+      await startBridge(bridge, rlEmitter);
+      expect(mockSpawn.mock.calls[0][1]).not.toContain('--thinking');
+    });
+
     it('should quote settings JSON for shell mode', async () => {
       const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({
