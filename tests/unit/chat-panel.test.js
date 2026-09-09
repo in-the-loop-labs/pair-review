@@ -167,6 +167,10 @@ function buildElementRegistry() {
     'chat-provider-picker': createMockElement('div'),
     'chat-provider-picker-btn': createMockElement('button'),
     'chat-provider-dropdown': createMockElement('div'),
+    'chat-model-picker': createMockElement('div', { contains: vi.fn(() => false) }),
+    'chat-model-picker-btn': createMockElement('button'),
+    'chat-model-dropdown': createMockElement('div'),
+    'chat-model-text': createMockElement('span'),
     'chat-session-picker': createMockElement('div'),
     'chat-session-dropdown': createMockElement('div'),
     'chat-history-btn': createMockElement('button'),
@@ -194,6 +198,7 @@ function buildElementRegistry() {
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-create-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-provider-dropdown'].style = { display: 'none' };
+  elementRegistry['chat-model-dropdown'].style = { display: 'none' };
   elementRegistry['chat-session-dropdown'].style = { display: 'none' };
   elementRegistry['chat-new-content-pill'].style = { display: 'none' };
 
@@ -364,6 +369,10 @@ function createChatPanel() {
       '.chat-panel__provider-picker': reg['chat-provider-picker'],
       '.chat-panel__provider-picker-btn': reg['chat-provider-picker-btn'],
       '.chat-panel__provider-dropdown': reg['chat-provider-dropdown'],
+      '.chat-panel__model-picker': reg['chat-model-picker'],
+      '.chat-panel__model-picker-btn': reg['chat-model-picker-btn'],
+      '.chat-panel__model-dropdown': reg['chat-model-dropdown'],
+      '.chat-panel__model-text': reg['chat-model-text'],
       '.chat-panel__session-picker': reg['chat-session-picker'],
       '.chat-panel__session-dropdown': reg['chat-session-dropdown'],
       '.chat-panel__history-btn': reg['chat-history-btn'],
@@ -2463,6 +2472,46 @@ describe('ChatPanel', () => {
       expect(errorSpy).toHaveBeenCalled();
     });
 
+    it('abandons the session when the provider changed while the POST was in flight', async () => {
+      chatPanel.reviewId = 1;
+      const tab = chatPanel._getActiveTab();
+      tab.provider = 'claude';
+      global.fetch.mockImplementationOnce(() => {
+        // The user picks a different provider before the response lands.
+        tab.provider = 'pi';
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'sess', status: 'active' } }),
+        });
+      });
+
+      const result = await chatPanel.createSession();
+
+      expect(result).toBeNull();
+      expect(tab.sessionId).toBeNull();
+      expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/sess', { method: 'DELETE' });
+    });
+
+    it('abandons the session when the model changed while the POST was in flight', async () => {
+      chatPanel.reviewId = 1;
+      const tab = chatPanel._getActiveTab();
+      tab.provider = 'claude';
+      tab.model = null;
+      global.fetch.mockImplementationOnce(() => {
+        tab.model = 'sonnet-5';
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'sess', status: 'active' } }),
+        });
+      });
+
+      const result = await chatPanel.createSession();
+
+      expect(result).toBeNull();
+      expect(tab.sessionId).toBeNull();
+      expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/sess', { method: 'DELETE' });
+    });
+
     it('should include contextCommentId when provided', async () => {
       chatPanel.reviewId = 1;
       global.fetch.mockResolvedValueOnce({
@@ -2719,6 +2768,58 @@ describe('ChatPanel', () => {
 
       expect(closeSpy).not.toHaveBeenCalled();
       expect(chatPanel.inputEl.blur).not.toHaveBeenCalled();
+    });
+
+    // ConfirmDialog cancels on Escape from its own bubble-phase document
+    // listener and does NOT stopPropagation, so the same event reaches us.
+    // The model-switch dialog is opened after the model dropdown is hidden, so
+    // every dropdown rung is false and the ladder would otherwise fall through
+    // to _stopAgent()/close() on exactly the tabs routed into that dialog.
+    describe('yields to an open confirm dialog', () => {
+      afterEach(() => {
+        delete global.window.confirmDialog;
+      });
+
+      it('does not stop the agent while a confirm dialog is up (streaming tab)', () => {
+        chatPanel.isOpen = true;
+        chatPanel.isStreaming = true;
+        global.document.activeElement = chatPanel.inputEl;
+        global.window.confirmDialog = { isVisible: true };
+
+        const stopSpy = vi.spyOn(chatPanel, '_stopAgent').mockImplementation(() => {});
+        const closeSpy = vi.spyOn(chatPanel, 'close');
+        getEscapeHandler()({ key: 'Escape' });
+
+        expect(stopSpy).not.toHaveBeenCalled();
+        expect(closeSpy).not.toHaveBeenCalled();
+        expect(chatPanel.inputEl.blur).not.toHaveBeenCalled();
+      });
+
+      it('does not close the panel while a confirm dialog is up (idle tab)', () => {
+        chatPanel.isOpen = true;
+        chatPanel.isStreaming = false;
+        global.document.activeElement = null;
+        global.window.confirmDialog = { isVisible: true };
+
+        const closeSpy = vi.spyOn(chatPanel, 'close');
+        const stopSpy = vi.spyOn(chatPanel, '_stopAgent').mockImplementation(() => {});
+        getEscapeHandler()({ key: 'Escape' });
+
+        expect(closeSpy).not.toHaveBeenCalled();
+        expect(stopSpy).not.toHaveBeenCalled();
+      });
+
+      it('still runs the ladder when the dialog is not visible', () => {
+        chatPanel.isOpen = true;
+        chatPanel.isStreaming = false;
+        global.document.activeElement = null;
+        global.window.confirmDialog = { isVisible: false };
+
+        const closeSpy = vi.spyOn(chatPanel, 'close');
+        getEscapeHandler()({ key: 'Escape' });
+
+        expect(closeSpy).toHaveBeenCalled();
+      });
     });
   });
 
@@ -5367,9 +5468,10 @@ describe('ChatPanel', () => {
     });
 
     describe('_updateTitle', () => {
-      it('should set title text with provider and model', () => {
+      it('should keep the model OFF the provider text and put it on the model button', () => {
         chatPanel._updateTitle('Claude', 'claude-sonnet-4');
-        expect(chatPanel.titleTextEl.textContent).toBe('Chat \u00b7 Claude \u00b7 Claude Sonnet 4');
+        expect(chatPanel.titleTextEl.textContent).toBe('Chat \u00b7 Claude');
+        expect(chatPanel.modelTextEl.textContent).toBe('Claude Sonnet 4');
       });
 
       it('should set default title when no args', () => {
@@ -5552,6 +5654,1499 @@ describe('ChatPanel', () => {
         chatPanel._ensureAnalysisContext = vi.fn();
         await chatPanel._startNewConversation();
         expect(spy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Model picker
+  // ---------------------------------------------------------------------------
+  describe('model picker', () => {
+    const CATALOG = {
+      data: {
+        providers: [
+          {
+            id: 'claude',
+            name: 'Claude',
+            type: 'claude',
+            available: true,
+            hasCatalog: true,
+            configuredModel: 'opus-5',
+            models: [
+              { id: 'opus-5', name: 'Opus 5', tier: 'thorough', tagline: 'Deepest analysis' },
+              { id: 'claude-sonnet-4-5-20250929', name: 'Sonnet 5', tier: 'balanced', tagline: 'Everyday driver' },
+            ],
+          },
+          {
+            id: 'pi',
+            name: 'Pi',
+            type: 'pi',
+            available: true,
+            hasCatalog: false,
+            configuredModel: null,
+            models: [],
+          },
+        ],
+      },
+    };
+
+    /** Arm fetch so /api/chat/providers serves CATALOG and everything else is a bland 200. */
+    function stubCatalogFetch(payload = CATALOG) {
+      global.fetch.mockImplementation((url) => {
+        if (typeof url === 'string' && url.startsWith('/api/chat/providers')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+      });
+    }
+
+    /**
+     * Arm /api/chat/providers with a fetch that does not settle until the returned
+     * release() is called, so a test can act while the catalog request is in flight.
+     */
+    function deferredCatalogFetch(payload = CATALOG) {
+      let open;
+      const gate = new Promise((resolve) => { open = resolve; });
+      global.fetch.mockImplementation((url) => {
+        if (typeof url === 'string' && url.startsWith('/api/chat/providers')) {
+          return gate.then(() => ({ ok: true, json: () => Promise.resolve(payload) }));
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+      });
+      return open;
+    }
+
+    /** Live document click listeners: added minus removed. */
+    function clickListenerCount() {
+      const added = global.document.addEventListener.mock.calls.filter(c => c[0] === 'click').length;
+      const removed = global.document.removeEventListener.mock.calls.filter(c => c[0] === 'click').length;
+      return added - removed;
+    }
+
+    /** Load the catalog into the panel without going through open(). */
+    async function loadCatalog(panel, payload = CATALOG) {
+      stubCatalogFetch(payload);
+      await panel._ensureChatCatalog();
+    }
+
+    /** Install a confirmDialog stub that always answers `choice`. */
+    function stubConfirmDialog(choice, { checkTheBox = false } = {}) {
+      const show = vi.fn(async (options) => {
+        if (choice === 'confirm' && options.onConfirm) {
+          options.onConfirm({ checkboxChecked: checkTheBox });
+        }
+        return choice;
+      });
+      global.window.confirmDialog = { show, isVisible: false };
+      return show;
+    }
+
+    afterEach(() => {
+      delete global.window.confirmDialog;
+    });
+
+    // ---------------------------------------------------------------------
+    // _ensureChatCatalog
+    // ---------------------------------------------------------------------
+    describe('_ensureChatCatalog', () => {
+      it('builds a providerId -> catalog map from GET /api/chat/providers', async () => {
+        stubCatalogFetch();
+
+        const map = await chatPanel._ensureChatCatalog();
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/providers');
+        expect(map.get('claude')).toEqual({
+          models: CATALOG.data.providers[0].models,
+          configuredModel: 'opus-5',
+          hasCatalog: true,
+        });
+        expect(map.get('pi')).toEqual({ models: [], configuredModel: null, hasCatalog: false });
+      });
+
+      it('caches the promise so two callers share one request', async () => {
+        stubCatalogFetch();
+
+        const [a, b] = await Promise.all([
+          chatPanel._ensureChatCatalog(),
+          chatPanel._ensureChatCatalog(),
+        ]);
+
+        expect(a).toBe(b);
+        const catalogCalls = global.fetch.mock.calls.filter(c => c[0] === '/api/chat/providers');
+        expect(catalogCalls).toHaveLength(1);
+      });
+
+      it('degrades to an empty catalog when the fetch rejects, and retries later', async () => {
+        global.fetch.mockRejectedValueOnce(new Error('offline'));
+
+        const map = await chatPanel._ensureChatCatalog();
+        expect(map.size).toBe(0);
+
+        // The failed promise is not cached — a later call tries again.
+        stubCatalogFetch();
+        const retried = await chatPanel._ensureChatCatalog();
+        expect(retried.get('claude')).toBeTruthy();
+      });
+
+      it('degrades to an empty catalog on a non-OK response', async () => {
+        global.fetch.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) });
+
+        const map = await chatPanel._ensureChatCatalog();
+
+        expect(map.size).toBe(0);
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Title rendering
+    // ---------------------------------------------------------------------
+    describe('_updateTitle model label', () => {
+      it('uses the catalog display name for a known model', async () => {
+        await loadCatalog(chatPanel);
+
+        // The fixture id deliberately does NOT prettify to its display name, so
+        // this asserts the catalog branch and not _prettifyModelId's output.
+        chatPanel._updateTitle('claude', 'claude-sonnet-4-5-20250929');
+
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+        expect(chatPanel.modelTextEl.textContent)
+          .not.toBe(chatPanel._prettifyModelId('claude-sonnet-4-5-20250929'));
+        expect(chatPanel.titleTextEl.textContent).toBe('Chat · Claude');
+      });
+
+      it('falls back to a prettified id when the model is not in the catalog', async () => {
+        await loadCatalog(chatPanel);
+
+        chatPanel._updateTitle('claude', 'anthropic-mystery-model');
+
+        expect(chatPanel.modelTextEl.textContent).toBe('Anthropic Mystery Model');
+      });
+
+      it('falls back to a prettified id when the catalog failed to load', async () => {
+        global.fetch.mockRejectedValueOnce(new Error('offline'));
+        await chatPanel._ensureChatCatalog();
+
+        chatPanel._updateTitle('claude', 'claude-sonnet-4');
+
+        expect(chatPanel.modelTextEl.textContent).toBe('Claude Sonnet 4');
+      });
+
+      it('renders "Default" when the model is null', async () => {
+        await loadCatalog(chatPanel);
+
+        chatPanel._updateTitle('claude', null);
+
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('keeps the active tab model when the model argument is omitted', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        chatPanel._updateTitle();
+
+        expect(chatPanel.modelTextEl.textContent).toBe('Opus 5');
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _renderModelDropdown
+    // ---------------------------------------------------------------------
+    describe('_renderModelDropdown', () => {
+      beforeEach(() => {
+        chatPanel.modelDropdown.querySelectorAll = vi.fn(() => []);
+      });
+
+      it('renders the provider-default row first, subtitled with the configured model', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        expect(html.indexOf('Provider default')).toBeGreaterThan(-1);
+        expect(html.indexOf('Provider default')).toBeLessThan(html.indexOf('Opus 5'));
+        // Configured model resolved through the catalog for its display name.
+        expect(html).toContain('chat-panel__model-item-subtitle">Opus 5<');
+      });
+
+      it('subtitles the default row with "CLI default" when nothing is configured', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'pi';
+
+        chatPanel._renderModelDropdown();
+
+        expect(chatPanel.modelDropdown.innerHTML).toContain('CLI default');
+      });
+
+      it('renders one row per catalog model with name, tagline and tier badge', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._getActiveTab().provider = 'claude';
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        expect(html).toContain('data-model-id="opus-5"');
+        expect(html).toContain('data-model-id="claude-sonnet-4-5-20250929"');
+        expect(html).toContain('Deepest analysis');
+        expect(html).toContain('chat-panel__model-badge--thorough');
+        expect(html).toContain('chat-panel__model-badge--balanced');
+        // Rows label from the catalog `name`, never from the prettified id.
+        expect(html).toContain('Sonnet 5');
+        expect(html).not.toContain(chatPanel._prettifyModelId('claude-sonnet-4-5-20250929'));
+      });
+
+      it('marks the default row active (with a checkmark) when tab.model is null', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        const defaultRow = html.slice(0, html.indexOf('data-model-id="opus-5"'));
+        expect(defaultRow).toContain('chat-panel__model-item--active');
+        expect(defaultRow).toContain('chat-panel__model-check');
+      });
+
+      it('marks the selected catalog row active and leaves the default row inactive', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'claude-sonnet-4-5-20250929';
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        const activeCount = html.split('chat-panel__model-item--active').length - 1;
+        expect(activeCount).toBe(1);
+        // The active row is the sonnet one: its <button ...> opening tag carries
+        // the modifier and its body carries the checkmark.
+        const sonnetIdx = html.indexOf('data-model-id="claude-sonnet-4-5-20250929"');
+        const sonnetRow = html.slice(html.lastIndexOf('<button', sonnetIdx));
+        expect(sonnetRow).toContain('chat-panel__model-item--active');
+        expect(sonnetRow).toContain('chat-panel__model-check');
+      });
+
+      it('shows only the default row (plus an empty note) for a provider with no catalog', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._getActiveTab().provider = 'pi';
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        expect(html).toContain('Provider default');
+        expect(html).toContain('chat-panel__model-empty');
+        expect(html).not.toContain('data-model-id="opus-5"');
+      });
+
+      it('degrades to the default row when the catalog fetch failed', async () => {
+        global.fetch.mockRejectedValueOnce(new Error('offline'));
+        await chatPanel._ensureChatCatalog();
+        chatPanel._getActiveTab().provider = 'claude';
+
+        chatPanel._renderModelDropdown();
+
+        const html = chatPanel.modelDropdown.innerHTML;
+        expect(html).toContain('Provider default');
+        expect(html).toContain('CLI default');
+        expect(html).toContain('chat-panel__model-empty');
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _positionModelDropdown — the dropdown is position:fixed (it has to escape
+    // the chat panel's overflow:hidden), so JS places it under the picker.
+    // ---------------------------------------------------------------------
+    describe('_positionModelDropdown', () => {
+      const originalInnerWidth = global.window.innerWidth;
+
+      /** Pin the picker button rect and the dropdown's rendered width. */
+      function stubGeometry({ btnRight, btnBottom, dropdownWidth, viewportWidth }) {
+        global.window.innerWidth = viewportWidth;
+        chatPanel.modelPickerBtn.getBoundingClientRect = vi.fn(() => ({
+          top: btnBottom - 20, bottom: btnBottom, left: btnRight - 100, right: btnRight, width: 100, height: 20,
+        }));
+        chatPanel.modelDropdown.getBoundingClientRect = vi.fn(() => ({
+          top: 0, bottom: 0, left: 0, right: 0, width: dropdownWidth, height: 320,
+        }));
+      }
+
+      afterEach(() => {
+        global.window.innerWidth = originalInnerWidth;
+      });
+
+      it('anchors under the picker button, right-aligned to its right edge', () => {
+        stubGeometry({ btnRight: 1200, btnBottom: 60, dropdownWidth: 320, viewportWidth: 1440 });
+
+        chatPanel._positionModelDropdown();
+
+        expect(chatPanel.modelDropdown.style.top).toBe('64px');
+        // 1440 - 1200: the dropdown's right edge sits on the button's right edge.
+        expect(chatPanel.modelDropdown.style.right).toBe('240px');
+      });
+
+      it('clamps so a dropdown wider than the space to its left stays on screen', () => {
+        // Button near the LEFT edge: an un-clamped right offset would put the
+        // dropdown's left edge at -120px.
+        stubGeometry({ btnRight: 200, btnBottom: 60, dropdownWidth: 320, viewportWidth: 1000 });
+
+        chatPanel._positionModelDropdown();
+
+        // 1000 - 320 - 8 (margin) => left edge lands on the 8px margin.
+        expect(chatPanel.modelDropdown.style.right).toBe('672px');
+      });
+
+      it('keeps a right-edge margin when the button sits at the viewport edge', () => {
+        stubGeometry({ btnRight: 1000, btnBottom: 60, dropdownWidth: 320, viewportWidth: 1000 });
+
+        chatPanel._positionModelDropdown();
+
+        expect(chatPanel.modelDropdown.style.right).toBe('8px');
+      });
+
+      it('is a no-op when the picker button is missing', () => {
+        const btn = chatPanel.modelPickerBtn;
+        chatPanel.modelPickerBtn = null;
+        chatPanel.modelDropdown.style.right = '';
+
+        expect(() => chatPanel._positionModelDropdown()).not.toThrow();
+        expect(chatPanel.modelDropdown.style.right).toBe('');
+
+        chatPanel.modelPickerBtn = btn;
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Dropdown visibility / mutual exclusion
+    // ---------------------------------------------------------------------
+    describe('dropdown visibility', () => {
+      it('_isModelDropdownOpen reflects the display style', () => {
+        chatPanel.modelDropdown.style.display = 'none';
+        expect(chatPanel._isModelDropdownOpen()).toBe(false);
+        chatPanel.modelDropdown.style.display = '';
+        expect(chatPanel._isModelDropdownOpen()).toBe(true);
+      });
+
+      it('_hideModelDropdown hides it and drops the open class', () => {
+        chatPanel.modelDropdown.style.display = '';
+        chatPanel._hideModelDropdown();
+        expect(chatPanel.modelDropdown.style.display).toBe('none');
+        expect(chatPanel.modelPickerBtn.classList.remove)
+          .toHaveBeenCalledWith('chat-panel__model-picker-btn--open');
+      });
+
+      it('opening the model dropdown hides the provider dropdown', async () => {
+        stubCatalogFetch();
+        const spy = vi.spyOn(chatPanel, '_hideProviderDropdown');
+        chatPanel.modelDropdown.querySelectorAll = vi.fn(() => []);
+
+        await chatPanel._showModelDropdown();
+
+        expect(spy).toHaveBeenCalled();
+        expect(chatPanel.modelDropdown.style.display).toBe('');
+      });
+
+      it('opening the provider dropdown hides the model dropdown', () => {
+        const spy = vi.spyOn(chatPanel, '_hideModelDropdown');
+        chatPanel.providerDropdown.querySelectorAll = vi.fn(() => []);
+
+        chatPanel._showProviderDropdown();
+
+        expect(spy).toHaveBeenCalled();
+      });
+
+      it('close() hides the model dropdown', () => {
+        const spy = vi.spyOn(chatPanel, '_hideModelDropdown');
+        chatPanel.isOpen = true;
+        chatPanel.close();
+        expect(spy).toHaveBeenCalled();
+      });
+
+      it('a hide that lands during the catalog fetch keeps the dropdown closed', async () => {
+        // The display flip happens after `await _ensureChatCatalog()`; without a
+        // generation guard it un-hides a dropdown the user already dismissed.
+        const release = deferredCatalogFetch();
+        chatPanel.modelDropdown.querySelectorAll = vi.fn(() => []);
+        const clicksBefore = clickListenerCount();
+
+        const pending = chatPanel._showModelDropdown();
+        chatPanel._hideModelDropdown();
+        release();
+        await pending;
+
+        expect(chatPanel.modelDropdown.style.display).toBe('none');
+        expect(clickListenerCount()).toBe(clicksBefore);
+      });
+
+      it('two concurrent opens register exactly one document click listener', async () => {
+        const release = deferredCatalogFetch();
+        chatPanel.modelDropdown.querySelectorAll = vi.fn(() => []);
+        const clicksBefore = clickListenerCount();
+
+        const first = chatPanel._showModelDropdown();
+        const second = chatPanel._showModelDropdown();
+        release();
+        await Promise.all([first, second]);
+
+        expect(chatPanel.modelDropdown.style.display).toBe('');
+        expect(clickListenerCount() - clicksBefore).toBe(1);
+      });
+
+      it('re-opening removes the previous outside-click listener before adding one', async () => {
+        stubCatalogFetch();
+        chatPanel.modelDropdown.querySelectorAll = vi.fn(() => []);
+
+        await chatPanel._showModelDropdown();
+        const firstHandler = chatPanel._modelOutsideClickHandler;
+        await chatPanel._showModelDropdown();
+
+        expect(chatPanel._modelOutsideClickHandler).not.toBe(firstHandler);
+        expect(global.document.removeEventListener).toHaveBeenCalledWith('click', firstHandler);
+        // One added per open, one removed for the stale one: a single live listener.
+        const added = global.document.addEventListener.mock.calls.filter(c => c[0] === 'click').length;
+        const removed = global.document.removeEventListener.mock.calls.filter(c => c[0] === 'click').length;
+        expect(added - removed).toBe(1);
+      });
+
+      it('Escape closes the model dropdown before falling through to close()', () => {
+        chatPanel.isOpen = true;
+        chatPanel.modelDropdown.style.display = '';
+        const hideSpy = vi.spyOn(chatPanel, '_hideModelDropdown');
+        const closeSpy = vi.spyOn(chatPanel, 'close');
+
+        (documentListeners['keydown'] || []).forEach(h => h({ key: 'Escape' }));
+
+        expect(hideSpy).toHaveBeenCalled();
+        expect(closeSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _isTabFresh
+    // ---------------------------------------------------------------------
+    describe('_isTabFresh', () => {
+      it('returns false for a null tab', () => {
+        expect(chatPanel._isTabFresh(null)).toBe(false);
+      });
+
+      it('returns true for a just-opened tab', () => {
+        expect(chatPanel._isTabFresh(chatPanel._getActiveTab())).toBe(true);
+      });
+
+      it('returns false once the tab has messages', () => {
+        const tab = chatPanel._getActiveTab();
+        tab.messages = [{ role: 'user', content: 'hi' }];
+        expect(chatPanel._isTabFresh(tab)).toBe(false);
+      });
+
+      it('returns false while streaming', () => {
+        const tab = chatPanel._getActiveTab();
+        tab.isStreaming = true;
+        expect(chatPanel._isTabFresh(tab)).toBe(false);
+      });
+
+      it('returns false with buffered streaming content', () => {
+        const tab = chatPanel._getActiveTab();
+        tab.streamingContent = 'partial';
+        expect(chatPanel._isTabFresh(tab)).toBe(false);
+      });
+
+      it('returns false once the title came from the user', () => {
+        const tab = chatPanel._getActiveTab();
+        tab.titleFromUser = true;
+        expect(chatPanel._isTabFresh(tab)).toBe(false);
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _selectModel — fresh tab
+    // ---------------------------------------------------------------------
+    describe('_selectModel on a fresh tab', () => {
+      it('swaps the model in place without opening a new tab', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._openNewTab = vi.fn();
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(tab.model).toBe('claude-sonnet-4-5-20250929');
+        expect(chatPanel._openNewTab).not.toHaveBeenCalled();
+        expect(chatPanel.tabs).toHaveLength(1);
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+        expect(chatPanel.modelDropdown.style.display).toBe('none');
+      });
+
+      it('DELETEs an already-created empty session and unbinds the tab', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.sessionId = 77;
+        chatPanel.activeTabKey = 77;
+        tab.wsUnsub = vi.fn();
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/77', { method: 'DELETE' });
+        expect(tab.sessionId).toBeNull();
+        expect(tab.sessionWarm).toBe(false);
+        expect(chatPanel.activeTabKey).toBe(tab._localKey);
+        expect(tab.wsUnsub).toBeNull();
+      });
+
+      it('selecting the provider-default row clears tab.model', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectModel(null);
+
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('is a no-op when the model is already selected', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.sessionId = 5;
+        const before = global.fetch.mock.calls.length;
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(global.fetch.mock.calls.length).toBe(before);
+        expect(tab.sessionId).toBe(5);
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _selectModel — zero-tab state
+    // ---------------------------------------------------------------------
+    describe('_selectModel with no active tab', () => {
+      /** Drop every tab, the state reachable by closing the last one. */
+      function emptyStrip(panel) {
+        panel.tabs.length = 0;
+        panel.activeTabKey = null;
+      }
+
+      it('opens a tab carrying the chosen model instead of dropping it', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        emptyStrip(chatPanel);
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(chatPanel.tabs).toHaveLength(1);
+        expect(chatPanel.tabs[0].provider).toBe('claude');
+        expect(chatPanel.tabs[0].model).toBe('claude-sonnet-4-5-20250929');
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+        expect(chatPanel.modelDropdown.style.display).toBe('none');
+      });
+
+      it('opens a provider-default tab when the default row is chosen', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        emptyStrip(chatPanel);
+
+        await chatPanel._selectModel(null);
+
+        expect(chatPanel.tabs).toHaveLength(1);
+        expect(chatPanel.tabs[0].model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Server-canonical model adoption
+    // ---------------------------------------------------------------------
+    describe('adopting the server-resolved model', () => {
+      it('takes the model from the create response on the lazy path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({
+            data: { id: 70, status: 'active', model: 'claude-sonnet-4-5-20250929' },
+          }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('claude-sonnet-4-5-20250929');
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+      });
+
+      it('takes the model from the create response on the legacy path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 71, status: 'active', model: 'opus-5' } }),
+        });
+
+        await chatPanel.createSession();
+
+        expect(tab.model).toBe('opus-5');
+        expect(chatPanel.modelTextEl.textContent).toBe('Opus 5');
+      });
+
+      it('leaves tab.model alone when the response omits the field', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 72, status: 'active' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('opus-5');
+      });
+
+      it('leaves tab.model alone when the response reports null', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 73, status: 'active', model: null } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('opus-5');
+      });
+
+      it('does not touch the header for a tab that is not active', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+        // Focus moves elsewhere while the POST is in flight.
+        chatPanel.activeTabKey = -999;
+        chatPanel.modelTextEl.textContent = 'Untouched';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 74, status: 'active', model: 'opus-5' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('opus-5');
+        expect(chatPanel.modelTextEl.textContent).toBe('Untouched');
+      });
+
+      it('does not adopt when the provider was swapped in flight (session is DELETEd)', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+
+        global.fetch.mockImplementationOnce(() => Promise.resolve({
+          ok: true,
+          json: () => {
+            tab.provider = 'pi';
+            return Promise.resolve({ data: { id: 75, status: 'active', model: 'opus-5' } });
+          },
+        }));
+        global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+        const result = await chatPanel._createSessionForTab(tab);
+
+        expect(result).toBeNull();
+        expect(tab.model).toBeNull();
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/75', { method: 'DELETE' });
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _selectModel — tab with a conversation
+    // ---------------------------------------------------------------------
+    describe('_selectModel on a tab with a conversation', () => {
+      /** Make the active tab non-fresh and return it. */
+      function conversingTab(panel, model = null) {
+        const tab = panel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = model;
+        tab.messages = [{ role: 'user', content: 'hi' }];
+        return tab;
+      }
+
+      it('shows the explainer and opens a new tab carrying provider + model on confirm', async () => {
+        await loadCatalog(chatPanel);
+        const show = stubConfirmDialog('confirm');
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        const tab = conversingTab(chatPanel, 'opus-5');
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(show).toHaveBeenCalledTimes(1);
+        const opts = show.mock.calls[0][0];
+        expect(opts.title).toBe('Start a new conversation?');
+        expect(opts.confirmText).toBe('New conversation');
+        expect(opts.confirmClass).toBe('btn-primary');
+        expect(opts.cancelText).toBe('Keep Opus 5');
+        expect(opts.checkboxLabel).toBe("Don't ask again");
+        expect(opts.message).toContain('Sonnet 5');
+        expect(opts.message).toContain('Claude · Sonnet 5');
+        expect(opts.message).toContain('\n\n');
+        expect(opts.message).toContain('does not switch models mid-conversation');
+
+        expect(chatPanel._openNewTab).toHaveBeenCalledWith({
+          provider: 'claude',
+          model: 'claude-sonnet-4-5-20250929',
+        });
+        // The originating conversation is left exactly as it was.
+        expect(tab.model).toBe('opus-5');
+      });
+
+      it('leaves the tab untouched and opens nothing on cancel', async () => {
+        await loadCatalog(chatPanel);
+        stubConfirmDialog('cancel');
+        chatPanel._openNewTab = vi.fn();
+        const tab = conversingTab(chatPanel, 'opus-5');
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(chatPanel._openNewTab).not.toHaveBeenCalled();
+        expect(tab.model).toBe('opus-5');
+        expect(chatPanel.tabs).toHaveLength(1);
+      });
+
+      it('labels the cancel button "Keep Default" when the tab is on the provider default', async () => {
+        await loadCatalog(chatPanel);
+        const show = stubConfirmDialog('cancel');
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel, null);
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(show.mock.calls[0][0].cancelText).toBe('Keep Default');
+      });
+
+      it('writes the ack key only when the checkbox was ticked', async () => {
+        await loadCatalog(chatPanel);
+        stubConfirmDialog('confirm', { checkTheBox: true });
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(global.localStorage.setItem)
+          .toHaveBeenCalledWith('pair-review:chat-model-switch-ack', '1');
+      });
+
+      it('does not write the ack key when the checkbox was left alone', async () => {
+        await loadCatalog(chatPanel);
+        stubConfirmDialog('confirm', { checkTheBox: false });
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        const ackWrites = global.localStorage.setItem.mock.calls
+          .filter(c => c[0] === 'pair-review:chat-model-switch-ack');
+        expect(ackWrites).toHaveLength(0);
+      });
+
+      it('does not write the ack key when the user cancels with the box ticked', async () => {
+        await loadCatalog(chatPanel);
+        // A cancel never invokes onConfirm, so the flag stays false.
+        stubConfirmDialog('cancel', { checkTheBox: true });
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        const ackWrites = global.localStorage.setItem.mock.calls
+          .filter(c => c[0] === 'pair-review:chat-model-switch-ack');
+        expect(ackWrites).toHaveLength(0);
+      });
+
+      it('short-circuits the dialog once the ack key is set', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store['pair-review:chat-model-switch-ack'] = '1';
+        const show = stubConfirmDialog('cancel');
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(show).not.toHaveBeenCalled();
+        expect(chatPanel._openNewTab).toHaveBeenCalledWith({
+          provider: 'claude',
+          model: 'opus-5',
+        });
+      });
+
+      it('treats a throwing localStorage as "not acknowledged"', async () => {
+        await loadCatalog(chatPanel);
+        const show = stubConfirmDialog('confirm', { checkTheBox: true });
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        global.localStorage.getItem.mockImplementationOnce(() => {
+          throw new Error('storage disabled');
+        });
+        global.localStorage.setItem.mockImplementationOnce(() => {
+          throw new Error('storage disabled');
+        });
+
+        // Must not throw, and must still ask.
+        await chatPanel._selectModel('opus-5');
+
+        expect(show).toHaveBeenCalledTimes(1);
+        expect(chatPanel._openNewTab).toHaveBeenCalled();
+      });
+
+      it('proceeds without a dialog when window.confirmDialog is absent', async () => {
+        await loadCatalog(chatPanel);
+        delete global.window.confirmDialog;
+        chatPanel._openNewTab = vi.fn();
+        conversingTab(chatPanel);
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(chatPanel._openNewTab).toHaveBeenCalledWith({
+          provider: 'claude',
+          model: 'claude-sonnet-4-5-20250929',
+        });
+      });
+
+      it('opens no new tab when the tab was closed while the dialog was open', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._openNewTab = vi.fn();
+        const tab = conversingTab(chatPanel);
+        // Close the tab from under the dialog while it is awaiting the answer.
+        global.window.confirmDialog = {
+          show: vi.fn(async () => {
+            chatPanel.tabs = chatPanel.tabs.filter(t => t !== tab);
+            return 'confirm';
+          }),
+          isVisible: false,
+        };
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(chatPanel._openNewTab).not.toHaveBeenCalled();
+      });
+
+      it('uses the captured provider, not one swapped in while the dialog was open', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._openNewTab = vi.fn();
+        const tab = conversingTab(chatPanel);
+        global.window.confirmDialog = {
+          show: vi.fn(async () => {
+            chatPanel._activeProvider = 'pi';
+            tab.provider = 'pi';
+            return 'confirm';
+          }),
+          isVisible: false,
+        };
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(chatPanel._openNewTab).toHaveBeenCalledWith({
+          provider: 'claude',
+          model: 'claude-sonnet-4-5-20250929',
+        });
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // _selectProvider interaction
+    // ---------------------------------------------------------------------
+    describe('_selectProvider and the model selection', () => {
+      it('resets tab.model when the provider changes on a fresh tab', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectProvider('pi');
+
+        expect(tab.provider).toBe('pi');
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('hides the model dropdown (it is rendering the old catalog)', async () => {
+        chatPanel._activeProvider = 'claude';
+        const spy = vi.spyOn(chatPanel, '_hideModelDropdown');
+        chatPanel._openNewTab = vi.fn();
+
+        await chatPanel._selectProvider('pi');
+
+        expect(spy).toHaveBeenCalled();
+      });
+
+      it('updates the title exactly once, with the new provider and no model', async () => {
+        // A bare _updateTitle() before the freshness branch would paint the OLD tab's
+        // model label under the NEW provider name for a frame.
+        await loadCatalog(chatPanel);
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        const spy = vi.spyOn(chatPanel, '_updateTitle');
+
+        await chatPanel._selectProvider('pi');
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledWith('pi', null);
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('updates the title once on the new-tab path too', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._activeProvider = 'claude';
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+        const spy = vi.spyOn(chatPanel, '_updateTitle');
+
+        await chatPanel._selectProvider('pi');
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledWith('pi', null);
+      });
+
+      it('routes both pickers through _discardEmptySession', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel._activeProvider = 'claude';
+        const spy = vi.spyOn(chatPanel, '_discardEmptySession');
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.sessionId = 11;
+        chatPanel.activeTabKey = 11;
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledWith(tab);
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/11', { method: 'DELETE' });
+
+        tab.sessionId = 12;
+        chatPanel.activeTabKey = 12;
+        await chatPanel._selectProvider('pi');
+
+        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy).toHaveBeenLastCalledWith(tab);
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/12', { method: 'DELETE' });
+      });
+
+      it('opens a new tab (with no model) when the tab is not fresh', async () => {
+        chatPanel._activeProvider = 'claude';
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        const tab = chatPanel._getActiveTab();
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectProvider('pi');
+
+        expect(chatPanel._openNewTab).toHaveBeenCalledWith();
+        // The prior conversation keeps its model.
+        expect(tab.model).toBe('opus-5');
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Remembered model per provider (pair-review:chat-model:<provider>)
+    // ---------------------------------------------------------------------
+    describe('remembered model per provider', () => {
+      const KEY_CLAUDE = 'pair-review:chat-model:claude';
+      const KEY_PI = 'pair-review:chat-model:pi';
+
+      /**
+       * Swap window.localStorage for one whose named methods throw, and restore
+       * the real stub afterwards. Storage can be disabled or quota-full in a
+       * real browser; every read/write must survive it.
+       */
+      async function withThrowingStorage(methods, fn) {
+        const real = global.window.localStorage;
+        const throwing = { ...real };
+        for (const m of methods) {
+          throwing[m] = () => { throw new Error(`localStorage.${m} blocked`); };
+        }
+        global.window.localStorage = throwing;
+        try {
+          await fn();
+        } finally {
+          global.window.localStorage = real;
+        }
+      }
+
+      // ── Writes ───────────────────────────────────────────────────────────
+
+      it('remembers the model picked on a fresh tab', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('REMOVES the key when the provider-default row is picked', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectModel(null);
+
+        expect(global.localStorage.removeItem).toHaveBeenCalledWith(KEY_CLAUDE);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      it('remembers the model picked from the zero-tab state', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        clearActiveTab(chatPanel);
+
+        await chatPanel._selectModel('opus-5');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+      });
+
+      it('remembers the model on confirm of the switch dialog', async () => {
+        await loadCatalog(chatPanel);
+        stubConfirmDialog('confirm');
+        chatPanel._openNewTab = vi.fn().mockResolvedValue(undefined);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('leaves the remembered model untouched when the dialog is cancelled', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        stubConfirmDialog('cancel');
+        chatPanel._openNewTab = vi.fn();
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        tab.messages = [{ role: 'user', content: 'hi' }];
+
+        await chatPanel._selectModel('claude-sonnet-4-5-20250929');
+
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+        expect(global.localStorage.setItem)
+          .not.toHaveBeenCalledWith(KEY_CLAUDE, 'claude-sonnet-4-5-20250929');
+      });
+
+      it('does not write from the server-adopted model path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = null;
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 3, status: 'active', model: 'opus-5' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        expect(tab.model).toBe('opus-5');
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      // ── Reads: seeding a new tab ─────────────────────────────────────────
+
+      it('seeds a new tab from the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'claude-sonnet-4-5-20250929';
+
+        await chatPanel._openNewTab();
+
+        const tab = chatPanel._getActiveTab();
+        expect(tab.model).toBe('claude-sonnet-4-5-20250929');
+        // Header label follows the seeded model, by catalog NAME.
+        expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
+      });
+
+      it('honours an explicit null init (provider default) over the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'claude', model: null });
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('honours an explicit model init over the remembered model', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'claude', model: 'claude-sonnet-4-5-20250929' });
+
+        expect(chatPanel._getActiveTab().model).toBe('claude-sonnet-4-5-20250929');
+      });
+
+      it('seeds per provider, not globally', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab({ provider: 'pi' });
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('seeds the lazy tab created by sendMessage on an empty strip', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        clearActiveTab(chatPanel);
+        // Stop the send after the tab exists — session creation is not the point.
+        chatPanel._createSessionForTab = vi.fn().mockResolvedValue(null);
+        chatPanel.inputEl.value = 'hello';
+
+        await chatPanel.sendMessage();
+
+        expect(chatPanel.tabs).toHaveLength(1);
+        expect(chatPanel.tabs[0].model).toBe('opus-5');
+      });
+
+      it('seeds the lazy tab created by the legacy createSession path', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        clearActiveTab(chatPanel);
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 12, status: 'active' } }),
+        });
+
+        await chatPanel.createSession();
+
+        const body = JSON.parse(
+          global.fetch.mock.calls.find(c => c[0] === '/api/chat/session')[1].body
+        );
+        expect(body.model).toBe('opus-5');
+      });
+
+      // ── Reads: provider switch ───────────────────────────────────────────
+
+      it('seeds the NEW provider\'s remembered model on a provider switch', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_PI] = 'pi-turbo';
+        // The pi catalog in the fixture is empty (hasCatalog: false), so nothing
+        // can validate it away — an unlisted provider seeds optimistically.
+        chatPanel._chatCatalog.delete('pi');
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectProvider('pi');
+
+        expect(tab.provider).toBe('pi');
+        expect(tab.model).toBe('pi-turbo');
+        expect(chatPanel.modelTextEl.textContent).toBe('Pi Turbo');
+      });
+
+      it('falls back to the provider default when the new provider has no remembered model', async () => {
+        await loadCatalog(chatPanel);
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+        chatPanel._activeProvider = 'claude';
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await chatPanel._selectProvider('pi');
+
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      // ── Validation ───────────────────────────────────────────────────────
+
+      it('ignores AND deletes a remembered id the catalog no longer lists', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-4-retired';
+
+        await chatPanel._openNewTab();
+
+        expect(chatPanel._getActiveTab().model).toBeNull();
+        expect(global.localStorage.removeItem).toHaveBeenCalledWith(KEY_CLAUDE);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+
+      it('waits for a cold catalog before seeding, so a stale id cannot slip through', async () => {
+        // Nothing loaded yet: _openNewTab must resolve the catalog first.
+        stubCatalogFetch();
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-4-retired';
+
+        await chatPanel._openNewTab();
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/providers');
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('does not fetch the catalog when there is nothing remembered', async () => {
+        stubCatalogFetch();
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+
+        await chatPanel._openNewTab();
+
+        expect(global.fetch).not.toHaveBeenCalledWith('/api/chat/providers');
+        expect(chatPanel._getActiveTab().model).toBeNull();
+      });
+
+      it('seeds optimistically when the catalog never answers', async () => {
+        global.fetch.mockRejectedValue(new Error('offline'));
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+        global.localStorage._store[KEY_CLAUDE] = 'opus-5';
+
+        await chatPanel._openNewTab();
+
+        expect(chatPanel._getActiveTab().model).toBe('opus-5');
+        // A catalog that never answered proves nothing — keep the preference.
+        expect(global.localStorage._store[KEY_CLAUDE]).toBe('opus-5');
+      });
+
+      // ── Throwing storage ─────────────────────────────────────────────────
+
+      it('treats a throwing getItem as nothing remembered', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        chatPanel._activeProvider = 'claude';
+
+        await withThrowingStorage(['getItem'], async () => {
+          await chatPanel._openNewTab();
+          expect(chatPanel._getActiveTab().model).toBeNull();
+          expect(chatPanel._rememberedModelFor('claude')).toBeNull();
+        });
+      });
+
+      it('survives a throwing setItem when a model is picked', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+
+        await withThrowingStorage(['setItem'], async () => {
+          await chatPanel._selectModel('opus-5');
+        });
+
+        expect(tab.model).toBe('opus-5');
+        expect(chatPanel.modelTextEl.textContent).toBe('Opus 5');
+      });
+
+      it('survives a throwing removeItem when the default row is picked', async () => {
+        await loadCatalog(chatPanel);
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        await withThrowingStorage(['removeItem'], async () => {
+          await chatPanel._selectModel(null);
+        });
+
+        expect(tab.model).toBeNull();
+        expect(chatPanel.modelTextEl.textContent).toBe('Default');
+      });
+
+      it('survives storage that throws while pruning a stale id', async () => {
+        await loadCatalog(chatPanel);
+        const real = global.window.localStorage;
+        global.window.localStorage = {
+          getItem: () => 'opus-4-retired',
+          setItem: () => {},
+          removeItem: () => { throw new Error('blocked'); },
+        };
+        try {
+          expect(chatPanel._rememberedModelFor('claude')).toBeNull();
+        } finally {
+          global.window.localStorage = real;
+        }
+      });
+
+      // ── Restore paths never write ────────────────────────────────────────
+
+      it('does not remember a model restored from the sessions list', async () => {
+        await loadCatalog(chatPanel);
+        chatPanel.reviewId = 1;
+        global.fetch.mockImplementation((url) => {
+          if (typeof url === 'string' && url.includes('/chat/sessions')) {
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({
+                data: {
+                  sessions: [
+                    { id: 41, provider: 'claude', model: 'opus-5', message_count: 0, first_message: null },
+                  ],
+                },
+              }),
+            });
+          }
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+        });
+
+        await chatPanel._restoreTabs({ tabs: [41], activeSessionId: 41 });
+
+        expect(chatPanel.tabs.some(t => t.model === 'opus-5')).toBe(true);
+        expect(KEY_CLAUDE in global.localStorage._store).toBe(false);
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Request body
+    // ---------------------------------------------------------------------
+    describe('_sessionRequestBody', () => {
+      it('carries the tab model on the lazy-create path', async () => {
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 9, status: 'active' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body).toMatchObject({ provider: 'claude', reviewId: 1, model: 'opus-5' });
+      });
+
+      it('carries the tab model on the legacy createSession path', async () => {
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'claude-sonnet-4-5-20250929';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 10, status: 'active' } }),
+        });
+
+        await chatPanel.createSession(42);
+
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body).toMatchObject({
+          provider: 'claude',
+          reviewId: 1,
+          model: 'claude-sonnet-4-5-20250929',
+          contextCommentId: 42,
+        });
+      });
+
+      it('sends model: null for the provider default', async () => {
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.model = null;
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 11, status: 'active' } }),
+        });
+
+        await chatPanel._createSessionForTab(tab);
+
+        const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+        expect(body.model).toBeNull();
+      });
+
+      it('still forwards skipAnalysisContext', () => {
+        chatPanel.reviewId = 3;
+        const tab = chatPanel._getActiveTab();
+        tab.analysisContextRemoved = true;
+
+        expect(chatPanel._sessionRequestBody(tab).skipAnalysisContext).toBe(true);
+        tab.analysisContextRemoved = false;
+        expect(chatPanel._sessionRequestBody(tab).skipAnalysisContext).toBeUndefined();
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // In-flight race
+    // ---------------------------------------------------------------------
+    describe('in-flight model change during session creation', () => {
+      it('DELETEs the created session and returns null when the model changed', async () => {
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+
+        global.fetch.mockImplementationOnce(() => Promise.resolve({
+          ok: true,
+          json: () => {
+            // The user picked a different model while the POST was in flight.
+            tab.model = 'claude-sonnet-4-5-20250929';
+            return Promise.resolve({ data: { id: 55, status: 'active' } });
+          },
+        }));
+        global.fetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+
+        const result = await chatPanel._createSessionForTab(tab);
+
+        expect(result).toBeNull();
+        expect(tab.sessionId).toBeNull();
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/55', { method: 'DELETE' });
+      });
+
+      it('keeps the session when neither provider nor model moved', async () => {
+        chatPanel.reviewId = 1;
+        const tab = chatPanel._getActiveTab();
+        tab.provider = 'claude';
+        tab.model = 'opus-5';
+        global.fetch.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 56, status: 'active' } }),
+        });
+
+        const result = await chatPanel._createSessionForTab(tab);
+
+        expect(result).toEqual({ id: 56, status: 'active' });
+        expect(tab.sessionId).toBe(56);
       });
     });
   });
@@ -6765,6 +8360,53 @@ describe('ChatPanel', () => {
       for (const tab of chatPanel.tabs) {
         expect(tab.status).toBe('pending');
       }
+    });
+
+    it('restores a non-null session model and renders its catalog name on focus', async () => {
+      // Prime the catalog first: the once-queue is consumed in call order, so
+      // this response goes to _ensureChatCatalog and the next to _fetchSessions.
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            providers: [{
+              id: 'claude',
+              name: 'Claude',
+              type: 'claude',
+              available: true,
+              hasCatalog: true,
+              configuredModel: null,
+              models: [
+                { id: 'claude-sonnet-4-5-20250929', name: 'Sonnet 5', tier: 'balanced' },
+              ],
+            }],
+          },
+        }),
+      });
+      await chatPanel._ensureChatCatalog();
+
+      mockSessionsResponse([
+        { id: 301, provider: 'claude', model: null, message_count: 0, first_message: null },
+        {
+          id: 302,
+          provider: 'claude',
+          model: 'claude-sonnet-4-5-20250929',
+          message_count: 0,
+          first_message: null,
+        },
+      ]);
+
+      const ok = await chatPanel._restoreTabs({ version: 1, tabs: [301, 302], activeSessionId: 301 });
+
+      expect(ok).toBe(true);
+      const restored = chatPanel.tabs.find(t => t.sessionId === 302);
+      expect(restored.model).toBe('claude-sonnet-4-5-20250929');
+      // The default-model tab has focus, so the header shows "Default"...
+      expect(chatPanel.modelTextEl.textContent).toBe('Default');
+
+      // ...and focusing the restored tab renders the catalog display name.
+      chatPanel._switchToTab(302);
+      expect(chatPanel.modelTextEl.textContent).toBe('Sonnet 5');
     });
 
     it('falls back to MRU when every saved sessionId is stale', async () => {

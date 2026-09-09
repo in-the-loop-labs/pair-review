@@ -10,7 +10,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs, resolveCliModelConfig } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -401,9 +401,8 @@ class MuseProvider extends AIProvider {
       m => modelKeys.has(m.id) || (m.aliases || []).some(a => modelKeys.has(a))
     );
 
-    const cliModel = configModel?.cli_model !== undefined
-      ? configModel.cli_model
-      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+    // Shared cli_model ladder (config model > built-in > id); see provider.js.
+    const cliModel = resolveCliModelConfig(builtIn, configModel, modelId);
 
     // Three-way merge for extra_args: built-in model → provider config → per-model config
     const builtInArgs = builtIn?.extra_args || [];

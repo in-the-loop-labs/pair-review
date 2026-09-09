@@ -10572,6 +10572,171 @@ body.resizing * {
   color: var(--chat-primary, #0969da);
 }
 
+/* Model picker — sits between the provider picker and the session picker.
+   The header is narrow, so the button truncates rather than wrapping. */
+.chat-panel__model-picker {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.chat-panel__model-picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #57606a);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-panel__model-picker-btn:hover {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.1));
+  color: var(--chat-text);
+}
+
+.chat-panel__model-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-panel__model-chevron {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 0.15s ease;
+}
+
+.chat-panel__model-picker-btn--open .chat-panel__model-chevron {
+  transform: rotate(180deg);
+}
+
+/* Model dropdown — position:fixed to escape the chat panel's overflow:hidden,
+   like the session dropdown. Placed by _positionModelDropdown(). */
+.chat-panel__model-dropdown {
+  position: fixed;
+  min-width: 320px;
+  width: max-content;
+  max-width: min(420px, calc(100vw - 32px));
+  background: var(--color-bg-primary, #fff);
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  max-height: 320px;
+  overflow-y: auto;
+  z-index: 1000;
+  padding: 4px;
+}
+
+.chat-panel__model-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
+.chat-panel__model-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  font-size: 13px;
+  color: var(--color-text-primary, #1f2328);
+}
+
+.chat-panel__model-item:hover {
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.08));
+}
+
+.chat-panel__model-item--active {
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.chat-panel__model-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* The name is the primary information: it takes the row, and the badge wraps
+   below it when the row gets tight instead of squeezing the name. */
+.chat-panel__model-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.chat-panel__model-item-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.chat-panel__model-item-subtitle {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--color-text-tertiary, #656d76);
+}
+
+.chat-panel__model-badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--color-text-secondary, #57606a);
+  background: var(--color-bg-tertiary, #eaeef2);
+  border: 1px solid var(--color-border-primary, #d0d7de);
+}
+
+.chat-panel__model-badge--fast {
+  color: #1a7f37;
+  background: #dafbe1;
+  border-color: #aceebb;
+}
+
+.chat-panel__model-badge--balanced {
+  color: #0969da;
+  background: #ddf4ff;
+  border-color: #b6e3ff;
+}
+
+.chat-panel__model-badge--thorough {
+  color: #8250df;
+  background: #fbefff;
+  border-color: #e6ceff;
+}
+
+.chat-panel__model-check {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--chat-primary, #0969da);
+}
+
 /* Session picker wrapper (dropdown container) */
 .chat-panel__session-picker {
   position: relative;
@@ -10718,6 +10883,49 @@ body.resizing * {
 
 [data-theme="dark"] .chat-panel__provider-item--active {
   background: var(--color-bg-secondary, #161b22);
+}
+
+/* Dark theme: model picker + dropdown */
+[data-theme="dark"] .chat-panel__model-dropdown {
+  background: var(--color-bg-primary, #0d1117);
+  border-color: var(--color-border-primary, #30363d);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .chat-panel__model-item {
+  color: var(--color-text-primary, #e6edf3);
+}
+
+[data-theme="dark"] .chat-panel__model-item--active {
+  background: var(--color-bg-secondary, #161b22);
+}
+
+[data-theme="dark"] .chat-panel__model-item-subtitle {
+  color: var(--color-text-tertiary, #8b949e);
+}
+
+[data-theme="dark"] .chat-panel__model-badge {
+  color: var(--color-text-secondary, #8b949e);
+  background: var(--color-bg-tertiary, #1c2128);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+[data-theme="dark"] .chat-panel__model-badge--fast {
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.12);
+  border-color: rgba(63, 185, 80, 0.3);
+}
+
+[data-theme="dark"] .chat-panel__model-badge--balanced {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.3);
+}
+
+[data-theme="dark"] .chat-panel__model-badge--thorough {
+  color: #bc8cff;
+  background: rgba(188, 140, 255, 0.12);
+  border-color: rgba(188, 140, 255, 0.3);
 }
 
 /* History button (icon-only, in actions) */

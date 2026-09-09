@@ -308,10 +308,41 @@ describe('hook payloads', () => {
 
       expect(payload.provider).toBeNull();
       expect(payload.model).toBeNull();
+      expect(payload.cli_model).toBeNull();
+    });
+
+    it('carries cli_model alongside the selector', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'claude', model: 'opus-5-high',
+        cliModel: 'claude-opus-5', mode: 'pr',
+      });
+
+      expect(payload.model).toBe('opus-5-high');
+      expect(payload.cli_model).toBe('claude-opus-5');
+    });
+
+    it('cli_model is null when the provider default was used', () => {
+      const payload = buildChatStartedPayload({
+        reviewId: 1, sessionId: 1, provider: 'pi', model: 'default',
+        cliModel: null, mode: 'pr',
+      });
+
+      expect(payload).toHaveProperty('cli_model', null);
     });
   });
 
   describe('buildChatResumedPayload', () => {
+    it('carries cli_model like chat.started', () => {
+      const payload = buildChatResumedPayload({
+        reviewId: 1, sessionId: 3, provider: 'codex', model: 'gpt-6-astra-high',
+        cliModel: 'gpt-6-astra', mode: 'pr',
+      });
+
+      expect(payload.event).toBe('chat.resumed');
+      expect(payload.model).toBe('gpt-6-astra-high');
+      expect(payload.cli_model).toBe('gpt-6-astra');
+    });
+
     it('sets event to chat.resumed', () => {
       const payload = buildChatResumedPayload({
         reviewId: 1, sessionId: 3, provider: 'antigravity', model: 'pro',

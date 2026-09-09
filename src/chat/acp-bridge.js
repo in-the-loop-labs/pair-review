@@ -42,6 +42,9 @@ class AcpBridge extends EventEmitter {
    * @param {string[]} [options.acpArgs] - Extra CLI args (default: ['--acp', '--stdio'])
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
+   * @param {string[]} [options.extraArgs] - Model-level catalog args. ACP has no argv
+   *   model surface (the model goes through `unstable_setSessionModel`), so these are
+   *   accepted and ignored with a debug log rather than silently dropped.
    * @param {string} [options.resumeSessionId] - ACP session ID to resume via loadSession
    * @param {Object} [options._deps] - Dependency injection for testing
    */
@@ -55,6 +58,14 @@ class AcpBridge extends EventEmitter {
     this.env = options.env || {};
     this.useShell = options.useShell || false;
     this.resumeSessionId = options.resumeSessionId || null;
+    this.extraArgs = options.extraArgs || [];
+
+    if (this.extraArgs.length > 0) {
+      logger.debug(
+        `[AcpBridge] Ignoring ${this.extraArgs.length} model-level extra arg(s) ` +
+        `(${this.extraArgs.join(' ')}): ACP exposes no argv model surface.`
+      );
+    }
 
     this._deps = { ...defaults, ...options._deps };
     this._process = null;

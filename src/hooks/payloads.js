@@ -87,7 +87,7 @@ function buildAnalysisCompletedPayload({
 
 // ── Chat payloads ───────────────────────────────────────────────
 
-function buildChatPayload(event, { reviewId, sessionId, provider, model, mode, prContext, localContext, user }) {
+function buildChatPayload(event, { reviewId, sessionId, provider, model, cliModel, mode, prContext, localContext, user }) {
   return {
     event,
     timestamp: new Date().toISOString(),
@@ -95,7 +95,11 @@ function buildChatPayload(event, { reviewId, sessionId, provider, model, mode, p
     reviewId,
     sessionId,
     provider: provider ?? null,
+    // `model` is the selector stored on the session (a canonical catalog id, or a raw
+    // CLI string from chat_providers.<id>.model). `cli_model` is what was actually
+    // handed to the CLI; null means the provider's own default was used.
     model: model ?? null,
+    cli_model: cliModel ?? null,
     ...buildContextFields({ mode, prContext, localContext, user }),
   };
 }

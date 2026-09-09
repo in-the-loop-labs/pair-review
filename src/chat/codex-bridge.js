@@ -61,6 +61,10 @@ class CodexBridge extends EventEmitter {
    * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server']); chat-providers.js adds shell env config
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
+   * @param {string[]} [options.extraArgs] - Extra CLI args appended after codexArgs.
+   *   `-c key=value` is a global Codex flag, so model-level effort settings
+   *   (e.g. `-c model_reasoning_effort="high"`) ride the same mechanism as the
+   *   built-in `-c allow_login_shell=false`.
    * @param {string} [options.resumeThreadId] - Thread ID to resume
    * @param {string|null} [options.sandbox] - Thread sandbox mode (default: 'workspace-write')
    * @param {Object|null} [options.sandboxPolicy] - Turn sandbox policy override for tests
@@ -85,6 +89,7 @@ class CodexBridge extends EventEmitter {
       || process.env.PAIR_REVIEW_CODEX_CMD
       || 'codex';
     this.codexArgs = options.codexArgs || ['app-server'];
+    this.extraArgs = options.extraArgs || [];
 
     this._deps = { ...defaults, ...options._deps };
     this._process = null;
@@ -114,7 +119,7 @@ class CodexBridge extends EventEmitter {
 
     const deps = this._deps;
     const command = this.codexCommand;
-    const args = [...this.codexArgs];
+    const args = [...this.codexArgs, ...this.extraArgs];
     const useShell = this.useShell;
 
     // For multi-word commands (e.g. "devx codex"), use shell mode. Quote args

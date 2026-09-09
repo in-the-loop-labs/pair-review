@@ -740,8 +740,12 @@ You can override provider settings and define custom models in your config file.
 | `badge` | No | Badge text (e.g., "NEW", "BETA") |
 | `badgeClass` | No | CSS class for badge styling |
 | `default` | No | **Deprecated** — use the provider-level `default_model` field instead. Set to `true` to make this the default model for the provider. Still honored for backward compatibility, but `default_model` takes precedence when both are present. |
+| `cli_model` | No | Exact string passed to the CLI's `--model` flag, decoupling it from `id`. `null` suppresses the flag entirely (the provider uses its own default). |
 | `extra_args` | No | Model-specific CLI arguments |
 | `env` | No | Model-specific environment variables |
+| `supports_chat` | No | Defaults to `true`. Set `false` for an analysis-only entry — it stays in the analysis model picker but is hidden from the chat model picker, and a chat session naming it falls back to the provider default. |
+
+An entry that overrides a **built-in** model only replaces the fields it names for `cli_model`, `extra_args`, and `env` — so renaming or re-describing a built-in keeps its CLI model string and effort environment, in both analysis and chat. Display fields (`name`, `tier`, `tagline`, …) come from the entry itself, which is why `tier` is required even on an override.
 
 #### Choosing and Hiding Models
 
@@ -838,19 +842,23 @@ Configure your preferred models in `providers.pi.models` — see [AI Provider Co
 
 [OMP (Oh My Pi)](https://github.com/can1357/oh-my-pi), a fork of Pi, is also available as a chat provider (`omp`) — it speaks the same RPC protocol through the `omp` CLI (`npm install -g @oh-my-pi/pi-coding-agent`) and uses whatever model your OMP configuration selects (set a chat model via `chat_providers.omp.model`; values are passed to `omp --model`, which fuzzy-matches). Unlike Pi chat, OMP chat does not load pair-review's task extension for subagent delegation.
 
+**Choosing a model:** The chat header includes a model picker, fed by the same per-provider model catalog used for AI review analysis (`providers.<id>.models` and `disabled_models` both apply; `default_model` does not — it is the *analysis* default, and chat's starting selection comes from `chat_providers.<id>.model` — see [AI Provider Configuration](#ai-provider-configuration)). The model is chosen before the first message is sent; once a conversation has messages, picking a different model opens a new tab (after a one-time "Start a new conversation?" dialog with a "Don't ask again" checkbox) rather than switching the model mid-conversation — pair-review keeps one model per chat by design. "Provider default" means the configured `chat_providers.<id>.model` if set, otherwise the CLI's own default. pair-review remembers the last model you picked for each provider in this browser and uses it as the starting model for new conversations (picking "Provider default" is remembered too). Effort variants like `opus-5-high` carry their effort env/flags into chat the same way they do for analysis.
+
+Two `chat_providers.<id>` keys control this: `model` sets the default model for that chat provider (a catalog id, alias, or raw CLI model string, passed through verbatim if it's not in the catalog), and `models_from` picks which review provider's catalog the picker uses. Built-in chat providers map automatically (`copilot-acp` → `copilot`, `opencode-acp` → `opencode`, `cursor-acp` → `cursor-agent`; the rest map to their own id), and a config-defined chat provider falls back to its `type`.
+
 **Chat provider command overrides:** To customize CLI commands for chat providers (e.g., to use a wrapper script), use the `chat_providers` config key:
 
 ```json
 {
   "chat_providers": {
-    "claude": { "command": "devx", "args": ["claude", "--"] },
+    "claude": { "command": "devx claude --" },
     "codex": { "command": "devx", "args": ["codex", "--", "app-server"] },
     "opencode-acp": { "command": "devx", "args": ["opencode", "acp"] }
   }
 }
 ```
 
-Available chat provider IDs: `pi`, `omp`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults; for `pi` and `omp` there are no default args — supplied args are appended after the generated RPC flags, so use a multi-word `command` like `"devx omp"` for wrappers rather than `args`), `extra_args` (appends), and `env` overrides. Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
+Available chat provider IDs: `pi`, `omp`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults; for `pi`, `omp` and `claude` there are no default args — supplied args are appended after the generated flags, so use a multi-word `command` like `"devx omp"` for wrappers rather than `args`), `extra_args` (appends), and `env` overrides, plus `model` and `models_from` (see **Choosing a model** above). Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 

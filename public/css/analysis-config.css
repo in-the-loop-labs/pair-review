@@ -107,6 +107,35 @@
   justify-content: center;
 }
 
+/* Message is set via textContent, so blank lines in the string are the only
+   way a caller can express a paragraph break. Honour them. */
+#confirm-dialog-message {
+  white-space: pre-line;
+}
+
+/* Opt-in "don't ask again"-style checkbox row (ConfirmDialog checkboxLabel) */
+.confirm-dialog__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--color-text-secondary, #57606a);
+  cursor: pointer;
+  user-select: none;
+}
+
+.confirm-dialog__checkbox input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--color-accent-primary, #0969da);
+}
+
+[data-theme="dark"] .confirm-dialog__checkbox {
+  color: var(--color-text-secondary, #8b949e);
+}
+
 /* When a secondary button is visible (3 buttons), widen and stack vertically.
    column-reverse puts Confirm (primary) on top, Cancel on bottom. */
 .confirm-dialog-container.has-secondary {

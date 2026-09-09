@@ -21,7 +21,7 @@
  */
 
 const path = require('path');
-const { registerProvider } = require('./provider');
+const { registerProvider, resolveCliModelConfig } = require('./provider');
 const { PiStyleProvider } = require('./pi-style-provider');
 
 // Path to the bundled Pi task extension, which provides a generic subagent tool
@@ -72,7 +72,11 @@ const PI_MODELS = [
     description: 'Pi autonomously selects the best model for each review task',
     badge: 'Smart Routing',
     badgeClass: 'badge-power',
-    extra_args: ['--thinking', 'high', '--skill', REVIEW_SKILL_PATH]
+    extra_args: ['--thinking', 'high', '--skill', REVIEW_SKILL_PATH],
+    // Analysis-only: the --skill arg loads review-model guidance, which has no meaning
+    // in a conversation (and PiBridge appends extraArgs after --no-skills, so the skill
+    // would load even with skill auto-discovery off).
+    supports_chat: false
   },
   {
     id: 'review-roulette',
@@ -84,7 +88,10 @@ const PI_MODELS = [
     badge: 'Surprise',
     badgeClass: 'badge-power',
     extra_args: ['--thinking', 'high', '--skill', ROULETTE_SKILL_PATH],
-    env: { PI_TASK_MAX_DEPTH: '2' }
+    env: { PI_TASK_MAX_DEPTH: '2' },
+    // Analysis-only — see the note on multi-model. Its PI_TASK_MAX_DEPTH bump is for
+    // fan-out during review, not for chat.
+    supports_chat: false
   }
 ];
 
@@ -238,9 +245,8 @@ class PiProvider extends PiStyleProvider {
   _resolveCliModelArgs(modelId) {
     const builtIn = PI_MODELS.find(m => m.id === modelId);
     const configModel = this.configOverrides?.models?.find(m => m.id === modelId);
-    const resolvedCliModel = configModel?.cli_model !== undefined
-      ? configModel.cli_model
-      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+    // Shared cli_model ladder (config model > built-in > id); see provider.js.
+    const resolvedCliModel = resolveCliModelConfig(builtIn, configModel, modelId);
     if (resolvedCliModel === null) return [];
     // Support provider/model format (e.g., 'google/gemini-2.5-flash')
     if (typeof resolvedCliModel === 'string' && resolvedCliModel.includes('/')) {
