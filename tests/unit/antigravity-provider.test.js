@@ -41,6 +41,7 @@ const mockSpawn = vi.spyOn(require('child_process'), 'spawn');
 
 // Import after mocks are set up
 const AntigravityProvider = require('../../src/ai/antigravity-provider');
+const { LLM_EXTRACTION_TIMEOUT_MS } = require('../../src/ai/provider');
 // Real cancellation primitives: the provider captured these at require time, so
 // driving the actual activeAnalyses map (as shared.test.js does) exercises the
 // same code path rather than a mock. CancellationError identity must match too.
@@ -740,6 +741,19 @@ describe('AntigravityProvider', () => {
       expect(config.args[modelIdx + 1]).toBe('Gemini 3.8 Flash (Low)');
     });
 
+    it('budgets --print-timeout just under the base-class extraction cap', () => {
+      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const config = provider.getExtractionConfig('gemini-3.5-flash-low');
+
+      const timeoutIdx = config.args.indexOf('--print-timeout');
+      expect(timeoutIdx).toBeGreaterThanOrEqual(0);
+      // agy must self-terminate (with its own error output) before the base
+      // class LLM_EXTRACTION_TIMEOUT_MS (300s) kills it from outside.
+      expect(config.args[timeoutIdx + 1]).toBe('295s');
+      const capSecs = LLM_EXTRACTION_TIMEOUT_MS / 1000;
+      expect(parseInt(config.args[timeoutIdx + 1], 10)).toBeLessThan(capSecs);
+    });
+
     it('should NOT enable tools for extraction (no --dangerously-skip-permissions)', () => {
       const provider = new AntigravityProvider('gemini-3.1-pro-low');
       const config = provider.getExtractionConfig('gemini-3.8-flash-low');
@@ -808,11 +822,14 @@ describe('AntigravityProvider', () => {
       // Analysis path enables the agentic tool loop.
       expect(args).toContain('--dangerously-skip-permissions');
 
-      // The -p directive is ANALYSIS_DIRECTIVE (read-only instruction), NOT the
-      // test prompt — that is what makes the write-block test meaningful.
+      // The -p directive is ANALYSIS_DIRECTIVE, NOT the test prompt. The
+      // directive defers access rules to the task instructions rather than
+      // stating its own — a hardcoded "never modify" here contradicted the
+      // thorough tier's environment-conditional execution policy (2026-08-19).
       const pIdx = args.indexOf('-p');
       expect(pIdx).toBeGreaterThanOrEqual(0);
-      expect(args[pIdx + 1]).toContain('Never create, modify, or delete files');
+      expect(args[pIdx + 1]).toContain('Follow the access and leave-no-trace rules stated in the task instructions');
+      expect(args[pIdx + 1]).not.toContain('Never create, modify, or delete files');
     });
 
     it('honors a custom printTimeoutSecs argument', () => {
