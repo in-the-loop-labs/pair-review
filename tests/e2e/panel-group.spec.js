@@ -112,7 +112,10 @@ test.describe('Panel Group - PR Mode', () => {
     await expect(layoutBtn).toBeVisible();
   });
 
-  test('file header scrolls horizontally instead of squishing a long filename when both panels are open', async ({ page }) => {
+  test('long filename scrolls within its slot while file header controls stay visible', async ({ page }) => {
+    // Leave enough room for the controls themselves; below this width the
+    // header-level scrollbar remains the unavoidable fallback.
+    await page.setViewportSize({ width: 1800, height: 800 });
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-chat', 'available');
       window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
@@ -121,7 +124,7 @@ test.describe('Panel Group - PR Mode', () => {
     const header = page.locator('.d2h-file-wrapper .d2h-file-header').first();
     const fileName = header.locator('.d2h-file-name');
     await fileName.evaluate((element) => {
-      element.textContent = 'packages/review-interface/src/components/file-header/rendered-review-controller.js';
+      element.textContent = 'packages/review-interface/src/components/file-header/with/a/deliberately/long/path/that/must/remain/readable/rendered-markdown-review-controller.js';
     });
     const beforePanels = await header.evaluate((element) => ({
       clientWidth: element.clientWidth,
@@ -141,43 +144,45 @@ test.describe('Panel Group - PR Mode', () => {
         headerScrollWidth: element.scrollWidth,
         nameClientWidth: name.clientWidth,
         nameScrollWidth: name.scrollWidth,
-        nameRightEdge: name.offsetLeft + name.offsetWidth,
         nameFlexShrink: nameStyle.flexShrink,
         nameWhiteSpace: nameStyle.whiteSpace,
+        nameOverflowX: nameStyle.overflowX,
         overflowX: headerStyle.overflowX,
         flexWrap: headerStyle.flexWrap,
         position: headerStyle.position,
-        childrenDoNotShrink: Array.from(element.children).every((child) => (
-          window.getComputedStyle(child).flexShrink === '0'
-        )),
+        controlsDoNotShrink: Array.from(element.children)
+          .filter((child) => child !== name)
+          .every((child) => window.getComputedStyle(child).flexShrink === '0'),
+        controlsAreVisible: Array.from(element.children)
+          .filter((child) => child !== name)
+          .every((child) => {
+            const headerRect = element.getBoundingClientRect();
+            const childRect = child.getBoundingClientRect();
+            return childRect.left >= headerRect.left - 1
+              && childRect.right <= headerRect.right + 1
+              && childRect.top >= headerRect.top - 1
+              && childRect.bottom <= headerRect.bottom + 1;
+          }),
       };
     });
 
     expect(layout.headerClientWidth).toBeLessThan(beforePanels.clientWidth);
-    expect(layout.headerScrollWidth).toBeGreaterThan(layout.headerClientWidth);
-    expect(layout.nameClientWidth).toBe(layout.nameScrollWidth);
-    expect(layout.nameRightEdge).toBeLessThanOrEqual(layout.headerScrollWidth);
-    expect(layout.nameFlexShrink).toBe('0');
+    expect(layout.headerScrollWidth).toBeLessThanOrEqual(layout.headerClientWidth);
+    expect(layout.nameScrollWidth).toBeGreaterThan(layout.nameClientWidth);
+    expect(layout.nameFlexShrink).toBe('1');
     expect(layout.nameWhiteSpace).toBe('nowrap');
+    expect(layout.nameOverflowX).toBe('auto');
     expect(layout.overflowX).toBe('auto');
     expect(layout.flexWrap).toBe('nowrap');
     expect(layout.position).toBe('sticky');
-    expect(layout.childrenDoNotShrink).toBe(true);
+    expect(layout.controlsDoNotShrink).toBe(true);
+    expect(layout.controlsAreVisible).toBe(true);
 
-    // Exercise the same horizontal wheel/trackpad interaction a user would use,
-    // then confirm the trailing Rendered/Diff control can be brought onscreen.
-    await header.hover();
+    // Exercise the filename's own horizontal wheel/trackpad scroll surface.
+    await fileName.hover();
     await page.mouse.wheel(2000, 0);
-    await expect.poll(() => header.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-
-    const trailingControlIsInsideHeader = await header.evaluate((element) => {
-      const control = element.querySelector('.file-header-view-toggle');
-      const headerRect = element.getBoundingClientRect();
-      const controlRect = control.getBoundingClientRect();
-      return controlRect.left >= headerRect.left && controlRect.right <= headerRect.right
-        && controlRect.top >= headerRect.top && controlRect.bottom <= headerRect.bottom;
-    });
-    expect(trailingControlIsInsideHeader).toBe(true);
+    await expect.poll(() => fileName.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    expect(await header.evaluate((element) => element.scrollLeft)).toBe(0);
 
     // Horizontal overflow must not break the header's existing sticky contract.
     const diffScrollTop = await page.locator('.diff-view').evaluate((element) => {

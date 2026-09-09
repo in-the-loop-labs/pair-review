@@ -206,8 +206,11 @@ mark.d2h-code-line-ctn {
 
 .d2h-file-name {
     display: inline-block !important;
-    flex: 0 0 auto !important;
-    min-width: max-content !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: thin;
     font-size: 14px !important;
     width: auto !important;
     white-space: nowrap !important;

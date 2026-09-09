@@ -1455,8 +1455,14 @@
 }
 
 .d2h-file-name {
-  flex: 0 0 auto;
-  min-width: max-content;
+  /* Reserve room for stats and actions. Flex sizing makes the remaining header
+     space the filename's effective maximum; long paths scroll within that slot
+     instead of pushing the controls beyond the viewport. */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
   white-space: nowrap;
 }
 
