@@ -160,6 +160,21 @@ const mockWorktreeResponses = {
 +  return JSON.stringify(data);
  }
 
+diff --git a/docs/guide.md b/docs/guide.md
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -7,1 +7,1 @@
+-This paragraph explains usage.
++This paragraph explains usage and was newly added by this PR.
+
+diff --git a/docs/setup.md b/docs/setup.md
+--- a/docs/setup.md
++++ b/docs/setup.md
+@@ -1,2 +1,2 @@
+ # Setup
+-Follow these steps to install the project.
++Follow these steps to set up the project.
+
 diff --git a/src/main.js b/src/main.js
 --- a/src/main.js
 +++ b/src/main.js
@@ -177,7 +192,18 @@ diff --git a/src/main.js b/src/main.js
   getWorktreePath: '/tmp/worktree/e2e-test',
   getChangedFiles: [
     { file: 'src/utils.js', additions: 5, deletions: 2 },
-    { file: 'src/main.js', additions: 5, deletions: 0 }
+    { file: 'src/main.js', additions: 5, deletions: 0 },
+    // Markdown fixtures for the Rendered Markdown view (E2E). guide.md's
+    // "Usage" paragraph (new line 7) sits inside the hunk above (in-diff,
+    // gets a diffPosition); its "Notes" paragraph (new line 11) is
+    // deliberately outside every hunk (honest-fallback comment target).
+    // setup.md is guide.md's relative-link target (`./setup.md`).
+    // NOTE: `insertions` (not `additions`, unlike the two entries above) —
+    // getFileStatus()/_isMarkdownRenderEligible() key off `file.insertions`
+    // (matching real changed_files data, see src/git/worktree.js), and a
+    // file with deletions but no `insertions` field is classified 'deleted'.
+    { file: 'docs/guide.md', insertions: 1, deletions: 1 },
+    { file: 'docs/setup.md', insertions: 1, deletions: 1 }
   ]
 };
 
@@ -804,6 +830,82 @@ async function startTestServer(port) {
       const oldContents = [...hunk1Old, ...gap, ...hunk2Old, ...trailer].join('\n') + '\n';
       const newContents = [...hunk1New, ...gap, ...hunk2New, ...trailer].join('\n') + '\n';
 
+      return res.json({ fileName, oldContents, newContents });
+    }
+
+    // docs/guide.md — Rendered Markdown E2E fixture. Line 7 ("Usage"
+    // paragraph) matches the diff hunk above exactly (in-diff, has a
+    // diffPosition). Line 11 ("Notes" paragraph) is deliberately
+    // unchanged and outside every hunk (honest-fallback comment target,
+    // no diffPosition). Line 8 is a blank separator line, rendered by no
+    // top-level block (off-block comment target). The "Setup" link
+    // exercises relative-link navigation to docs/setup.md; the "GitHub"
+    // link exercises ordinary external-link passthrough.
+    //
+    // The trailing filler + "far-away" paragraph exist so the document is
+    // long enough that the diff engine COLLAPSES the region around the
+    // last paragraph (the only hunk is a single line near the top). That
+    // makes the far-away paragraph an out-of-hunk comment target whose
+    // diff row does not exist until the enclosing gap / context range is
+    // revealed — the condition the "reaches the Diff surface" test needs.
+    // Filler entries are plain paragraphs (never headings) so the Outline
+    // assertions elsewhere in the spec stay exactly as they were.
+    if (fileName === 'docs/guide.md') {
+      const filler = [];
+      for (let i = 1; i <= 25; i++) filler.push('', `Filler paragraph ${i} — unchanged context.`);
+      // Hierarchical structures for the nested comment-target tests. Kept
+      // at the very END of the document so every line number asserted
+      // elsewhere in the spec (7 = "Usage" paragraph, 8 = blank separator,
+      // 11 = "Notes" paragraph) is unchanged, and deliberately heading-free
+      // so the Outline assertions stay exactly as they were. The two table
+      // body cells share ONE source line — that is the whole point of the
+      // cell-level descriptor.
+      const hierarchy = [
+        '',
+        '- Alpha item',
+        '  - Nested alpha item',
+        '- Beta item',
+        '',
+        '| Column A | Column B |',
+        '| --- | --- |',
+        '| a1 | b1 |'
+      ];
+      const tail = [
+        ...filler,
+        '',
+        'This far-away paragraph is nowhere near the diff hunk.',
+        ...hierarchy
+      ];
+      const head = [
+        '# Guide', '',
+        'Welcome to the guide. See [Setup](./setup.md) for installation steps, or visit [GitHub](https://github.com) for source.', '',
+        '## Usage'
+      ];
+      const oldContents = [
+        ...head, '',
+        'This paragraph explains usage.', '',
+        '## Notes', '',
+        'This paragraph is unchanged context and sits far from any diff hunk.',
+        ...tail
+      ].join('\n') + '\n';
+      const newContents = [
+        ...head, '',
+        'This paragraph explains usage and was newly added by this PR.', '',
+        '## Notes', '',
+        'This paragraph is unchanged context and sits far from any diff hunk.',
+        ...tail
+      ].join('\n') + '\n';
+      return res.json({ fileName, oldContents, newContents });
+    }
+
+    // docs/setup.md — relative-link target for docs/guide.md. No blank line
+    // between the heading and the paragraph (matches the diff hunk above
+    // exactly — unified diff context lines must carry a literal leading
+    // space even when blank, so hand-authored hunks in this fixture avoid
+    // blank context lines entirely).
+    if (fileName === 'docs/setup.md') {
+      const oldContents = ['# Setup', 'Follow these steps to install the project.'].join('\n') + '\n';
+      const newContents = ['# Setup', 'Follow these steps to set up the project.'].join('\n') + '\n';
       return res.json({ fileName, oldContents, newContents });
     }
 

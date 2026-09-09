@@ -1285,6 +1285,53 @@ class AIPanel {
     }
 
     /**
+     * Resolve the element to scroll to for a line-level comment id,
+     * preferring whichever surface is actually SHOWING that comment.
+     *
+     * A single comment id can legitimately exist on two surfaces at once:
+     * the Diff surface (a legacy `.user-comment-row` `<tr>`, or the
+     * light-DOM `.user-comment-row` div PierreBridge slots into
+     * `@pierre/diffs`) and — when its file is toggled into Rendered
+     * Markdown mode — a `.rendered-markdown-comment-card`. Rendered mode
+     * only CSS-hides the diff body (`.d2h-file-wrapper.rendered-mode-active
+     * .d2h-file-body, ... .pierre-diff-body { display: none }`), so the
+     * diff row stays in the DOM and a naive `.user-comment-row` lookup
+     * returns an element that cannot be scrolled to or seen — the click
+     * appears to do nothing.
+     *
+     * The check is on STATE, not layout: `closest('.rendered-mode-active')`
+     * reads the very class the hiding rule is keyed off, so it is exact for
+     * both engines (the Pierre annotation container is slotted inside the
+     * file wrapper too) and needs no `offsetParent`/`getComputedStyle`
+     * measurement — which would be both fragile and unavailable in jsdom.
+     * When no diff row is hidden, behavior is byte-for-byte the previous
+     * behavior: diff row first, then any `[data-comment-id]` element.
+     * @param {string|number} commentId
+     * @returns {HTMLElement|null}
+     * @private
+     */
+    _resolveLineCommentTarget(commentId) {
+        const idAttr = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+            ? globalThis.CSS.escape(String(commentId))
+            : String(commentId);
+
+        const diffRow = document.querySelector(`.user-comment-row[data-comment-id="${idAttr}"]`);
+        const diffRowHidden = !!diffRow?.closest?.('.rendered-mode-active');
+        if (diffRow && !diffRowHidden) return diffRow;
+
+        const renderedCard = document.querySelector(
+            `.rendered-markdown-comment-card[data-comment-id="${idAttr}"]`
+        );
+        if (renderedCard) return renderedCard;
+
+        // No visible Rendered card either — fall back to the previous
+        // behavior (the hidden diff row, or any other element carrying this
+        // id) rather than returning nothing, so scrolling the file into
+        // view still happens and toggling back to Diff lands on the row.
+        return diffRow || document.querySelector(`[data-comment-id="${idAttr}"]`);
+    }
+
+    /**
      * Scroll to a user comment in the diff view
      * @param {string} commentId
      * @param {string} file
@@ -1341,8 +1388,7 @@ class AIPanel {
             // Legacy path uses .user-comment-row (table rows), annotation path
             // uses [data-comment-id] on light-DOM divs slotted into @pierre/diffs.
             if (!targetElement && commentId) {
-                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
-                    || document.querySelector(`[data-comment-id="${commentId}"]`);
+                targetElement = this._resolveLineCommentTarget(commentId);
             }
 
             // Fallback: find by file and line if no direct match

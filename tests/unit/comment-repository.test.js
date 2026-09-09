@@ -112,6 +112,41 @@ describe('CommentRepository', () => {
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
       expect(comment.body).toBe('Test comment');
     });
+
+    it('stores a rendered_anchor string verbatim and returns it from getUserComments', async () => {
+      const anchor = JSON.stringify({ v: 1, kind: 'table-cell', startLine: 9, endLine: 9, ordinal: 1 });
+      const commentId = await commentRepo.createLineComment({
+        review_id: 1,
+        file: 'docs/guide.md',
+        line_start: 9,
+        body: 'On the second cell',
+        rendered_anchor: anchor
+      });
+
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
+      expect(comment.rendered_anchor).toBe(anchor);
+
+      // It has to survive the read path too, or a reload cannot restore the
+      // comment to the cell it was made on.
+      const [listed] = await commentRepo.getUserComments(1);
+      expect(listed.rendered_anchor).toBe(anchor);
+    });
+
+    it('defaults rendered_anchor to NULL, and refuses a non-string (the caller must serialize)', async () => {
+      const plainId = await commentRepo.createLineComment({
+        review_id: 1, file: 'test.js', line_start: 10, body: 'Plain'
+      });
+      expect((await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [plainId])).rendered_anchor).toBeNull();
+
+      // Guard against a caller handing over a raw object: the column holds
+      // validated JSON produced at the API boundary, never a stringified
+      // "[object Object]".
+      const objectId = await commentRepo.createLineComment({
+        review_id: 1, file: 'test.js', line_start: 10, body: 'Object anchor',
+        rendered_anchor: { v: 1, kind: 'table-cell', startLine: 10, endLine: 10, ordinal: 0 }
+      });
+      expect((await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [objectId])).rendered_anchor).toBeNull();
+    });
   });
 
   describe('createFileComment', () => {

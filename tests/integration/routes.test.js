@@ -1190,6 +1190,98 @@ describe('User Comment Endpoints', () => {
       expect(comment.diff_position).toBe(42);
       expect(comment.type).toBe('suggestion');
     });
+
+    /**
+     * Optional Rendered-Markdown nested target descriptor. It is LOCAL
+     * display metadata — the GitHub coordinates stay `file`/`side`/
+     * `line_start`/`line_end`/`diff_position` — so the route must (a) round
+     * it back out unchanged so a reload can restore the exact cell/item, and
+     * (b) refuse anything it does not fully recognise rather than storing it.
+     */
+    describe('rendered_anchor', () => {
+      const CELL = { v: 1, kind: 'table-cell', startLine: 9, endLine: 9, ordinal: 1 };
+
+      const createWithAnchor = (rendered_anchor, overrides = {}) =>
+        request(server)
+          .post(`/api/reviews/${prId}/comments`)
+          .send({
+            file: 'docs/guide.md',
+            line_start: 9,
+            line_end: 9,
+            side: 'RIGHT',
+            body: 'On the second cell',
+            rendered_anchor,
+            ...overrides
+          });
+
+      it('persists a valid descriptor and returns it on the comments listing', async () => {
+        const response = await createWithAnchor(CELL);
+        expect(response.status).toBe(200);
+
+        const stored = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+        expect(JSON.parse(stored.rendered_anchor)).toEqual(CELL);
+        // The GitHub-facing coordinates are untouched by the descriptor.
+        expect(stored.line_start).toBe(9);
+        expect(stored.line_end).toBe(9);
+        expect(stored.side).toBe('RIGHT');
+
+        const listing = await request(server).get(`/api/reviews/${prId}/comments`);
+        const returned = listing.body.comments.find((c) => c.id === response.body.commentId);
+        expect(JSON.parse(returned.rendered_anchor)).toEqual(CELL);
+      });
+
+      it('keeps two comments on two cells of ONE source line distinguishable', async () => {
+        const first = await createWithAnchor({ ...CELL, ordinal: 0 });
+        const second = await createWithAnchor(CELL);
+
+        const listing = await request(server).get(`/api/reviews/${prId}/comments`);
+        const byId = new Map(listing.body.comments.map((c) => [c.id, c]));
+        const a = byId.get(first.body.commentId);
+        const b = byId.get(second.body.commentId);
+        expect(a.line_start).toBe(b.line_start);
+        expect(JSON.parse(a.rendered_anchor).ordinal).toBe(0);
+        expect(JSON.parse(b.rendered_anchor).ordinal).toBe(1);
+      });
+
+      it('stores NULL when no descriptor is supplied (every non-Rendered comment)', async () => {
+        const response = await request(server)
+          .post(`/api/reviews/${prId}/comments`)
+          .send({ file: 'file.js', line_start: 10, body: 'ordinary comment' });
+        const stored = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+        expect(stored.rendered_anchor).toBeNull();
+      });
+
+      it('rejects an unknown version, unknown kind, extra key or bad range (fail closed)', async () => {
+        for (const bad of [
+          { ...CELL, v: 2 },
+          { ...CELL, kind: 'table-column' },
+          { ...CELL, file: '../../etc/passwd' },
+          { ...CELL, ordinal: -1 },
+          { ...CELL, startLine: 40, endLine: 40 },
+          'not json at all',
+          [CELL]
+        ]) {
+          const response = await createWithAnchor(bad);
+          expect(response.status, JSON.stringify(bad)).toBe(400);
+          expect(response.body.error).toMatch(/rendered_anchor/);
+        }
+        const count = await queryOne(db, "SELECT COUNT(*) AS n FROM comments WHERE rendered_anchor IS NOT NULL");
+        expect(count.n).toBe(0);
+      });
+
+      it('rejects an oversized descriptor', async () => {
+        const response = await createWithAnchor({ ...CELL, pad: 'x'.repeat(2000) });
+        expect(response.status).toBe(400);
+      });
+
+      it('rejects a descriptor on a file-level comment, where nested targets are meaningless', async () => {
+        const response = await request(server)
+          .post(`/api/reviews/${prId}/comments`)
+          .send({ file: 'docs/guide.md', body: 'file-level', rendered_anchor: CELL });
+        expect(response.status).toBe(400);
+        expect(response.body.error).toMatch(/line-level/);
+      });
+    });
   });
 
   describe('POST /api/file-comment', () => {

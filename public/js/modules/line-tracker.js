@@ -384,3 +384,8 @@ class LineTracker {
 
 // Make LineTracker available globally
 window.LineTracker = LineTracker;
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { LineTracker };
+}

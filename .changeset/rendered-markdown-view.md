@@ -1,0 +1,19 @@
+---
+"@in-the-loop-labs/pair-review": minor
+---
+
+Add a first-class Rendered Markdown view. Markdown files (`.md`, `.markdown`) get a per-file "Diff | Rendered" toggle in the file header — Diff mode remains the default and always-available fallback, and still shows removed Markdown content exactly as before.
+
+Rendered mode renders the file's current content with the existing markdown-it + DOMPurify pipeline and shows the whole document (not just diffed hunks). The left sidebar gains a second "Outline" tab alongside "Files", listing headings for the active Rendered document with click-to-scroll navigation and scroll-tracked `aria-current` state.
+
+Hovering a rendered block (paragraph, heading, list, code block, etc.) reveals a plain `+` button, always visible on touch devices that have no hover state. Each button's accessible name carries the block's semantic kind and real source line range ("Add comment on code block, lines 5-7"). Comments go through the same `/api/reviews/:id/comments` endpoint as every other comment in the app — no new storage path. Blocks inside a changed hunk get a real diff position; blocks outside every hunk are saved with their file/line range but no diff position (the same honest fallback GitHub review submission already applies to out-of-hunk comments), so a comment is never silently misattached to an unrelated changed line.
+
+Lists and tables go further: an individual list item, a nested list item, a table row, a header cell or a single data cell can each be commented on, alongside the whole-list/whole-table target. Hover or keyboard focus reveals exactly one `+` — the innermost target — and outlines and names what it applies to. GitHub coordinates stay line-based (a cell comment is submitted at its row's source line; a column is never treated as a line), while the selected element is remembered locally so comments return to the same cell or item after a reload — including two comments on two cells of one table row, which share a source line. A comment whose remembered target can't be identified in the current content is shown at its original line with an explicit "this target changed or is unavailable" note instead of being re-attached to a neighbouring cell or item, and comments created before this feature keep their existing whole-block placement.
+
+Diff and Rendered stay in step as two views of the same review: a comment created, edited or dismissed in either surface is reflected in the other and in the AI/Review panel right away. Comments outside the default hunks have their diff target revealed before being mirrored, so they appear in Diff mode too. Each comment is counted once no matter how many surfaces show it, so the toolbar count, "N comments will be submitted", Clear All and the Request-changes check all reflect the real amount of captured feedback. "Jump to comment" from the AI panel targets whichever surface is actually visible.
+
+Comments anchored on a line that renders as nothing (typically a blank separator line) are shown at their true position in the document with their real repository line number, rather than being hidden or re-attached to unrelated neighbouring content.
+
+Relative Markdown links to another Markdown file changed in the same review switch that file into Rendered mode and scroll to it (and to a `#fragment` heading); links to anything else behave normally. Works in both PR mode and Local mode.
+
+Unusually large files (over 200KB or 5,000 lines of current content) decline Rendered mode with a clear message pointing back to Diff mode, rather than freezing the tab. Within a rendered document, granular list/table targets are capped at 5,000 per document (a machine-generated table can stay under the file-size limit and still expand to tens of thousands of buttons); past the cap, whole blocks stop offering granular targets — never a partly-annotated table — and keep their whole-block **+**.

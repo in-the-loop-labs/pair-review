@@ -681,8 +681,11 @@ describe('PRManager Suggestion Status', () => {
 
       await prManager.deleteUserComment(commentId);
 
-      // Verify document.querySelector was called to find the row
-      expect(document.querySelector).toHaveBeenCalledWith(`[data-comment-id="${commentId}"]`);
+      // Verify document.querySelector was called to find the row. Scoped to
+      // `.user-comment-row` (not a bare `[data-comment-id]`) so this can
+      // never accidentally match a Rendered-view comment card carrying the
+      // same id — see the cross-surface comment-CRUD-sync fix.
+      expect(document.querySelector).toHaveBeenCalledWith(`.user-comment-row[data-comment-id="${commentId}"]`);
 
       // Comment row should ALWAYS be removed from diff view (design decision)
       expect(mockRowWithChild.remove).toHaveBeenCalled();

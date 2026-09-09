@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 55;
+const CURRENT_SCHEMA_VERSION = 56;
 
 /**
  * Database schema SQL statements
@@ -99,6 +99,18 @@ const SCHEMA_SQL = {
       is_raw INTEGER DEFAULT 0,
 
       severity TEXT,
+
+      -- Optional, pair-review-LOCAL descriptor of the nested Rendered
+      -- Markdown element a comment was made on (list item, table row,
+      -- table cell, ...), stored as a small validated JSON object:
+      --   {"v":1,"kind":"table-cell","startLine":4,"endLine":4,"ordinal":1}
+      -- Needed because line numbers alone cannot identify these targets:
+      -- every cell of a Markdown table row shares one source line, and
+      -- parent/nested list item ranges overlap. NEVER part of the GitHub
+      -- submission contract — file/side/line_start/line_end/diff_position
+      -- remain the only coordinates ever sent upstream. NULL for every
+      -- comment made anywhere else, which is the overwhelming majority.
+      rendered_anchor TEXT,
 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2363,6 +2375,30 @@ const MIGRATIONS = {
       console.log('  pool_fetch_owner column already present; nothing to do');
     }
     console.log('Migration to schema version 55 complete');
+  },
+
+  // Migration to version 56: add `comments.rendered_anchor`, the optional
+  // local descriptor of the nested Rendered Markdown element a comment was
+  // made on (see SCHEMA_SQL.comments for the shape and why line numbers
+  // alone are insufficient).
+  //
+  // Purely ADDITIVE and nullable: every existing comment keeps working
+  // unchanged with a NULL anchor (it renders at its top-level block / gap
+  // exactly as before), and nothing in the GitHub submission path reads
+  // this column. No table rebuild is needed, so the historical rebuild in
+  // migration 33 — which runs strictly before this one — is untouched.
+  // Guarded by columnExists so re-running after a crash is a no-op.
+  56: (db) => {
+    console.log('Running migration to schema version 56: add rendered_anchor to comments...');
+    if (!tableExists(db, 'comments')) {
+      console.log('  comments table does not exist, skipping');
+    } else if (!columnExists(db, 'comments', 'rendered_anchor')) {
+      db.exec('ALTER TABLE comments ADD COLUMN rendered_anchor TEXT');
+      console.log('  Added rendered_anchor column to comments');
+    } else {
+      console.log('  rendered_anchor column already present; nothing to do');
+    }
+    console.log('Migration to schema version 56 complete');
   }
 };
 
@@ -3647,6 +3683,12 @@ class CommentRepository {
    * @param {string} [commentData.title] - Comment title
    * @param {number} [commentData.parent_id] - Parent AI suggestion ID if adopted
    * @param {string} [commentData.author='Current User'] - Comment author
+   * @param {string|null} [commentData.rendered_anchor] - ALREADY-VALIDATED
+   *   JSON string describing the nested Rendered Markdown element this
+   *   comment targets, or null. Callers must validate/serialize with
+   *   src/utils/rendered-anchor.js — this repository stores the string
+   *   verbatim and never interprets it, and it is never used for GitHub
+   *   submission coordinates.
    * @returns {Promise<number>} Created comment ID
    */
   async createLineComment({
@@ -3661,7 +3703,8 @@ class CommentRepository {
     type = 'comment',
     title = null,
     parent_id = null,
-    author = 'Current User'
+    author = 'Current User',
+    rendered_anchor = null
   }) {
     // Validate required fields
     if (!review_id || !file || !line_start || !body) {
@@ -3674,8 +3717,8 @@ class CommentRepository {
     const result = await run(this.db, `
       INSERT INTO comments (
         review_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
-        type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        type, title, body, status, parent_id, rendered_anchor
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       review_id,
       'user',
@@ -3690,7 +3733,8 @@ class CommentRepository {
       title,
       body.trim(),
       'active',
-      parent_id
+      parent_id,
+      typeof rendered_anchor === 'string' ? rendered_anchor : null
     ]);
 
     return result.lastID;
@@ -4005,6 +4049,7 @@ class CommentRepository {
         parent_id,
         is_file_level,
         severity,
+        rendered_anchor,
         created_at,
         updated_at
       FROM comments

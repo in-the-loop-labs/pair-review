@@ -69,6 +69,7 @@ const SCHEMA_SQL = {
       voice_id TEXT,
       is_raw INTEGER DEFAULT 0,
       severity TEXT,
+      rendered_anchor TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,

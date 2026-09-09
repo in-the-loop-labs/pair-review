@@ -285,6 +285,25 @@ class PRManager {
     this._tourCleanupPending = null;
     // Cached staleness check promise — shared between on-load and triggerAIAnalysis
     this._stalenessPromise = null;
+    // ---- Rendered Markdown view state ----------------------------------
+    // Active RenderedDocumentView instances, keyed by file path. Reset (along
+    // with the lazy-body maps) at the top of every renderDiff() — the DOM
+    // they point into is torn down by diffContainer.innerHTML = '' there.
+    this._renderedDocuments = new Map();
+    // In-flight `_buildRenderedDocument` promises, keyed by file path —
+    // de-dupes concurrent `_ensureRenderedDocument` callers for the same
+    // file (see there). Reset alongside `_renderedDocuments`.
+    this._renderedDocumentPromises = new Map();
+    // Per-file view mode ('diff' | 'rendered'), keyed by file path. Reset in
+    // renderDiff() so a refresh/whitespace-toggle starts every Markdown file
+    // back in Diff mode (matches the always-available Diff fallback).
+    this._fileViewMode = new Map();
+    // The file path whose Outline is currently shown in the sidebar, or null.
+    // Set when a file is toggled into Rendered mode or an internal Markdown
+    // link navigates to one; cleared if that file leaves Rendered mode.
+    this._activeRenderedFile = null;
+    // Sidebar mode: 'files' | 'outline'.
+    this._sidebarMode = 'files';
     // Unique client ID for self-echo suppression on WebSocket review events.
     // Sent as X-Client-Id header on mutation requests; the server echoes
     // it back in the WebSocket broadcast so this tab can skip its own events.
@@ -404,6 +423,7 @@ class PRManager {
 
     // Initialize event handlers and UI
     this.setupEventHandlers();
+    this._initSidebarModeTabs();
     this.initTheme();
     this.initAnalysisConfigModal();
     this.initKeyboardShortcuts();
@@ -3994,6 +4014,26 @@ class PRManager {
     this._lazyFileBodies = new Map();
     this._fileBodyObserver = this._createFileBodyObserver();
 
+    // Rendered-Markdown view state is DOM-bound to the diff body we just
+    // wiped above; every RenderedDocumentView instance is now dangling and
+    // every per-file mode resets to the always-available Diff fallback.
+    //
+    // Tear the Outline scroll-spy down FIRST, before the maps below are
+    // replaced and before any of the DOM it observes can be reused: the
+    // observer holds hard references to heading elements from the previous
+    // render generation, all detached by the `innerHTML = ''` above. Left
+    // connected it keeps those nodes reachable and — because
+    // `_setCurrentOutlineHeading` writes into the live Outline sidebar — a
+    // late callback for a detached heading could stamp `aria-current` onto
+    // the NEW generation's outline. Same reasoning (and same placement,
+    // before the state reset) as `_teardownFileBodyObserver()` above.
+    this._teardownOutlineScrollSpy();
+    this._renderedDocuments = new Map();
+    this._renderedDocumentPromises = new Map();
+    this._fileViewMode = new Map();
+    this._activeRenderedFile = null;
+    this._renderOutlineSidebar();
+
     // Use changed_files array from API
     const files = pr.changed_files || pr.files || [];
     this.changedFilesByPath = new Map(files.map(file => [file.file, file]));
@@ -4429,6 +4469,19 @@ class PRManager {
       return wrapper;
     }
 
+    // Markdown files gain a first-class Rendered/Diff toggle. Deliberately
+    // excluded for deferred (too-large) diffs above and for binary/deleted
+    // files — Diff remains the sole, always-available mode for those, so
+    // existing behavior for those cases cannot regress. The container is
+    // created empty and hidden; content is fetched lazily on first toggle
+    // (see _ensureRenderedDocument), not eagerly for every markdown file.
+    if (this._isMarkdownRenderEligible(file)) {
+      this._addRenderedViewToggle(file, header, wrapper);
+      const renderedContainer = document.createElement('div');
+      renderedContainer.className = 'rendered-markdown-container';
+      wrapper.appendChild(renderedContainer);
+    }
+
     // Create container for @pierre/diffs rendering. Built EMPTY here — the
     // actual `pierreBridge.renderFile()` (patch parse + FileDiff instance +
     // shadow-DOM build) is deferred to _renderPierreFileBodyNow, driven by the
@@ -4527,6 +4580,957 @@ class PRManager {
     }
 
     return wrapper;
+  }
+
+  // ==========================================================================
+  // Rendered Markdown view
+  //
+  // Markdown files gain a per-file "Diff" / "Rendered" toggle (see the
+  // eligibility check + toggle wiring inside renderFileDiff above). Diff mode
+  // is the always-available fallback and is what every file starts in — the
+  // legacy/@pierre diff body is never torn down or replaced, only hidden via
+  // the `.rendered-mode-active` class on the wrapper. Rendered mode fetches
+  // the full NEW file content on first toggle (via the existing
+  // /file-contents route) and hands it to RenderedDocumentView, which does
+  // the actual block-splitting + DOM assembly (public/js/modules/
+  // rendered-document-view.js, built on public/js/modules/
+  // rendered-markdown.js's pure parsing helpers).
+  // ==========================================================================
+
+  /**
+   * Whether a changed_files entry is eligible for the Rendered/Diff toggle.
+   * @param {object} file - a changed_files entry
+   * @returns {boolean}
+   */
+  _isMarkdownRenderEligible(file) {
+    if (!file || !file.file || !window.RenderedMarkdown) return false;
+    if (!window.RenderedMarkdown.isMarkdownPath(file.file)) return false;
+    if (file.binary) return false;
+    if (this.getFileStatus(file) === 'deleted') return false;
+    return true;
+  }
+
+  /**
+   * Build the "Diff | Rendered" segmented toggle for a file header and wire
+   * its click handlers. Stashes the two buttons on the wrapper so
+   * setFileRenderMode can keep their pressed/active state in sync.
+   * @param {object} file
+   * @param {HTMLElement} header
+   * @param {HTMLElement} wrapper
+   */
+  _addRenderedViewToggle(file, header, wrapper) {
+    const toggle = document.createElement('div');
+    toggle.className = 'file-header-view-toggle';
+    toggle.setAttribute('role', 'group');
+    toggle.setAttribute('aria-label', 'View mode');
+
+    const diffBtn = document.createElement('button');
+    diffBtn.type = 'button';
+    diffBtn.className = 'file-header-view-toggle-btn active';
+    diffBtn.textContent = 'Diff';
+    diffBtn.setAttribute('aria-pressed', 'true');
+
+    const renderedBtn = document.createElement('button');
+    renderedBtn.type = 'button';
+    renderedBtn.className = 'file-header-view-toggle-btn';
+    renderedBtn.textContent = 'Rendered';
+    renderedBtn.setAttribute('aria-pressed', 'false');
+
+    diffBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setFileRenderMode(file.file, 'diff');
+    });
+    renderedBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setFileRenderMode(file.file, 'rendered');
+    });
+
+    toggle.appendChild(diffBtn);
+    toggle.appendChild(renderedBtn);
+    header.appendChild(toggle);
+
+    wrapper._renderModeButtons = { diffBtn, renderedBtn };
+  }
+
+  /**
+   * Switch a file between 'diff' and 'rendered' view mode. Idempotent.
+   * Lazily fetches + builds the RenderedDocumentView on first switch to
+   * 'rendered'; subsequent switches just toggle visibility.
+   * @param {string} filePath
+   * @param {'diff'|'rendered'} mode
+   */
+  async setFileRenderMode(filePath, mode) {
+    const wrapper = this.findFileElement(filePath);
+    if (!wrapper) return;
+
+    this._fileViewMode.set(filePath, mode);
+    wrapper.classList.toggle('rendered-mode-active', mode === 'rendered');
+
+    const buttons = wrapper._renderModeButtons;
+    if (buttons) {
+      buttons.diffBtn.classList.toggle('active', mode === 'diff');
+      buttons.diffBtn.setAttribute('aria-pressed', String(mode === 'diff'));
+      buttons.renderedBtn.classList.toggle('active', mode === 'rendered');
+      buttons.renderedBtn.setAttribute('aria-pressed', String(mode === 'rendered'));
+    }
+
+    if (mode === 'rendered') {
+      this._activeRenderedFile = filePath;
+      await this._ensureRenderedDocument(filePath);
+    } else if (this._activeRenderedFile === filePath) {
+      // _activeRenderedFile is a single pointer, but _fileViewMode allows
+      // MULTIPLE files to be in Rendered mode at once (each file's toggle
+      // is independent). Toggling THIS file back to Diff must not blow away
+      // the Outline for some OTHER file that is still in Rendered mode —
+      // fall back to any other still-rendered file before giving up.
+      this._activeRenderedFile = this._findAnyRenderedFilePath();
+    }
+
+    this._renderOutlineSidebar();
+  }
+
+  /**
+   * The first file path (in `_fileViewMode` iteration/insertion order)
+   * still in Rendered mode, or null if none are. Used by setFileRenderMode
+   * to pick a fallback `_activeRenderedFile` when the file being toggled
+   * back to Diff was the active one.
+   * @returns {string|null}
+   */
+  _findAnyRenderedFilePath() {
+    for (const [path, mode] of this._fileViewMode) {
+      if (mode === 'rendered') return path;
+    }
+    return null;
+  }
+
+  /**
+   * Whether a comment belongs in a file's Rendered view: same file,
+   * active (not dismissed), not file-level (those render in the separate
+   * file-comments zone above the document), and — critically — NOT a
+   * LEFT-side (old-file) comment.
+   *
+   * Rendered mode only ever shows the NEW/current file content
+   * (RenderedDocumentView.findBlockForLine resolves purely by new-file line
+   * number, with no awareness of `side`). A LEFT comment's `line_start` is
+   * an OLD-file line number — passing it through unfiltered lets
+   * findBlockForLine coincidentally match it against an unrelated NEW-file
+   * block that happens to span the same line number (e.g. a comment left
+   * on a since-deleted line reattaching to whatever new content now sits at
+   * that line number), silently misattaching a comment to content the
+   * reviewer never commented on. RIGHT-side comments (and legacy rows with
+   * no `side` at all, which predate the LEFT/RIGHT distinction and were
+   * always new-file-relative) are the only safe input here.
+   * @param {object} comment
+   * @param {string} filePath
+   * @returns {boolean}
+   */
+  _isRenderableComment(comment, filePath) {
+    return comment.file === filePath
+      && comment.is_file_level !== 1
+      && comment.status !== 'inactive'
+      && (comment.side || 'RIGHT') === 'RIGHT';
+  }
+
+  // Deterministic client-side ceiling on the RAW (pre-parse) size of a
+  // Markdown file's NEW content that Rendered mode will attempt to build.
+  // RenderedDocumentView.render() re-parses + re-sanitizes EVERY top-level
+  // block individually (on top of the single full-document parse used to
+  // find block boundaries) so it can wire independent per-block comment
+  // zones; that per-block work is what can freeze the main thread on a
+  // large document, not the one-time parse. Measured against the real
+  // renderer: a 400KB/~12,000-line document (~6,000 blocks) took ~1.3s;
+  // ~490KB/~16,000 lines (~16,000 blocks) took ~2.2s. These ceilings sit
+  // well under that first measured point so ordinary large docs (long
+  // READMEs/CHANGELOGs) still render, while pathological ones fail closed
+  // to a clear "use Diff mode" message instead of freezing the tab with no
+  // feedback. Diff mode has no per-block-reparse cost and remains available
+  // regardless of file size (see README "Rendered Markdown View").
+  static RENDERED_MARKDOWN_MAX_SOURCE_CHARS = 200 * 1024;
+  static RENDERED_MARKDOWN_MAX_SOURCE_LINES = 5000;
+
+  /**
+   * Fetch the file's current content and build its RenderedDocumentView, if
+   * not already built. Guarded against the render-generation changing (a
+   * refresh/whitespace-toggle/scope-change) while the fetch is in flight —
+   * mirrors the guard pattern used throughout the lazy diff-body machinery.
+   *
+   * In-flight de-duplication: concurrent callers for the SAME filePath
+   * (e.g. a fast Diff→Rendered→Rendered re-click, or the toggle handler
+   * racing an internal-link navigation to the same file) share one fetch +
+   * one RenderedDocumentView build rather than each starting their own —
+   * mirrors `_deferredDiffRenderPromises`'s in-flight-promise-cache pattern.
+   * Deliberately NOT declared `async`: an `async function` always wraps its
+   * return value in a NEW Promise object on every call, even when returning
+   * an already-existing promise — that would defeat the in-flight cache
+   * below, since two synchronous back-to-back callers would each get a
+   * distinct (if equivalently-resolving) wrapper promise instead of sharing
+   * the literal in-flight one. Returning the cached promise directly here
+   * preserves reference equality for concurrent callers.
+   * @param {string} filePath
+   * @returns {Promise<object|null>} the RenderedDocumentView, or null on failure
+   */
+  _ensureRenderedDocument(filePath) {
+    if (this._renderedDocuments.has(filePath)) {
+      return Promise.resolve(this._renderedDocuments.get(filePath));
+    }
+
+    if (!this._renderedDocumentPromises) {
+      this._renderedDocumentPromises = new Map();
+    }
+    const inFlight = this._renderedDocumentPromises.get(filePath);
+    if (inFlight) return inFlight;
+
+    const promise = this._buildRenderedDocument(filePath).finally(() => {
+      // Only delete our own entry — a later caller may already have
+      // replaced it with a NEWER in-flight promise for this same filePath
+      // (e.g. this build was itself pre-empted by a stale-generation
+      // guard and a fresh build started before this `finally` ran).
+      if (this._renderedDocumentPromises.get(filePath) === promise) {
+        this._renderedDocumentPromises.delete(filePath);
+      }
+    });
+    this._renderedDocumentPromises.set(filePath, promise);
+    return promise;
+  }
+
+  /**
+   * Does the actual fetch + build for `_ensureRenderedDocument`. Split out
+   * so the in-flight de-dupe cache in `_ensureRenderedDocument` wraps
+   * exactly one underlying attempt per filePath, however many callers ask
+   * for it concurrently.
+   * @param {string} filePath
+   * @returns {Promise<object|null>}
+   * @private
+   */
+  async _buildRenderedDocument(filePath) {
+    const wrapper = this.findFileElement(filePath);
+    const container = wrapper?.querySelector('.rendered-markdown-container');
+    const file = this.changedFilesByPath.get(filePath);
+    if (!container || !file || !this.currentPR?.id) return null;
+
+    const gen = this._renderGen;
+    container.innerHTML = '<div class="rendered-markdown-loading">Loading…</div>';
+
+    let newContents = null;
+    try {
+      const status = this.getFileStatus(file);
+      const response = await fetch(
+        `/api/reviews/${this.currentPR.id}/file-contents/${encodeURIComponent(filePath)}?status=${encodeURIComponent(status)}`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        newContents = data.newContents;
+      }
+    } catch (error) {
+      console.warn('[RenderedMarkdown] failed to fetch file contents:', error);
+    }
+
+    // Stale-render guard: renderDiff() may have wiped this generation's DOM
+    // and reset _renderedDocuments while the fetch above was in flight.
+    if (gen !== this._renderGen || !container.isConnected) return null;
+
+    if (newContents == null) {
+      container.innerHTML = '<div class="rendered-markdown-error">Could not load file content for the Rendered view. Try Diff mode instead.</div>';
+      return null;
+    }
+
+    if (
+      newContents.length > PRManager.RENDERED_MARKDOWN_MAX_SOURCE_CHARS ||
+      this._countLines(newContents) > PRManager.RENDERED_MARKDOWN_MAX_SOURCE_LINES
+    ) {
+      container.innerHTML = '<div class="rendered-markdown-error">This file is too large to render in Rendered mode. Use Diff mode instead.</div>';
+      return null;
+    }
+
+    const view = new window.RenderedDocumentView({
+      container,
+      filePath,
+      source: newContents,
+      patch: file.patch || null,
+      md: window.markdownRenderer,
+      renderMarkdown: window.renderMarkdown,
+      escapeHtmlAttribute: window.escapeHtmlAttribute,
+      changedMarkdownPaths: this._getChangedMarkdownPaths(),
+      callbacks: {
+        onNavigateInternalLink: (targetPath, fragment) => this._onInternalMarkdownLink(targetPath, fragment),
+        onCreateComment: (payload) => this._createRenderedBlockComment(filePath, payload),
+        onEditComment: (commentId, body) => this._editRenderedBlockComment(commentId, body),
+        onDeleteComment: (commentId) => this._deleteRenderedBlockComment(commentId),
+        // Recount AFTER the view has added/removed its own card. The
+        // create/delete handlers above resolve before that happens, so the
+        // count they take is one card stale: it misses a comment whose only
+        // surface is this Rendered view (no renderable Diff target), and
+        // still includes a card that is about to be removed. Counting is
+        // DOM-derived across both surfaces (see
+        // public/js/utils/comment-count.js), so it has to run last.
+        onCommentsChanged: () => {
+          this.updateCommentCount?.();
+          this.commentMinimizer?.refreshIndicators?.();
+        }
+      }
+    });
+    view.render();
+    this._renderedDocuments.set(filePath, view);
+
+    const existingComments = (this.userComments || []).filter(
+      (c) => this._isRenderableComment(c, filePath)
+    );
+    view.setComments(existingComments);
+
+    this._renderOutlineSidebar();
+    return view;
+  }
+
+  /**
+   * The set of changed-file paths (in this review) that are Markdown —
+   * i.e. safe cross-file link-navigation targets. Relative links resolving
+   * to anything else are left as ordinary links (see resolveInternalLink).
+   * @returns {Set<string>}
+   */
+  _getChangedMarkdownPaths() {
+    const paths = new Set();
+    for (const path of this.changedFilesByPath.keys()) {
+      if (window.RenderedMarkdown?.isMarkdownPath(path)) paths.add(path);
+    }
+    return paths;
+  }
+
+  /**
+   * Handle a click on a safe internal Markdown link: switch the target file
+   * into Rendered mode, scroll it into view, then (if a fragment was given)
+   * scroll to the matching heading within it.
+   * @param {string} targetPath
+   * @param {string|null} fragment
+   */
+  async _onInternalMarkdownLink(targetPath, fragment) {
+    if (!this.findFileElement(targetPath)) return;
+    if (this._fileViewMode.get(targetPath) !== 'rendered') {
+      await this.setFileRenderMode(targetPath, 'rendered');
+    }
+    await this.scrollToFile(targetPath);
+    if (fragment) {
+      this._renderedDocuments.get(targetPath)?.scrollToHeading(fragment);
+    }
+  }
+
+  /**
+   * Create a comment on a rendered block. Uses the SAME
+   * `/api/reviews/:id/comments` endpoint and payload shape as every other
+   * comment path (CommentManager, FileCommentManager) — this is not a new
+   * submission path, just a new UI surface over the existing one. Works
+   * unchanged in both PR and Local mode, since that endpoint already
+   * dispatches on the review record rather than the URL the page was
+   * loaded from.
+   * @param {string} filePath
+   * @param {object} payload - { side, line_start, line_end, diff_position, body }
+   * @returns {Promise<object>} the saved comment
+   */
+  async _createRenderedBlockComment(filePath, payload) {
+    const requestBody = {
+      file: filePath,
+      line_start: payload.line_start,
+      line_end: payload.line_end,
+      side: payload.side,
+      diff_position: payload.diff_position,
+      body: payload.body,
+      commit_sha: this.currentPR?.head_sha,
+      // Optional, LOCAL-only nested target descriptor (list item / table
+      // row / exact cell). Sent alongside — never instead of — the line
+      // coordinates above, which remain the whole GitHub contract. Omitted
+      // entirely (rather than sent as null) when there is no nested target,
+      // so the request body is byte-identical to every other comment create
+      // for the block-level case. The server re-validates it and rejects
+      // anything unexpected.
+      ...(payload.rendered_anchor ? { rendered_anchor: payload.rendered_anchor } : {})
+    };
+
+    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': this._clientId },
+      body: JSON.stringify(requestBody)
+    });
+    if (!response.ok) throw new Error('Failed to save comment');
+    const result = await response.json();
+
+    const comment = {
+      id: result.commentId,
+      file: filePath,
+      line_start: payload.line_start,
+      line_end: payload.line_end,
+      side: payload.side,
+      diff_position: payload.diff_position,
+      body: payload.body,
+      // Kept on the in-memory record so a later
+      // `_refreshRenderedDocumentsComments()` (triggered by any other
+      // surface's create/edit/delete, or another client's websocket event)
+      // re-renders this comment back onto the SAME nested target instead of
+      // demoting it to its enclosing block until the next full reload.
+      // Normalized again by the view, exactly like the string form the API
+      // returns on reload.
+      rendered_anchor: payload.rendered_anchor || null,
+      source: 'user',
+      is_file_level: 0,
+      status: 'active',
+      created_at: new Date().toISOString()
+    };
+    this.userComments = this.userComments || [];
+    this.userComments.push(comment);
+
+    // Make the Diff surface's target line RENDERABLE before syncing. The
+    // headline use case for Rendered mode is commenting on prose that is
+    // NOT part of the diff (an unchanged paragraph next to a changed one),
+    // so `comment.line_start` very often sits outside every default hunk.
+    // Both `_syncDiffCommentCreate` branches can only anchor to content
+    // that is already on screen (Pierre anchors an annotation at a line the
+    // vendor must actually be showing; the legacy branch scans existing
+    // `<tr>`s), so without this step an out-of-hunk comment renders nowhere
+    // in Diff — and, because every comment counter in the app is DOM-based
+    // on `.user-comment-row`, it is also missing from the toolbar count,
+    // from "N comments will be submitted", from Clear All, and it fails to
+    // satisfy the "Request changes needs comments or a summary" check. This
+    // is the same one-line precondition `loadUserComments()` and
+    // `_renderAdoptedUserComment()` already apply for exactly this reason;
+    // it expands the enclosing gap (legacy) or adds a context range
+    // (Pierre) and, for a file whose Diff body was never rendered, renders
+    // it first. Best-effort: a failure here must not lose the comment the
+    // server already stored, so we still fall through to the sync (which
+    // safely no-ops when there is nothing to anchor to) and to the
+    // authoritative `this.userComments` above.
+    try {
+      await this.ensureLinesVisible([{
+        file: filePath,
+        line_start: comment.line_start,
+        line_end: comment.line_end || comment.line_start,
+        side: comment.side || 'RIGHT'
+      }]);
+    } catch (error) {
+      console.warn('[RenderedMarkdown] could not reveal diff target for new comment:', error);
+    }
+
+    // Cross-surface sync: mirror this brand-new comment onto whichever
+    // engine currently owns this file's Diff surface — a `@pierre/diffs`
+    // annotation or a legacy `<tr>` row. Called EXACTLY ONCE, after the
+    // reveal above, so the single attempt is the one that can succeed;
+    // it is internally idempotent (id-keyed guards on both branches) but
+    // relies on us not racing ourselves. Without this, a comment created
+    // via a Rendered block is invisible in an already-open Diff view until
+    // an unrelated full loadUserComments() reload happens (e.g. another
+    // client's edit) — this same tab's own websocket broadcast is
+    // self-suppressed (see the `sourceClientId === this._clientId`
+    // guards), so it can't be relied on to close this gap for the tab that
+    // made the edit.
+    this._syncDiffCommentCreate(comment);
+
+    // Third surface: the AI/Review panel is the reviewer's inbox of
+    // captured feedback. Every other create path notifies it
+    // (CommentManager.saveUserComment, FileCommentManager, _notifyAdoption)
+    // — without this the panel stays stale until a reload. Exactly one
+    // notification per create: neither `_syncDiffCommentCreate` nor
+    // `displayUserComment` touches the panel.
+    if (window.aiPanel?.addComment) window.aiPanel.addComment(comment);
+
+    this.updateCommentCount?.();
+    if (this.commentMinimizer) this.commentMinimizer.refreshIndicators();
+    window.chatPanel?.queueUserActionHint?.(`[User Action: created comment ${result.commentId}]`);
+    return comment;
+  }
+
+  /**
+   * Edit a comment created via a rendered block. Same endpoint as
+   * CommentManager/FileCommentManager edits.
+   * @param {number} commentId
+   * @param {string} body
+   */
+  async _editRenderedBlockComment(commentId, body) {
+    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body })
+    });
+    if (!response.ok) throw new Error('Failed to update comment');
+    const existing = (this.userComments || []).find((c) => c.id === commentId);
+    if (existing) existing.body = body;
+    // Cross-surface sync: patch the matching Diff-surface comment's body
+    // too (Pierre annotation or legacy row, whichever owns this file), if
+    // one is currently rendered — mirrors saveEditedUserComment's own
+    // in-place DOM patch, just from the other direction.
+    this._syncDiffCommentUpdate(existing || { id: commentId, body });
+    // Third surface: keep the AI/Review panel's copy of the body in step,
+    // exactly as saveEditedUserComment does for the legacy edit form.
+    if (window.aiPanel?.updateComment) window.aiPanel.updateComment(commentId, { body });
+  }
+
+  /**
+   * Delete a comment created via a rendered block. Same endpoint as
+   * CommentManager/FileCommentManager deletes.
+   * @param {number} commentId
+   */
+  async _deleteRenderedBlockComment(commentId) {
+    const comment = (this.userComments || []).find((c) => c.id === commentId);
+    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete comment');
+    // Consume the response body: for a comment ADOPTED from an AI
+    // suggestion the server reports the orphaned parent in
+    // `dismissedSuggestionId`, and that state has to be applied here too —
+    // this is a second delete entry point over the same endpoint, not a
+    // different operation (see _applyDismissedSuggestionAfterDelete).
+    // Tolerant of a body-less/non-JSON response: a delete that succeeded
+    // must not fail because there was nothing to parse.
+    let apiResult = {};
+    try {
+      apiResult = (await response.json()) || {};
+    } catch {
+      apiResult = {};
+    }
+    this.userComments = (this.userComments || []).filter((c) => c.id !== commentId);
+    // Cross-surface sync: remove the matching Diff-surface comment too
+    // (Pierre annotation or legacy row, whichever owns this file), if one
+    // is currently rendered — mirrors deleteUserComment's own DOM removal,
+    // just from the other direction. Captured `comment` (its `.file`)
+    // BEFORE filtering it out of this.userComments above, since the sync
+    // needs to know which engine owns that file.
+    this._syncDiffCommentDelete(comment || { id: commentId });
+
+    // Third surface: mirror deleteUserComment's own AI/Review-panel
+    // handling exactly — a soft-deleted comment becomes a 'dismissed' entry
+    // when the panel's "show dismissed" filter is on, and disappears
+    // otherwise. Deliberately the same branch (not an unconditional
+    // removeComment) so the two delete entry points can't disagree about
+    // what the panel shows.
+    const showDismissed = window.aiPanel?.showDismissedComments || false;
+    if (showDismissed && window.aiPanel?.updateComment) {
+      window.aiPanel.updateComment(commentId, { status: 'inactive' });
+    } else if (window.aiPanel?.removeComment) {
+      window.aiPanel.removeComment(commentId);
+    }
+
+    // Fourth surface: the parent AI suggestion, if this comment was adopted
+    // from one. Shared with deleteUserComment so both delete entry points
+    // leave the suggestion in the same state.
+    this._applyDismissedSuggestionAfterDelete(apiResult.dismissedSuggestionId);
+
+    this.updateCommentCount?.();
+    if (this.commentMinimizer) this.commentMinimizer.refreshIndicators();
+  }
+
+  /**
+   * Mirror a brand-new comment (created via a Rendered block) onto
+   * whichever engine currently owns this file's Diff surface, if that
+   * surface has already rendered.
+   *
+   * Engine dispatch: `this.pierreBridge.files` only contains files whose
+   * Diff body has actually been built (eager render, or lazy render via
+   * IntersectionObserver / the "Load diff" button for large diffs) — a
+   * Markdown file can be open in Rendered mode with its Diff body never
+   * having rendered at all yet, on EITHER engine. In that case both
+   * branches below are a deliberate no-op: there is no DOM to patch, and
+   * the authoritative `this.userComments` (already updated by the caller)
+   * means the file's own future render pass will pick the comment up
+   * normally, exactly as `loadUserComments()`'s reanchor-after-render path
+   * does for every other comment.
+   *
+   * Pierre branch: adds a `comment-${id}` annotation via the bridge's own
+   * public `addAnnotation`/`getAnnotations` API — never touches the
+   * bridge's shadow DOM directly. Guarded against a double-add on a
+   * redundant call (e.g. this same create racing an incoming
+   * `loadUserComments()` reload from another client) by checking the
+   * bridge's own annotation list first.
+   *
+   * Legacy branch: inserts a `.user-comment-row` next to the target line's
+   * `<tr>`, mirroring the same find-the-row-then-`displayUserComment`
+   * logic `loadUserComments()` uses for legacy line-level comments.
+   * Guarded against a double-insert via the engine-agnostic
+   * `[data-comment-id]` attribute both `displayUserComment` and the Pierre
+   * annotation renderer set.
+   *
+   * Selector note: once a file has been switched to Rendered mode,
+   * `setFileRenderMode` only CSS-hides its legacy Diff DOM
+   * (`.rendered-mode-active .d2h-file-body { display: none }`) — a legacy
+   * `.user-comment-row` and this comment's Rendered
+   * `.rendered-markdown-comment-card` can both be present in the DOM at
+   * once, both carrying the SAME `data-comment-id`. The legacy-branch
+   * lookups here and in the two sibling methods below are scoped to
+   * `.user-comment-row` so they can never accidentally match the Rendered
+   * card instead.
+   * @param {object} comment
+   * @private
+   */
+  _syncDiffCommentCreate(comment) {
+    if (!comment || comment.is_file_level === 1) return;
+
+    if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+      const annotationId = `comment-${comment.id}`;
+      const alreadyPresent = this.pierreBridge
+        .getAnnotations(comment.file, 'comment')
+        .some((a) => a.metadata.id === annotationId);
+      if (alreadyPresent) return;
+      this.pierreBridge.addAnnotation(comment.file, {
+        lineNumber: comment.line_start,
+        side: comment.side || 'RIGHT',
+        type: 'comment',
+        id: annotationId,
+        data: comment,
+      });
+      return;
+    }
+
+    if (document.querySelector(`.user-comment-row[data-comment-id="${comment.id}"]`)) return;
+    const fileElement = this.findFileElement(comment.file);
+    if (!fileElement) return;
+
+    const side = comment.side || 'RIGHT';
+    const lineRows = fileElement.querySelectorAll('tr');
+    for (const row of lineRows) {
+      if (this.getLineNumber(row, side) === comment.line_start) {
+        this.displayUserComment(comment, row);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Patch an already-rendered Diff-surface comment's body after an edit
+   * made via a Rendered block, on whichever engine owns this file's Diff
+   * surface. No-op if that file's Diff surface hasn't rendered a matching
+   * annotation/row yet — same reasoning as `_syncDiffCommentCreate`;
+   * `this.userComments` (already patched by the caller) is authoritative
+   * and will be picked up whenever that surface does render.
+   *
+   * Pierre branch: the bridge exposes no "update annotation data" call —
+   * `addAnnotation`/`removeAnnotation`/`getAnnotations` are the only public
+   * mutators. Remove-then-re-add with the SAME id and refreshed `data` is
+   * the idempotent-update pattern already used elsewhere in this codebase
+   * (see `HunkSummaryRenderer.renderPierre`), and it's not merely
+   * cosmetic: `_renderCommentAnnotation` reads `comment.body` at render
+   * time, so leaving the stale annotation in place and hoping a FUTURE
+   * unrelated rerender picks up a body mutated on the shared object would
+   * leave the currently-slotted DOM node showing the pre-edit text until
+   * something else happens to force that file to rerender, which may be
+   * never. The anchor (lineNumber/side, read straight off `comment`, which
+   * an edit never changes) and the id are preserved exactly.
+   *
+   * Legacy branch: patches the `.user-comment-body` div in place (mirrors
+   * saveEditedUserComment's own in-place DOM patch).
+   * @param {object} comment - the ALREADY-mutated comment (post-edit body)
+   * @private
+   */
+  _syncDiffCommentUpdate(comment) {
+    if (!comment || !comment.file) return;
+
+    if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+      const annotationId = `comment-${comment.id}`;
+      const exists = this.pierreBridge
+        .getAnnotations(comment.file, 'comment')
+        .some((a) => a.metadata.id === annotationId);
+      if (!exists) return;
+      this.pierreBridge.removeAnnotation(comment.file, annotationId);
+      this.pierreBridge.addAnnotation(comment.file, {
+        lineNumber: comment.line_start,
+        side: comment.side || 'RIGHT',
+        type: 'comment',
+        id: annotationId,
+        data: comment,
+      });
+      return;
+    }
+
+    const bodyDiv = document.querySelector(`.user-comment-row[data-comment-id="${comment.id}"] .user-comment-body`);
+    if (!bodyDiv) return;
+    bodyDiv.innerHTML = window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body);
+    bodyDiv.dataset.originalMarkdown = comment.body;
+  }
+
+  /**
+   * Remove an already-rendered Diff-surface comment after a delete made
+   * via a Rendered block, from whichever engine owns this file's Diff
+   * surface. No-op if the comment/file is unknown, or if that surface
+   * hasn't rendered a matching annotation/row — `this.userComments`
+   * (already filtered by the caller) is authoritative.
+   *
+   * Pierre branch: MUST go through the bridge's own `removeAnnotation`,
+   * never `.remove()` the slotted DOM node directly — the bridge still
+   * holds the annotation in its internal per-file annotation list, and the
+   * next UNRELATED rerender of this file (any other
+   * addAnnotation/removeAnnotation/addAnnotations call, `setCollapsed`,
+   * `addContextRanges`, a worker content-upgrade, ...) re-slots every
+   * annotation still in that list — resurrecting a comment the reviewer
+   * already dismissed. `ExternalCommentManager.clear()` documents this
+   * exact rule for its own annotation type.
+   *
+   * Legacy branch: removes the `.user-comment-row` from the DOM (mirrors
+   * deleteUserComment's own removal).
+   * @param {object} comment - the comment as it existed BEFORE being
+   *   filtered out of `this.userComments` (need `.file` to pick the engine)
+   * @private
+   */
+  _syncDiffCommentDelete(comment) {
+    if (!comment || !comment.file) return;
+
+    if (this.pierreBridge && this.pierreBridge.files.has(comment.file)) {
+      const annotationId = `comment-${comment.id}`;
+      const exists = this.pierreBridge
+        .getAnnotations(comment.file, 'comment')
+        .some((a) => a.metadata.id === annotationId);
+      if (!exists) return;
+      this.pierreBridge.removeAnnotation(comment.file, annotationId);
+      return;
+    }
+
+    document.querySelector(`.user-comment-row[data-comment-id="${comment.id}"]`)?.remove();
+  }
+
+  /**
+   * Authoritative "a user comment was just created on some OTHER surface"
+   * entry point. Records the comment in `this.userComments` (the single
+   * source of truth every RenderedDocumentView is built from) and refreshes
+   * every live Rendered view so the new comment appears there immediately.
+   *
+   * This is the narrow producer→consumer seam for surfaces that own their
+   * own creation flow and therefore cannot be routed through
+   * `_createRenderedBlockComment`:
+   *   - `CommentManager.saveUserComment` — the legacy (non-`@pierre/diffs`)
+   *     inline comment form, reached whenever the vendor bundle is absent;
+   *     it already holds a `prManager` reference and already calls back into
+   *     `prManager.updateCommentCount()` / `prManager.lineTracker`, so this
+   *     is the same established delegate seam, not a new one. Comment
+   *     PERSISTENCE stays entirely in CommentManager — this method never
+   *     fetches, so there is no second copy of the create request.
+   *   - `_notifyAdoption` — an adopted AI suggestion becomes a real user
+   *     comment, but the adoption flow builds it locally rather than
+   *     re-reading `/comments`.
+   *
+   * Idempotent and id-keyed: a comment id already present is merged in
+   * place rather than duplicated, so a create racing an incoming
+   * `loadUserComments()` reload (or a caller that already pushed) can't
+   * produce two entries — and hence can't produce two Rendered cards.
+   * @param {object} comment - comment object with at least `{ id, file, line_start }`
+   */
+  registerCreatedUserComment(comment) {
+    if (!comment || comment.id == null) return;
+    this.userComments = this.userComments || [];
+    const index = this.userComments.findIndex((c) => c.id === comment.id);
+    if (index === -1) {
+      this.userComments.push(comment);
+    } else {
+      // Merge rather than replace: the stored copy may carry server-side
+      // fields (status, is_file_level, parent_id) the caller's freshly
+      // built object doesn't know about.
+      this.userComments[index] = { ...this.userComments[index], ...comment };
+    }
+    this._refreshRenderedDocumentsComments();
+  }
+
+  /**
+   * Re-display the current comment set inside every active
+   * RenderedDocumentView. Called after loadUserComments() refetches, so a
+   * comment created via the Diff view (or by another client, via the
+   * websocket-triggered reload) also shows up in Rendered mode, and vice
+   * versa — both are just views over the same `this.userComments`.
+   */
+  _refreshRenderedDocumentsComments() {
+    // Defensive guard: many existing unit tests construct a PRManager
+    // instance via `Object.create(PRManager.prototype)` and only set the
+    // handful of properties their target method needs, bypassing the real
+    // constructor (which always initializes `_renderedDocuments`). Treat
+    // "never initialized" the same as "no Rendered views currently open" —
+    // there is nothing to refresh either way — rather than throwing and
+    // aborting whatever legacy comment-CRUD flow called this as a
+    // side-effect (saveEditedUserComment, deleteUserComment).
+    if (!this._renderedDocuments) return;
+    for (const [filePath, view] of this._renderedDocuments) {
+      const comments = (this.userComments || []).filter(
+        (c) => this._isRenderableComment(c, filePath)
+      );
+      view.setComments(comments);
+    }
+  }
+
+  /**
+   * Wire the sidebar's Files/Outline tab buttons. Idempotent (the buttons
+   * are static markup, not regenerated per render, so this only needs to
+   * run once).
+   */
+  _initSidebarModeTabs() {
+    const filesTab = document.getElementById('sidebar-tab-files');
+    const outlineTab = document.getElementById('sidebar-tab-outline');
+    if (!filesTab || !outlineTab || filesTab.dataset.listenerAdded === 'true') return;
+    filesTab.dataset.listenerAdded = 'true';
+    filesTab.addEventListener('click', () => this.setSidebarMode('files'));
+    outlineTab.addEventListener('click', () => this.setSidebarMode('outline'));
+
+    // Roving-tabindex keyboard navigation per the ARIA Authoring Practices
+    // "tab" pattern: Left/Right/Up/Down moves focus to the adjacent tab AND
+    // activates it (with only two tabs, Left/Up and Right/Down are each
+    // other's inverse); Home/End jump to the first/last tab. These are the
+    // ONLY keys intercepted — Tab (moving focus in/out of the tablist) and
+    // Enter/Space (native <button> click activation, already handled by
+    // the click listeners above) are left completely untouched.
+    const tabs = [filesTab, outlineTab];
+    const modes = ['files', 'outline'];
+    tabs.forEach((tab, i) => {
+      tab.addEventListener('keydown', (e) => {
+        let targetIndex = null;
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') targetIndex = (i - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') targetIndex = (i + 1) % tabs.length;
+        else if (e.key === 'Home') targetIndex = 0;
+        else if (e.key === 'End') targetIndex = tabs.length - 1;
+        if (targetIndex === null) return;
+        e.preventDefault();
+        tabs[targetIndex].focus();
+        this.setSidebarMode(modes[targetIndex]);
+      });
+    });
+  }
+
+  /**
+   * Switch the left sidebar between the File Navigator and the Outline of
+   * the currently-active Rendered Markdown document.
+   * @param {'files'|'outline'} mode
+   */
+  setSidebarMode(mode) {
+    this._sidebarMode = mode;
+    const filesTab = document.getElementById('sidebar-tab-files');
+    const outlineTab = document.getElementById('sidebar-tab-outline');
+    const fileList = document.getElementById('file-list');
+    const outlineList = document.getElementById('outline-list');
+
+    if (filesTab) {
+      filesTab.classList.toggle('active', mode === 'files');
+      filesTab.setAttribute('aria-selected', String(mode === 'files'));
+      // Roving tabindex: only the selected tab is Tab-reachable; the ARIA
+      // APG tab pattern's arrow-key handler (_initSidebarModeTabs) moves
+      // focus between tabs directly via .focus(), not via browser Tab
+      // order.
+      filesTab.tabIndex = mode === 'files' ? 0 : -1;
+    }
+    if (outlineTab) {
+      outlineTab.classList.toggle('active', mode === 'outline');
+      outlineTab.setAttribute('aria-selected', String(mode === 'outline'));
+      outlineTab.tabIndex = mode === 'outline' ? 0 : -1;
+    }
+    if (fileList) fileList.hidden = mode !== 'files';
+    if (outlineList) outlineList.hidden = mode !== 'outline';
+
+    if (mode === 'outline') this._renderOutlineSidebar();
+  }
+
+  /**
+   * Render the Outline sidebar contents for `this._activeRenderedFile`
+   * (the most recently Rendered-mode-toggled — or internal-link-navigated
+   * to — Markdown document). Shows a helpful empty state when no document
+   * is active or the active document has no headings. Safe to call even
+   * when the Outline tab isn't the visible sidebar mode (e.g. right after
+   * a toggle) — it's cheap and keeps the sidebar correct the moment the
+   * user switches to it.
+   */
+  _renderOutlineSidebar() {
+    const outlineList = document.getElementById('outline-list');
+    if (!outlineList) return;
+    outlineList.innerHTML = '';
+
+    const filePath = this._activeRenderedFile;
+    const view = filePath ? this._renderedDocuments.get(filePath) : null;
+
+    if (!view || !view.outline || view.outline.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'outline-empty-state';
+      empty.textContent = filePath
+        ? 'This document has no headings.'
+        : 'Switch a Markdown file to Rendered mode to see its outline.';
+      outlineList.appendChild(empty);
+      return;
+    }
+
+    const title = document.createElement('div');
+    title.className = 'outline-file-title';
+    title.textContent = filePath;
+    title.title = filePath;
+    outlineList.appendChild(title);
+
+    view.outline.forEach((entry) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `outline-item outline-level-${entry.level}`;
+      item.textContent = entry.text || '(untitled)';
+      item.dataset.slug = entry.slug;
+      item.style.setProperty('--outline-indent', String(Math.max(0, entry.level - 1)));
+      item.addEventListener('click', () => {
+        view.scrollToHeading(entry.slug);
+        this._setCurrentOutlineHeading(entry.slug);
+      });
+      outlineList.appendChild(item);
+    });
+
+    this._wireOutlineScrollSpy(view);
+  }
+
+  /**
+   * Mark one Outline entry as the accessible "current heading" (aria-current
+   * + visual highlight), clearing it from every other entry.
+   * @param {string} slug
+   */
+  _setCurrentOutlineHeading(slug) {
+    const outlineList = document.getElementById('outline-list');
+    if (!outlineList) return;
+    outlineList.querySelectorAll('.outline-item').forEach((el) => {
+      const isCurrent = el.dataset.slug === slug;
+      el.classList.toggle('current', isCurrent);
+      if (isCurrent) el.setAttribute('aria-current', 'true');
+      else el.removeAttribute('aria-current');
+    });
+  }
+
+  /**
+   * Track which heading is nearest the top of the scroll container while
+   * the Outline is showing, so it can carry an accessible "current" state
+   * as the user scrolls (not just on click). Recreated per document;
+   * no-ops under jsdom (IntersectionObserver undefined), same fallback used
+   * by the lazy diff-body observer.
+   * @param {object} view - the active RenderedDocumentView
+   */
+  _wireOutlineScrollSpy(view) {
+    this._teardownOutlineScrollSpy();
+    if (typeof IntersectionObserver === 'undefined') return;
+
+    const headingEls = Array.from(
+      view.container.querySelectorAll('h1[id^="md-heading-"],h2[id^="md-heading-"],h3[id^="md-heading-"],h4[id^="md-heading-"],h5[id^="md-heading-"],h6[id^="md-heading-"]')
+    );
+    if (headingEls.length === 0) return;
+
+    const root = document.querySelector('.diff-view') || null;
+    const visible = new Set();
+    this._outlineScrollObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) visible.add(entry.target);
+        else visible.delete(entry.target);
+      });
+      const current = headingEls.find((el) => visible.has(el));
+      // Recover the bare heading slug via the view itself (it knows its own
+      // file-scoped id prefix — see RenderedDocumentView#slugFromHeadingId)
+      // rather than a fixed regex strip, since heading ids are namespaced
+      // per-file to avoid cross-file id collisions.
+      const slug = current ? view.slugFromHeadingId(current.id) : null;
+      if (slug) {
+        this._setCurrentOutlineHeading(slug);
+      }
+    }, { root, rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+
+    headingEls.forEach((el) => this._outlineScrollObserver.observe(el));
+  }
+
+  /**
+   * Disconnect and drop the Outline scroll-spy IntersectionObserver, if one
+   * is live. Idempotent. Two callers:
+   *   - `_wireOutlineScrollSpy` (replacing the previous document's spy), and
+   *   - `renderDiff` (whole-render reset, where the observed headings have
+   *     already been detached by the container wipe and no new spy is wired
+   *     until a file is toggled back into Rendered mode).
+   * @private
+   */
+  _teardownOutlineScrollSpy() {
+    if (!this._outlineScrollObserver) return;
+    this._outlineScrollObserver.disconnect();
+    this._outlineScrollObserver = null;
   }
 
   /**
@@ -6153,7 +7157,7 @@ class PRManager {
    */
   async editUserComment(commentId) {
     try {
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
       if (!commentRow) return;
 
       const commentDiv = commentRow.querySelector('.user-comment');
@@ -6272,7 +7276,7 @@ class PRManager {
 
       if (!response.ok) throw new Error('Failed to update comment');
 
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
       let bodyDiv = commentDiv.querySelector('.user-comment-body');
       const editFormEl = commentDiv.querySelector('.user-comment-edit-form');
@@ -6295,6 +7299,17 @@ class PRManager {
         window.aiPanel.updateComment(commentId, { body: editedText });
       }
 
+      // Cross-surface sync: this.userComments and the legacy Diff DOM row
+      // just updated above are two independent views over the same
+      // comment. Without patching this.userComments too, a
+      // RenderedDocumentView showing the same comment (built from
+      // this.userComments at construction/refresh time) would keep
+      // displaying the pre-edit body indefinitely, with no error or
+      // indication that the edit didn't reach it.
+      const existingComment = (this.userComments || []).find((c) => c.id === commentId);
+      if (existingComment) existingComment.body = editedText;
+      this._refreshRenderedDocumentsComments();
+
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
@@ -6310,7 +7325,7 @@ class PRManager {
    * Cancel editing user comment
    */
   cancelEditUserComment(commentId) {
-    const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+    const commentRow = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
     if (!commentRow) return;
 
     const commentDiv = commentRow.querySelector('.user-comment');
@@ -6339,14 +7354,22 @@ class PRManager {
 
       const apiResult = await response.json();
 
+      // Cross-surface sync: remove the comment from this.userComments too
+      // (matching the design decision below that dismissed comments are
+      // never shown, in either surface) and refresh every live
+      // RenderedDocumentView. Without this, a comment dismissed here while
+      // viewing a file in Diff mode stays visible — with live Edit/Delete
+      // controls — in that same file's Rendered view.
+      this.userComments = (this.userComments || []).filter((c) => c.id !== commentId);
+      this._refreshRenderedDocumentsComments();
+
       // Check if dismissed comments filter is enabled for AI Panel updates
       const showDismissed = window.aiPanel?.showDismissedComments || false;
 
       // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
-        this.updateCommentCount();
       }
 
       // Also handle file-level comment cards
@@ -6357,8 +7380,19 @@ class PRManager {
         if (zone && this.fileCommentManager) {
           this.fileCommentManager.updateCommentCount(zone);
         }
-        this.updateCommentCount();
       }
+
+      // Toolbar count / Clear-All enablement is recounted exactly once,
+      // unconditionally, after both DOM sweeps above. It must NOT be nested
+      // inside either `if`: `CommentCount` now also counts
+      // `.rendered-markdown-comment-card`, so a comment whose only surface is
+      // a Rendered view (an orphan-line comment, or one whose Diff target was
+      // never revealed) has neither a `.user-comment-row` nor a
+      // `.file-comment-card` — yet its Rendered card has just been removed by
+      // `_refreshRenderedDocumentsComments()` above, so the count really did
+      // change. Recounting here (rather than in each branch) also avoids the
+      // previous double call when a comment somehow had both surfaces.
+      this.updateCommentCount();
 
       // Update AI Panel - transition to dismissed state or remove based on filter
       if (showDismissed && window.aiPanel?.updateComment) {
@@ -6371,18 +7405,7 @@ class PRManager {
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
       // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
       // User can click "Show" to restore it to active state if they want to re-adopt.
-      if (apiResult.dismissedSuggestionId) {
-        if (window.aiPanel?.updateFindingStatus) {
-          window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
-        }
-        // Clear hiddenForAdoption so that restoring the suggestion takes the API code path
-        // instead of the toggle-only shortcut. Without this, restoring a previously-adopted
-        // suggestion would only toggle visibility without updating its status.
-        const suggestionDiv = document.querySelector(`[data-suggestion-id="${apiResult.dismissedSuggestionId}"]`);
-        if (suggestionDiv) {
-          delete suggestionDiv.dataset.hiddenForAdoption;
-        }
-      }
+      this._applyDismissedSuggestionAfterDelete(apiResult.dismissedSuggestionId);
 
       // Refresh minimize-mode indicators so deleted comments no longer show
       if (this.commentMinimizer) {
@@ -6437,6 +7460,38 @@ class PRManager {
   }
 
   /**
+   * Apply the "the parent AI suggestion was dismissed too" side effect that
+   * a single-comment DELETE reports back in `dismissedSuggestionId`.
+   *
+   * Extracted from `deleteUserComment` so the SECOND delete entry point —
+   * `_deleteRenderedBlockComment`, the Rendered-Markdown card's Delete
+   * button — cannot disagree with it. Deleting an adopted AI comment
+   * orphans its suggestion: the suggestion card is left collapsed/hidden in
+   * the diff view, so without this the reviewer has no way to see it was
+   * dismissed and no path back to re-adopting it.
+   *
+   * NOTE: deliberately NOT `updateDismissedSuggestionUI` (the bulk
+   * Clear-All helper), which sets `hiddenForAdoption = 'false'`. The
+   * single-delete path must DELETE that flag so a later restore takes the
+   * API code path rather than the toggle-only shortcut.
+   * @param {number|string|null|undefined} suggestionId
+   * @private
+   */
+  _applyDismissedSuggestionAfterDelete(suggestionId) {
+    if (!suggestionId) return;
+    if (window.aiPanel?.updateFindingStatus) {
+      window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
+    }
+    // Clear hiddenForAdoption so that restoring the suggestion takes the API code path
+    // instead of the toggle-only shortcut. Without this, restoring a previously-adopted
+    // suggestion would only toggle visibility without updating its status.
+    const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    if (suggestionDiv) {
+      delete suggestionDiv.dataset.hiddenForAdoption;
+    }
+  }
+
+  /**
    * Update the UI for a dismissed AI suggestion
    * Delegates to the shared SuggestionUI utility
    * @param {number} suggestionId - The suggestion ID that was dismissed
@@ -6451,10 +7506,10 @@ class PRManager {
    * Clear all user comments (soft-delete with confirmation for bulk operations)
    */
   async clearAllUserComments() {
-    // Count both line-level and file-level user comments
-    const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
-    const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
-    const totalComments = lineCommentRows.length + fileCommentCards.length;
+    // Count via the shared counter so a comment that currently only has a
+    // Rendered-Markdown card is still clearable (it is stored server-side;
+    // the DELETE below is a bulk endpoint that doesn't depend on the DOM).
+    const totalComments = this.countDraftComments();
 
     if (totalComments === 0) {
       if (window.toast?.showInfo) {
@@ -6487,7 +7542,15 @@ class PRManager {
       const result = await response.json();
       const deletedCount = result.deletedCount || totalComments;
 
-      // Remove line-level comment rows from DOM
+      // Remove line-level comment rows from DOM. Re-queried HERE rather
+      // than before the confirm dialog: the reviewer may have added or
+      // dismissed a comment while the dialog was open, and the DELETE above
+      // cleared whatever the server holds NOW, so the DOM sweep must match
+      // now too. (Rendered-Markdown cards are cleared by the
+      // loadUserComments() reload below, which refreshes every live
+      // RenderedDocumentView from the reloaded comment set.)
+      const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
+      const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
       lineCommentRows.forEach(row => row.remove());
 
       // Remove file-level comment cards from DOM
@@ -6657,6 +7720,11 @@ class PRManager {
       if (this.commentMinimizer) {
         this.commentMinimizer.refreshIndicators();
       }
+
+      // Rendered Markdown view is a separate display surface over the same
+      // this.userComments — refresh it too so a comment created (or
+      // dismissed/restored) via any path shows up there as well.
+      this._refreshRenderedDocumentsComments();
     } catch (error) {
       console.error('Error loading user comments:', error);
     }
@@ -6897,6 +7965,21 @@ class PRManager {
     if (window.aiPanel?.addComment) {
       window.aiPanel.addComment(newComment);
     }
+
+    // An adopted suggestion IS a user comment from here on — it is stored
+    // in the same `comments` table, counted by the same counters, and
+    // submitted by the same review submission. Record it in the
+    // authoritative `this.userComments` and refresh every live Rendered
+    // view, so adopting a suggestion while that file is open in Rendered
+    // mode shows the resulting comment immediately instead of only after a
+    // reload. Diff-surface rendering (Pierre annotation / legacy `<tr>`)
+    // and the AI-panel notification above are unchanged and still owned by
+    // `_renderAdoptedUserComment` / this method's remaining body; this is
+    // purely the third surface. Id-keyed inside
+    // `registerCreatedUserComment`, so the three adoption call sites
+    // (adopt-as-is, edit-then-adopt, and the file-level branch's sibling
+    // path) cannot double-insert the same comment.
+    this.registerCreatedUserComment(newComment);
 
     if (this.suggestionNavigator?.suggestions) {
       const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
@@ -7385,14 +8468,37 @@ class PRManager {
   }
 
   /**
+   * Total number of draft comments currently captured in this review, as
+   * shown to the reviewer. Thin wrapper over the shared
+   * `CommentCount.countDraftComments()` so every counting call site in
+   * PRManager goes through one implementation, with a conservative
+   * fallback if the util script somehow isn't loaded.
+   *
+   * Note: Dismissed comments are never in the diff DOM (design decision),
+   * so counting visible elements is equivalent to counting active comments.
+   * @returns {number}
+   */
+  countDraftComments() {
+    if (window.CommentCount?.countDraftComments) {
+      return window.CommentCount.countDraftComments(document).total;
+    }
+    // Fallback (util not loaded — both pr.html and local.html load it, so
+    // this is defense in depth only): exactly the pre-existing sum, i.e.
+    // the historical behavior, rather than a crash.
+    return document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length
+      + document.querySelectorAll('.file-comment-card.user-comment').length;
+  }
+
+  /**
    * Update comment count display
-   * Note: Dismissed comments are never in the diff DOM (design decision), so we simply count all visible elements.
    */
   updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    // Delegated to the shared counter so the toolbar, the Clear All
+    // enablement, submitReview's validation and both ReviewModal call sites
+    // can never disagree — and so a comment that currently only has a
+    // Rendered-Markdown card (no renderable Diff target) is still counted
+    // exactly once. See public/js/utils/comment-count.js.
+    const userComments = this.countDraftComments();
 
     if (this.splitButton) {
       this.splitButton.updateCommentCount(userComments);
@@ -7426,10 +8532,11 @@ class PRManager {
     const reviewBody = document.getElementById('review-body').value.trim();
     const submitBtn = document.getElementById('submit-review-btn');
 
-    // Count BOTH line-level and file-level comments for validation
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const totalComments = lineComments + fileComments;
+    // Count BOTH line-level and file-level comments for validation, via the
+    // shared counter — a comment that only has a Rendered-Markdown card
+    // must not falsely block Request changes (it is stored and WILL be
+    // submitted).
+    const totalComments = this.countDraftComments();
     if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {
       alert('Please add comments or a review summary when requesting changes.');
       return;

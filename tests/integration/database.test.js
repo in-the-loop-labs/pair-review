@@ -527,6 +527,75 @@ describe('Migration 46: rebuild external_comments with parent_id SET NULL', () =
   });
 });
 
+/**
+ * Migration 56 adds `comments.rendered_anchor`: the optional, LOCAL
+ * descriptor of the nested Rendered Markdown element (list item, table row,
+ * exact cell) a comment was made on. It must be purely additive — existing
+ * comments keep working untouched with a NULL anchor — and re-runnable,
+ * since a crash mid-startup re-runs the pending migrations on the next boot.
+ */
+describe('Migration 56: add comments.rendered_anchor', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  beforeEach(() => {
+    // Pre-56 baseline: the comments table exactly as version 55 left it.
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE comments (
+        id INTEGER PRIMARY KEY,
+        review_id INTEGER,
+        source TEXT,
+        file TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        body TEXT,
+        status TEXT DEFAULT 'active',
+        severity TEXT
+      )
+    `);
+    db.prepare(`
+      INSERT INTO comments (id, review_id, source, file, line_start, line_end, body)
+      VALUES (1, 7, 'user', 'docs/guide.md', 9, 9, 'existing comment')
+    `).run();
+  });
+
+  afterEach(() => {
+    if (db) db.close();
+  });
+
+  it('adds a nullable rendered_anchor column and preserves existing rows', () => {
+    MIGRATIONS[56](db);
+
+    const cols = db.prepare('PRAGMA table_info(comments)').all();
+    const anchorCol = cols.find((c) => c.name === 'rendered_anchor');
+    expect(anchorCol).toBeTruthy();
+    expect(anchorCol.type).toBe('TEXT');
+    expect(anchorCol.notnull).toBe(0);
+
+    const existing = db.prepare('SELECT * FROM comments WHERE id = 1').get();
+    expect(existing.body).toBe('existing comment');
+    expect(existing.rendered_anchor).toBeNull();
+  });
+
+  it('is idempotent — re-running after a crash does not throw or duplicate the column', () => {
+    MIGRATIONS[56](db);
+    expect(() => MIGRATIONS[56](db)).not.toThrow();
+    const anchorCols = db.prepare('PRAGMA table_info(comments)').all()
+      .filter((c) => c.name === 'rendered_anchor');
+    expect(anchorCols).toHaveLength(1);
+  });
+
+  it('is a no-op when the comments table does not exist', () => {
+    const fresh = new Database(':memory:');
+    try {
+      expect(() => MIGRATIONS[56](fresh)).not.toThrow();
+    } finally {
+      fresh.close();
+    }
+  });
+});
+
 // ============================================================================
 // Basic Query Operations Tests
 // ============================================================================

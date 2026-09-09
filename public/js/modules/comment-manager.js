@@ -491,6 +491,16 @@ class CommentManager {
       // Create comment display row
       this.displayUserComment(commentData, formRow.previousElementSibling);
 
+      // Record the comment in PRManager's authoritative `userComments` and
+      // refresh any live Rendered-Markdown view of this file. Uses the
+      // existing `this.prManager` delegate seam (the same one the
+      // updateCommentCount / lineTracker calls below already go through) —
+      // persistence stays here, PRManager only consumes the result, so
+      // there is exactly one create request and one source of truth.
+      // Optional-chained because several unit tests construct a
+      // CommentManager with a partial prManager stub.
+      this.prManager?.registerCreatedUserComment?.(commentData);
+
       // Notify AI Panel about the new comment
       if (window.aiPanel?.addComment) {
         window.aiPanel.addComment(commentData);

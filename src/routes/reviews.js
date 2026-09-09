@@ -24,6 +24,7 @@ const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
 const validateReviewId = require('./middleware/validate-review-id');
+const { validateRenderedAnchor } = require('../utils/rendered-anchor');
 const { reviewScope, scopeIncludes, includesBranch } = require('../local-scope');
 const { findMergeBase } = require('../local-review');
 
@@ -102,7 +103,10 @@ router.get('/api/reviews/:reviewId/comments', validateReviewId, async (req, res)
  */
 router.post('/api/reviews/:reviewId/comments', validateReviewId, async (req, res) => {
   try {
-    const { file, line_start, line_end, diff_position, side, commit_sha, body, parent_id, type, title } = req.body;
+    const {
+      file, line_start, line_end, diff_position, side, commit_sha, body, parent_id, type, title,
+      rendered_anchor
+    } = req.body;
 
     if (!file || !body) {
       return res.status(400).json({
@@ -116,6 +120,24 @@ router.post('/api/reviews/:reviewId/comments', validateReviewId, async (req, res
       return res.status(400).json({
         error: 'Comment body cannot be empty or whitespace only'
       });
+    }
+
+    // Optional Rendered-Markdown nested target descriptor. Fail closed: an
+    // anchor that isn't an exactly-known shape/kind/range is rejected here
+    // rather than stored and puzzled over later. A file-level comment has no
+    // line range for a nested element to sit inside, so an anchor there is
+    // meaningless and is refused rather than silently dropped.
+    if (rendered_anchor !== undefined && rendered_anchor !== null && !line_start) {
+      return res.status(400).json({
+        error: 'rendered_anchor is only valid for line-level comments'
+      });
+    }
+    const anchorResult = validateRenderedAnchor(rendered_anchor, {
+      lineStart: line_start,
+      lineEnd: line_end
+    });
+    if (!anchorResult.ok) {
+      return res.status(400).json({ error: anchorResult.error });
     }
 
     const db = req.app.get('db');
@@ -136,7 +158,8 @@ router.post('/api/reviews/:reviewId/comments', validateReviewId, async (req, res
         body: trimmedBody,
         parent_id,
         type,
-        title
+        title,
+        rendered_anchor: anchorResult.value
       });
     } else {
       // File-level comment

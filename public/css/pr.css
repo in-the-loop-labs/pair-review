@@ -13824,3 +13824,589 @@ diffs-container {
     animation: loop-spin 1.4s linear infinite !important;
   }
 }
+
+/* ==========================================================================
+   Rendered Markdown view (Files/Outline sidebar + per-file Diff/Rendered
+   toggle + block-level comments). See public/js/modules/rendered-markdown.js
+   and rendered-document-view.js.
+   ========================================================================== */
+
+/* Sidebar Files/Outline tabs */
+.sidebar-mode-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--color-border-primary);
+}
+
+.sidebar-mode-tab {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.sidebar-mode-tab:hover {
+  background-color: var(--color-bg-tertiary);
+}
+
+.sidebar-mode-tab.active {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-primary);
+}
+
+.outline-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 8px 0;
+}
+
+.outline-file-title {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outline-empty-state {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  line-height: 1.4;
+}
+
+.outline-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 12px 5px calc(12px + (var(--outline-indent, 0) * 14px));
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+}
+
+.outline-item:hover {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.outline-item.current,
+.outline-item[aria-current="true"] {
+  color: var(--color-accent-primary);
+  border-left-color: var(--color-accent-primary);
+  font-weight: 600;
+}
+
+.outline-item.outline-level-1 {
+  font-weight: 600;
+}
+
+/* Per-file Diff/Rendered segmented toggle in the file header */
+.file-header-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.file-header-view-toggle-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.file-header-view-toggle-btn + .file-header-view-toggle-btn {
+  border-left: 1px solid var(--color-border-primary);
+}
+
+.file-header-view-toggle-btn:hover {
+  background-color: var(--color-bg-tertiary);
+}
+
+.file-header-view-toggle-btn.active {
+  background-color: var(--color-accent-primary);
+  color: var(--color-text-on-emphasis);
+}
+
+/* Mode switching: the diff body (legacy or Pierre) and the rendered
+   container are mutually exclusive siblings of .d2h-file-wrapper. Only the
+   CSS class flips between them — neither is ever torn down, so the Diff
+   view (and any removed Markdown content it shows) stays intact and just a
+   toggle-click away. */
+.d2h-file-wrapper .rendered-markdown-container {
+  display: none;
+}
+
+.d2h-file-wrapper.rendered-mode-active .rendered-markdown-container {
+  display: block;
+}
+
+.d2h-file-wrapper.rendered-mode-active .d2h-file-body,
+.d2h-file-wrapper.rendered-mode-active .pierre-diff-body,
+.d2h-file-wrapper.rendered-mode-active .large-diff-placeholder {
+  display: none;
+}
+
+/* Collapsed files hide both bodies, same as the existing diff-only rule. */
+.d2h-file-wrapper.collapsed .rendered-markdown-container {
+  display: none !important;
+}
+
+.rendered-markdown-container {
+  padding: 16px 20px 8px;
+  background-color: var(--color-bg-primary);
+  /* Size of the block-level add-comment button, and the right-hand gutter
+     reserved for it inside every block (button + a little breathing room).
+     Declared once here so the button box and the reserved space can never
+     drift apart: the button is absolutely positioned at the block's top
+     right, so any block content allowed to extend under it would be painted
+     over — including the INLINE plus of a wide first list item or header
+     cell, which sits at nearly the same coordinates and would then swallow
+     clicks aimed at the nested target. */
+  --rendered-md-btn-size: 22px;
+  --rendered-md-gutter: 28px;
+}
+
+.rendered-markdown-loading,
+.rendered-markdown-error,
+.rendered-markdown-empty {
+  padding: 16px 0;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+}
+
+.rendered-markdown-doc {
+  max-width: 100%;
+}
+
+.rendered-markdown-block {
+  position: relative;
+  padding: 2px 0;
+  border-radius: 6px;
+}
+
+.rendered-markdown-block:hover {
+  background-color: var(--color-bg-subtle);
+}
+
+.rendered-markdown-block-content {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  /* Reserve the gutter the absolutely-positioned block button occupies, so
+     rendered content (and the inline nested affordances at the end of a
+     list item / table cell) can never be laid out underneath it. Padding on
+     the CONTENT element, not the block: for an absolutely positioned child
+     `right: 0` resolves against the block's PADDING box, so padding the
+     block itself would just drag the button inwards over the content again.
+     Percentage-free and small, so narrow viewports lose 28px rather than a
+     share of the width. */
+  padding-right: var(--rendered-md-gutter, 28px);
+}
+
+.rendered-markdown-block-content :first-child {
+  margin-top: 0;
+}
+
+.rendered-markdown-block-content h1,
+.rendered-markdown-block-content h2,
+.rendered-markdown-block-content h3,
+.rendered-markdown-block-content h4,
+.rendered-markdown-block-content h5,
+.rendered-markdown-block-content h6 {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+
+.rendered-markdown-block-content pre {
+  background-color: var(--color-bg-secondary);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.rendered-markdown-block-content code {
+  background-color: var(--color-bg-secondary);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+}
+
+.rendered-markdown-block-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.rendered-markdown-block-content table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  /* A table's intrinsic width can exceed its container, which would push
+     the header row's trailing gutter cell (and its inline plus) back under
+     the block button the padding above just made room for. Capping at the
+     content width makes the browser wrap cell text instead — the table
+     keeps real table semantics for assistive tech (no display swap). */
+  max-width: 100%;
+}
+
+.rendered-markdown-block-content th,
+.rendered-markdown-block-content td {
+  border: 1px solid var(--color-border-primary);
+  padding: 4px 10px;
+}
+
+.rendered-markdown-block-content a.rendered-markdown-internal-link {
+  color: var(--color-text-link);
+  text-decoration: underline;
+}
+
+/* Block-level comment zone */
+.rendered-markdown-add-comment-btn {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--rendered-md-btn-size, 22px);
+  height: var(--rendered-md-btn-size, 22px);
+  padding: 0;
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+  /* `opacity: 0` does NOT stop hit-testing, so without this every block
+     would carry an invisible clickable button at its top right — and on a
+     touch device the first tap on a list item would land on that item's
+     still-invisible plus instead of activating the item. Every rule that
+     reveals a button restores `pointer-events: auto` below. Focusability is
+     unaffected (`pointer-events` does not remove an element from the tab
+     order), so keyboard reviewers still reach it. */
+  pointer-events: none;
+}
+
+/* Scoped to the BLOCK-level button only. Nested (list item / row / cell)
+   affordances share the visual style but must NOT all light up when the
+   block is hovered — exactly one nested affordance is revealed at a time,
+   driven by the innermost-target tracking in rendered-document-view.js.
+   `:focus` as well as `:focus-visible` because focus is also restored
+   PROGRAMMATICALLY (`triggerEl.focus()` after Cancel/Escape), which not
+   every engine treats as focus-visible — a focused-but-invisible button is
+   a focus trap for a keyboard reviewer. */
+.rendered-markdown-block:hover .rendered-markdown-block-btn,
+.rendered-markdown-block-btn:focus-visible,
+.rendered-markdown-block-btn:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Pointers with no hover state (touch, most styluses) can never trigger the
+   `:hover` reveal above, which would make block-level commenting completely
+   unreachable in Rendered mode. Show the block plus permanently there — the
+   same plain plus, unchanged: no filled disc, no new glyph. Nested
+   item/row/cell affordances deliberately stay one-at-a-time: a tap on the
+   item/row/cell activates it (see the `pointerdown` path in
+   `_wireTargetHoverTracking`) and reveals exactly that target's plus. */
+@media (hover: none) {
+  .rendered-markdown-block-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.rendered-markdown-add-comment-btn:hover {
+  background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.1));
+  border-color: var(--color-accent-primary);
+  color: var(--color-accent-primary);
+}
+
+.rendered-markdown-comments-list:empty {
+  display: none;
+}
+
+.rendered-markdown-comment-form,
+.rendered-markdown-comment-card {
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.rendered-markdown-context-note {
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.rendered-markdown-comment-textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 6px 8px;
+  background-color: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.rendered-markdown-comment-form-footer {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.rendered-markdown-comment-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-primary);
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.rendered-markdown-comment-btn.submit {
+  background-color: var(--color-accent-primary);
+  border-color: var(--color-accent-primary);
+  color: var(--color-text-on-emphasis);
+}
+
+.rendered-markdown-comment-btn.submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rendered-markdown-comment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.rendered-markdown-comment-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.rendered-markdown-comment-edit,
+.rendered-markdown-comment-delete {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.rendered-markdown-comment-body {
+  color: var(--color-text-primary);
+}
+
+.rendered-markdown-comment-card.comment-ai-origin {
+  border-left: 3px solid var(--color-accent-primary);
+}
+
+/* Off-block comment containers.
+
+   A comment can be anchored on a source line that renders as no top-level
+   block at all — most commonly the blank separator line between two blocks,
+   which is trivially easy to land on in the Diff view. Rather than dropping
+   such a comment from the Rendered view (invisible feedback) or reattaching
+   it to the neighbouring heading/paragraph (a lie about what was reviewed),
+   it gets its own container at its true position in the document, labelled
+   with its true repository line range. `.rendered-markdown-orphan-comments`
+   is the same idea for a comment whose line isn't in the file at all any
+   more; it sits at the end of the document.
+
+   Both are rendered with the `hidden` attribute until they actually hold a
+   card, so an ordinary document looks exactly as before. The explicit
+   `[hidden]` rules below are required because the `display` declarations
+   here are more specific than the UA's `[hidden] { display: none }`. */
+.rendered-markdown-gap,
+.rendered-markdown-orphan-comments {
+  display: block;
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-left: 3px dashed var(--color-border-primary);
+  border-radius: 0 6px 6px 0;
+  background-color: var(--color-bg-subtle);
+}
+
+.rendered-markdown-gap[hidden],
+.rendered-markdown-orphan-comments[hidden] {
+  display: none;
+}
+
+.rendered-markdown-gap-note {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-tertiary);
+}
+
+/* Real repository line range, shown only on cards that sit outside a
+   rendered block (see above) — there the line number is the reviewer's only
+   anchor, so it must be visible and honest. */
+.rendered-markdown-comment-lines {
+  margin-right: auto;
+  padding-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+/* ==========================================================================
+   Nested comment targets (list item, nested list item, table row, header
+   cell, data cell).
+
+   The block-level target above still covers the WHOLE list/table; these are
+   additional, more precise targets. Only ONE of them is revealed at a time —
+   the innermost one under the pointer or keyboard focus (see
+   `_setActiveTarget`) — so overlapping hierarchies never present several
+   ancestor affordances at once with no way to tell which one you'd hit.
+
+   A row's affordance lives in a trailing gutter cell because `tr` may only
+   contain `td`/`th`; nothing is ever injected directly under
+   `table`/`tr`/`ul`/`ol`.
+   ========================================================================== */
+.rendered-markdown-target {
+  position: relative;
+}
+
+.rendered-markdown-target-affordance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* Overrides the absolute positioning the block-level button uses: nested
+   affordances sit inline, at the end of the item/cell they belong to. */
+.rendered-markdown-target-btn {
+  position: static;
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+}
+
+/* Child-scoped on purpose: a descendant selector would also reveal the
+   buttons of nested targets inside an active parent item. `:focus` is
+   included for the same programmatic-focus reason as the block button. */
+.rendered-markdown-target.is-target-active > .rendered-markdown-target-affordance > .rendered-markdown-target-btn,
+.rendered-markdown-target.is-target-active > .rendered-markdown-row-gutter > .rendered-markdown-target-affordance > .rendered-markdown-target-btn,
+.rendered-markdown-target-btn:focus-visible,
+.rendered-markdown-target-btn:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The active target is outlined so the reviewer can see exactly which
+   element the visible plus applies to. `tr` outlines render inconsistently
+   under `border-collapse`, so rows get a background tint instead. */
+li.rendered-markdown-target.is-target-active,
+th.rendered-markdown-target.is-target-active,
+td.rendered-markdown-target.is-target-active {
+  outline: 1px dashed var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+tr.rendered-markdown-target.is-target-active > td,
+tr.rendered-markdown-target.is-target-active > th {
+  background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.1));
+}
+
+/* Gutter cell holding a row's affordance: structurally a real cell (valid
+   inside `tr`), visually just margin. */
+.rendered-markdown-block-content td.rendered-markdown-row-gutter {
+  border: none;
+  width: 1%;
+  padding: 0 4px;
+  background: none;
+  vertical-align: middle;
+}
+
+/* Comment-count badge. The card itself lives in the block's comment zone
+   (a card is not valid content for a `tr`, and would wreck a table's
+   layout inside a cell), so this badge is what marks the exact element as
+   carrying feedback. */
+.rendered-markdown-target-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background-color: var(--color-accent-primary);
+  color: var(--color-text-on-emphasis);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.rendered-markdown-target-badge[hidden] {
+  display: none;
+}
+
+/* Which nested element a form/card is about. On a card whose stored anchor
+   no longer resolves this is the honest "target changed or is unavailable"
+   note — the card stays at its original line and is never re-pointed at a
+   sibling. */
+.rendered-markdown-comment-target {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.rendered-markdown-comment-form .rendered-markdown-comment-target {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.rendered-markdown-comment-header .rendered-markdown-comment-target {
+  margin-right: auto;
+}
+
+.rendered-markdown-comment-target.is-stale {
+  background-color: var(--color-warning-bg, rgba(191, 135, 0, 0.12));
+  color: var(--color-warning-fg, var(--color-text-secondary));
+}

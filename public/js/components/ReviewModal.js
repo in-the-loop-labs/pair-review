@@ -378,13 +378,36 @@ class ReviewModal {
   }
 
   /**
+   * Total draft comments that will be submitted with this review.
+   *
+   * Delegates to the shared `CommentCount.countDraftComments()` so this
+   * modal's displayed count and its Request-changes validation always match
+   * PRManager's toolbar count. Critically, the shared counter takes the
+   * UNION of `.user-comment-row` (Diff surface, legacy `<tr>` or slotted
+   * `@pierre/diffs` annotation) and `.rendered-markdown-comment-card`
+   * (Rendered Markdown surface) keyed by `data-comment-id`, so a comment
+   * showing on both surfaces counts once and a comment showing only on the
+   * Rendered surface still counts — it is stored server-side and WILL be
+   * submitted, so hiding it here (or blocking Request changes on it) would
+   * misreport the review.
+   * @returns {number}
+   */
+  countDraftComments() {
+    if (typeof window !== 'undefined' && window.CommentCount?.countDraftComments) {
+      return window.CommentCount.countDraftComments(document).total;
+    }
+    // Fallback (util not loaded — both pr.html and local.html load it, so
+    // this is defense in depth only): exactly the pre-existing sum, i.e.
+    // the historical behavior, rather than a crash.
+    return document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length
+      + document.querySelectorAll('.file-comment-card.user-comment').length;
+  }
+
+  /**
    * Update comment count display in modal
    */
   updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    const userComments = this.countDraftComments();
     const countElement = this.modal.querySelector('.review-comment-count');
     
     if (countElement) {
@@ -481,11 +504,9 @@ class ReviewModal {
       : reviewBody;
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
-    // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
-    // This must match the counting logic in updateCommentCount() for consistency
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const commentCount = lineComments + fileComments;
+    // Same shared counter updateCommentCount() uses, so the displayed count
+    // and this validation can never disagree.
+    const commentCount = this.countDraftComments();
     
     // Hide any previous errors
     this.hideError();

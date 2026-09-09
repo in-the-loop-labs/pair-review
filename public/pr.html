@@ -168,8 +168,15 @@
                         </button>
                     </div>
                 </div>
-                <nav class="file-tree" id="file-list">
+                <div class="sidebar-mode-tabs" role="tablist" aria-label="Sidebar view">
+                    <button type="button" class="sidebar-mode-tab active" id="sidebar-tab-files" role="tab" aria-selected="true" aria-controls="file-list" tabindex="0">Files</button>
+                    <button type="button" class="sidebar-mode-tab" id="sidebar-tab-outline" role="tab" aria-selected="false" aria-controls="outline-list" tabindex="-1">Outline</button>
+                </div>
+                <nav class="file-tree" id="file-list" role="tabpanel" aria-labelledby="sidebar-tab-files">
                     <!-- File tree will be loaded here -->
+                </nav>
+                <nav class="outline-list" id="outline-list" role="tabpanel" aria-labelledby="sidebar-tab-outline" hidden>
+                    <!-- Outline of the active Rendered Markdown document -->
                 </nav>
                 <div class="resize-handle resize-handle-right" data-panel="sidebar"></div>
             </aside>
@@ -403,6 +410,9 @@
     <!-- Stable scroll-into-view for lazily rendered diff bodies -->
     <script src="/js/utils/scroll-into-view.js"></script>
 
+    <!-- Shared draft-comment counter (de-duplicates Diff rows vs Rendered Markdown cards) -->
+    <script src="/js/utils/comment-count.js"></script>
+
     <!-- WebSocket client -->
     <script src="/js/ws-client.js"></script>
 
@@ -444,6 +454,8 @@
     <script src="/js/modules/suggestion-manager.js"></script>
     <script src="/js/modules/comment-minimizer.js"></script>
     <script src="/js/modules/file-comment-manager.js"></script>
+    <script src="/js/modules/rendered-markdown.js"></script>
+    <script src="/js/modules/rendered-document-view.js"></script>
     <script src="/js/modules/panel-resizer.js"></script>
     <script src="/js/modules/analysis-history.js"></script>
     <script src="/js/modules/diff-context.js"></script>
