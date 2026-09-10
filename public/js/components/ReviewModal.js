@@ -74,7 +74,10 @@ class ReviewModal {
             <div class="review-summary-section">
               <div class="review-label-row">
                 <label for="review-body-modal" class="review-label">Review Summary</label>
-                <a href="#" class="copy-ai-summary-link" id="copy-ai-summary-link" style="display: none;">Copy AI summary</a>
+                <span class="review-summary-actions">
+                  <a href="#" class="draft-with-ai-link" id="draft-with-ai-link" style="display: none;">✨ Draft with AI</a>
+                  <a href="#" class="copy-ai-summary-link" id="copy-ai-summary-link" style="display: none;">Copy AI summary</a>
+                </span>
               </div>
               <textarea
                 class="review-body-textarea"
@@ -188,11 +191,15 @@ class ReviewModal {
       }
     });
 
-    // Handle copy AI summary link (delegated since modal is recreated)
+    // Handle copy AI summary / draft-with-AI links (delegated since modal is recreated)
     document.addEventListener('click', (e) => {
       if (e.target.closest('#copy-ai-summary-link')) {
         e.preventDefault();
         window.reviewModal?.appendAISummary();
+      }
+      if (e.target.closest('#draft-with-ai-link')) {
+        e.preventDefault();
+        window.reviewModal?.handleDraftWithAI();
       }
     });
 
@@ -236,6 +243,9 @@ class ReviewModal {
         toggle.classList.remove('disabled');
       }
     }
+
+    // Drafting a summary makes no sense for DRAFT reviews (no body is sent).
+    this.updateDraftWithAILink();
   }
 
   /**
@@ -283,6 +293,8 @@ class ReviewModal {
 
     // Update AI summary link visibility
     this.updateAISummaryLink();
+    // Update Draft-with-AI link visibility
+    this.updateDraftWithAILink();
 
     // Apply the configured remote-host display name + icon (resolves
     // asynchronously after the modal HTML was built).
@@ -663,6 +675,91 @@ class ReviewModal {
     if (window.toast) {
       window.toast.showSuccess('AI summary added to review');
     }
+  }
+
+  /**
+   * Show the "Draft with AI" link only when a chat panel is available and the
+   * selected review type includes a body (i.e. not DRAFT, whose body GitHub
+   * ignores). Mirrors updateAISummaryLink's visibility handling.
+   */
+  updateDraftWithAILink() {
+    const link = this.modal?.querySelector('#draft-with-ai-link');
+    if (!link) return;
+
+    const selectedOption = this.modal?.querySelector('input[name="review-event"]:checked');
+    const isDraft = selectedOption?.value === 'DRAFT';
+    const chatAvailable = typeof window !== 'undefined'
+      && !!window.chatPanel
+      && typeof window.chatPanel.startSummaryDraft === 'function';
+
+    link.style.display = (chatAvailable && !isDraft) ? 'inline' : 'none';
+  }
+
+  /**
+   * Open the chat panel to draft the review summary. Hides the modal so the
+   * side-by-side chat panel is usable; the chat's action bar then shows a
+   * "Use as review summary" button (like the findings-chat "Create comment"
+   * action) which calls applyDraftedSummary() to bring the draft back. The
+   * current summary text (if any) is handed to the chat so the agent refines
+   * rather than starting from scratch.
+   */
+  async handleDraftWithAI() {
+    if (this.isSubmitting) return;
+
+    const chatPanel = (typeof window !== 'undefined') ? window.chatPanel : null;
+    if (!chatPanel || typeof chatPanel.startSummaryDraft !== 'function') {
+      window.toast?.showWarning?.('Chat is not available for drafting.');
+      return;
+    }
+
+    const textarea = this.modal?.querySelector('#review-body-modal');
+    const currentSummary = (textarea?.value || '').trim();
+
+    // Hide the modal so the chat panel is interactive; the chat's action-bar
+    // "Use as review summary" button re-opens it via applyDraftedSummary().
+    this.hide();
+
+    try {
+      await chatPanel.startSummaryDraft({ currentSummary });
+    } catch (err) {
+      console.error('[ReviewModal] Failed to start summary draft:', err);
+      window.toast?.showError?.('Could not start the drafting chat.');
+    }
+  }
+
+  /**
+   * Put a drafted summary into the review summary field and re-open the modal.
+   * Called by ChatPanel's "Use as review summary" action. Re-displays without
+   * running show()'s form reset, preserving the selected review type. Falls
+   * back to reading the chat's latest reply when no text is passed.
+   *
+   * @param {string} [text] - Draft summary text to insert
+   */
+  applyDraftedSummary(text) {
+    const draft = (typeof text === 'string' && text)
+      ? text
+      : (typeof window !== 'undefined' ? window.chatPanel?.getLastAssistantMessage?.() : null);
+    if (!draft) {
+      window.toast?.showWarning?.('No draft yet — wait for the AI to respond, then try again.');
+      return;
+    }
+
+    const textarea = this.modal?.querySelector('#review-body-modal');
+    if (textarea) {
+      textarea.value = draft;
+    }
+
+    // Re-display without show()'s reset so the injected draft and the selected
+    // review type both survive.
+    if (this.modal) {
+      this.modal.style.display = 'flex';
+      this.isVisible = true;
+      if (textarea && typeof textarea.focus === 'function') {
+        setTimeout(() => textarea.focus(), 50);
+      }
+    }
+
+    window.toast?.showSuccess?.('Draft added to review summary');
   }
 
   /**
