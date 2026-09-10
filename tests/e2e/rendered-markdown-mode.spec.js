@@ -75,6 +75,17 @@ async function setTheme(page, theme) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 }
 
+/** Select a concrete preference through the production theme-toggle path. */
+async function selectThemePreference(page, preference) {
+  const target = `Theme: ${preference[0].toUpperCase()}${preference.slice(1)} `;
+  const toggle = page.locator('#theme-toggle');
+  for (let attempts = 0; attempts < 3; attempts++) {
+    if ((await toggle.getAttribute('aria-label'))?.startsWith(target)) return;
+    await toggle.click();
+  }
+  throw new Error(`Could not select ${preference} theme preference`);
+}
+
 /**
  * Disable CSS transitions/animations for the rest of the test.
  *
@@ -215,6 +226,99 @@ for (const { label, url, reviewApiBase } of [
         return host?.shadowRoot?.textContent || '';
       });
       expect(shadowText).toContain('This paragraph explains usage.');
+    });
+
+    test('renders gap-tolerant document rhythm and highlighted scrolling code in both app themes', async ({ page }) => {
+      const fileWrapper = await toggleRendered(page, 'docs/guide.md');
+      const renderedDocument = fileWrapper.locator('.rendered-markdown-doc');
+      const usageHeading = fileWrapper
+        .locator('.rendered-markdown-heading-block')
+        .filter({ hasText: 'Usage' })
+        .first();
+      const usageParagraph = fileWrapper.locator('.rendered-markdown-block', {
+        hasText: 'This paragraph explains usage and was newly added by this PR.'
+      });
+
+      const rhythm = await usageHeading.evaluate((element) => ({
+        marginTop: getComputedStyle(element).marginTop,
+        separatorClass: element.previousElementSibling?.className || '',
+        separatorHidden: element.previousElementSibling?.hidden === true
+      }));
+      expect(rhythm).toEqual({
+        marginTop: '20px',
+        separatorClass: 'rendered-markdown-gap',
+        separatorHidden: true
+      });
+      await expect(usageParagraph).toHaveCSS('margin-top', '8px');
+
+      const listBlock = fileWrapper.locator('.rendered-markdown-block', { hasText: 'Alpha item' });
+      const tableBlock = fileWrapper.locator('.rendered-markdown-block', { hasText: 'Column A' });
+      const quoteBlock = fileWrapper.locator('.rendered-markdown-block', {
+        hasText: 'A quoted note for rendered rhythm coverage.'
+      });
+      const codeBlock = fileWrapper.locator('.rendered-markdown-block:has(pre code.language-js)');
+      const rhythmElements = [
+        usageParagraph.locator('p'),
+        listBlock.locator('.rendered-markdown-block-content > ul'),
+        tableBlock.locator('.rendered-markdown-block-content > table'),
+        quoteBlock.locator('blockquote'),
+        codeBlock.locator('pre')
+      ];
+      for (const element of rhythmElements) {
+        expect(await element.evaluate((node) => ({
+          marginTop: getComputedStyle(node).marginTop,
+          marginBottom: getComputedStyle(node).marginBottom,
+          wrapperMargin: getComputedStyle(node.closest('.rendered-markdown-block')).marginTop
+        }))).toEqual({ marginTop: '0px', marginBottom: '0px', wrapperMargin: '8px' });
+      }
+
+      const pre = codeBlock.locator('pre');
+      const code = pre.locator('code');
+      const keyword = code.locator('.hljs-keyword');
+      await expect(keyword).toHaveText('const');
+
+      const themeCases = [
+        { theme: 'light', oppositeOs: 'dark', expectedKeyword: 'rgb(215, 58, 73)' },
+        { theme: 'dark', oppositeOs: 'light', expectedKeyword: 'rgb(255, 123, 114)' }
+      ];
+      for (const { theme, oppositeOs, expectedKeyword } of themeCases) {
+        await page.emulateMedia({ colorScheme: oppositeOs });
+        await selectThemePreference(page, theme);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        const colors = await code.evaluate((element) => ({
+          code: getComputedStyle(element).color,
+          keyword: getComputedStyle(element.querySelector('.hljs-keyword')).color
+        }));
+        expect(colors.keyword).toBe(expectedKeyword);
+        expect(colors.keyword).not.toBe(colors.code);
+      }
+      await selectThemePreference(page, 'system');
+
+      const codeOverflow = await pre.evaluate((element) => ({
+        scrolls: element.scrollWidth > element.clientWidth,
+        whiteSpace: getComputedStyle(element).whiteSpace
+      }));
+      expect(codeOverflow).toEqual({ scrolls: true, whiteSpace: 'pre' });
+
+      const wideTableContent = fileWrapper.locator('.rendered-markdown-block', {
+        hasText: 'Wide column 30'
+      }).locator('.rendered-markdown-block-content');
+      const documentOverflow = await wideTableContent.evaluate((element) => {
+        const doc = element.closest('.rendered-markdown-doc');
+        return {
+          tableScrolls: element.scrollWidth > element.clientWidth,
+          documentFits: doc.scrollWidth <= doc.clientWidth + 1
+        };
+      });
+      expect(documentOverflow).toEqual({ tableScrolls: true, documentFits: true });
+      await expect(renderedDocument).toBeVisible();
+
+      await codeBlock.hover();
+      const addButton = codeBlock.locator('.rendered-markdown-block-btn');
+      await expect(addButton).toBeVisible();
+      await addButton.click();
+      await expect(codeBlock.locator('.rendered-markdown-comment-form')).toBeVisible();
+      await codeBlock.locator('.rendered-markdown-comment-btn.cancel').click();
     });
 
     test('Outline sidebar lists headings for the Rendered document, supports click-to-scroll, and shows an empty state otherwise', async ({ page }) => {

@@ -3,17 +3,21 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 const markdownit = require('markdown-it');
+const hljs = require('highlight.js');
 const createDOMPurify = require('dompurify');
 const { JSDOM } = require('jsdom');
 
 const {
   escapeHtmlAttribute,
   configureMarkdownIt,
+  highlightCode,
   createRenderMarkdown,
   sanitizeHtml,
   initMarkdownGlobals,
   ALLOWED_TAGS,
   ALLOWED_ATTR,
+  MAX_HIGHLIGHT_CODE_LENGTH,
+  MAX_HIGHLIGHT_OUTPUT_LENGTH,
 } = require('../../public/js/utils/markdown.js');
 
 /**
@@ -21,9 +25,9 @@ const {
  * using the real markdown-it and a DOMPurify instance backed by jsdom —
  * i.e. the actual production code paths, never a duplicate.
  */
-function buildRenderer() {
+function buildRenderer({ highlighter = hljs } = {}) {
   const purify = createDOMPurify(new JSDOM('').window);
-  const md = configureMarkdownIt(markdownit, { html: true });
+  const md = configureMarkdownIt(markdownit, { html: true, highlighter, purify });
   return createRenderMarkdown({ md, purify });
 }
 
@@ -171,9 +175,34 @@ describe('renderMarkdown (sanitized, html enabled)', () => {
   });
 
   describe('class scoping', () => {
-    it('keeps the language class on fenced code blocks', () => {
-      const html = render('```js\nconst x = 1;\n```');
+    it('keeps language hints and compound highlight scopes on supported fences', () => {
+      const html = render('```c++\nclass Example {};\n```');
+      expect(html).toContain('class="language-c++"');
+      expect(html).toContain('class="hljs-keyword"');
+      expect(html).toContain('class="hljs-title class_"');
+    });
+
+    it('falls back to escaped code for an unsupported fenced language', () => {
+      const html = render('```not-a-real-language\nconst x = "<tag>";\n```');
+      expect(html).toContain('class="language-not-a-real-language"');
+      expect(html).toContain('&lt;tag&gt;');
+      expect(html).not.toContain('hljs-');
+    });
+
+    it('falls back when the highlighter throws or returns malformed output', () => {
+      const throwing = { getLanguage: () => true, highlight: () => { throw new Error('failed'); } };
+      const malformed = { getLanguage: () => true, highlight: () => ({ value: { unsafe: true } }) };
+      for (const highlighter of [throwing, malformed]) {
+        const html = buildRenderer({ highlighter })('```js\nconst x = "<tag>";\n```');
+        expect(html).toContain('&lt;tag&gt;');
+        expect(html).not.toContain('hljs-');
+      }
+    });
+
+    it('renders safely without a highlighting runtime', () => {
+      const html = buildRenderer({ highlighter: null })('```js\nconst x = 1;\n```');
       expect(html).toContain('class="language-js"');
+      expect(html).not.toContain('hljs-');
     });
 
     it('strips class from non-code raw elements', () => {
@@ -184,10 +213,23 @@ describe('renderMarkdown (sanitized, html enabled)', () => {
       expect(html).not.toContain('class=');
     });
 
-    it('filters code classes down to language-* only', () => {
-      const html = render('<code class="language-js sneaky-overlay">x</code>');
-      expect(html).toContain('language-js');
+    it('filters code classes down to punctuation-safe language hints only', () => {
+      const html = render('<code class="language-c# hljs sneaky-overlay">x</code>');
+      expect(html).toContain('language-c#');
+      expect(html).not.toContain('class="hljs"');
       expect(html).not.toContain('sneaky-overlay');
+    });
+
+    it('keeps only known token classes and modifiers on highlight spans', () => {
+      const html = render(
+        '<span class="hljs-title class_ inherited__ app-toolbar">Example</span>' +
+        '<span class="hljs-not-a-real-scope language_">fake</span>' +
+        '<span class="language_ app-toolbar">unsafe</span>'
+      );
+      expect(html).toContain('class="hljs-title class_ inherited__"');
+      expect(html).not.toContain('app-toolbar');
+      expect(html).not.toContain('hljs-not-a-real-scope');
+      expect(html).not.toContain('class="language_"');
     });
   });
 
@@ -229,6 +271,58 @@ describe('renderMarkdown fallback (no DOMPurify, html disabled)', () => {
   });
 });
 
+describe('highlightCode', () => {
+  it('does not auto-detect unlabeled code', () => {
+    expect(highlightCode(hljs, 'const x = 1;', '')).toBe('');
+  });
+
+  it('uses the explicit language before any fence metadata', () => {
+    expect(highlightCode(hljs, 'const x = 1;', 'js extra')).toContain('hljs-keyword');
+  });
+
+  it('highlights at the input limit but skips oversized fences', () => {
+    let calls = 0;
+    const spy = {
+      getLanguage: () => true,
+      highlight: () => {
+        calls += 1;
+        return { value: 'highlighted' };
+      }
+    };
+    expect(highlightCode(spy, 'x'.repeat(MAX_HIGHLIGHT_CODE_LENGTH), 'js')).toBe('highlighted');
+    expect(highlightCode(spy, 'x'.repeat(MAX_HIGHLIGHT_CODE_LENGTH + 1), 'js')).toBe('');
+    expect(calls).toBe(1);
+  });
+
+  it('falls back when method access throws or highlighted output is amplified', () => {
+    const throwingAccessor = Object.defineProperty({}, 'getLanguage', {
+      get() { throw new Error('revoked'); }
+    });
+    const amplified = {
+      getLanguage: () => true,
+      highlight: () => ({ value: 'x'.repeat(MAX_HIGHLIGHT_OUTPUT_LENGTH + 1) })
+    };
+    expect(highlightCode(throwingAccessor, 'const x = 1;', 'js')).toBe('');
+    expect(highlightCode(amplified, 'const x = 1;', 'js')).toBe('');
+  });
+
+  it('requires a purifier before configureMarkdownIt enables highlighter HTML', () => {
+    let called = false;
+    const hostile = {
+      getLanguage: () => true,
+      highlight: () => {
+        called = true;
+        return { value: '<img src=x onerror="alert(1)">' };
+      }
+    };
+    const md = configureMarkdownIt(markdownit, { html: false, highlighter: hostile });
+    const html = md.render('```js\n<img src=x onerror="alert(1)">\n```');
+    expect(called).toBe(false);
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<img');
+  });
+});
+
 describe('sanitizeHtml', () => {
   it('applies the allowlist and removes comments', () => {
     const purify = createDOMPurify(new JSDOM('').window);
@@ -261,12 +355,15 @@ describe('initMarkdownGlobals (browser wiring)', () => {
    * Build a window-like object mirroring what the browser exposes when
    * markdown.js runs, optionally including DOMPurify.
    */
-  function makeWindow({ withPurify }) {
+  function makeWindow({ withPurify, highlighter = hljs }) {
     const dom = new JSDOM('');
     const win = dom.window;
     win.markdownit = markdownit;
     if (withPurify) {
       win.DOMPurify = createDOMPurify(win);
+    }
+    if (highlighter) {
+      win.hljs = highlighter;
     }
     return win;
   }
@@ -277,6 +374,24 @@ describe('initMarkdownGlobals (browser wiring)', () => {
     expect(typeof win.renderMarkdown).toBe('function');
     expect(win.renderMarkdown('H<sub>2</sub>O')).toContain('<sub>2</sub>');
     expect(win.renderMarkdown('x <!-- thread-id:z -->')).not.toContain('<!--');
+    expect(win.renderMarkdown('```js\nconst x = 1;\n```')).toContain('hljs-keyword');
+  });
+
+  it('does not invoke or trust a highlighter when DOMPurify is unavailable', () => {
+    let called = false;
+    const hostileHighlighter = {
+      getLanguage: () => true,
+      highlight: () => {
+        called = true;
+        return { value: '<img src=x onerror="alert(1)">' };
+      }
+    };
+    const win = makeWindow({ withPurify: false, highlighter: hostileHighlighter });
+    initMarkdownGlobals(win);
+    const html = win.renderMarkdown('```js\n<img src=x onerror="alert(1)">\n```');
+    expect(called).toBe(false);
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<img');
   });
 
   it('falls back to escaping raw HTML when DOMPurify is absent (safe degraded mode)', () => {

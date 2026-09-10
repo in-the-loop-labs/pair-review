@@ -379,15 +379,104 @@ mark.d2h-code-line-ctn {
 }
 
 /* ==========================================================================
-   Syntax Highlighting Overrides for Dark Mode
+   Syntax Highlighting Overrides for Application Themes
 
-   The highlight.js CDN styles use prefers-color-scheme media queries, but our
-   app uses data-theme="dark" for manual theme toggling. These overrides ensure
-   proper syntax highlighting colors when dark mode is manually enabled.
-
-   Additionally, the default blue (#79c0ff) has been adjusted to #a5d6ff for
-   better contrast against dark backgrounds, especially in diff views.
+   The highlight.js CDN styles use prefers-color-scheme media queries, while
+   the app supports an explicit data-theme preference. Define both palettes
+   here so a manual preference always wins over the operating-system scheme.
    ========================================================================== */
+
+[data-theme="light"] .hljs {
+    color: #24292e;
+    background: #ffffff;
+}
+
+[data-theme="light"] .hljs-doctag,
+[data-theme="light"] .hljs-keyword,
+[data-theme="light"] .hljs-meta .hljs-keyword,
+[data-theme="light"] .hljs-template-tag,
+[data-theme="light"] .hljs-template-variable,
+[data-theme="light"] .hljs-type,
+[data-theme="light"] .hljs-variable.language_ {
+    color: #d73a49;
+}
+
+[data-theme="light"] .hljs-title,
+[data-theme="light"] .hljs-title.class_,
+[data-theme="light"] .hljs-title.class_.inherited__,
+[data-theme="light"] .hljs-title.function_ {
+    color: #6f42c1;
+}
+
+[data-theme="light"] .hljs-attr,
+[data-theme="light"] .hljs-attribute,
+[data-theme="light"] .hljs-literal,
+[data-theme="light"] .hljs-meta,
+[data-theme="light"] .hljs-number,
+[data-theme="light"] .hljs-operator,
+[data-theme="light"] .hljs-variable,
+[data-theme="light"] .hljs-selector-attr,
+[data-theme="light"] .hljs-selector-class,
+[data-theme="light"] .hljs-selector-id {
+    color: #005cc5;
+}
+
+[data-theme="light"] .hljs-regexp,
+[data-theme="light"] .hljs-string,
+[data-theme="light"] .hljs-meta .hljs-string {
+    color: #032f62;
+}
+
+[data-theme="light"] .hljs-built_in,
+[data-theme="light"] .hljs-symbol {
+    color: #e36209;
+}
+
+[data-theme="light"] .hljs-comment,
+[data-theme="light"] .hljs-code,
+[data-theme="light"] .hljs-formula {
+    color: #6a737d;
+}
+
+[data-theme="light"] .hljs-name,
+[data-theme="light"] .hljs-quote,
+[data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-selector-pseudo {
+    color: #22863a;
+}
+
+[data-theme="light"] .hljs-subst,
+[data-theme="light"] .hljs-emphasis,
+[data-theme="light"] .hljs-strong {
+    color: #24292e;
+}
+
+[data-theme="light"] .hljs-section {
+    color: #005cc5;
+    font-weight: bold;
+}
+
+[data-theme="light"] .hljs-bullet {
+    color: #735c0f;
+}
+
+[data-theme="light"] .hljs-emphasis {
+    font-style: italic;
+}
+
+[data-theme="light"] .hljs-strong {
+    font-weight: bold;
+}
+
+[data-theme="light"] .hljs-addition {
+    color: #22863a;
+    background-color: #f0fff4;
+}
+
+[data-theme="light"] .hljs-deletion {
+    color: #b31d28;
+    background-color: #ffeef0;
+}
 
 [data-theme="dark"] .hljs {
     color: #c9d1d9;

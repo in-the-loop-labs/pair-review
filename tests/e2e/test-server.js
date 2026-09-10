@@ -854,12 +854,11 @@ async function startTestServer(port) {
       const filler = [];
       for (let i = 1; i <= 25; i++) filler.push('', `Filler paragraph ${i} — unchanged context.`);
       // Hierarchical structures for the nested comment-target tests. Kept
-      // at the very END of the document so every line number asserted
-      // elsewhere in the spec (7 = "Usage" paragraph, 8 = blank separator,
-      // 11 = "Notes" paragraph) is unchanged, and deliberately heading-free
-      // so the Outline assertions stay exactly as they were. The two table
-      // body cells share ONE source line — that is the whole point of the
-      // cell-level descriptor.
+      // after every line whose number is asserted elsewhere in the spec
+      // (7 = "Usage" paragraph, 8 = blank separator, 11 = "Notes" paragraph),
+      // and deliberately heading-free so the Outline assertions stay exactly
+      // as they were. The two table body cells share ONE source line — that is
+      // the whole point of the cell-level descriptor.
       const hierarchy = [
         '',
         '- Alpha item',
@@ -870,11 +869,26 @@ async function startTestServer(port) {
         '| --- | --- |',
         '| a1 | b1 |'
       ];
+      const renderedStyleSamples = [
+        '',
+        '```js',
+        `const highlightedValue = "${'syntax-highlight-overflow-'.repeat(16)}";`,
+        '```',
+        '',
+        '> A quoted note for rendered rhythm coverage.',
+        '',
+        `Unbroken prose: ${'unbroken-overflow-'.repeat(40)}`,
+        '',
+        `| ${Array.from({ length: 30 }, (_, i) => `Wide column ${i + 1}`).join(' | ')} |`,
+        `| ${Array.from({ length: 30 }, () => '---').join(' | ')} |`,
+        `| ${Array.from({ length: 30 }, (_, i) => `value ${i + 1}`).join(' | ')} |`
+      ];
       const tail = [
         ...filler,
         '',
         'This far-away paragraph is nowhere near the diff hunk.',
-        ...hierarchy
+        ...hierarchy,
+        ...renderedStyleSamples
       ];
       const head = [
         '# Guide', '',
