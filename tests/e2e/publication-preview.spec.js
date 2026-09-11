@@ -27,6 +27,8 @@ test('shows exact transformed text and sends the preview token only after review
   await expect(page.locator('#publication-omitted')).toContainText('1 comment(s) omitted');
   expect(requests).toHaveLength(1);
   expect(requests[0].publicationToken).toBeUndefined();
+  expect(requests[0].headSha).toBe('def456head');
+  expect(requests[0].baseSha).toBe('abc123base');
   await page.getByRole('button', { name: 'Publish reviewed comments' }).click();
   await expect(page.locator('#review-modal')).toBeHidden();
   expect(requests).toHaveLength(2);
