@@ -20,6 +20,10 @@ const anchorSchema = z.object({
   start_side: z.enum(['LEFT', 'RIGHT']).optional(), body: z.string().trim().min(1)
 }).strict();
 const payloadSchema = z.object({ body: z.string(), comments: z.array(anchorSchema) }).strict();
+const commentQuery = `SELECT c.id, c.file, c.line_start, c.line_end, c.body, c.side,
+  COALESCE(c.commit_sha, a.head_sha) AS commit_sha, c.is_file_level
+  FROM comments c LEFT JOIN comments original ON original.id = c.parent_id
+  LEFT JOIN analysis_runs a ON a.id = original.ai_run_id`;
 
 function publicationPolicy(config, repository) {
   return getRepoConfig(config, repository)?.review_submission || config.review_submission || null;
@@ -96,8 +100,8 @@ function readSnapshot(db, reviewId, target, request, policy) {
   if (!request.headSha || !request.baseSha || request.headSha !== pr.head_sha || request.baseSha !== pr.base_sha) {
     fail('The displayed PR revision changed. Refresh and review it before preparing publication.');
   }
-  const comments = db.prepare(`SELECT id, file, line_start, line_end, body, side, commit_sha, is_file_level
-    FROM comments WHERE review_id = ? AND source = 'user' AND status = 'active' ORDER BY id`).all(reviewId);
+  const comments = db.prepare(`${commentQuery}
+    WHERE c.review_id = ? AND c.source = 'user' AND c.status = 'active' ORDER BY c.id`).all(reviewId);
   if (comments.some(c => c.commit_sha && c.commit_sha !== request.headSha)) {
     fail('Some comments were reviewed on an older commit. Re-review them against the current revision.');
   }
@@ -141,8 +145,8 @@ function recordReceipt(db, reviewId, state, receipt) {
     for (const id of state.payload.comments.map(c => c.id)) {
       // Edits made while the provider request was in flight remain drafts.
       const originalHash = state.commentHashes[id];
-      const row = db.prepare(`SELECT id, file, line_start, line_end, body, side, commit_sha, is_file_level
-        FROM comments WHERE id = ? AND review_id = ? AND status = 'active'`).get(id, reviewId);
+      const row = db.prepare(`${commentQuery}
+        WHERE c.id = ? AND c.review_id = ? AND c.status = 'active'`).get(id, reviewId);
       if (row && hash(row) === originalHash) {
         db.prepare("UPDATE comments SET status = 'submitted', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
       }

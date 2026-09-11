@@ -15,10 +15,11 @@ describe('previewed review publication', () => {
       CREATE TABLE pr_metadata (repository TEXT, pr_number INTEGER, pr_data TEXT);
       CREATE TABLE comments (id INTEGER PRIMARY KEY, review_id INTEGER, source TEXT, status TEXT,
         file TEXT, line_start INTEGER, line_end INTEGER, body TEXT, side TEXT, commit_sha TEXT,
-        is_file_level INTEGER, updated_at TEXT);`);
+        is_file_level INTEGER, updated_at TEXT, parent_id INTEGER, ai_run_id TEXT);
+      CREATE TABLE analysis_runs (id TEXT PRIMARY KEY, head_sha TEXT);`);
     db.prepare('INSERT INTO reviews VALUES (1, ?)').run(JSON.stringify({ worktree_path: '/local' }));
     db.prepare('INSERT INTO pr_metadata VALUES (?, ?, ?)').run(target.repository, target.number, JSON.stringify(revision));
-    db.prepare("INSERT INTO comments VALUES (1,1,'user','active','a.cc',2,2,'Private draft','RIGHT',?,0,NULL)").run(revision.head_sha);
+    db.prepare("INSERT INTO comments VALUES (1,1,'user','active','a.cc',2,2,'Private draft','RIGHT',?,0,NULL,NULL,NULL)").run(revision.head_sha);
     request = { body: 'Private summary', event: 'COMMENT', headSha: revision.head_sha, baseSha: revision.base_sha };
     client = {
       fetchPullRequest: vi.fn(async () => revision), getPendingReviewForUser: vi.fn(async () => null),
@@ -74,6 +75,14 @@ describe('previewed review publication', () => {
       return input;
     });
     await expect(run(args)).rejects.toThrow(/changed during preparation/);
+  });
+
+  it('rejects an adopted suggestion from an older analysis even without a comment SHA', async () => {
+    db.prepare("INSERT INTO analysis_runs VALUES ('old-run', 'old-head')").run();
+    db.prepare("INSERT INTO comments (id, review_id, source, ai_run_id) VALUES (2, 1, 'ai', 'old-run')").run();
+    db.prepare('UPDATE comments SET commit_sha = NULL, parent_id = 2 WHERE id = 1').run();
+    await expect(run(args)).rejects.toThrow(/older commit/);
+    expect(client.octokit.rest.pulls.createReview).not.toHaveBeenCalled();
   });
 
   it('leaves omitted findings as local drafts', async () => {
