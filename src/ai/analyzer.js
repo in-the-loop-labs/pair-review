@@ -131,6 +131,7 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-exec-'));
   try {
     const executableContext = {
+      prUrl: resolvePrUrl(prMetadata),
       title: prMetadata.title || null,
       description: resolveReviewDescription(prMetadata) || null,
       cwd: worktreePath,
@@ -191,7 +192,9 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
 
     return {
       suggestions,
-      summary: result.data.summary || ''
+      summary: result.data.summary || '',
+      warnings: result.data.warnings || [],
+      levelOutcomes: { exec: result.data.warnings?.length ? 'partial' : 'success', warnings: result.data.warnings || [] }
     };
   } finally {
     if (logger.isStreamDebugEnabled()) {
@@ -200,6 +203,13 @@ async function runExecutableVoice(voiceProvider, reviewId, worktreePath, prMetad
       try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch (_) {}
     }
   }
+}
+
+/** Return the provider-recorded PR URL; local reviews have no provider identity. */
+function resolvePrUrl(prMetadata) {
+  if (!prMetadata) return null;
+  const stored = typeof prMetadata.pr_data === 'string' ? JSON.parse(prMetadata.pr_data) : prMetadata.pr_data;
+  return prMetadata.html_url || stored?.html_url || null;
 }
 
 /**
@@ -3223,7 +3233,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
 
         if (progressCallback) {
-          progressCallback({ level: 'exec', status: 'completed', progress: `External tool complete: ${finalSuggestions.length} suggestions` });
+          progressCallback({ level: 'exec', status: 'completed', warnings: result.warnings, progress: `External tool complete${result.warnings.length ? ' with limited coverage' : ''}: ${finalSuggestions.length} suggestions` });
         }
 
         try {
@@ -3232,7 +3242,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             summary: result.summary,
             totalSuggestions: finalSuggestions.length,
             filesAnalyzed: validFiles.length,
-            levelOutcomes: { consolidation: 'skipped' }
+            levelOutcomes: { ...result.levelOutcomes, consolidation: 'skipped' }
           });
         } catch (err) {
           logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
@@ -3242,7 +3252,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           runId: parentRunId,
           suggestions: finalSuggestions,
           summary: result.summary || `Review council complete: ${finalSuggestions.length} suggestions`,
-          levelOutcomes: { consolidation: 'skipped' }
+          warnings: result.warnings,
+          levelOutcomes: { ...result.levelOutcomes, consolidation: 'skipped' }
         };
       }
 
@@ -3348,7 +3359,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
               status: 'completed',
               summary: result.summary,
               totalSuggestions: validatedSuggestions.length,
-              levelOutcomes: { consolidation: 'skipped' }
+              levelOutcomes: { ...result.levelOutcomes, consolidation: 'skipped' }
             });
           } catch (err) {
             logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
@@ -3358,7 +3369,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           await commentRepo.bulkInsertAISuggestions(reviewId, childRunId, validatedSuggestions, null);
 
           if (voiceProgressCallback) {
-            voiceProgressCallback({ level: 'exec', status: 'completed', progress: `External tool complete: ${validatedSuggestions.length} suggestions` });
+            voiceProgressCallback({ level: 'exec', status: 'completed', warnings: result.warnings, progress: `External tool complete${result.warnings.length ? ' with limited coverage' : ''}: ${validatedSuggestions.length} suggestions` });
           }
 
           const validatedResult = { ...result, suggestions: validatedSuggestions };
@@ -4399,6 +4410,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 module.exports = Analyzer;
 module.exports.buildDedupContext = buildDedupContext;
 module.exports.resolveRepositorySlug = resolveRepositorySlug;
+module.exports.resolvePrUrl = resolvePrUrl;
 module.exports.resolveReviewDescription = resolveReviewDescription;
 module.exports.buildDedupInstructions = buildDedupInstructions;
 module.exports.fetchExistingReviewComments = fetchExistingReviewComments;

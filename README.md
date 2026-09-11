@@ -486,6 +486,14 @@ checking the exit code first (as above) covers every outcome.
 
 ## Configuration
 
+For a launcher that must keep its provider and publication settings fixed, set
+`PAIR_REVIEW_CONFIG=/absolute/path/to/config.json`. This loads only that JSON
+object on top of built-in defaults, bypassing managed, user, and project config
+files. An unreadable or invalid explicit file stops startup. Normal environment
+overrides such as `GITHUB_TOKEN`, `PORT`, and `PAIR_REVIEW_DB_NAME` still apply.
+This also lets a launcher review an untrusted checkout without loading commands
+or publication overrides from its `.pair-review` configuration.
+
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**
@@ -1247,3 +1255,58 @@ Apache-2.0 License - see LICENSE file for details
 ```bash
 npx @in-the-loop-labs/pair-review <PR-number-or-URL or --local>
 ```
+
+### Native executable results and publication previews
+
+An executable provider can write Pair Review's native suggestion JSON directly:
+set `output_format: "pair-review"`, `result_file: "review.json"`, and map
+`context_args.result_path` to the CLI's output-file flag. Pair Review provides a
+new absolute path in its private run directory and reads only that file after a
+successful exit. It rejects malformed output, failed/timed-out runs, and symlinks
+without using another model to rewrite the result. This works in PR and local
+mode. The file contains `{summary, suggestions}` and optional `warnings` (up to
+20 plain-text messages, each at most 500 characters). Warnings describe incomplete
+review coverage; they appear in progress and saved run history, separately from
+publishable suggestions and the review summary. Suggestions have `file`,
+`line_start`, `line_end`, `old_or_new`, `type`, `severity`, `title`, `description`,
+`suggestion`, and `is_file_level`. No additional fields are accepted. Line numbers
+are positive or null; file-level suggestions use null line numbers.
+Map `context_args.pr_url` to a reviewer's PR-URL flag to pass the recorded upstream
+PR URL, including when the local checkout is a fork. Local-only reviews omit it.
+
+For external publication, configure an optional transform globally or under a
+`repos["owner/repo"]` entry:
+
+```json
+{
+  "review_submission": {
+    "command": "/absolute/path/to/publication-transform",
+    "args": ["--input", "{input}", "--output", "{output}"],
+    "timeout": 300000
+  }
+}
+```
+
+The command is a local executable, invoked without a shell. It receives a private
+JSON file containing `{body, comments}`. Each comment has `id`, `path`, `line`,
+`side`, `body`, and optional `start_line`/`start_side`. Write the same shape to the
+new output path. The transform may change text or omit comments; it cannot add
+comments, change anchors, or include extra metadata. Include the whole intended
+summary/footer in the input. Pair Review adds only a public receipt marker after
+the transform and displays that marker in the preview.
+
+With this configuration, Submit Review first prepares an exact-text preview.
+Review it and choose **Publish reviewed comments**. Edits, changed credentials,
+and changed base/head revisions invalidate preparation. The submitted review is
+pinned to the inspected head commit. A push during the GitHub request can still
+make that review outdated; GitHub does not offer an atomic conditional-head write.
+Retries reconcile the public marker and saved receipt instead of resending an
+uncertain request. Unconfirmed requests remain locked until reconciliation.
+
+This first version publishes directly to github.com and supports Comment,
+Approve, and Request changes. Finish or remove pending GitHub drafts separately.
+Move file-level or expanded-context feedback into the review summary before
+preparing. Omitted comments remain local drafts. Headless `--ai-draft` and
+`--ai-review` are blocked when a publication transform applies; local analysis,
+agent triage, and local feedback export remain available. A transform is not a
+proof of confidentiality: inspect the complete preview before publishing.

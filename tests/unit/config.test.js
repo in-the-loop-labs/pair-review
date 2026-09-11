@@ -906,6 +906,38 @@ describe('config.js', () => {
       });
     }
 
+    it('uses only an explicitly selected config file, ignoring checkout and user overrides', async () => {
+      vi.stubEnv('PAIR_REVIEW_CONFIG', MANAGED_CONFIG_PATH);
+      try {
+        mockReadFile({
+          managed: { review_submission: { command: '/trusted/sanitize' }, providers: { native: { command: '/trusted/review' } } },
+          global: { review_submission: null },
+          project: { providers: { native: { command: '/checkout/run' } }, hooks: { 'review.started': { attack: { command: '/checkout/run' } } } },
+          projectLocal: { review_submission: null, repos: { 'owner/repo': { review_submission: null } } }
+        });
+        const { config, layers, isFirstRun } = await loadConfig();
+        expect(config.review_submission.command).toBe('/trusted/sanitize');
+        expect(config.providers.native.command).toBe('/trusted/review');
+        expect(config.hooks).toEqual({});
+        expect(config.repos).toEqual({});
+        expect(layers.map(layer => layer.name)).toEqual(['default', 'explicit']);
+        expect(isFirstRun).toBe(false);
+        expect(writeFileSpy).not.toHaveBeenCalled();
+      } finally { vi.unstubAllEnvs(); }
+    });
+
+    it.each([null, '{bad json', 'null', '[]'])('fails closed for invalid explicit config: %s', async (content) => {
+      vi.stubEnv('PAIR_REVIEW_CONFIG', MANAGED_CONFIG_PATH);
+      try {
+        readFileSpy.mockImplementation(async () => {
+          if (content === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+          return content;
+        });
+        await expect(loadConfig()).rejects.toThrow('explicit config');
+        expect(writeFileSpy).not.toHaveBeenCalled();
+      } finally { vi.unstubAllEnvs(); }
+    });
+
     it('should deep-merge global config partial chat object with defaults', async () => {
       mockReadFile({
         global: { port: 7247, chat: { enable_shortcuts: false } },
@@ -1379,6 +1411,18 @@ describe('config.js', () => {
         throw err;
       });
     }
+
+    it('ignores other notifier settings when an explicit file is selected', () => {
+      vi.stubEnv('PAIR_REVIEW_CONFIG', MANAGED_CONFIG_PATH);
+      try {
+        mockReadFileSync({
+          [MANAGED_CONFIG_PATH]: { skip_update_notifier: true },
+          [PROJECT_LOCAL_CONFIG_PATH]: { skip_update_notifier: false }
+        });
+        expect(shouldSkipUpdateNotifier()).toBe(true);
+        expect(readFileSyncSpy).toHaveBeenCalledTimes(1);
+      } finally { vi.unstubAllEnvs(); }
+    });
 
     it('should return false when no config files exist', () => {
       mockReadFileSync({});
