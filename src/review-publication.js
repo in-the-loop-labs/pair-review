@@ -231,7 +231,11 @@ async function reviewPublication({ db, reviewId, target, request, policy, client
       comments: previous.payload.comments.map(({ id, ...comment }) => comment)
     });
     return recordReceipt(db, reviewId, previous, receiptFor(review, previous));
-  } catch {
+  } catch (error) {
+    if ([400, 401, 403, 404, 422, 429].includes(error.status)) {
+      writeState(db, reviewId, previous);
+      fail('The provider rejected this review. Check its content and your permissions, then prepare again.');
+    }
     writeState(db, reviewId, { ...previous, status: 'uncertain' });
     fail('The provider did not confirm publication. Retry to check its receipt; the review will not be sent twice.');
   }

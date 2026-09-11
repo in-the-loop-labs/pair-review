@@ -461,6 +461,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
         head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
+        base_sha: extendedData.base_sha || null,  // Inspected base for publication revision checks
         node_id: extendedData.node_id || null,  // GraphQL node ID for review submission
         stack_data: stackData,
         shaAbbrevLength,

@@ -126,6 +126,16 @@ describe('previewed review publication', () => {
     await run(args);
     expect(db.prepare('SELECT status FROM comments').get().status).toBe('active');
   });
+
+  it('allows correction after a definite provider rejection', async () => {
+    await prepare();
+    client.octokit.rest.pulls.createReview.mockRejectedValueOnce(Object.assign(new Error('validation'), { status: 422 }));
+    await expect(run(args)).rejects.toThrow(/provider rejected/);
+    delete request.publicationToken;
+    request.body = 'Corrected draft';
+    await prepare();
+    expect((await run(args)).success).toBe(true);
+  });
 });
 
 describe('publication transform contract', () => {

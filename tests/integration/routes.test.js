@@ -466,6 +466,8 @@ describe('PR Management Endpoints', () => {
       expect(response.body.data.author).toBe('testuser');
       expect(response.body.data.base_branch).toBe('main');
       expect(response.body.data.head_branch).toBe('feature-branch');
+      expect(response.body.data.head_sha).toBe('def456');
+      expect(response.body.data.base_sha).toBe('abc123');
     });
 
     it('should return stack_data as null when walkPRStack returns null', async () => {
