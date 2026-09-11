@@ -65,6 +65,7 @@ const { CommentRepository } = require('../database');
 const { runExecutableAnalysis } = require('./executable-analysis');
 const analysesRouter = require('./analyses');
 const { worktreeLock } = require('../git/worktree-lock');
+const { publicationPolicy, reviewPublication } = require('../review-publication');
 const router = express.Router();
 
 /**
@@ -1535,6 +1536,25 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // Comments are associated with review.id, not prMetadata.id
     const reviewRepo = new ReviewRepository(db);
     const { review } = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    const publicationConfig = req.app.get('config') || {};
+    const policy = publicationPolicy(publicationConfig,
+      resolveBindingRepositoryForHost(owner, repo, publicationConfig, binding.host));
+    if (req.body.publicationToken && !policy) {
+      return res.status(409).json({ error: 'The publication policy changed. Restore it and prepare a new preview.' });
+    }
+    if (policy) {
+      try {
+        return res.json(await reviewPublication({
+          db, reviewId: review.id, target: { owner, repo, number: prNumber, repository },
+          request: req.body, policy, client: githubClient
+        }));
+      } catch (error) {
+        return res.status(error.status || 500).json({
+          error: error.status ? error.message : 'Could not prepare or publish the review. Nothing else was sent.'
+        });
+      }
+    }
 
     // Get all active user comments for this PR using review.id
     const comments = await query(db, `

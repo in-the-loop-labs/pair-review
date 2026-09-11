@@ -21,6 +21,7 @@ const logger = require('../utils/logger');
 const { killChildSafely } = require('./abort-signal-wiring');
 const jsonExtractor = require('../utils/json-extractor');
 const configModule = require('../config');
+const { parseNativeResult } = require('./native-result');
 
 const MAPPING_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -136,6 +137,8 @@ function createExecutableProviderClass(id, config) {
       this.contextArgs = config.context_args || {};
       this.diffArgs = config.diff_args || [];
       this.outputGlob = config.output_glob || '**/results.json';
+      this.outputFormat = config.output_format || 'mapped';
+      this.resultFile = config.result_file || 'review.json';
       this.mappingInstructions = config.mapping_instructions || '';
       this.timeout = config.timeout || 600000; // Default 10 minutes
       this.availabilityCommand = config.availability_command || 'true';
@@ -186,7 +189,7 @@ function createExecutableProviderClass(id, config) {
      * @returns {Promise<Object>} { success: true, data: { suggestions, summary } }
      */
     async execute(prompt, options = {}) {
-      const {
+      let {
         executableContext = {},
         analysisId,
         registerProcess,
@@ -196,6 +199,23 @@ function createExecutableProviderClass(id, config) {
 
       const outputDir = executableContext.outputDir;
       const cwd = executableContext.cwd || process.cwd();
+
+      if (!['mapped', 'pair-review'].includes(this.outputFormat)) {
+        throw new Error(`[${id}] Invalid output_format`);
+      }
+      if (this.outputFormat === 'pair-review') {
+        if (!outputDir || !this.resultFile || path.basename(this.resultFile) !== this.resultFile ||
+            this.resultFile === '.' || this.resultFile === '..' || this.resultFile.includes('\\')) {
+          throw new Error(`[${id}] result_file must be a filename within outputDir`);
+        }
+        executableContext = { ...executableContext, resultPath: path.join(outputDir, this.resultFile) };
+        try {
+          await fs.lstat(executableContext.resultPath);
+          throw new Error(`[${id}] Native result file already exists`);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
 
       // Build CLI args from context
       const cliArgs = this._buildArgs(executableContext);
@@ -324,6 +344,19 @@ function createExecutableProviderClass(id, config) {
           }
 
           try {
+            if (this.outputFormat === 'pair-review') {
+              if (code !== 0 || timedOut || cancelled) {
+                throw new Error(`[${id}] Native review failed (exit ${code}); output discarded`);
+              }
+              const resultPath = executableContext.resultPath;
+              const stat = await fs.lstat(resultPath);
+              if (!stat.isFile() || stat.isSymbolicLink()) {
+                throw new Error(`[${id}] Native result must be a regular file`);
+              }
+              const data = parseNativeResult(await fs.readFile(resultPath, 'utf8'));
+              settle(resolve, { success: true, data });
+              return;
+            }
             // Find the result file — check even on non-zero exit code,
             // since some tools exit non-zero but still produce valid output
             if (!outputDir) {

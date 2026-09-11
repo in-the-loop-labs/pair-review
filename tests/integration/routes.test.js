@@ -2904,6 +2904,26 @@ describe('Review Submission Endpoint', () => {
   });
 
   describe('POST /api/pr/:owner/:repo/:number/submit-review', () => {
+    it('requires preparation on the existing submit endpoint when a transform applies', async () => {
+      app.set('config', { ...app.get('config'), review_submission: { command: 'transform', args: [] } });
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Private unprepared text' });
+      expect(response.status).toBe(409);
+      expect(response.body.error).toContain('revision');
+      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+      expect(GitHubClient.prototype.createDraftReviewGraphQL).not.toHaveBeenCalled();
+    });
+
+    it('does not bypass a removed policy when submitting a preview token', async () => {
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Private text', publicationToken: 'saved-token' });
+      expect(response.status).toBe(409);
+      expect(response.body.error).toContain('policy changed');
+      expect(GitHubClient.prototype.createReviewGraphQL).not.toHaveBeenCalled();
+    });
+
     it('should return 400 for invalid PR number', async () => {
       const response = await request(server)
         .post('/api/pr/owner/repo/invalid/submit-review')

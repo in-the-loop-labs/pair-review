@@ -1247,3 +1247,53 @@ Apache-2.0 License - see LICENSE file for details
 ```bash
 npx @in-the-loop-labs/pair-review <PR-number-or-URL or --local>
 ```
+
+### Native executable results and publication previews
+
+An executable provider can write Pair Review's native suggestion JSON directly:
+set `output_format: "pair-review"`, `result_file: "review.json"`, and map
+`context_args.result_path` to the CLI's output-file flag. Pair Review provides a
+new absolute path in its private run directory and reads only that file after a
+successful exit. It rejects malformed output, failed/timed-out runs, and symlinks
+without using another model to rewrite the result. This works in PR and local
+mode. The file contains `{summary, suggestions}`; suggestions have `file`,
+`line_start`, `line_end`, `old_or_new`, `type`, `severity`, `title`, `description`,
+`suggestion`, and `is_file_level`. No additional fields are accepted. Line numbers
+are positive or null; file-level suggestions use null line numbers.
+
+For external publication, configure an optional transform globally or under a
+`repos["owner/repo"]` entry:
+
+```json
+{
+  "review_submission": {
+    "command": "/absolute/path/to/publication-transform",
+    "args": ["--input", "{input}", "--output", "{output}"],
+    "timeout": 300000
+  }
+}
+```
+
+The command is a local executable, invoked without a shell. It receives a private
+JSON file containing `{body, comments}`. Each comment has `id`, `path`, `line`,
+`side`, `body`, and optional `start_line`/`start_side`. Write the same shape to the
+new output path. The transform may change text or omit comments; it cannot add
+comments, change anchors, or include extra metadata. Include the whole intended
+summary/footer in the input. Pair Review adds only a public receipt marker after
+the transform and displays that marker in the preview.
+
+With this configuration, Submit Review first prepares an exact-text preview.
+Review it and choose **Publish reviewed comments**. Edits, changed credentials,
+and changed base/head revisions invalidate preparation. The submitted review is
+pinned to the inspected head commit. A push during the GitHub request can still
+make that review outdated; GitHub does not offer an atomic conditional-head write.
+Retries reconcile the public marker and saved receipt instead of resending an
+uncertain request. Unconfirmed requests remain locked until reconciliation.
+
+This first version publishes directly to github.com and supports Comment,
+Approve, and Request changes. Finish or remove pending GitHub drafts separately.
+Move file-level or expanded-context feedback into the review summary before
+preparing. Omitted comments remain local drafts. Headless `--ai-draft` and
+`--ai-review` are blocked when a publication transform applies; local analysis,
+agent triage, and local feedback export remain available. A transform is not a
+proof of confidentiality: inspect the complete preview before publishing.

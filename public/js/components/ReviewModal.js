@@ -12,6 +12,7 @@ class ReviewModal {
     this.modal = null;
     this.isVisible = false;
     this.isSubmitting = false;
+    this.publicationPreview = null;
     this.assistedByUrl = DEFAULT_ASSISTED_BY_URL;
     fetch('/api/config')
       .then(res => res.ok ? res.json() : null)
@@ -55,6 +56,13 @@ class ReviewModal {
         
         <div class="modal-body review-modal-body">
           <div class="review-form">
+            <section id="publication-preview" hidden aria-label="Publication preview">
+              <h4>Review the exact text to publish</h4>
+              <p id="publication-target"></p>
+              <p id="publication-omitted"></p>
+              <pre id="publication-text" style="white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto;"></pre>
+              <button type="button" id="publication-edit">Back to editing</button>
+            </section>
             <!-- Pending draft notice -->
             <div class="pending-draft-notice" id="pending-draft-notice" style="display: none;">
               <div class="pending-draft-notice-icon">
@@ -190,6 +198,7 @@ class ReviewModal {
 
     // Handle copy AI summary link (delegated since modal is recreated)
     document.addEventListener('click', (e) => {
+      if (e.target.closest('#publication-edit')) window.reviewModal?.clearPublicationPreview();
       if (e.target.closest('#copy-ai-summary-link')) {
         e.preventDefault();
         window.reviewModal?.appendAISummary();
@@ -198,6 +207,9 @@ class ReviewModal {
 
     // Handle review type selection change (delegated since modal is recreated)
     document.addEventListener('change', (e) => {
+      if (e.target.matches('input[name="review-event"], #assisted-by-checkbox')) {
+        window.reviewModal?.clearPublicationPreview();
+      }
       if (e.target.matches('input[name="review-event"]')) {
         window.reviewModal?.updateTextareaState();
       }
@@ -205,6 +217,34 @@ class ReviewModal {
         window.reviewModal?.handleAssistedByToggle();
       }
     });
+    document.addEventListener('input', (e) => {
+      if (e.target.matches('#review-body-modal')) window.reviewModal?.clearPublicationPreview();
+    });
+  }
+
+  clearPublicationPreview() {
+    this.publicationPreview = null;
+    const panel = this.modal?.querySelector('#publication-preview');
+    if (panel) panel.hidden = true;
+    const button = this.modal?.querySelector('#submit-review-btn-modal');
+    if (button && !this.isSubmitting) button.textContent = 'Submit review';
+  }
+
+  showPublicationPreview(preview, draftKey) {
+    this.publicationPreview = { ...preview, draftKey };
+    const panel = this.modal.querySelector('#publication-preview');
+    panel.hidden = false;
+    this.modal.querySelector('#publication-target').textContent =
+      `${preview.target.repository}#${preview.target.number} · ${preview.event} · commit ${preview.headSha}`;
+    this.modal.querySelector('#publication-omitted').textContent = preview.omittedComments
+      ? `${preview.omittedComments} comment(s) omitted by the publication transform; they remain local drafts.`
+      : 'Review all text below before publishing. Edits require a new preview.';
+    this.modal.querySelector('#publication-text').textContent = [
+      preview.body,
+      ...preview.comments.map(c => `${c.path}:${c.start_line ? `${c.start_line}-` : ''}${c.line} (${c.side})\n${c.body}`)
+    ].join('\n\n');
+    this.modal.querySelector('#submit-review-btn-modal').textContent = 'Publish reviewed comments';
+    panel.scrollIntoView?.({ block: 'nearest' });
   }
 
   /**
@@ -243,6 +283,7 @@ class ReviewModal {
    */
   show() {
     if (!this.modal) return;
+    this.clearPublicationPreview();
     
     // Update comment count
     this.updateCommentCount();
@@ -459,7 +500,7 @@ class ReviewModal {
       closeBtn.style.display = 'none';
     } else {
       // Restore normal state
-      submitBtn.innerHTML = 'Submit review';
+      submitBtn.textContent = this.publicationPreview ? 'Publish reviewed comments' : 'Submit review';
       submitBtn.disabled = false;
       cancelBtn.style.display = 'inline-block';
       closeBtn.style.display = 'inline-block';
@@ -520,6 +561,11 @@ class ReviewModal {
       if (!pr) {
         throw new Error('No PR loaded');
       }
+      const draftKey = JSON.stringify({ finalBody, reviewEvent, owner: pr.owner, repo: pr.repo,
+        number: pr.number, headSha: pr.head_sha, baseSha: pr.base_sha });
+      if (this.publicationPreview && this.publicationPreview.draftKey !== draftKey) {
+        this.clearPublicationPreview();
+      }
       
       const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`, {
         method: 'POST',
@@ -528,7 +574,10 @@ class ReviewModal {
         },
         body: JSON.stringify({
           event: reviewEvent,
-          body: finalBody
+          body: finalBody,
+          headSha: pr.head_sha,
+          baseSha: pr.base_sha,
+          ...(this.publicationPreview ? { publicationToken: this.publicationPreview.publicationToken } : {})
         })
       });
       
@@ -538,6 +587,11 @@ class ReviewModal {
       }
       
       const result = await response.json();
+      if (result.previewRequired) {
+        this.setSubmittingState(false);
+        this.showPublicationPreview(result, draftKey);
+        return;
+      }
       
       // Show appropriate success message
       if (window.toast) {
@@ -640,6 +694,7 @@ class ReviewModal {
    * Append AI summary to the review textarea
    */
   appendAISummary() {
+    this.clearPublicationPreview();
     const textarea = this.modal?.querySelector('#review-body-modal');
     if (!textarea) return;
 
