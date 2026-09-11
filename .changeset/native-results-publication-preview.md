@@ -10,3 +10,5 @@ commands or publication overrides from the reviewed checkout.
 Preserve exact PR URLs for executable reviewers. Retain incomplete-coverage
 warnings in progress and run history, and finish executable stages consistently
 on success, failure, and cancellation.
+Support optional reviewer branding on review summaries and inline comments,
+attributed to the authenticated developer and included in the exact preview.

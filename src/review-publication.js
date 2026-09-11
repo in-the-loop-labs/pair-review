@@ -20,6 +20,9 @@ const anchorSchema = z.object({
   start_side: z.enum(['LEFT', 'RIGHT']).optional(), body: z.string().trim().min(1)
 }).strict();
 const payloadSchema = z.object({ body: z.string(), comments: z.array(anchorSchema) }).strict();
+const attributionSchema = z.object({
+  name: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9 .-]*$/)
+}).strict();
 const commentQuery = `SELECT c.id, c.file, c.line_start, c.line_end, c.body, c.side,
   COALESCE(c.commit_sha, a.head_sha) AS commit_sha, c.is_file_level
   FROM comments c LEFT JOIN comments original ON original.id = c.parent_id
@@ -129,6 +132,25 @@ function buildInput(snapshot, diff) {
   }) };
 }
 
+function attributionFooter(policy, actor) {
+  if (policy.attribution === undefined) return null;
+  const parsed = attributionSchema.safeParse(policy.attribution);
+  if (!parsed.success) fail('review_submission.attribution requires a public name using letters, numbers, spaces, dots, or hyphens.');
+  if (actor.type !== 'User' || typeof actor.login !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,100}$/.test(actor.login)) {
+    fail('Review attribution requires an authenticated GitHub user with a valid login.');
+  }
+  return `_${parsed.data.name} review on behalf of [@${actor.login}](https://github.com/${actor.login})._`;
+}
+
+function appendAttribution(payload, footer) {
+  if (!footer) return payload;
+  const append = body => body.trim() ? `${body}\n\n---\n${footer}` : footer;
+  // Only the deliberately public brand and authenticated public handle are added
+  // after transformation. Keep them deterministic and inside the frozen preview.
+  return { body: append(payload.body), comments: payload.comments.map(c => ({ ...c, body: append(c.body) })) };
+}
+
 async function publicationReviews(client, target) {
   return client.octokit.paginate(client.octokit.rest.pulls.listReviews,
     { owner: target.owner, repo: target.repo, pull_number: target.number, per_page: 100 });
@@ -184,6 +206,7 @@ async function reviewPublication({ db, reviewId, target, request, policy, client
   const fingerprint = hash(snapshot);
   if (token && fingerprint !== previous.fingerprint) fail('The draft changed after preview. Prepare and review it again.');
   const { data: actor } = await client.octokit.rest.users.getAuthenticated();
+  const footer = attributionFooter(policy, actor);
   await assertFresh(client, target, snapshot);
   if (await client.getPendingReviewForUser(target.owner, target.repo, target.number)) {
     fail('A pending remote review exists. Finish or remove it on GitHub before preparing this review.');
@@ -194,15 +217,17 @@ async function reviewPublication({ db, reviewId, target, request, policy, client
       mediaType: { format: 'diff' }
     });
     const input = buildInput(snapshot, diff);
-    const payload = validateTransformed(input, await transform(input, policy));
-    if (!payload.body.trim() && !payload.comments.length && snapshot.event !== 'APPROVE') {
+    const transformed = validateTransformed(input, await transform(input, policy));
+    if (!transformed.body.trim() && !transformed.comments.length && snapshot.event !== 'APPROVE') {
       fail('The transformed review is empty. Nothing to publish.');
     }
+    const payload = appendAttribution(transformed, footer);
     const marker = `<!-- pair-review-publication:${hash({ target, headSha: snapshot.headSha, event: snapshot.event, payload })} -->`;
     payload.body += `${payload.body ? '\n\n' : ''}${marker}`;
     const state = { token: crypto.randomUUID(), status: 'prepared', fingerprint,
       target, headSha: snapshot.headSha, baseSha: snapshot.baseSha, event: snapshot.event,
-      actorId: actor.id, payload, marker, commentHashes: Object.fromEntries(snapshot.comments.map(c => [c.id, hash(c)])) };
+      actorId: actor.id, ...(footer ? { actorLogin: actor.login } : {}),
+      payload, marker, commentHashes: Object.fromEntries(snapshot.comments.map(c => [c.id, hash(c)])) };
     db.transaction(() => {
       previous = readState(db, reviewId);
       if (previous && ['submitting', 'uncertain'].includes(previous.status)) fail('Another publication is in progress.');
@@ -213,7 +238,9 @@ async function reviewPublication({ db, reviewId, target, request, policy, client
       baseSha: state.baseSha, event: state.event, ...payload,
       omittedComments: input.comments.length - payload.comments.length };
   }
-  if (actor.id !== previous.actorId) fail('The publishing account changed. Prepare again.');
+  if (actor.id !== previous.actorId || (previous.actorLogin && actor.login !== previous.actorLogin)) {
+    fail('The publishing account changed. Prepare again.');
+  }
   // Reconcile identical public content even if a previous local receipt was lost.
   const reviews = await publicationReviews(client, target);
   const found = reviews.find(r => r.user.id === previous.actorId && r.body?.includes(previous.marker) &&

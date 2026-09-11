@@ -4,6 +4,7 @@ import { waitForDiffToRender } from './helpers.js';
 
 test('shows exact transformed text and sends the preview token only after review', async ({ page }) => {
   const requests = [];
+  const attribution = '_Binks review on behalf of [@developer](https://github.com/developer)._';
   await page.route('**/submit-review', async route => {
     const request = route.request().postDataJSON();
     requests.push(request);
@@ -12,7 +13,7 @@ test('shows exact transformed text and sends the preview token only after review
       : { previewRequired: true, publicationToken: 'preview-token',
           target: { repository: 'test-owner/test-repo', number: 1 },
           headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), event: request.event,
-          body: 'Public summary', comments: [{ id: 1, path: 'src/a.js', line: 2, side: 'RIGHT', body: 'Public finding <img src=x onerror=alert(1)>' }],
+          body: `Public summary\n\n---\n${attribution}`, comments: [{ id: 1, path: 'src/a.js', line: 2, side: 'RIGHT', body: `Public finding <img src=x onerror=alert(1)>\n\n---\n${attribution}` }],
           omittedComments: 1 } });
   });
   await page.goto('/pr/test-owner/test-repo/1');
@@ -22,6 +23,7 @@ test('shows exact transformed text and sends the preview token only after review
   await page.locator('#submit-review-btn-modal').click();
   await expect(page.locator('#publication-preview')).toBeVisible();
   await expect(page.locator('#publication-text')).toContainText('Public finding');
+  expect((await page.locator('#publication-text').textContent()).split(attribution)).toHaveLength(3);
   await expect(page.locator('#publication-text')).not.toContainText('Private');
   await expect(page.locator('#publication-text img')).toHaveCount(0);
   await expect(page.locator('#publication-omitted')).toContainText('1 comment(s) omitted');
