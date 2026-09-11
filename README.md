@@ -1282,8 +1282,7 @@ For external publication, configure an optional transform globally or under a
   "review_submission": {
     "command": "/absolute/path/to/publication-transform",
     "args": ["--input", "{input}", "--output", "{output}"],
-    "timeout": 300000,
-    "attribution": { "name": "Example Reviewer" }
+    "timeout": 300000
   }
 }
 ```
@@ -1293,19 +1292,8 @@ JSON file containing `{body, comments}`. Each comment has `id`, `path`, `line`,
 `side`, `body`, and optional `start_line`/`start_side`. Write the same shape to the
 new output path. The transform may change text or omit comments; it cannot add
 comments, change anchors, or include extra metadata. Include the whole intended
-summary/footer in the input. After the transform, Pair Review adds the configured
-attribution (if present) and a public receipt marker; both appear in the preview.
-
-Optional `review_submission.attribution.name` brands the summary and every inline
-comment, for example: _Example Reviewer review on behalf of @developer._ The name
-is deliberately public configuration (1–80 letters, numbers, spaces, dots, or
-hyphens). The developer handle comes from the authenticated GitHub user; it cannot
-be supplied by the reviewed repository, draft text, or a different account field.
-The footer uses that public handle and configured name after transforming the
-edited text, so its attribution is deterministic. A changed account or handle
-requires a new preview. GitHub still shows the developer as the author; this
-option does not create a bot identity or claim who originally generated an
-imported finding. Local-only feedback export is unaffected.
+summary/footer in the input. Pair Review adds only a public receipt marker after
+the transform and displays that marker in the preview.
 
 With this configuration, Submit Review first prepares an exact-text preview.
 Review it and choose **Publish reviewed comments**. Edits, changed credentials,
