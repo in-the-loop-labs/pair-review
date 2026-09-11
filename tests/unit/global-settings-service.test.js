@@ -80,6 +80,11 @@ describe('GlobalSettingsService', () => {
   }
 
   describe('source attribution', () => {
+    it('resolves values from an explicit launcher configuration', () => {
+      const svc = makeService({ layers: [{ name: 'explicit', data: { comment_format: 'plain' } }] });
+      expect(svc.resolve('comment_format')).toEqual({ value: 'plain', source: 'explicit' });
+    });
+
     it('reports "default" when no layer, env, or override defines the value', () => {
       const svc = makeService();
       expect(svc.resolve('comment_button_action')).toEqual({ value: 'submit', source: 'default' });

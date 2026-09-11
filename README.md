@@ -486,6 +486,14 @@ checking the exit code first (as above) covers every outcome.
 
 ## Configuration
 
+For a launcher that must keep its provider and publication settings fixed, set
+`PAIR_REVIEW_CONFIG=/absolute/path/to/config.json`. This loads only that JSON
+object on top of built-in defaults, bypassing managed, user, and project config
+files. An unreadable or invalid explicit file stops startup. Normal environment
+overrides such as `GITHUB_TOKEN`, `PORT`, and `PAIR_REVIEW_DB_NAME` still apply.
+This also lets a launcher review an untrusted checkout without loading commands
+or publication overrides from its `.pair-review` configuration.
+
 On first run, pair-review will prompt you to configure the application.
 
 **Token Requirements:**

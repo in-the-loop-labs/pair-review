@@ -362,7 +362,10 @@ async function loadConfig() {
   await ensureConfigDir();
 
   const localDir = path.join(process.cwd(), '.pair-review');
-  const sources = [
+  const explicitConfig = process.env.PAIR_REVIEW_CONFIG;
+  const sources = explicitConfig ? [
+    { path: path.resolve(explicitConfig), label: 'explicit config', layerName: 'explicit', required: true }
+  ] : [
     { path: MANAGED_CONFIG_FILE,                         label: 'managed config',       layerName: 'managed',       required: false },
     { path: CONFIG_FILE,                                label: 'global config',        layerName: 'config',        required: true  },
     { path: CONFIG_LOCAL_FILE,                           label: 'global local config',  layerName: 'config.local',  required: false },
@@ -385,12 +388,18 @@ async function loadConfig() {
     try {
       const data = await fs.readFile(source.path, 'utf8');
       const parsed = JSON.parse(data);
+      if (explicitConfig && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+        throw new Error('Expected a configuration object');
+      }
       if (source.label === 'managed config' && Object.keys(parsed).length > 0) {
         hasManagedConfig = true;
       }
       layers.push({ name: source.layerName, data: parsed });
       mergedConfig = deepMerge(mergedConfig, parsed);
     } catch (error) {
+      if (explicitConfig) {
+        throw new Error(`Cannot load explicit config at ${source.path}: ${error.message}`, { cause: error });
+      }
       if (error.code === 'ENOENT') {
         if (source.required && !hasManagedConfig) {
           // Global config doesn't exist — create it with defaults
@@ -1671,7 +1680,7 @@ function shouldSkipUpdateNotifier() {
   const fsSync = require('fs');
   const localDir = path.join(process.cwd(), '.pair-review');
   // Keep in sync with the sources list in loadConfig()
-  const sources = [
+  const sources = process.env.PAIR_REVIEW_CONFIG ? [path.resolve(process.env.PAIR_REVIEW_CONFIG)] : [
     MANAGED_CONFIG_FILE,
     CONFIG_FILE,
     CONFIG_LOCAL_FILE,
