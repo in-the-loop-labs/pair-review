@@ -345,6 +345,9 @@ function createExecutableProviderClass(id, config) {
 
           try {
             if (this.outputFormat === 'pair-review') {
+              if (cancelled && !timedOut) {
+                throw Object.assign(new Error(`[${id}] Analysis cancelled`), { isCancellation: true });
+              }
               if (code !== 0 || timedOut || cancelled) {
                 throw new Error(`[${id}] Native review failed (exit ${code}); output discarded`);
               }

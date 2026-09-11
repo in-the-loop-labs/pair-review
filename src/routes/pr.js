@@ -2080,6 +2080,7 @@ async function handleExecutablePRAnalysis(req, res, {
   }, {
     logLabel: `PR #${prNumber}`,
     buildContext: (_r, { selectedModel: model, requestInstructions: customInstructions }) => ({
+      prUrl: Analyzer.resolvePrUrl(prMetadata),
       title: prMetadata.title || `PR #${prNumber}`,
       description: prMetadata.description || '',
       cwd: worktreePath,

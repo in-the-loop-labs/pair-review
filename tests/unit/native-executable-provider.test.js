@@ -44,6 +44,17 @@ describe('native executable results', () => {
     expect(provider.mapOutputToSchema).not.toHaveBeenCalled();
   });
 
+  it('retains incomplete-stage warnings separately from accepted suggestions', async () => {
+    const partial = { ...result, warnings: ['Incident-memory verification did not complete.'] };
+    const provider = providerFor(partial);
+    const response = await provider.execute(null, {
+      executableContext: { cwd: directory, outputDir: directory }, timeout: 5000,
+    });
+    expect(response.data).toEqual(partial);
+    expect(response.data.summary).toBe('');
+    expect(provider.mapOutputToSchema).not.toHaveBeenCalled();
+  });
+
   it('rejects malformed output and never falls back to model extraction', async () => {
     const provider = providerFor({ comments: [{ body: 'raw private output' }] });
     await expect(provider.execute(null, {

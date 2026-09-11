@@ -14,7 +14,9 @@ const suggestion = z.object({
 }).strict().refine(s => s.is_file_level
   ? s.line_start === null && s.line_end === null
   : s.line_start !== null && (s.line_end === null || s.line_end >= s.line_start));
-const schema = z.object({ summary: z.string(), suggestions: z.array(suggestion) }).strict();
+const schema = z.object({ summary: z.string(), suggestions: z.array(suggestion),
+  warnings: z.array(z.string().trim().min(1).max(500)).max(20).optional()
+}).strict();
 
 function parseNativeResult(raw) {
   try {

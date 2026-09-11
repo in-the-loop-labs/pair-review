@@ -1264,10 +1264,15 @@ set `output_format: "pair-review"`, `result_file: "review.json"`, and map
 new absolute path in its private run directory and reads only that file after a
 successful exit. It rejects malformed output, failed/timed-out runs, and symlinks
 without using another model to rewrite the result. This works in PR and local
-mode. The file contains `{summary, suggestions}`; suggestions have `file`,
+mode. The file contains `{summary, suggestions}` and optional `warnings` (up to
+20 plain-text messages, each at most 500 characters). Warnings describe incomplete
+review coverage; they appear in progress and saved run history, separately from
+publishable suggestions and the review summary. Suggestions have `file`,
 `line_start`, `line_end`, `old_or_new`, `type`, `severity`, `title`, `description`,
 `suggestion`, and `is_file_level`. No additional fields are accepted. Line numbers
 are positive or null; file-level suggestions use null line numbers.
+Map `context_args.pr_url` to a reviewer's PR-URL flag to pass the recorded upstream
+PR URL, including when the local checkout is a fork. Local-only reviews omit it.
 
 For external publication, configure an optional transform globally or under a
 `repos["owner/repo"]` entry:
