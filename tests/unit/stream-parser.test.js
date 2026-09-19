@@ -1103,6 +1103,47 @@ describe('extractToolDetail', () => {
     expect(extractToolDetail({ description: 'Review code', task: 'Analyze auth' })).toBe('Review code');
   });
 
+  it('summarizes a single OMP task from tasks[]', () => {
+    expect(extractToolDetail({ context: 'shared ctx', tasks: [{ description: 'Audit auth flow' }] }))
+      .toBe('Audit auth flow');
+  });
+
+  it('summarizes multiple OMP tasks with a (+N more) suffix', () => {
+    const input = {
+      context: 'shared ctx',
+      tasks: [
+        { description: 'Audit auth flow' },
+        { description: 'Audit session handling' },
+        { description: 'Audit token refresh' }
+      ]
+    };
+    expect(extractToolDetail(input)).toBe('Audit auth flow (+2 more)');
+  });
+
+  it('falls back to task/prompt fields within a tasks[] item', () => {
+    expect(extractToolDetail({ tasks: [{ task: 'Trace callers' }] })).toBe('Trace callers');
+    expect(extractToolDetail({ tasks: [{ prompt: 'Summarize the diff' }] })).toBe('Summarize the diff');
+  });
+
+  it('handles plain string entries in tasks[]', () => {
+    expect(extractToolDetail({ tasks: ['Check the migration', 'Check the schema'] }))
+      .toBe('Check the migration (+1 more)');
+  });
+
+  it('falls through when tasks[] is empty', () => {
+    expect(extractToolDetail({ tasks: [] })).toBe('');
+    expect(extractToolDetail({ tasks: [], file_path: '/src/app.js' })).toBe('/src/app.js');
+  });
+
+  it('falls through when tasks[] items have no usable string field', () => {
+    expect(extractToolDetail({ tasks: [{ id: 3 }] })).toBe('');
+  });
+
+  it('prefers description over tasks[]', () => {
+    expect(extractToolDetail({ description: 'Parent description', tasks: [{ description: 'Child' }] }))
+      .toBe('Parent description');
+  });
+
   it('extracts file_path field', () => {
     expect(extractToolDetail({ file_path: '/src/app.js' })).toBe('/src/app.js');
   });

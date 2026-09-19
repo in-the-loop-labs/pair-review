@@ -144,7 +144,7 @@ describe('OmpProvider', () => {
       const provider = new OmpProvider('default');
       expect(provider.baseArgs).toEqual([
         '-p', '--mode', 'json',
-        '--tools', 'read,bash,grep,glob',
+        '--tools', 'read,bash,grep,glob,task',
         '--no-session',
         '--config', REVIEW_CONFIG_OVERLAY_PATH
       ]);
@@ -154,7 +154,10 @@ describe('OmpProvider', () => {
       const provider = new OmpProvider('default');
       const toolsIdx = provider.baseArgs.indexOf('--tools');
       expect(toolsIdx).toBeGreaterThan(-1);
-      expect(provider.baseArgs[toolsIdx + 1]).toBe('read,bash,grep,glob');
+      // Regression: `task` was previously omitted from --tools, which silently
+      // removed subagent delegation from OMP review runs (OMP only loads the
+      // tools listed in --tools).
+      expect(provider.baseArgs[toolsIdx + 1]).toBe('read,bash,grep,glob,task');
     });
 
     it('should not include Pi-only flags (--no-prompt-templates, -e)', () => {
@@ -851,7 +854,7 @@ describe('OmpProvider', () => {
       const [command, args, opts] = lastCall;
       expect(command).toMatch(/^devx omp /);
       // quoteShellArgs quotes the comma-containing tools list
-      expect(command).toContain("--tools 'read,bash,grep,glob'");
+      expect(command).toContain("--tools 'read,bash,grep,glob,task'");
       expect(args).toEqual([]);
       expect(opts.shell).toBe(true);
       expect(opts.detached).toBe(true);

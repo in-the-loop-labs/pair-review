@@ -50,7 +50,7 @@ function stripPathPrefix(filePath, cwdPrefix) {
  * Extract a human-readable detail string from tool input/arguments.
  * Shared across all provider-specific line parsers.
  *
- * Priority: command > description > file_path/filePath/path
+ * Priority: command > description > task > tasks[] > file_path/filePath/path
  *
  * @param {Object|string|null} input - Tool input (object or JSON string)
  * @param {string} [cwd] - Working directory to strip from file paths
@@ -74,6 +74,27 @@ function extractToolDetail(input, cwd) {
   // Task/agent description (Claude Code Task tool, Pi task extension, etc.)
   if (parsed.description) return parsed.description;
   if (parsed.task) return parsed.task;
+
+  // OMP's built-in `task` tool takes { context, tasks: [...] }. Summarize the
+  // first task and note how many others were dispatched alongside it.
+  if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
+    const first = parsed.tasks[0];
+    let label = '';
+    if (typeof first === 'string') {
+      label = first;
+    } else if (first && typeof first === 'object') {
+      for (const field of ['description', 'task', 'prompt', 'name', 'title']) {
+        if (typeof first[field] === 'string' && first[field].trim()) {
+          label = first[field].trim();
+          break;
+        }
+      }
+    }
+    if (label) {
+      const extra = parsed.tasks.length - 1;
+      return extra > 0 ? `${label} (+${extra} more)` : label;
+    }
+  }
 
   // File path (various field naming conventions)
   const rawPath = parsed.file_path || parsed.filePath || parsed.path;

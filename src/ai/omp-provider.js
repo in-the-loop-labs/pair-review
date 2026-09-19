@@ -21,7 +21,8 @@
  *   (advisor.enabled in ~/.omp/agent/config.yml). Reviews disable it by
  *   default via a bundled --config overlay; set `"advisor": true` in
  *   config.json providers.omp to opt in (passes --advisor instead).
- * - Tools: OMP's read-only tool set is read,bash,grep,glob (no find/ls).
+ * - Tools: OMP's read-only tool set is read,bash,grep,glob (no find/ls),
+ *   plus OMP's built-in `task` subagent tool.
  * - No bundled task extension or --no-prompt-templates flag (Pi-specific).
  *
  * OMP provides a 'default' analysis mode and supports additional models via
@@ -109,8 +110,20 @@ class OmpProvider extends PiStyleProvider {
     // MCP tools configured in the user's OMP setup are likewise excluded because
     // they are not on the allowlist.
     //
-    // Enabled tools: read, bash, grep, glob
-    // Excluded tools: edit, write (file modification), task, MCP tools
+    // Enabled tools: read, bash, grep, glob, task
+    // Excluded tools: edit, write (file modification), MCP tools
+    //
+    // `task` is OMP's built-in subagent tool. It is enabled so Level 2/3
+    // analysis can parallelize read-only exploration (the thorough-tier prompts
+    // explicitly invite this). Verified against OMP 18.1.21 source
+    // (src/task/executor.ts): a subagent's tool set comes from its agent
+    // definition, NOT from the parent's --tools list. The bundled scout,
+    // reviewer, and security-reviewer agents declare read-only tool lists, but
+    // the generic `task`/`sonic` agents declare none and therefore receive
+    // OMP's full default tool set, including write. This does not widen the
+    // effective blast radius — the parent already has unrestricted `bash`
+    // (see LIMITATION below) — but it does mean the write/edit exclusion is
+    // defense-in-depth for the parent turn only, not a hard boundary.
     //
     // LIMITATION: The `bash` tool grants arbitrary shell command execution.
     // Unlike Claude (Bash(git diff*) prefixes) or Copilot (shell(git diff) prefixes),
@@ -121,24 +134,27 @@ class OmpProvider extends PiStyleProvider {
     // 1. Prompt engineering: Analysis prompts explicitly instruct the AI to only
     //    use read-only operations and never modify files
     // 2. Worktree isolation: Analysis runs in a git worktree, limiting blast radius
-    // 3. Tool exclusion: edit and write tools are not loaded at all
+    // 3. Tool exclusion: edit and write tools are not loaded for the parent
+    //    session (subagents spawned via `task` follow their agent definitions)
     //
     // If OMP CLI adds prefix-based bash restrictions in the future, they should
     // be adopted here to match the granularity of other providers.
     // ============================================================================
 
-    // omp -p --mode json --model <model> --tools read,bash,grep,glob <prompt-via-@file>
+    // omp -p --mode json --model <model> --tools read,bash,grep,glob,task <prompt-via-@file>
     // -p: Non-interactive mode (process prompt and exit)
     // --mode json: Output JSONL events
     // --model: Specify the model (omitted when cli_model is null to use OMP's default)
-    // --tools: Enable read-only tools for Level 2/3 analysis (excludes edit,write for safety)
+    // --tools: Enable read-only tools plus `task` (subagents) for Level 2/3 analysis
+    //          (excludes edit,write for safety)
     // --no-session: Each omp invocation is an ephemeral analysis — there's no need to
     //               persist session state between runs. Set PAIR_REVIEW_OMP_SESSION=1
     //               to enable session saving for debugging (sessions saved under ~/.omp/).
     // Advisor: disabled by default via the bundled --config overlay (see
     //   REVIEW_CONFIG_OVERLAY_PATH); configOverrides.advisor === true opts in via --advisor.
     // Build args: base args + built-in extra_args + provider extra_args + model extra_args
-    // In yolo mode, omit --tools entirely to allow all tools (including edit, write)
+    // In yolo mode, omit --tools entirely to allow all tools (including edit, write).
+    // `task` is in both modes; only the file-modification tools differ.
     // load_skills (default true): when false, adds --no-skills to suppress skill
     //   auto-discovery.
     const loadSkills = configOverrides.load_skills !== false;
@@ -152,7 +168,7 @@ class OmpProvider extends PiStyleProvider {
       baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, ...sessionArgs,
         ...advisorArgs, ...skillArgs];
     } else {
-      baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--tools', 'read,bash,grep,glob',
+      baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--tools', 'read,bash,grep,glob,task',
         ...sessionArgs, ...advisorArgs, ...skillArgs];
     }
     const builtInArgs = builtIn?.extra_args || [];
