@@ -5292,9 +5292,14 @@ class ChatPanel {
       }
     } else {
       if (isTask) {
-        // Remove spinner from completed Task badge
-        const badges = streamingMsg.querySelectorAll('.chat-panel__tool-badge[data-tool="Task"]:not(.chat-panel__tool-badge--transient), .chat-panel__tool-badge[data-tool="Agent"]:not(.chat-panel__tool-badge--transient)');
+        // Remove spinner from completed Task badges. Tool names arrive with
+        // provider-specific casing (Claude sends `Task`, OMP/Pi send `task`) and
+        // dataset.tool stores the name verbatim, so match case-insensitively
+        // instead of with an exact [data-tool="Task"] selector.
+        const badges = streamingMsg.querySelectorAll('.chat-panel__tool-badge:not(.chat-panel__tool-badge--transient)');
         badges.forEach(b => {
+          const badgeTool = (b.dataset?.tool || '').toLowerCase();
+          if (badgeTool !== 'task' && badgeTool !== 'agent') return;
           const spinner = b.querySelector('.chat-panel__tool-spinner');
           if (spinner) spinner.remove();
         });

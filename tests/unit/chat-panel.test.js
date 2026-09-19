@@ -4732,6 +4732,57 @@ describe('ChatPanel', () => {
       expect(badge.dataset.tool).toBe('Agent');
     });
 
+    it('should clear the spinner on tool end for a lowercase task badge', () => {
+      // Regression: OMP/Pi emit the tool name as lowercase `task`, and the end
+      // branch used to query [data-tool="Task"]/[data-tool="Agent"] only, so
+      // lowercase badges kept spinning until the turn ended.
+      chatPanel._showToolUse('task', 'start', { description: 'explore' });
+      const badge = streamingMsg.insertBefore.mock.calls[0][0];
+      expect(badge.dataset.tool).toBe('task');
+
+      const spinner = createMockElement('span');
+      badge.querySelector = vi.fn((sel) => (sel === '.chat-panel__tool-spinner' ? spinner : null));
+      streamingMsg.querySelectorAll = vi.fn(() => [badge]);
+
+      chatPanel._showToolUse('task', 'end');
+
+      // The end selector must not hard-code a capitalized tool name
+      const selector = streamingMsg.querySelectorAll.mock.calls[0][0];
+      expect(selector).not.toContain('data-tool="Task"');
+      expect(spinner.remove).toHaveBeenCalled();
+    });
+
+    it('should clear the spinner on tool end for a lowercase agent badge', () => {
+      chatPanel._showToolUse('agent', 'start', { description: 'research' });
+      const badge = streamingMsg.insertBefore.mock.calls[0][0];
+
+      const spinner = createMockElement('span');
+      badge.querySelector = vi.fn((sel) => (sel === '.chat-panel__tool-spinner' ? spinner : null));
+      streamingMsg.querySelectorAll = vi.fn(() => [badge]);
+
+      chatPanel._showToolUse('agent', 'end');
+
+      expect(spinner.remove).toHaveBeenCalled();
+    });
+
+    it('should not clear spinners on non-task persistent badges', () => {
+      chatPanel._showToolUse('task', 'start', { description: 'explore' });
+      const taskBadge = streamingMsg.insertBefore.mock.calls[0][0];
+      const taskSpinner = createMockElement('span');
+      taskBadge.querySelector = vi.fn((sel) => (sel === '.chat-panel__tool-spinner' ? taskSpinner : null));
+
+      const otherBadge = createMockElement('div', { dataset: { tool: 'Read' } });
+      const otherSpinner = createMockElement('span');
+      otherBadge.querySelector = vi.fn((sel) => (sel === '.chat-panel__tool-spinner' ? otherSpinner : null));
+
+      streamingMsg.querySelectorAll = vi.fn(() => [taskBadge, otherBadge]);
+
+      chatPanel._showToolUse('task', 'end');
+
+      expect(taskSpinner.remove).toHaveBeenCalled();
+      expect(otherSpinner.remove).not.toHaveBeenCalled();
+    });
+
     it('should return early without crashing when toolName is null', () => {
       expect(() => chatPanel._showToolUse(null, 'start')).not.toThrow();
       expect(streamingMsg.insertBefore).not.toHaveBeenCalled();

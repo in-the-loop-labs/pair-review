@@ -24,7 +24,14 @@ const CHAT_TOOLS = 'read,bash,grep,find,ls';
 
 // OMP's tool names differ from Pi's: file listing is `glob` (no find/ls), and
 // OMP errors on unknown tool names in --tools, so the Pi list cannot be reused.
-const OMP_CHAT_TOOLS = 'read,bash,grep,glob';
+// `task` is OMP's built-in subagent tool. Note that OMP subagents take their
+// tool set from OMP agent definitions, not from --tools, so the write/edit
+// exclusion here applies to the parent turn only (Pi's extension, by contrast,
+// re-passes the parent's active tool list to its subtasks). Chat runs in the
+// review's real working tree — no worktree isolation in Local mode — but the
+// blast radius is unchanged because bash is already granted. See the SECURITY
+// comment block in src/ai/omp-provider.js for detail.
+const OMP_CHAT_TOOLS = 'read,bash,grep,glob,task';
 
 class ChatSessionManager {
   /**
@@ -659,10 +666,13 @@ class ChatSessionManager {
     if (isOmpProvider(provider)) {
       // OMP — same RPC protocol as Pi, so the option mapping below mirrors the
       // Pi branch (see its comments), with two OMP-specific differences:
-      // - Tools: OMP_CHAT_TOOLS (OMP rejects Pi's find/ls tool names).
+      // - Tools: OMP_CHAT_TOOLS (OMP rejects Pi's find/ls tool names). It
+      //   includes OMP's built-in `task` subagent tool so chat can delegate
+      //   large explorations; see the OMP_CHAT_TOOLS comment above for why that
+      //   tool's subagents are not bound by this allowlist.
       // - No task extension: pair-review's bundled extension is Pi-specific
-      //   (it spawns `pi` subagents via PI_CMD), matching the AI provider,
-      //   which also omits it for OMP.
+      //   (it spawns `pi` subagents via PI_CMD) and OMP ships its own `task`
+      //   tool, matching the AI provider, which also omits the extension.
       return {
         resolved,
         bridge: new OmpBridge({

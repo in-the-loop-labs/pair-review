@@ -1033,8 +1033,11 @@ describe('ChatSessionManager', () => {
     it('should pass OMP tool set and no extensions to OmpBridge', async () => {
       await manager.createSession({ provider: 'omp', reviewId: 1 });
       const bridge = _createdOmpBridges[0];
-      // OMP rejects Pi's find/ls tool names; its file-listing tool is glob
-      expect(bridge._constructorOptions.tools).toBe('read,bash,grep,glob');
+      // OMP rejects Pi's find/ls tool names; its file-listing tool is glob.
+      // Regression: OMP chat had no subagent capability because `task` was
+      // missing from the --tools allowlist and the Pi task extension is not
+      // loaded for OMP.
+      expect(bridge._constructorOptions.tools).toBe('read,bash,grep,glob,task');
       // The pair-review task extension is Pi-specific and must not be loaded
       expect(bridge._constructorOptions.extensions).toBeUndefined();
     });
