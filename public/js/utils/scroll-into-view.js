@@ -49,8 +49,8 @@ const SCROLL_KEYS = new Set([
 let activeGeneration = 0;
 
 /**
- * Wait until `target`'s viewport-relative top is unchanged for
- * SETTLE_FRAMES consecutive animation frames (or SETTLE_TIMEOUT_MS passes).
+ * Wait until `target` has a rendered box whose viewport-relative top stays
+ * unchanged for SETTLE_FRAMES frames (or SETTLE_TIMEOUT_MS passes).
  * Resolves early when the target is disconnected or `isCancelled()` trips.
  * @param {Element} target
  * @param {() => boolean} isCancelled
@@ -66,7 +66,17 @@ function waitForStablePosition(target, isCancelled) {
         resolve();
         return;
       }
-      const top = target.getBoundingClientRect().top;
+      const rect = target.getBoundingClientRect();
+      // Pierre can attach an annotation before its worker paints the slot.
+      // An unchanged zero-sized box is not a settled scroll target. Restart
+      // settling if an intervening render temporarily removes the box too.
+      if (rect.width === 0 && rect.height === 0) {
+        lastTop = null;
+        stableFrames = 0;
+        requestAnimationFrame(tick);
+        return;
+      }
+      const top = rect.top;
       if (lastTop !== null && Math.abs(top - lastTop) <= STABLE_PX) {
         stableFrames += 1;
         if (stableFrames >= SETTLE_FRAMES) {
@@ -142,7 +152,11 @@ async function scrollIntoViewStable(target, options = {}) {
       if (isCancelled() || !target.isConnected) return;
       // Re-issue instantly: a no-op when the smooth scroll landed true, a
       // snap to the real position when lazy renders shifted the layout.
-      const before = target.getBoundingClientRect().top;
+      const rect = target.getBoundingClientRect();
+      // The wait may have timed out before paint. Do not spend corrective
+      // attempts scrolling an unrendered target, or treat that no-op as success.
+      if (rect.width === 0 && rect.height === 0) return;
+      const before = rect.top;
       target.scrollIntoView({ ...options, behavior: 'auto' });
       if (Math.abs(target.getBoundingClientRect().top - before) <= STABLE_PX) return;
       // The correction moved us — newly revealed bodies may render and

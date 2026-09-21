@@ -17,7 +17,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const {
   scrollIntoViewStable,
-  MAX_CORRECTIONS
+  MAX_CORRECTIONS,
+  SETTLE_FRAMES,
+  SETTLE_TIMEOUT_MS
 } = require('../../public/js/utils/scroll-into-view.js');
 
 /**
@@ -26,7 +28,7 @@ const {
  * drives what the helper sees.
  */
 function makeTarget({ wrapped = true, collapsed = false } = {}) {
-  const state = { top: 500 };
+  const state = { top: 500, rendered: true };
   let parent = document.body;
   let wrapper = null;
   if (wrapped) {
@@ -38,7 +40,9 @@ function makeTarget({ wrapped = true, collapsed = false } = {}) {
   const target = document.createElement('tr');
   parent.appendChild(target);
   vi.spyOn(target, 'getBoundingClientRect').mockImplementation(() => ({
-    top: state.top, bottom: state.top + 20, left: 0, right: 100, width: 100, height: 20
+    top: state.rendered ? state.top : 0, bottom: state.rendered ? state.top + 20 : 0,
+    left: 0, right: state.rendered ? 100 : 0,
+    width: state.rendered ? 100 : 0, height: state.rendered ? 20 : 0
   }));
   target.scrollIntoView = vi.fn();
   return { target, wrapper, state };
@@ -57,6 +61,100 @@ afterEach(() => {
 });
 
 describe('scrollIntoViewStable', () => {
+  describe('delayed annotation paint', () => {
+    let frames;
+
+    beforeEach(() => {
+      frames = [];
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+        frames.push(callback);
+        return frames.length;
+      });
+    });
+
+    async function advanceFrames(count) {
+      for (let i = 0; i < count; i++) {
+        const callbacks = frames.splice(0);
+        callbacks.forEach(callback => callback());
+        await Promise.resolve();
+      }
+    }
+
+    it('waits for a rendered box before settling and correcting the scroll', async () => {
+      const { target, state } = makeTarget({ wrapped: false });
+      state.rendered = false;
+      target.scrollIntoView.mockImplementation(() => {
+        if (state.rendered) state.top = 100;
+      });
+      let completed = false;
+      const pending = scrollIntoViewStable(target, { behavior: 'smooth' })
+        .then(() => { completed = true; });
+
+      await advanceFrames(SETTLE_FRAMES + 3);
+      expect(completed).toBe(false);
+      expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+
+      state.rendered = true;
+      await advanceFrames(2 * (SETTLE_FRAMES + 1));
+      await pending;
+      expect(state.top).toBe(100);
+      expect(target.scrollIntoView.mock.calls[1]).toEqual([{ behavior: 'auto' }]);
+    });
+
+    it('resets settling when a rendered target temporarily loses its box', async () => {
+      const { target, state } = makeTarget({ wrapped: false });
+      const pending = scrollIntoViewStable(target);
+      await advanceFrames(SETTLE_FRAMES);
+      state.rendered = false;
+      await advanceFrames(SETTLE_FRAMES + 2);
+      expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+
+      state.rendered = true;
+      await advanceFrames(SETTLE_FRAMES);
+      expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+      await advanceFrames(1);
+      await pending;
+      expect(target.scrollIntoView).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['wheel', 'touchstart', 'keydown', 'detached', 'superseded'])(
+      'cancels while waiting for paint: %s', async (reason) => {
+        const { target, state } = makeTarget({ wrapped: false });
+        state.rendered = false;
+        const removed = vi.spyOn(window, 'removeEventListener');
+        const pending = scrollIntoViewStable(target);
+        let newer;
+        if (reason === 'detached') target.remove();
+        else if (reason === 'superseded') newer = scrollIntoViewStable(makeTarget({ wrapped: false }).target);
+        else if (reason === 'keydown') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+        else window.dispatchEvent(new Event(reason));
+
+        await advanceFrames(SETTLE_FRAMES + 1);
+        await pending;
+        if (newer) await newer;
+        expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+        for (const type of ['wheel', 'touchstart', 'keydown']) {
+          expect(removed.mock.calls.some(([event]) => event === type)).toBe(true);
+        }
+      }
+    );
+
+    it('times out without corrective scrolling when the box never paints', async () => {
+      const { target, state } = makeTarget({ wrapped: false });
+      state.rendered = false;
+      const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+      const removed = vi.spyOn(window, 'removeEventListener');
+      const pending = scrollIntoViewStable(target);
+      await advanceFrames(SETTLE_FRAMES + 1);
+      now.mockReturnValue(SETTLE_TIMEOUT_MS + 1);
+      await advanceFrames(1);
+      await pending;
+      expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(frames).toHaveLength(0);
+      expect(removed).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('renders the lazy body of the target file before scrolling', async () => {
     const { target, wrapper } = makeTarget();
     const calls = [];

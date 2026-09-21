@@ -147,9 +147,58 @@ for (const mode of MODES) {
       await expect(suggestion).toBeHidden();
       // Use the actual sidebar click path to reveal the collapsed target again.
       await page.evaluate(() => window.aiPanel.expand());
-      await page.locator('.ai-panel .finding-item[data-id="9202"]').click();
-      await expect(fileWrapper).not.toHaveClass(/collapsed/);
-      await expect(suggestion).toBeInViewport();
+      await page.evaluate(() => {
+        const poolPrototype = window.PierreDiffs.WorkerPoolManager.prototype;
+        const handleMessage = poolPrototype.handleWorkerMessage;
+        const scroll = window.ScrollUtils.scrollIntoViewStable;
+        const queued = [];
+        let workerArrived;
+        let scrollStarted;
+        const workerReady = new Promise(resolve => { workerArrived = resolve; });
+        const scrollReady = new Promise(resolve => { scrollStarted = resolve; });
+        const gate = window.inlineNavigationGate = {
+          completed: false,
+          // Advance beyond the scroll helper's three-frame stability window
+          // while the worker is blocked. This sentinel exposes an early finish
+          // without relying on a machine-dependent delay.
+          frames: Promise.all([workerReady, scrollReady]).then(async () => {
+            for (let frame = 0; frame < 8; frame++) {
+              await new Promise(requestAnimationFrame);
+            }
+          }),
+          release() {
+            poolPrototype.handleWorkerMessage = handleMessage;
+            window.ScrollUtils.scrollIntoViewStable = scroll;
+            for (const deliver of queued.splice(0)) deliver();
+          }
+        };
+        poolPrototype.handleWorkerMessage = function(...args) {
+          queued.push(() => handleMessage.apply(this, args));
+          workerArrived();
+        };
+        window.ScrollUtils.scrollIntoViewStable = async (...args) => {
+          scrollStarted();
+          try {
+            return await scroll(...args);
+          } finally {
+            gate.completed = true;
+          }
+        };
+      });
+      try {
+        await page.locator('.ai-panel .finding-item[data-id="9202"]').click();
+        await expect(fileWrapper).not.toHaveClass(/collapsed/);
+        await page.evaluate(() => window.inlineNavigationGate.frames);
+        await expect(suggestion).toBeHidden();
+        expect(await page.evaluate(() => window.inlineNavigationGate.completed)).toBe(false);
+        await page.evaluate(() => window.inlineNavigationGate.release());
+        await expect(suggestion).toBeInViewport();
+      } finally {
+        await page.evaluate(() => {
+          window.inlineNavigationGate.release();
+          delete window.inlineNavigationGate;
+        });
+      }
     });
   });
 }
