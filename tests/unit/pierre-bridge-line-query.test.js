@@ -77,8 +77,8 @@ describe('PierreBridge._queryLineElement()', () => {
 // paint asynchronously (worker highlighting), so DOM queries lag the latest
 // render call. isLineVisible must consult the instance's CURRENT logical
 // state (fileDiff.hunks + per-hunk gap expansion), never the DOM — otherwise
-// a clear-ranges-then-check sequence sees lines that are about to disappear,
-// skips re-expansion, and leaves annotations unslotted (invisible orphans).
+// an expand-then-check sequence can otherwise report a newly revealed anchor
+// as hidden and unnecessarily rerender the file.
 describe('PierreBridge.isLineVisible()', () => {
   let PierreBridge;
 
@@ -100,8 +100,8 @@ describe('PierreBridge.isLineVisible()', () => {
 
   // Hunk shape mirrors @pierre/diffs fileDiff.hunks entries.
   const HUNKS = [
-    { additionStart: 3, additionCount: 5, deletionStart: 3, deletionCount: 2 },   // lines 3-7 (RIGHT), 3-4 (LEFT)
-    { additionStart: 20, additionCount: 4, deletionStart: 17, deletionCount: 4 }, // lines 20-23 (RIGHT)
+    { additionStart: 3, additionCount: 5, deletionStart: 3, deletionCount: 2, collapsedBefore: 2 },   // lines 3-7 (RIGHT), 3-4 (LEFT)
+    { additionStart: 20, additionCount: 4, deletionStart: 17, deletionCount: 4, collapsedBefore: 12 }, // lines 20-23 (RIGHT)
   ];
 
   function makeBridgeWithHunks({ hunks = HUNKS, collapsed = false, expandedHunks = new Map() } = {}) {
@@ -122,7 +122,31 @@ describe('PierreBridge.isLineVisible()', () => {
     expect(bridge.isLineVisible('a.js', 14, 'RIGHT')).toBe(false);  // gap between hunks
     expect(bridge.isLineVisible('a.js', 20, 'RIGHT')).toBe(true);
     expect(bridge.isLineVisible('a.js', 24, 'RIGHT')).toBe(false);  // past last hunk
-    expect(bridge.isLineVisible('a.js', 1, 'RIGHT')).toBe(false);   // before first hunk
+    expect(bridge.isLineVisible('a.js', 1, 'RIGHT')).toBe(true);    // two-line gap is painted in full
+  });
+
+  it.each(['LEFT', 'RIGHT'])('reports five-line leading, middle and trailing gaps visible on %s without manual expansion', (side) => {
+    const bridge = makeBridgeWithHunks({
+      hunks: [
+        { additionStart: 6, additionCount: 2, deletionStart: 6, deletionCount: 2, collapsedBefore: 5 },
+        { additionStart: 13, additionCount: 2, deletionStart: 13, deletionCount: 2, collapsedBefore: 5 },
+      ],
+    });
+    const metadata = bridge.files.get('a.js').instance.fileDiff;
+    metadata.additionLines = Array(19).fill('line');
+    metadata.deletionLines = Array(19).fill('line');
+    for (const line of [1, 5, 8, 12, 15, 19]) {
+      expect(bridge.isLineVisible('a.js', line, side)).toBe(true);
+    }
+    expect(bridge.isLineVisible('a.js', 20, side)).toBe(false);
+  });
+
+  it('keeps a six-line gap hidden without manual expansion', () => {
+    const bridge = makeBridgeWithHunks({
+      hunks: [{ additionStart: 7, additionCount: 1, deletionStart: 7, deletionCount: 1, collapsedBefore: 6 }],
+    });
+    expect(bridge.isLineVisible('a.js', 1, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 6, 'RIGHT')).toBe(false);
   });
 
   it('uses deletion-side coordinates for LEFT and skips zero-count sides', () => {
@@ -139,14 +163,29 @@ describe('PierreBridge.isLineVisible()', () => {
     expect(bridge.isLineVisible('a.js', 26, 'LEFT')).toBe(false);
   });
 
-  it('widens hunks by user gap expansion tracked in hunksRenderer.expandedHunks', () => {
+  it('reads expansion counts from both ends of the gap before a hunk', () => {
     const bridge = makeBridgeWithHunks({
       expandedHunks: new Map([[1, { fromStart: 3, fromEnd: 2 }]]),
     });
-    expect(bridge.isLineVisible('a.js', 17, 'RIGHT')).toBe(true);   // 20 - 3
-    expect(bridge.isLineVisible('a.js', 16, 'RIGHT')).toBe(false);
-    expect(bridge.isLineVisible('a.js', 25, 'RIGHT')).toBe(true);   // 23 + 2
-    expect(bridge.isLineVisible('a.js', 26, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 8, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 10, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 11, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 17, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 18, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 19, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 25, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 5, 'LEFT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 7, 'LEFT')).toBe(true);
+    expect(bridge.isLineVisible('a.js', 8, 'LEFT')).toBe(false);
+    expect(bridge.isLineVisible('a.js', 15, 'LEFT')).toBe(true);
+  });
+
+  it('ignores expansions on partial diffs without full file contents', () => {
+    const bridge = makeBridgeWithHunks({
+      expandedHunks: new Map([[1, { fromStart: 12, fromEnd: 0 }]]),
+    });
+    bridge.files.get('a.js').instance.fileDiff.isPartial = true;
+    expect(bridge.isLineVisible('a.js', 8, 'RIGHT')).toBe(false);
   });
 
   it('returns false for collapsed files even when the line is in a hunk', () => {

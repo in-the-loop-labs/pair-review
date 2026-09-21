@@ -5900,7 +5900,7 @@ class PRManager {
    * Ensure that the given line ranges are visible in the diff view.
    * For each item, checks if the target line rows exist in the DOM; if not,
    * calls expandForSuggestion() to expand the gap containing those lines.
-   * @param {Array<{file: string, line_start: number, line_end: number, side: string}>} items
+   * @param {Array<{file: string, line_start: number, line_end: number, side: string, contextPadding?: number}>} items
    */
   async ensureLinesVisible(items) {
     for (const item of items) {
@@ -5945,9 +5945,12 @@ class PRManager {
             }
           }
 
+          // Pad after converting to NEW coordinates. Padding the requested
+          // endpoints can cross edits on LEFT or put a target beyond EOF.
+          const padding = item.contextPadding || 0;
           this.pierreBridge.addContextRanges(file, [{
-            startLine: rangeStart,
-            endLine: rangeEnd,
+            startLine: Math.max(1, rangeStart - padding),
+            endLine: rangeEnd + padding,
           }]);
         }
         continue;
@@ -5956,28 +5959,16 @@ class PRManager {
       const fileElement = this.findFileElement(file);
       if (!fileElement) continue;
 
-      // Render the file body first — with lazy rendering an unrendered file
-      // has zero rows, so the visibility scan below would always miss and the
-      // line would be treated as "hidden in a gap" (then gap-expanded against
-      // zero gap rows → silent anchor failure).
-      await this.ensureFileBodyRendered(file);
-
-      // Check if any line in the range is already visible
-      let anyLineVisible = false;
-      const lineRows = fileElement.querySelectorAll('tr');
-      for (let checkLine = line_start; checkLine <= (line_end || line_start); checkLine++) {
-        for (const row of lineRows) {
-          const lineNum = this.getLineNumber(row, resolvedSide);
-          if (lineNum === checkLine) {
-            anyLineVisible = true;
-            break;
-          }
+      // Cards anchor at line_start except Pierre suggestions, which use
+      // line_end. Reveal both endpoints so either card has a row, even when
+      // only a middle line is visible. Endpoints may occupy different gaps;
+      // re-query after expansion because it replaces rows.
+      for (const line of new Set([line_start, line_end || line_start])) {
+        const visible = Array.from(fileElement.querySelectorAll('tr'))
+          .some(row => this.getLineNumber(row, resolvedSide) === line);
+        if (!visible) {
+          await this.expandForSuggestion(file, line, line_end || line_start, resolvedSide);
         }
-        if (anyLineVisible) break;
-      }
-
-      if (!anyLineVisible) {
-        await this.expandForSuggestion(file, line_start, line_end || line_start, resolvedSide);
       }
     }
   }
@@ -6732,10 +6723,6 @@ class PRManager {
   /**
    * AI Suggestion methods - delegate to SuggestionManager
    */
-  findHiddenSuggestions(suggestions) {
-    return this.suggestionManager.findHiddenSuggestions(suggestions);
-  }
-
   async displayAISuggestions(suggestions) {
     await this.suggestionManager.displayAISuggestions(suggestions);
     // Refresh minimize-mode indicators (no-op when minimize mode is off)

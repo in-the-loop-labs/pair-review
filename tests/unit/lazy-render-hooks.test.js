@@ -7,7 +7,7 @@
  * since an unrendered body has zero rows.
  *   - PRManager.expandForSuggestion() renders the body before scanning gaps.
  *   - SuggestionManager.displayAISuggestions() renders every targeted file's
- *     body before findHiddenSuggestions / inline insertion.
+ *     body before revealing lines / inline insertion.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -111,12 +111,14 @@ describe('SuggestionManager.displayAISuggestions force-render', () => {
     sm.prManager = {
       currentPR: { id: 1 },
       ensureFileBodyRendered: ensureSpy,
+      ensureLinesVisible: vi.fn(async () => {
+        expect(ensureSpy.mock.calls).toEqual([['a.js'], ['b.js']]);
+      }),
       suggestionNavigator: null,
       fileCommentManager: null
     };
     // Stub the bits we are not exercising so the method runs cleanly.
     sm._closeReasoningPopover = vi.fn();
-    sm.findHiddenSuggestions = vi.fn(() => []);
     sm.findFileElement = vi.fn(() => null); // short-circuit inline insertion
 
     await sm.displayAISuggestions([
@@ -128,8 +130,10 @@ describe('SuggestionManager.displayAISuggestions force-render', () => {
     // Distinct files only, each rendered before scanning.
     const files = ensureSpy.mock.calls.map(c => c[0]).sort();
     expect(files).toEqual(['a.js', 'b.js']);
-    // Force-render ran before the hidden-line scan.
-    expect(ensureSpy).toHaveBeenCalled();
-    expect(sm.findHiddenSuggestions).toHaveBeenCalled();
+    expect(sm.prManager.ensureLinesVisible.mock.calls).toEqual([[[
+      { file: 'a.js', line_start: 1, line_end: 1, side: 'RIGHT', contextPadding: 3 },
+      { file: 'b.js', line_start: 2, line_end: 2, side: 'RIGHT', contextPadding: 3 },
+      { file: 'a.js', line_start: 9, line_end: 9, side: 'RIGHT', contextPadding: 3 },
+    ]]]);
   });
 });

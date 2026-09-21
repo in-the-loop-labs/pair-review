@@ -66,6 +66,7 @@ function createTestPRManager() {
   prManager.expandForSuggestion = vi.fn().mockResolvedValue(undefined);
   prManager._materializeDeferredDiff = vi.fn().mockResolvedValue(false);
   prManager._ensurePierreContentUpgrade = vi.fn().mockResolvedValue(false);
+  prManager.ensureFileBodyRendered = vi.fn().mockResolvedValue(undefined);
   prManager.pierreBridge = null;
 
   return prManager;
@@ -89,6 +90,95 @@ function createMockRow(id) {
 }
 
 describe('PRManager.ensureLinesVisible()', () => {
+  describe('legacy range anchors', () => {
+    it.each([
+      ['hidden start', [50], [10]],
+      ['hidden end', [10], [50]],
+      ['endpoints in separate gaps', [30], [10, 50]],
+      ['already visible', [10, 50], []],
+    ])('reveals missing anchors: %s', async (_name, visibleLines, expected) => {
+      const manager = createTestPRManager();
+      const rows = visibleLines.map(line => ({ line }));
+      manager.findFileElement.mockReturnValue(createMockFileElement(rows));
+      manager.getLineNumber.mockImplementation(row => row.line);
+      manager.expandForSuggestion.mockImplementation(async (_file, line) => rows.push({ line }));
+
+      await manager.ensureLinesVisible([{ file: 'a.js', line_start: 10, line_end: 50, side: 'left' }]);
+
+      expect(manager.expandForSuggestion.mock.calls).toEqual(
+        expected.map(line => ['a.js', line, 50, 'LEFT'])
+      );
+      expect(rows.map(row => row.line)).toEqual(expect.arrayContaining([10, 50]));
+      expect(manager.ensureFileBodyRendered.mock.calls).toEqual([['a.js']]);
+    });
+
+    it('does not expand again when revealing the start also reveals the ending row', async () => {
+      const manager = createTestPRManager();
+      const rows = [];
+      manager.findFileElement.mockReturnValue(createMockFileElement(rows));
+      manager.getLineNumber.mockImplementation(row => row.line);
+      manager.expandForSuggestion.mockImplementation(async () => rows.push({ line: 10 }, { line: 15 }));
+
+      await manager.ensureLinesVisible([{ file: 'a.js', line_start: 10, line_end: 15, contextPadding: 3 }]);
+
+      expect(manager.expandForSuggestion.mock.calls).toEqual([['a.js', 10, 15, 'RIGHT']]);
+    });
+
+    it('skips items without a file or start line', async () => {
+      const manager = createTestPRManager();
+      await manager.ensureLinesVisible([{ file: null, line_start: 10 }, { file: 'a.js', line_start: null }]);
+      expect(manager.ensureFileBodyRendered).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Pierre suggestion padding', () => {
+    function makePierreManager() {
+      const manager = createTestPRManager();
+      manager.pierreBridge = {
+        files: new Map([['a.js', {}]]),
+        isLineVisible: vi.fn(() => false),
+        convertOldToNew: vi.fn(() => ({ startLine: 2, endLine: 4 })),
+        addContextRanges: vi.fn(),
+      };
+      return manager;
+    }
+
+    it('converts actual LEFT endpoints before adding context and clamps the start', async () => {
+      const manager = makePierreManager();
+      await manager.ensureLinesVisible([
+        { file: 'a.js', line_start: 10, line_end: 12, side: 'LEFT', contextPadding: 3 },
+      ]);
+      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([
+        ['a.js', 10, 'LEFT'], ['a.js', 12, 'LEFT'],
+      ]);
+      expect(manager.pierreBridge.convertOldToNew.mock.calls).toEqual([['a.js', 10, 12]]);
+      expect(manager.pierreBridge.addContextRanges.mock.calls).toEqual([
+        ['a.js', [{ startLine: 1, endLine: 7 }]],
+      ]);
+    });
+
+    it('skips expansion for visible anchors even when padding extends past EOF', async () => {
+      const manager = makePierreManager();
+      manager.pierreBridge.isLineVisible.mockReturnValue(true);
+      await manager.ensureLinesVisible([
+        { file: 'a.js', line_start: 100, line_end: 100, contextPadding: 3 },
+      ]);
+      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([
+        ['a.js', 100, 'RIGHT'], ['a.js', 100, 'RIGHT'],
+      ]);
+      expect(manager.pierreBridge.addContextRanges).not.toHaveBeenCalled();
+    });
+
+    it('skips a LEFT range that cannot be mapped to the new file', async () => {
+      const manager = makePierreManager();
+      manager.pierreBridge.convertOldToNew.mockReturnValue(null);
+      await manager.ensureLinesVisible([
+        { file: 'a.js', line_start: 10, line_end: 12, side: 'LEFT', contextPadding: 3 },
+      ]);
+      expect(manager.pierreBridge.addContextRanges).not.toHaveBeenCalled();
+    });
+  });
+
   describe('empty input', () => {
     it('should be a no-op for an empty items array', async () => {
       const prManager = createTestPRManager();
@@ -133,7 +223,7 @@ describe('PRManager.ensureLinesVisible()', () => {
       expect(prManager.expandForSuggestion).not.toHaveBeenCalled();
     });
 
-    it('should not call expandForSuggestion when any line in the range is visible', async () => {
+    it('reveals hidden endpoints even when a middle line is visible', async () => {
       const prManager = createTestPRManager();
       const row12 = createMockRow('row-12');
       const fileEl = createMockFileElement([row12]);
@@ -149,7 +239,10 @@ describe('PRManager.ensureLinesVisible()', () => {
         { file: 'partial.js', line_start: 10, line_end: 15, side: 'RIGHT' }
       ]);
 
-      expect(prManager.expandForSuggestion).not.toHaveBeenCalled();
+      expect(prManager.expandForSuggestion.mock.calls).toEqual([
+        ['partial.js', 10, 15, 'RIGHT'],
+        ['partial.js', 15, 15, 'RIGHT'],
+      ]);
     });
   });
 
@@ -167,8 +260,10 @@ describe('PRManager.ensureLinesVisible()', () => {
         { file: 'hidden.js', line_start: 10, line_end: 15, side: 'RIGHT' }
       ]);
 
-      expect(prManager.expandForSuggestion).toHaveBeenCalledTimes(1);
-      expect(prManager.expandForSuggestion).toHaveBeenCalledWith('hidden.js', 10, 15, 'RIGHT');
+      expect(prManager.expandForSuggestion.mock.calls).toEqual([
+        ['hidden.js', 10, 15, 'RIGHT'],
+        ['hidden.js', 15, 15, 'RIGHT'],
+      ]);
     });
 
     it('should default side to RIGHT when not specified', async () => {
@@ -242,8 +337,10 @@ describe('PRManager.ensureLinesVisible()', () => {
       ]);
 
       // Only the second item should trigger expansion
-      expect(prManager.expandForSuggestion).toHaveBeenCalledTimes(1);
-      expect(prManager.expandForSuggestion).toHaveBeenCalledWith('b.js', 20, 25, 'RIGHT');
+      expect(prManager.expandForSuggestion.mock.calls).toEqual([
+        ['b.js', 20, 25, 'RIGHT'],
+        ['b.js', 25, 25, 'RIGHT'],
+      ]);
     });
 
     it('should expand multiple items when none are visible', async () => {
@@ -257,9 +354,12 @@ describe('PRManager.ensureLinesVisible()', () => {
         { file: 'y.js', line_start: 10, line_end: 15, side: 'LEFT' }
       ]);
 
-      expect(prManager.expandForSuggestion).toHaveBeenCalledTimes(2);
-      expect(prManager.expandForSuggestion).toHaveBeenCalledWith('x.js', 1, 5, 'RIGHT');
-      expect(prManager.expandForSuggestion).toHaveBeenCalledWith('y.js', 10, 15, 'LEFT');
+      expect(prManager.expandForSuggestion.mock.calls).toEqual([
+        ['x.js', 1, 5, 'RIGHT'],
+        ['x.js', 5, 5, 'RIGHT'],
+        ['y.js', 10, 15, 'LEFT'],
+        ['y.js', 15, 15, 'LEFT'],
+      ]);
     });
 
     it('should skip items with missing file element and continue to next', async () => {
@@ -278,8 +378,10 @@ describe('PRManager.ensureLinesVisible()', () => {
       ]);
 
       // Only the second item should trigger expansion (first file not found)
-      expect(prManager.expandForSuggestion).toHaveBeenCalledTimes(1);
-      expect(prManager.expandForSuggestion).toHaveBeenCalledWith('exists.js', 10, 15, 'RIGHT');
+      expect(prManager.expandForSuggestion.mock.calls).toEqual([
+        ['exists.js', 10, 15, 'RIGHT'],
+        ['exists.js', 15, 15, 'RIGHT'],
+      ]);
     });
   });
 
