@@ -50,6 +50,41 @@ afterEach(() => {
 });
 
 describe('AIPanel scroll-to latest-wins race', () => {
+  it.each([
+    ['scrollToFinding', 'ai-suggestion', 'suggestionId'],
+    ['scrollToComment', 'user-comment-row', 'commentId'],
+  ])('%s ignores a stale target after waiting for range expansion', async (method, className, idKey) => {
+    const oldGate = deferred();
+    const newGate = deferred();
+    window.prManager = {
+      ensureLinesVisible: vi.fn()
+        .mockImplementationOnce(() => oldGate.promise)
+        .mockImplementationOnce(() => newGate.promise),
+    };
+    const inst = makeInstance();
+    const cards = ['A', 'B'].map(id => {
+      const card = document.createElement('div');
+      card.className = className;
+      card.dataset[idKey] = id;
+      document.body.appendChild(card);
+      return card;
+    });
+
+    const older = inst[method]('A', 'a.js', '10');
+    const newer = inst[method]('B', 'b.js', '20');
+    expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(2);
+
+    oldGate.resolve();
+    await older;
+    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(cards[0].classList.contains('current-suggestion')).toBe(false);
+    expect(cards[0].classList.contains('highlight-flash')).toBe(false);
+
+    newGate.resolve();
+    await newer;
+    expect(inst._scrollDiffTarget.mock.calls).toEqual([[cards[1]]]);
+  });
+
   it('scrollToFinding: an older call bails after a newer call supersedes it', async () => {
     const oldGate = deferred();
     const newGate = deferred();

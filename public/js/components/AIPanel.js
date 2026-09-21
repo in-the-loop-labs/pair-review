@@ -1193,8 +1193,9 @@ class AIPanel {
         // Resolve the diff side: explicit arg wins, else the finding's own side,
         // else RIGHT. Deletions live on the LEFT, so a hardcoded RIGHT would
         // reveal the wrong line for deletion-side findings.
+        const finding = this.findings?.find(f => String(f.id) === String(findingId));
         const resolvedSide = side
-            || this.findings?.find(f => String(f.id) === String(findingId))?.side
+            || finding?.side
             || 'RIGHT';
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
@@ -1208,12 +1209,13 @@ class AIPanel {
         }
 
         const doScroll = async () => {
-            // Reveal the target line first — for Pierre-rendered files this
-            // materializes deferred diffs and expands collapsed gaps.
+            // Pierre suggestions anchor at line_end; legacy suggestions anchor
+            // at line_start. Reveal both endpoints so either card has a row.
             if (file && line && window.prManager?.ensureLinesVisible) {
                 await window.prManager.ensureLinesVisible([
-                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: resolvedSide }
+                    { file, line_start: finding?.line_start || parseInt(line, 10), line_end: finding?.line_end || parseInt(line, 10), side: resolvedSide }
                 ]);
+                if (myGen !== this._navGen) return;
             }
 
             let targetSuggestion = null;
@@ -1264,7 +1266,7 @@ class AIPanel {
 
         // A newer navigation took over while we awaited — let it win.
         if (myGen !== this._navGen) return;
-        doScroll();
+        await doScroll();
     }
 
     /**
@@ -1296,8 +1298,9 @@ class AIPanel {
         const myGen = ++this._navGen;
         // Resolve the diff side: explicit arg wins, else the comment's own side,
         // else RIGHT.
+        const comment = this.comments?.find(c => String(c.id) === String(commentId));
         const resolvedSide = side
-            || this.comments?.find(c => String(c.id) === String(commentId))?.side
+            || comment?.side
             || 'RIGHT';
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
@@ -1309,17 +1312,19 @@ class AIPanel {
         }
 
         const doScroll = async () => {
+            // Comments anchor at line_start. Reveal the full selected range,
+            // including an ending line that may be in another collapsed gap.
             if (file && line && window.prManager?.ensureLinesVisible) {
                 await window.prManager.ensureLinesVisible([
-                    { file, line_start: parseInt(line, 10), line_end: parseInt(line, 10), side: resolvedSide }
+                    { file, line_start: comment?.line_start || parseInt(line, 10), line_end: comment?.line_end || parseInt(line, 10), side: resolvedSide }
                 ]);
+                if (myGen !== this._navGen) return;
             }
 
             let targetElement = null;
             let isFileLevel = false;
 
             // Check if this is a file-level comment
-            const comment = this.comments.find(c => String(c.id) === String(commentId));
             if (comment && (comment.is_file_level === 1 || comment.is_file_level === true)) {
                 isFileLevel = true;
             }
@@ -1377,7 +1382,7 @@ class AIPanel {
 
         // A newer navigation took over while we awaited — let it win.
         if (myGen !== this._navGen) return;
-        doScroll();
+        await doScroll();
     }
 
     /**

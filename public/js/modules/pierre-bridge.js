@@ -8,6 +8,8 @@
  * Depends on: window.PierreDiffs (from vendor bundle)
  */
 
+const COLLAPSED_CONTEXT_THRESHOLD = 5;
+
 class PierreBridge {
   /**
    * @param {Object} options
@@ -558,7 +560,7 @@ class PierreBridge {
       unsafeCSS: this.getUnsafeCSS(),
       hunkSeparators: 'line-info',
       expansionLineCount: 20,
-      collapsedContextThreshold: 5,
+      collapsedContextThreshold: COLLAPSED_CONTEXT_THRESHOLD,
       collapsed: renderOptions.collapsed || false,
 
       // Custom gutter render — dual buttons (chat + comment) matching legacy UI.
@@ -931,7 +933,7 @@ class PierreBridge {
       // full-contents re-diff can produce narrower context than the patch;
       // these spans are merged into every render so the upgrade never
       // un-renders visible lines (which would orphan annotations anchored to
-      // them). Unlike contextRanges, they survive clearContextRanges.
+      // them). Keep these original spans alongside dynamic context ranges.
       patchParityRanges: null,
       forcePlainText: !!renderOptions.forcePlainText,
       collapsed: !!renderOptions.collapsed,
@@ -1080,9 +1082,14 @@ class PierreBridge {
       return false;
     }
 
+    // Context merging changes hunk indices, so _renderWithFileDiff clears the
+    // vendor's per-hunk expansion state. Preserve manually revealed lines as
+    // context ranges first; comments may already be anchored to those lines.
+    const expandedRanges = this._getExpandedContextRanges(fileState);
+
     // Merge with existing context ranges (deduplicate)
     const existing = fileState.contextRanges || [];
-    fileState.contextRanges = mergeOverlapping([...existing, ...ranges]);
+    fileState.contextRanges = mergeOverlapping([...existing, ...expandedRanges, ...ranges]);
 
     // If file contents aren't loaded yet, ranges will be applied in upgradeFileContents
     if (!fileState.baseMetadata) return false;
@@ -1137,48 +1144,6 @@ class PierreBridge {
 
     const merged = mergeContextRanges(fileState.baseMetadata, ranges);
     return this._renderWithFileDiff(fileState, merged);
-  }
-
-  /**
-   * Remove specific context ranges from a file.
-   * @param {string} fileName
-   * @param {Array<{startLine: number, endLine: number}>} ranges
-   * @returns {boolean} true if re-render occurred
-   */
-  removeContextRanges(fileName, ranges) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return false;
-
-    const { subtractRanges } = window.PierreContext || {};
-    if (!subtractRanges) return false;
-
-    fileState.contextRanges = subtractRanges(fileState.contextRanges || [], ranges);
-
-    if (!fileState.baseMetadata) return false;
-    if (this._effectiveContextRanges(fileState).length === 0) {
-      return this._renderWithFileDiff(fileState, fileState.baseMetadata);
-    }
-    return this._applyContextRanges(fileName);
-  }
-
-  /**
-   * Remove all context ranges for a file, restoring original diff view.
-   * @param {string} fileName
-   * @returns {boolean} true if re-render occurred
-   */
-  clearContextRanges(fileName) {
-    const fileState = this.files.get(fileName);
-    if (!fileState) return false;
-
-    fileState.contextRanges = [];
-
-    if (!fileState.baseMetadata) return false;
-    // Patch-parity spans are not "context ranges" — clearing must never
-    // shrink the view below what the original patch rendered.
-    if (this._effectiveContextRanges(fileState).length) {
-      return this._applyContextRanges(fileName);
-    }
-    return this._renderWithFileDiff(fileState, fileState.baseMetadata);
   }
 
   /**
@@ -1689,6 +1654,48 @@ class PierreBridge {
   // ─── Gap Expansion ────────────────────────────────────────────────
 
   /**
+   * Read the vendor's manual expansions in file coordinates. Expansion index
+   * i describes the gap BEFORE hunk i: fromStart reveals the beginning of that
+   * gap, fromEnd its end. Index hunks.length describes the trailing EOF gap.
+   * These are not padding counts around the hunk itself.
+   */
+  _getExpandedContextRanges(fileState, side = 'RIGHT') {
+    const instance = fileState?.instance;
+    const metadata = instance?.fileDiff;
+    if (!metadata || metadata.isPartial) return [];
+    const hunks = metadata.hunks || [];
+    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
+    const ranges = [];
+    for (let i = 0; i <= hunks.length; i++) {
+      const hunk = hunks[i];
+      const last = hunks[hunks.length - 1];
+      if (!hunk && !last) continue;
+      const start = hunk
+        ? hunk[`${sideKey}Start`] - hunk.collapsedBefore
+        : last[`${sideKey}Start`] + last[`${sideKey}Count`];
+      const end = hunk
+        ? hunk[`${sideKey}Start`] - 1
+        : (metadata[`${sideKey}Lines`]?.length || 0);
+      const gapSize = end - start + 1;
+      if (gapSize <= 0) continue;
+      // The vendor paints small gaps in full without an expandedHunks entry.
+      if (gapSize <= COLLAPSED_CONTEXT_THRESHOLD) {
+        ranges.push({ startLine: start, endLine: end });
+        continue;
+      }
+      const expanded = instance.hunksRenderer?.getExpandedHunk?.(i);
+      if (!expanded) continue;
+      if (expanded.fromStart > 0) {
+        ranges.push({ startLine: start, endLine: Math.min(end, start + expanded.fromStart - 1) });
+      }
+      if (hunk && expanded.fromEnd > 0) {
+        ranges.push({ startLine: Math.max(start, end - expanded.fromEnd + 1), endLine: end });
+      }
+    }
+    return ranges;
+  }
+
+  /**
    * Expand a hunk in a file's diff.
    * @param {string} fileName
    * @param {number} hunkIndex
@@ -1720,24 +1727,21 @@ class PierreBridge {
     // Decide from the instance's CURRENT logical state, never the DOM.
     // render()/rerender() paint asynchronously (worker highlighting), so the
     // shadow DOM lags behind the latest render call — a DOM query here returns
-    // stale answers (e.g. a line still on screen right after
-    // clearContextRanges dropped it). instance.fileDiff is assigned
+    // stale answers while a newly revealed line is awaiting paint.
+    // instance.fileDiff is assigned
     // synchronously inside render(), so hunk membership reflects the state the
     // in-flight paint will converge to. A line is rendered iff it falls inside
-    // a hunk of the current (context-range-merged) metadata, widened by any
-    // user gap expansion tracked per hunk in hunksRenderer.expandedHunks.
+    // a hunk of the current metadata or a manually expanded gap.
     const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
     for (let i = 0; i < hunks.length; i++) {
       const hunk = hunks[i];
       const count = hunk[`${sideKey}Count`];
       if (!count) continue;
       const start = hunk[`${sideKey}Start`];
-      const expanded = instance.hunksRenderer?.getExpandedHunk?.(i);
-      const from = start - (expanded?.fromStart || 0);
-      const to = start + count - 1 + (expanded?.fromEnd || 0);
-      if (lineNumber >= from && lineNumber <= to) return true;
+      if (lineNumber >= start && lineNumber < start + count) return true;
     }
-    return false;
+    return this._getExpandedContextRanges(fileState, side)
+      .some(range => lineNumber >= range.startLine && lineNumber <= range.endLine);
   }
 
   /**
@@ -1796,49 +1800,6 @@ class PierreBridge {
       return side === 'deletions' ? [deletions, additions] : [additions, deletions];
     }
     return [pre];
-  }
-
-  /**
-   * Expand collapsed gaps so that the given line becomes visible.
-   * Iterates over hunks to find which gap the line falls in, then
-   * expands that hunk upward/downward by enough lines to reveal it.
-   * @param {string} fileName
-   * @param {number} lineNumber
-   * @param {string} side - 'LEFT'/'RIGHT'
-   */
-  expandToLine(fileName, lineNumber, side = 'RIGHT') {
-    const fileState = this.files.get(fileName);
-    if (!fileState || !fileState.instance) return;
-    const instance = fileState.instance;
-    if (!instance.fileDiff || !instance.fileDiff.hunks) return;
-
-    const hunks = instance.fileDiff.hunks;
-    const sideKey = PierreBridge.toPierreSide(side) === 'deletions' ? 'deletion' : 'addition';
-
-    for (let i = 0; i < hunks.length; i++) {
-      const hunk = hunks[i];
-      const hunkStart = hunk[`${sideKey}Start`];
-      const hunkEnd = hunkStart + hunk[`${sideKey}Count`] - 1;
-
-      // Target line is before this hunk — it's in the collapsed gap above
-      if (lineNumber < hunkStart) {
-        instance.expandHunk(i, 'up', hunk.collapsedBefore);
-        instance.rerender();
-        return;
-      }
-
-      // Target line is within this hunk — already visible (or should be)
-      if (lineNumber <= hunkEnd) {
-        return;
-      }
-
-      // If this is the last hunk and the line is after it — expand down
-      if (i === hunks.length - 1 && lineNumber > hunkEnd) {
-        instance.expandHunk(i, 'down', lineNumber - hunkEnd);
-        instance.rerender();
-        return;
-      }
-    }
   }
 
   // ─── Shadow DOM Access ────────────────────────────────────────────

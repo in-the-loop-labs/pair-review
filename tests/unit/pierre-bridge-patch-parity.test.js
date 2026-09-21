@@ -10,8 +10,7 @@ const BRIDGE_PATH = '../../public/js/modules/pierre-bridge.js';
 // NARROWER hunks. The upgrade render then silently un-rendered lines that
 // annotations were anchored to, leaving them as unslotted (invisible)
 // light-DOM orphans. The bridge must capture the patch-rendered spans as
-// patchParityRanges and merge them into every subsequent render — including
-// after clearContextRanges, which only clears DYNAMIC expansion ranges.
+// patchParityRanges and merge them into every subsequent context render.
 
 function makeWindow() {
   return {
@@ -22,8 +21,6 @@ function makeWindow() {
       // Test double: tag the metadata with the ranges it was merged with so
       // assertions can inspect exactly what got rendered.
       mergeContextRanges: (base, ranges) => ({ ...base, mergedRanges: ranges }),
-      subtractRanges: (existing, toRemove) =>
-        existing.filter(r => !toRemove.some(t => t.startLine === r.startLine && t.endLine === r.endLine)),
     },
   };
 }
@@ -104,30 +101,15 @@ describe('PierreBridge patch parity across content upgrades', () => {
     expect(bridge.isLineVisible('a.js', 14, 'RIGHT')).toBe(true);
   });
 
-  it('clearContextRanges keeps parity ranges — clears only dynamic ranges', () => {
+  it('keeps patch parity when adding dynamic context ranges', () => {
     upgrade();
     bridge.addContextRanges('a.js', [{ startLine: 40, endLine: 50 }]);
-    bridge.clearContextRanges('a.js');
-    expect(fileState.contextRanges).toEqual([]);
+    expect(fileState.contextRanges).toEqual([{ startLine: 40, endLine: 50 }]);
     const last = instance.renderCalls.at(-1);
-    expect(last.fileDiff.mergedRanges).toEqual([{ startLine: 12, endLine: 25 }]);
-  });
-
-  it('removeContextRanges falls back to parity-merged render, not raw base', () => {
-    upgrade();
-    bridge.addContextRanges('a.js', [{ startLine: 40, endLine: 50 }]);
-    bridge.removeContextRanges('a.js', [{ startLine: 40, endLine: 50 }]);
-    const last = instance.renderCalls.at(-1);
-    expect(last.fileDiff.mergedRanges).toEqual([{ startLine: 12, endLine: 25 }]);
-  });
-
-  it('renders raw base after clear when there are no parity ranges', () => {
-    fileState.baseMetadata = { hunks: UPGRADED_HUNKS };
-    bridge.addContextRanges('a.js', [{ startLine: 40, endLine: 50 }]);
-    bridge.clearContextRanges('a.js');
-    const last = instance.renderCalls.at(-1);
-    expect(last.fileDiff).toEqual({ hunks: UPGRADED_HUNKS });
-    expect(last.fileDiff.mergedRanges).toBeUndefined();
+    expect(last.fileDiff.mergedRanges).toEqual([
+      { startLine: 12, endLine: 25 },
+      { startLine: 40, endLine: 50 },
+    ]);
   });
 
   it('does not recapture parity on subsequent upgrades', () => {
