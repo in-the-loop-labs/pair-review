@@ -73,6 +73,11 @@ class GitWorktreeManager {
    * repository's git config. This preserves proxy/mirror setups where the
    * canonical fetch URL may differ from GitHub's clone URL.
    *
+   * A remote matching `cloneUrl` always wins over one matching `sshUrl`,
+   * regardless of `git remote -v` ordering: `cloneUrl` may be the user's
+   * explicitly configured `repos[...].clone_url`, while `sshUrl` still comes
+   * from the API and can name a different host.
+   *
    * @param {Object} git - simple-git instance
    * @param {string} cloneUrl - HTTPS clone URL of the target repository
    * @param {string} sshUrl - SSH URL of the target repository (may be empty/null)
@@ -127,16 +132,25 @@ class GitWorktreeManager {
       ? 'origin'
       : remoteNames.find((name) => name !== MANAGED_REMOTE) || 'origin';
 
-    // Check each non-managed remote for a direct URL match
-    for (const [name, url] of Object.entries(remotes)) {
-      if (name === MANAGED_REMOTE) {
+    // Check each non-managed remote for a direct URL match, in TWO passes:
+    // the clone URL first across every remote, only then the SSH URL.
+    //
+    // A single pass would let `git remote -v` ordering decide between them,
+    // which breaks an explicitly configured `repos[...].clone_url`: that value
+    // replaces the API's `base.repo.clone_url` but NOT its `ssh_url`, so an
+    // earlier-sorting remote matching the (possibly wrong-host) API ssh_url
+    // would outrank the remote the user pointed us at. When both URLs name the
+    // same repository the two passes pick the same remote as before.
+    const nonManagedRemotes = Object.entries(remotes).filter(([name]) => name !== MANAGED_REMOTE);
+    for (const target of [normalizedCloneUrl, normalizedSshUrl]) {
+      if (!target) {
         continue;
       }
-      const normalizedRemoteUrl = normalizeUrl(url);
-      if (normalizedRemoteUrl === normalizedCloneUrl ||
-          (normalizedSshUrl && normalizedRemoteUrl === normalizedSshUrl)) {
-        console.log(`Found matching remote '${name}' for base repository`);
-        return name;
+      for (const [name, url] of nonManagedRemotes) {
+        if (normalizeUrl(url) === target) {
+          console.log(`Found matching remote '${name}' for base repository`);
+          return name;
+        }
       }
     }
 

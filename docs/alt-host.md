@@ -46,6 +46,12 @@ All alt-host settings live under a per-repository entry in
       // Optional regex for matching pasted URLs to this repo entry.
       "url_pattern": "^https://althost\\.example/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<number>[0-9]+)",
 
+      // Canonical git clone URL for this repository. Set this when the host's
+      // API omits `base.repo.clone_url` from its pull request response —
+      // without it pair-review falls back to a github.com URL. See
+      // "clone_url" below.
+      "clone_url": "https://althost.example/owner/repo.git",
+
       // Per-area dispatch mode (see "Feature Areas" below).
       "features": {
         "pending_review_check": "rest",
@@ -191,6 +197,50 @@ repo entry applies"). When set, it is tried BEFORE the derived
 `api_host` patterns.
 
 Invalid regexes are reported with a clear error at startup.
+
+### `clone_url`
+
+The canonical git clone URL for the repository, e.g.
+`https://althost.example/owner/repo.git`.
+
+pair-review normally reads this from the pull request response's
+`base.repo.clone_url`. Some GitHub-compatible hosts omit that field. When it
+is missing, pair-review falls back to `https://github.com/<owner>/<repo>.git`,
+which for an alt-host repo is the wrong URL: it matches no local remote (so
+the wrong remote is used to fetch the PR) and, when there is no local checkout
+at all, it clones from github.com.
+
+Setting `clone_url` fixes both. The configured value **wins over** the API's
+`base.repo.clone_url` when both are present — it is your explicit statement of
+where the git objects live. pair-review then uses it for two things:
+
+1. **Choosing the fetch remote.** The value is compared against the URLs in
+   `git remote -v` for the local checkout, after normalising case, a trailing
+   `.git`, a trailing slash, and the `ssh://` vs. scp-like (`git@host:path`)
+   forms. It is matched against *every* remote before the PR's `ssh_url` is
+   considered — `ssh_url` still comes from the API, so a remote matching it
+   must never outrank the one you named here, whatever the order
+   `git remote -v` prints. When nothing matches either URL, pair-review falls
+   back to `origin` (or the first non-managed remote) without modifying git
+   config.
+2. **Cloning.** When no local checkout, cached clone, or existing worktree is
+   found, this is the URL pair-review clones from.
+
+```jsonc
+"clone_url": "https://althost.example/owner/repo.git"
+```
+
+Reopening a previously reviewed PR ("restore mode") replays stored metadata
+instead of calling the API, so the configured value is applied to that stored
+snapshot before the worktree is set up — a review captured before you added
+`clone_url` picks it up on the next open.
+
+The key is not restricted to alt-host repos — a github.com repo whose local
+remotes point at a proxy or mirror URL can use it too — but it exists
+primarily for alt hosts. For a **dual-host** repo (`exclusive: false`) it
+describes the alt host only: the repo's github.com binding ignores it, since
+github.com's API reports the correct `clone_url` itself. That applies to
+restore mode too — a dual repo's PR recorded on github.com is not patched.
 
 ### `features`
 
