@@ -129,6 +129,11 @@ function createTestReviewModal() {
   textarea.id = 'review-body-modal';
   textarea.value = '';
 
+  // Create a persistent Draft-with-AI link element
+  const draftWithAILink = createMockElement('a');
+  draftWithAILink.id = 'draft-with-ai-link';
+  draftWithAILink.style = { display: 'none' };
+
   // Create assisted-by checkbox and toggle
   const assistedByCheckbox = createMockElement('input');
   assistedByCheckbox.type = 'checkbox';
@@ -183,6 +188,7 @@ function createTestReviewModal() {
     if (sel === '#review-error-message') return createMockElement('div');
     if (sel === '#large-review-warning') return createMockElement('div');
     if (sel === '#copy-ai-summary-link') return createMockElement('a');
+    if (sel === '#draft-with-ai-link') return draftWithAILink;
     return null;
   });
 
@@ -208,7 +214,8 @@ function createTestReviewModal() {
     pendingDraftLink,
     draftRadioInput,
     draftTypeLabel,
-    draftTypeOption
+    draftTypeOption,
+    draftWithAILink
   };
 }
 
@@ -601,6 +608,114 @@ describe('ReviewModal', () => {
       expect(ReviewModal.resolveDraftPrUrl(null, null)).toBeNull();
       expect(ReviewModal.resolveDraftPrUrl({}, {})).toBeNull();
       expect(ReviewModal.resolveDraftPrUrl(undefined, undefined)).toBeNull();
+    });
+  });
+});
+
+describe('ReviewModal — Draft with AI', () => {
+  describe('updateDraftWithAILink', () => {
+    it('shows the link when a chat panel is available and review type is not DRAFT', () => {
+      const { modal, draftWithAILink } = createTestReviewModal();
+      global.window.chatPanel = { startSummaryDraft: vi.fn() };
+
+      modal.updateDraftWithAILink();
+
+      expect(draftWithAILink.style.display).toBe('inline');
+    });
+
+    it('hides the link when no chat panel is available', () => {
+      const { modal, draftWithAILink } = createTestReviewModal();
+      global.window.chatPanel = null;
+
+      modal.updateDraftWithAILink();
+
+      expect(draftWithAILink.style.display).toBe('none');
+    });
+
+    it('hides the link when DRAFT review type is selected (no body is sent)', () => {
+      const { modal, modalContainer, draftWithAILink } = createTestReviewModal();
+      global.window.chatPanel = { startSummaryDraft: vi.fn() };
+
+      // Override the checked radio to report DRAFT.
+      const originalQS = modalContainer.querySelector;
+      modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === 'input[name="review-event"]:checked') {
+          const radio = createMockElement('input');
+          radio.value = 'DRAFT';
+          return radio;
+        }
+        if (sel === '#draft-with-ai-link') return draftWithAILink;
+        return originalQS(sel);
+      });
+
+      modal.updateDraftWithAILink();
+
+      expect(draftWithAILink.style.display).toBe('none');
+    });
+  });
+
+  describe('handleDraftWithAI', () => {
+    it('hides the modal and hands the current summary to the chat panel', async () => {
+      const { modal, modalContainer, textarea } = createTestReviewModal();
+      textarea.value = 'my current summary';
+      const startSummaryDraft = vi.fn().mockResolvedValue(undefined);
+      global.window.chatPanel = { startSummaryDraft };
+
+      await modal.handleDraftWithAI();
+
+      expect(modalContainer.style.display).toBe('none');
+      expect(modal.isVisible).toBe(false);
+      expect(startSummaryDraft).toHaveBeenCalledWith({ currentSummary: 'my current summary' });
+    });
+
+    it('warns and does nothing when the chat panel is unavailable', async () => {
+      const { modal, modalContainer } = createTestReviewModal();
+      global.window.chatPanel = null;
+      global.window.toast = { showWarning: vi.fn() };
+
+      await modal.handleDraftWithAI();
+
+      expect(global.window.toast.showWarning).toHaveBeenCalled();
+      // Modal was never hidden.
+      expect(modalContainer.style.display).not.toBe('none');
+    });
+  });
+
+  describe('applyDraftedSummary', () => {
+    it('inserts the passed draft text and reopens the modal', () => {
+      const { modal, modalContainer, textarea } = createTestReviewModal();
+      global.window.toast = { showSuccess: vi.fn() };
+
+      modal.applyDraftedSummary('# Summary\nLooks good.');
+
+      expect(textarea.value).toBe('# Summary\nLooks good.');
+      expect(modalContainer.style.display).toBe('flex');
+      expect(modal.isVisible).toBe(true);
+      expect(global.window.toast.showSuccess).toHaveBeenCalled();
+    });
+
+    it('falls back to the chat panel\u2019s latest reply when no text is passed', () => {
+      const { modal, textarea } = createTestReviewModal();
+      global.window.chatPanel = { getLastAssistantMessage: vi.fn().mockReturnValue('fallback draft') };
+      global.window.toast = { showSuccess: vi.fn() };
+
+      modal.applyDraftedSummary();
+
+      expect(textarea.value).toBe('fallback draft');
+      expect(modal.isVisible).toBe(true);
+    });
+
+    it('warns and does not reopen when there is no draft', () => {
+      const { modal, textarea } = createTestReviewModal();
+      textarea.value = 'untouched';
+      global.window.chatPanel = { getLastAssistantMessage: vi.fn().mockReturnValue(null) };
+      global.window.toast = { showWarning: vi.fn() };
+
+      modal.applyDraftedSummary();
+
+      expect(textarea.value).toBe('untouched');
+      expect(global.window.toast.showWarning).toHaveBeenCalled();
+      expect(modal.isVisible).toBe(false);
     });
   });
 });
