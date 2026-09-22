@@ -91,7 +91,11 @@ class GitWorktreeManager {
     // Parse remote output into { name: url } map (fetch URLs only)
     const remotes = {};
     for (const line of remoteOutput.trim().split('\n')) {
-      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)$/);
+      // Tolerate trailing annotations git appends to partial-clone remotes,
+      // e.g. `origin\thttps://... (fetch) [blob:none]`. Without this, such
+      // remotes are dropped from the map and never match, so PR-ref fetches
+      // fall back to an unrelated remote (or a mirror lacking refs/pull/*).
+      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)(?:\s+\[.*\])?$/);
       if (match) {
         remotes[match[1]] = match[2];
       }

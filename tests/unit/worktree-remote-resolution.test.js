@@ -193,6 +193,27 @@ describe('GitWorktreeManager remote resolution', () => {
       expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
 
+    it('should match partial-clone remotes annotated with [blob:none]', async () => {
+      // git remote -v appends a filter annotation for partial clones, so the
+      // matching remote's fetch line ends with `(fetch) [blob:none]`.
+      mockGit.raw.mockResolvedValue(
+        'delta\thttps://mirror.example.com/owner/repo.git (fetch)\n' +
+        'delta\thttps://mirror.example.com/owner/repo.git (push)\n' +
+        'origin\thttps://github.com/owner/repo.git (fetch) [blob:none]\n' +
+        'origin\thttps://github.com/owner/repo.git (push)\n'
+      );
+
+      const result = await manager.resolveRemoteForRepo(
+        mockGit,
+        'https://github.com/owner/repo.git',
+        ''
+      );
+
+      // Must match the annotated origin, not fall back to the mirror.
+      expect(result).toBe('origin');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
     it('should throw when remote output is empty', async () => {
       mockGit.raw.mockResolvedValue('');
 
