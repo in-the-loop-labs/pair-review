@@ -4,3 +4,6 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+
+overrides:
+  'markdown-it>linkify-it': '5.0.2'
