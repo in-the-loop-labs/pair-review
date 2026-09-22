@@ -1658,6 +1658,123 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('fetchPullRequest', () => {
+    // Minimal REST `pulls.get` payload. `base.repo` is present here; the
+    // absent-`base.repo` case is covered separately below.
+    const restPayload = (overrides = {}) => ({
+      number: 7,
+      node_id: 'PR_kwDO123',
+      title: 'A title',
+      body: 'A body',
+      user: { login: 'octocat' },
+      state: 'open',
+      merged: false,
+      base: {
+        ref: 'main',
+        sha: 'basesha',
+        repo: {
+          full_name: 'owner/repo',
+          clone_url: 'https://github.com/owner/repo.git',
+          ssh_url: 'git@github.com:owner/repo.git',
+          default_branch: 'main'
+        }
+      },
+      head: { ref: 'feature', sha: 'headsha' },
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+      additions: 1,
+      deletions: 0,
+      changed_files: 1,
+      mergeable: true,
+      mergeable_state: 'clean',
+      html_url: 'https://github.com/owner/repo/pull/7',
+      ...overrides
+    });
+
+    /** Stub `octokit.rest.pulls.get` on a client with the supplied payload. */
+    function stubPullsGet(client, data) {
+      const get = vi.fn().mockResolvedValue({ data });
+      // Replace the whole `rest` namespace: the real one is a lazy proxy that
+      // throws when spread.
+      client.octokit.rest = { pulls: { get } };
+      return get;
+    }
+
+    const ALT_BINDING = {
+      token: 'alt-token',
+      apiHost: 'https://althost.example/api/v3',
+      cloneUrl: 'https://althost.example/owner/repo.git'
+    };
+
+    it('leaves the API clone_url untouched for a plain-token client', async () => {
+      const client = new GitHubClient('test-token');
+      stubPullsGet(client, restPayload());
+
+      const result = await client.fetchPullRequest('owner', 'repo', 7);
+
+      expect(client.cloneUrl).toBeNull();
+      expect(result.repository).toEqual({
+        full_name: 'owner/repo',
+        clone_url: 'https://github.com/owner/repo.git',
+        ssh_url: 'git@github.com:owner/repo.git',
+        default_branch: 'main'
+      });
+    });
+
+    it('lets a configured cloneUrl override the API value', async () => {
+      const client = new GitHubClient(ALT_BINDING);
+      stubPullsGet(client, restPayload());
+
+      const result = await client.fetchPullRequest('owner', 'repo', 7);
+
+      expect(result.repository.clone_url).toBe('https://althost.example/owner/repo.git');
+      // Other repository fields still come from the API.
+      expect(result.repository.ssh_url).toBe('git@github.com:owner/repo.git');
+      expect(result.repository.default_branch).toBe('main');
+    });
+
+    it('fills in clone_url when the host omits base.repo.clone_url', async () => {
+      const client = new GitHubClient(ALT_BINDING);
+      stubPullsGet(client, restPayload({
+        base: {
+          ref: 'main',
+          sha: 'basesha',
+          repo: { full_name: 'owner/repo', ssh_url: '', default_branch: 'trunk' }
+        }
+      }));
+
+      const result = await client.fetchPullRequest('owner', 'repo', 7);
+
+      expect(result.repository.clone_url).toBe('https://althost.example/owner/repo.git');
+      expect(result.repository.default_branch).toBe('trunk');
+    });
+
+    it('does not throw when the host omits base.repo entirely', async () => {
+      const client = new GitHubClient(ALT_BINDING);
+      stubPullsGet(client, restPayload({ base: { ref: 'main', sha: 'basesha' } }));
+
+      const result = await client.fetchPullRequest('owner', 'repo', 7);
+
+      expect(result.repository).toEqual({
+        full_name: 'owner/repo',
+        clone_url: 'https://althost.example/owner/repo.git',
+        ssh_url: undefined,
+        default_branch: undefined
+      });
+      expect(result.base_branch).toBe('main');
+    });
+
+    it('falls back to owner/repo for full_name and leaves clone_url undefined with no binding value', async () => {
+      const client = new GitHubClient('test-token');
+      stubPullsGet(client, restPayload({ base: { ref: 'main', sha: 'basesha' } }));
+
+      const result = await client.fetchPullRequest('acme', 'widget', 7);
+
+      expect(result.repository.full_name).toBe('acme/widget');
+      expect(result.repository.clone_url).toBeUndefined();
+    });
+  });
+
   describe('fetchPullRequestFiles', () => {
     it('should return mapped file objects from paginated API response', async () => {
       const client = new GitHubClient('test-token');

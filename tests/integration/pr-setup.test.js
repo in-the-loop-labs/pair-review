@@ -36,6 +36,8 @@ const { RepoSettingsRepository, WorktreePoolRepository, ReviewRepository, run, q
 const { GitHubClient } = require('../../src/github/client');
 const worktreePoolLifecycleModule = require('../../src/git/worktree-pool-lifecycle');
 const hooksPayloads = require('../../src/hooks/payloads');
+// Unmocked simple-git, used only to build/inspect real local repos in tests.
+const realSimpleGit = require('simple-git');
 
 // Install spies BEFORE pr-setup.js is loaded so that its destructured
 // variables capture the spy wrappers, not the original functions.
@@ -507,6 +509,88 @@ describe('findRepositoryPath with monorepo configuration', () => {
     });
 
     expect(result.worktreeConfig).toBeNull();
+  });
+});
+
+// ============================================================================
+// findRepositoryPath Tier 3 - fresh clone uses the supplied clone URL
+// ============================================================================
+// Regression: Tier 3 used to hard-code `https://github.com/<owner>/<repo>.git`.
+// For alt hosts (whose API may omit `base.repo.clone_url`, and which callers
+// now backstop with the repo's configured `clone_url`) that cloned the wrong
+// host. The source repository here is a local path, so the test performs a
+// real clone with no network access.
+
+describe('findRepositoryPath Tier 3 clone URL', () => {
+  let db;
+  let sourceRepoDir;
+  let testConfig;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    vi.clearAllMocks();
+
+    testConfig = { github_token: 'test-token' };
+
+    configModule.getConfigDir.mockReturnValue(testConfigDir);
+    configModule.getRepoPath.mockReturnValue(null);
+    configModule.resolveRepoOptions.mockReturnValue({
+      checkoutScript: null,
+      checkoutTimeout: 300000,
+      worktreeConfig: null,
+      resetScript: null,
+      poolSize: 0,
+      poolFetchIntervalMinutes: null
+    });
+    configModule.resolvePoolConfig.mockReturnValue({ poolSize: 0, poolFetchIntervalMinutes: null });
+    configModule.getRepoPoolSize.mockReturnValue(0);
+    configModule.getRepoResetScript.mockReturnValue(null);
+    localReview.findMainGitRoot.mockRejectedValue(new Error('Not a git repo'));
+    // Nothing exists on disk -> falls through every tier to the fresh clone.
+    GitWorktreeManager.prototype.pathExists.mockResolvedValue(false);
+
+    // A real local repository to clone from (no network).
+    sourceRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-src-'));
+    const git = realSimpleGit(sourceRepoDir);
+    await git.init();
+    await git.addConfig('user.email', 'test@example.com');
+    await git.addConfig('user.name', 'Test');
+    fs.writeFileSync(path.join(sourceRepoDir, 'README.md'), '# src\n');
+    await git.add('.');
+    await git.commit('initial');
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+    if (sourceRepoDir) {
+      fs.rmSync(sourceRepoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('clones from the supplied cloneUrl instead of github.com', async () => {
+    const owner = 'altowner';
+    const repo = `altrepo-${process.pid}`;
+    const cachedRepoPath = path.join(testConfigDir, 'repos', owner, repo);
+
+    try {
+      const result = await findRepositoryPath({
+        db,
+        owner,
+        repo,
+        repository: `${owner}/${repo}`,
+        prNumber: 1,
+        config: testConfig,
+        cloneUrl: sourceRepoDir
+      });
+
+      expect(result.repositoryPath).toBe(cachedRepoPath);
+      const originUrl = (await realSimpleGit(cachedRepoPath).raw(['remote', 'get-url', 'origin'])).trim();
+      expect(originUrl).toBe(sourceRepoDir);
+    } finally {
+      fs.rmSync(cachedRepoPath, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1245,6 +1329,133 @@ describe('restore mode (setupPRReview with restoreMetadata)', () => {
 
     expect(result.reviewUrl).toBe('/pr/owner/repo/42');
     expect(result.title).toBe('Restored PR'); // from the mock fetchPullRequest
+  });
+
+  // --------------------------------------------------------------------
+  // Configured clone_url hydration (restore mode)
+  // --------------------------------------------------------------------
+  // Restore mode never calls the API, so GitHubClient.fetchPullRequest never
+  // gets to substitute the repo's configured `clone_url`. Legacy snapshots
+  // (and any host that omits `base.repo.clone_url`) therefore carry no clone
+  // URL at all, and restore also skips storePRData so the gap never heals.
+  // setupPRReview must hydrate a COPY of the snapshot before handing prData
+  // downstream — the worktree layer's resolveRemoteForPR reads it to pick the
+  // fetch remote, not just the Tier 3 clone.
+
+  const ALT_CLONE_URL = 'https://althost.example/owner/repo.git';
+  const ALT_API_HOST = 'https://althost.example/api/v3';
+
+  /** prData as it reached WorktreePoolLifecycle.acquireForPR (arg index 1). */
+  function prDataSeenByWorktreeLayer() {
+    const calls = worktreePoolLifecycleModule.WorktreePoolLifecycle.prototype.acquireForPR.mock.calls;
+    expect(calls.length).toBe(1);
+    return calls[0][1];
+  }
+
+  it('hydrates the configured clone_url into prData when the snapshot lacks one', async () => {
+    testConfig.repos = { 'owner/repo': { clone_url: ALT_CLONE_URL } };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    // The worktree layer (resolveRemoteForPR) must see the configured URL.
+    expect(prDataSeenByWorktreeLayer().repository.clone_url).toBe(ALT_CLONE_URL);
+    // The caller's snapshot object must not be mutated.
+    expect(mockRestoreMetadata.repository).toBeUndefined();
+  });
+
+  it('keeps a clone_url already present on the snapshot', async () => {
+    testConfig.repos = { 'owner/repo': { clone_url: ALT_CLONE_URL } };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: {
+        ...mockRestoreMetadata,
+        repository: { clone_url: 'https://stored.example/owner/repo.git', ssh_url: 'git@stored.example:owner/repo.git' }
+      },
+    });
+
+    const seen = prDataSeenByWorktreeLayer().repository;
+    expect(seen.clone_url).toBe('https://stored.example/owner/repo.git');
+    expect(seen.ssh_url).toBe('git@stored.example:owner/repo.git');
+  });
+
+  it('preserves other repository fields when hydrating', async () => {
+    testConfig.repos = { 'owner/repo': { clone_url: ALT_CLONE_URL } };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: {
+        ...mockRestoreMetadata,
+        repository: { ssh_url: 'git@github.com:owner/repo.git', default_branch: 'main' }
+      },
+    });
+
+    const seen = prDataSeenByWorktreeLayer().repository;
+    expect(seen.clone_url).toBe(ALT_CLONE_URL);
+    expect(seen.ssh_url).toBe('git@github.com:owner/repo.git');
+    expect(seen.default_branch).toBe('main');
+  });
+
+  it('does NOT hydrate for a dual-host repo whose restore resolves to github.com', async () => {
+    // `clone_url` describes the ALT host (same rule as `features`), and this
+    // repo has no stored host, so the ambiguity rule binds github.com — whose
+    // API reports the correct clone_url itself.
+    testConfig.repos = {
+      'owner/repo': { api_host: ALT_API_HOST, exclusive: false, clone_url: ALT_CLONE_URL }
+    };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    expect(prDataSeenByWorktreeLayer().repository).toBeUndefined();
+  });
+
+  it('hydrates a dual-host repo when the stored PR row records the alt host', async () => {
+    testConfig.repos = {
+      'owner/repo': { api_host: ALT_API_HOST, exclusive: false, clone_url: ALT_CLONE_URL }
+    };
+    await run(
+      db,
+      'INSERT INTO pr_metadata (pr_number, repository, title, host) VALUES (?, ?, ?, ?)',
+      [prNumber, repository, 'Restored PR', ALT_API_HOST]
+    );
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    expect(prDataSeenByWorktreeLayer().repository.clone_url).toBe(ALT_CLONE_URL);
+  });
+
+  it('hydrates a dual-host repo when the caller passes the alt host explicitly', async () => {
+    testConfig.repos = {
+      'owner/repo': { api_host: ALT_API_HOST, exclusive: false, clone_url: ALT_CLONE_URL }
+    };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      host: ALT_API_HOST,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    expect(prDataSeenByWorktreeLayer().repository.clone_url).toBe(ALT_CLONE_URL);
+  });
+
+  it('hydrates an exclusive alt-host repo with no stored host', async () => {
+    testConfig.repos = { 'owner/repo': { api_host: ALT_API_HOST, clone_url: ALT_CLONE_URL } };
+
+    await setupPRReview({
+      db, owner, repo, prNumber, githubToken, config: testConfig,
+      restoreMetadata: mockRestoreMetadata,
+    });
+
+    expect(prDataSeenByWorktreeLayer().repository.clone_url).toBe(ALT_CLONE_URL);
   });
 
   it('should not use restore mode when restoreMetadata lacks head_sha', async () => {
