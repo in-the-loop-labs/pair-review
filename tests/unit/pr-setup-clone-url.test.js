@@ -15,6 +15,12 @@
  * restore snapshots, defensive callers) the Tier 3 fallback keeps the
  * github.com URL so behaviour is unchanged for the simple case.
  *
+ * A repo's explicitly configured `repos[...].clone_url` reaches the same
+ * field: `GitHubClient.fetchPullRequest` substitutes it for the API's value,
+ * and restore mode (which never fetches) hydrates `prData.repository` from
+ * config before any consumer sees it — so every call site here reads
+ * `prData.repository.clone_url` and nothing else.
+ *
  * These tests pin (textually — runtime end-to-end is exercised in
  * tests/integration/pr-setup.test.js):
  *   1. findRepositoryPath accepts `cloneUrl` and uses it for the Tier 3 clone.
@@ -74,6 +80,41 @@ describe('src/main.js — headless setup forwards prData.repository.clone_url', 
     const callBlock = src.match(/await findRepositoryPath\(\{[\s\S]*?\}\)/);
     expect(callBlock).toBeTruthy();
     expect(callBlock[0]).toMatch(/cloneUrl:\s*prData\?\.repository\?\.clone_url/);
+  });
+
+  it('every findRepositoryPath call site forwards the fetched clone URL', () => {
+    const src = readSource('src/main.js');
+    const callBlocks = src.match(/await findRepositoryPath\(\{[\s\S]*?\n\s*\}\);/g) || [];
+    // Both the headless and the interactive setup paths call it.
+    expect(callBlocks.length).toBe(2);
+    for (const block of callBlocks) {
+      expect(block).toMatch(/cloneUrl:\s*prData\?\.repository\?\.clone_url/);
+    }
+    // `prData` here is always a FRESH fetch via resolvePrHostBinding, whose
+    // client already substitutes the repo's configured `clone_url` — there is
+    // no restore snapshot to patch up, so no config fallback belongs here.
+    expect(src).not.toMatch(/\bgetRepoCloneUrl\b/);
+  });
+});
+
+describe('GitHubClient — configured clone URL reaches prData.repository.clone_url', () => {
+  it('fetchPullRequest prefers the binding cloneUrl over the API value', () => {
+    const src = readSource('src/github/client.js');
+    expect(src).toMatch(/clone_url:\s*this\.cloneUrl\s*\|\|\s*data\.base\?\.repo\?\.clone_url/);
+  });
+
+  it('resolveHostBinding supplies cloneUrl on the binding', () => {
+    const src = readSource('src/config.js');
+    // Every return of resolveHostBinding must carry the field.
+    const fn = src.slice(
+      src.indexOf('function resolveHostBinding(repository, config, options = {}) {'),
+      src.indexOf('function _makeRefresh(')
+    );
+    const returns = fn.match(/return \{[\s\S]*?\};/g) || [];
+    expect(returns.length).toBeGreaterThanOrEqual(6);
+    for (const ret of returns) {
+      expect(ret).toMatch(/\bcloneUrl\b/);
+    }
   });
 });
 

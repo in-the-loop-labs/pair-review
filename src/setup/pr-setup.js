@@ -17,7 +17,7 @@ const { WorktreePoolLifecycle } = require('../git/worktree-pool-lifecycle');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, getRepoConfig, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
+const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, getRepoConfig, getRepoCloneUrlForHost, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const { storedHostToOption, isDualHostRepoConfig, resolveRecordedHost, bindingRepositoryForHost } = require('../utils/host-resolution');
 const logger = require('../utils/logger');
 const { fireReviewStartedHook } = require('../hooks/payloads');
@@ -374,6 +374,37 @@ async function resolvePrHostBinding({ db, config, bindingRepository, owner, repo
 }
 
 /**
+ * Resolve which host a RESTORED PR lives on, without contacting any API.
+ *
+ * Restore mode replays a stored snapshot, so `resolvePrHostBinding` (which
+ * fetches) never runs. This applies the same host precedence minus the probe:
+ *
+ *   1. the explicit `host` parameter when defined (URL paste / dashboard row);
+ *   2. otherwise the stored `pr_metadata` row, read through the SAME
+ *      `getPRHostWithRecordedUrl` + `resolveRecordedHost` pair that
+ *      `resolvePrHostBinding` uses, so a pre-stamping NULL row is interpreted
+ *      identically;
+ *   3. otherwise `undefined` — host unknown, leaving the caller's ambiguity
+ *      rule to decide.
+ *
+ * @param {Object} params
+ * @param {Object} params.db
+ * @param {Object} params.config
+ * @param {string} params.bindingRepository - `repos[...]` config-lookup key
+ * @param {string} params.repository - normalized "owner/repo"
+ * @param {number} params.prNumber
+ * @param {string|null|undefined} params.host - explicit host override
+ * @returns {Promise<string|null|undefined>} The host, or `undefined` if unknown
+ */
+async function resolveRestoreHost({ db, config, bindingRepository, repository, prNumber, host }) {
+  if (host !== undefined) return host;
+  if (!db) return undefined;
+  const recorded = await new PRMetadataRepository(db).getPRHostWithRecordedUrl(repository, prNumber);
+  if (recorded === undefined) return undefined;
+  return resolveRecordedHost(config, bindingRepository, recorded.host, recorded.recordedUrl);
+}
+
+/**
  * Register the known location of a GitHub repository in the database.
  * This allows the web UI to find the repo without cloning when reviewing PRs.
  *
@@ -646,6 +677,28 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
 
   if (isRestore) {
     prData = restoreMetadata;
+    // Restore mode replays a stored snapshot and never calls the API, so
+    // `fetchPullRequest` never gets to substitute the repo's configured
+    // `clone_url`. Snapshots taken before the option existed (or from a host
+    // that omits `base.repo.clone_url` entirely) therefore carry no clone URL
+    // at all, and restore also skips `storePRData` — so the gap never heals.
+    // Hydrate a copy here so EVERY downstream consumer sees it: the clone in
+    // `findRepositoryPath` AND the `resolveRemoteForPR` calls reached via
+    // `acquireForPR` / `createWorktreeForPR`. Never mutate `restoreMetadata`
+    // itself — the caller may reuse that object.
+    if (config && !prData?.repository?.clone_url) {
+      const configuredCloneUrl = getRepoCloneUrlForHost(
+        config,
+        bindingRepository,
+        await resolveRestoreHost({ db, config, bindingRepository, repository, prNumber, host })
+      );
+      if (configuredCloneUrl) {
+        prData = {
+          ...restoreMetadata,
+          repository: { ...(restoreMetadata.repository || {}), clone_url: configuredCloneUrl }
+        };
+      }
+    }
     progress({ step: 'verify', status: 'completed', message: 'Restoring previous review state.' });
     progress({ step: 'fetch', status: 'completed', message: 'Using stored PR data.' });
   } else {

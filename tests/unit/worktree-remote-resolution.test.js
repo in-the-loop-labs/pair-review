@@ -232,6 +232,28 @@ describe('GitWorktreeManager remote resolution', () => {
       expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
 
+    it('should prefer the cloneUrl match over an earlier-sorting sshUrl match', async () => {
+      // Regression: a configured `repos[...].clone_url` replaces the API's
+      // `base.repo.clone_url` but NOT its `ssh_url`. A single-pass match let
+      // `git remote -v` ordering hand the win to the remote matching the
+      // stale API ssh_url, defeating the configured URL.
+      mockGit.raw.mockResolvedValue(
+        'github\tgit@github.com:owner/repo.git (fetch)\n' +
+        'github\tgit@github.com:owner/repo.git (push)\n' +
+        'mirror\thttps://mirror.example/owner/repo.git (fetch)\n' +
+        'mirror\thttps://mirror.example/owner/repo.git (push)\n'
+      );
+
+      const result = await manager.resolveRemoteForRepo(
+        mockGit,
+        'https://mirror.example/owner/repo.git',
+        'git@github.com:owner/repo.git'
+      );
+
+      expect(result).toBe('mirror');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
     it('should throw when remote output is empty', async () => {
       mockGit.raw.mockResolvedValue('');
 
