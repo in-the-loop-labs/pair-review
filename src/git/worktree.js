@@ -88,10 +88,15 @@ class GitWorktreeManager {
       throw new Error(`No remotes configured — cannot resolve base repository for ${cloneUrl}`);
     }
 
-    // Parse remote output into { name: url } map (fetch URLs only)
+    // Parse remote output into { name: url } map (fetch URLs only).
+    // `git remote -v` annotates a partial-clone remote's fetch line with its
+    // object filter (`origin<TAB>https://… (fetch) [blob:none]`), so the
+    // `(fetch)` marker is not always the end of the line. Anchoring on it
+    // would drop every filtered remote — typically `origin` itself on a
+    // partial clone — and send resolution to an unrelated remote.
     const remotes = {};
     for (const line of remoteOutput.trim().split('\n')) {
-      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)$/);
+      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)(?:\s|$)/);
       if (match) {
         remotes[match[1]] = match[2];
       }
