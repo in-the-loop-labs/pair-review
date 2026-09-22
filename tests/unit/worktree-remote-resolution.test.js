@@ -193,6 +193,45 @@ describe('GitWorktreeManager remote resolution', () => {
       expect(mockGit.addRemote).not.toHaveBeenCalled();
     });
 
+    it('should match a remote whose fetch line carries a partial-clone filter', async () => {
+      // `git remote -v` appends the object filter to a partial-clone remote's
+      // fetch line. The annotated remote must still be parsed, otherwise the
+      // base repository is invisible and an unrelated remote wins.
+      mockGit.raw.mockResolvedValue(
+        'delta\thttps://delta.example.com/owner/repo.git (fetch)\n' +
+        'delta\thttps://delta.example.com/owner/repo.git (push)\n' +
+        'origin\thttps://github.com/owner/repo.git (fetch) [blob:none]\n' +
+        'origin\thttps://github.com/owner/repo.git (push)\n'
+      );
+
+      const result = await manager.resolveRemoteForRepo(
+        mockGit,
+        'https://github.com/owner/repo.git',
+        'git@github.com:owner/repo.git'
+      );
+
+      expect(result).toBe('origin');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to a filtered origin over an unrelated unfiltered remote', async () => {
+      mockGit.raw.mockResolvedValue(
+        'delta\thttps://delta.example.com/owner/repo.git (fetch)\n' +
+        'delta\thttps://delta.example.com/owner/repo.git (push)\n' +
+        'origin\thttps://proxy.example.com/owner/repo.git (fetch) [blob:none]\n' +
+        'origin\thttps://proxy.example.com/owner/repo.git (push)\n'
+      );
+
+      const result = await manager.resolveRemoteForRepo(
+        mockGit,
+        'https://github.com/upstream-owner/repo.git',
+        ''
+      );
+
+      expect(result).toBe('origin');
+      expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+
     it('should throw when remote output is empty', async () => {
       mockGit.raw.mockResolvedValue('');
 
