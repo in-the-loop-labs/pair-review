@@ -1,5 +1,68 @@
 # Changelog
 
+## 5.3.2
+
+### Patch Changes
+
+- fdb92ad: Add Claude Opus 5.5 models (`opus-5.5-xhigh`, `opus-5.5-high`) and make `opus-5.5-high` the default for new installs
+
+  The bare `opus` alias now resolves to Opus 5.5 XHigh (was Opus 4.8 XHigh), and `fable`
+  resolves to Fable 5.1 XHigh (was Fable 5 XHigh). Any config, council, `--model`, or
+  `disabled_models` entry that names an alias follows it. That includes the stock
+  `"default_model": "opus"` that earlier versions wrote to `~/.pair-review/config.json`.
+  To stay on the previous generation, name `opus-4.8-xhigh` or `fable-5-xhigh` explicitly.
+
+  Requires a Claude Code CLI that recognizes `claude-opus-5-5`. Use a per-model
+  `cli_model` override if you need a different ID.
+
+- fdb92ad: Add GPT-6 Sol and GPT-6 Luna models to the Codex provider and replace the retired `gpt-5.4-mini`
+
+  - GPT-6 Sol (`gpt-6-sol-high`, `gpt-6-sol-xhigh`) and GPT-6 Luna (`gpt-6-luna-max`,
+    `gpt-6-luna-low`) can now be picked. OpenAI is still rolling out GPT-6 access, and
+    Enterprise workspace admins must enable it, so these entries are opt-in.
+  - The Codex default stays `gpt-5.6-sol-high` so default analyses keep working for
+    accounts without GPT-6 access.
+  - JSON extraction and hunk summaries now run on `gpt-5.6-luna-low` instead of
+    `gpt-5.4-mini`. OpenAI retired `gpt-5.4-mini` for ChatGPT sign-in on 2026-08-31,
+    and Codex has rejected it with a 400 since then, so extraction failed for ChatGPT
+    users.
+  - `gpt-5.4-mini` is removed with no alias. API-key users can still name it directly
+    (`--model gpt-5.4-mini`) or add it under `providers.codex.models`.
+  - The GPT-5.5 entries remain for now; OpenAI retires GPT-5.5 from Codex on 2026-10-14.
+
+- fdb92ad: Guided tours now use the tour provider's default model instead of its fast-tier model
+
+  A tour is an agentic walk through the codebase, so the fast tier was a poor fit.
+  When neither `tours.model` nor `summaries.model` is set, tour generation now uses the
+  tour provider's built-in default model (for Claude, `opus-5.5-high` instead of
+  `haiku`). This applies to every provider with a built-in default: Claude, Codex,
+  Antigravity, Copilot, Cursor Agent, Muse, Pi, and OMP. For Pi and OMP this is their
+  `default` mode, which uses your Pi or OMP configuration, even when Pi or OMP is the
+  global `default_provider` and a different `default_model` is set. OpenCode has no
+  built-in default and still falls back to the global `default_model`.
+
+  The provider default is used even when the tour provider is the global
+  `default_provider`, so an existing config's saved `default_model` does not decide
+  the tour model. The lookup reads the provider's built-in model list, so
+  `providers.<id>.default_model` does not change it; set `tours.model` to pick a
+  specific model. For Claude, `opus-5.5-high` needs a Claude Code CLI that knows
+  `claude-opus-5-5` (2.1.280 or later); on an older CLI, tours fail until you update
+  the CLI or set `tours.model`. Hunk summaries are unchanged and still use the fast tier.
+
+  Tours are off by default. If you enabled them, `tours.auto_generate` is on by
+  default, so each review load now runs a tour on the default model, which costs
+  more and takes longer than the fast tier did.
+
+- 3a22f4d: Upgrade the bundled markdown renderer to markdown-it 14.3.2 to fix a linkify denial-of-service
+
+  markdown-it 13.0.2 bundled `linkify-it` 4.x, whose link matcher has quadratic
+  cost (CVE-2026-48801 / GHSA-22p9-wv53-3rq4): a comment or suggestion containing
+  tens of kilobytes of email-like text could freeze the review page for seconds
+  while it rendered. The PR and Local review pages now load markdown-it 14.3.2,
+  which bundles the fixed `linkify-it` 5.0.2. `markdown-it` moved to
+  `devDependencies`, since the browser loads it from the CDN and only the unit
+  tests use the npm copy.
+
 ## 5.3.1
 
 ### Patch Changes
