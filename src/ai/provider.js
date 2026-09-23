@@ -158,11 +158,15 @@ class AIProvider {
   }
 
   /**
-   * Get the default model for this provider
-   * @returns {string}
+   * Get the default model for this provider: the built-in entry flagged
+   * `default: true`. Move that flag to change a provider's default.
+   * @returns {string|null} Model id, or null when no entry is flagged
    */
   static getDefaultModel() {
-    throw new Error('getDefaultModel() must be implemented by subclass');
+    // In a static method, `this` is the class the method was called on
+    // (e.g. CodexProvider.getDefaultModel()), so this reads that provider's
+    // own catalog. `?.` and `?? null` return null when no entry is flagged.
+    return this.getModels().find(m => m.default)?.id ?? null;
   }
 
   /**
@@ -590,7 +594,7 @@ function resolveCliModelConfig(builtIn, configModel, modelId) {
  * Match a model definition against a selector that may be the model's canonical
  * id OR one of its aliases. Used by config-driven selectors (`default_model`,
  * `disabled_models`, `models` overrides) so legacy config naming an alias (e.g.
- * `opus`, an alias of the canonical `opus-4.8-xhigh`) keeps working.
+ * `opus`, an alias of the canonical `opus-5.5-xhigh`) keeps working.
  *
  * Optional-chaining is intentional: a model with no `aliases` short-circuits to
  * undefined/falsy, so no Array.isArray guard is needed.
@@ -781,7 +785,7 @@ function applyConfigOverrides(config) {
 
     // Canonicalize alias-keyed override ids to their built-in canonical id.
     // A config entry may key a model by a short alias (e.g. `opus` for the
-    // canonical `opus-4.8-xhigh`). mergeModels() already resolves aliases for the
+    // canonical `opus-5.5-xhigh`). mergeModels() already resolves aliases for the
     // display/metadata path, but the runtime path forwards this raw `models` array
     // to the provider instance, where per-model config is looked up by EXACT id
     // (e.g. `configOverrides.models.find(m => m.id === model)`). The frontend
@@ -893,7 +897,7 @@ function mergeModels(builtInModels, configModels) {
   }
   // Replace overridden built-ins in-place to preserve display order. An override
   // matched by alias (e.g. config `{ id: 'opus' }` against built-in
-  // `opus-4.8-xhigh`) still replaces, but keeps the canonical built-in id.
+  // `opus-5.5-xhigh`) still replaces, but keeps the canonical built-in id.
   const matched = new Set();
   const merged = builtInModels.map(bm => {
     const override = configModels.find(cm => modelMatches(bm, cm.id));

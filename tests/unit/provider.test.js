@@ -118,3 +118,75 @@ describe('resolveCliModelConfig', () => {
     expect(resolveCliModelConfig({ cli_model: '' }, undefined, 'the-id')).toBe('');
   });
 });
+
+describe('AIProvider.getDefaultModel', () => {
+  const { AIProvider } = providerModule;
+
+  it('returns the id of the entry flagged default: true', () => {
+    class Flagged extends AIProvider {
+      static getModels() {
+        return [
+          { id: 'fast-one', tier: 'fast' },
+          { id: 'the-default', tier: 'balanced', default: true },
+          { id: 'deep-one', tier: 'thorough' }
+        ];
+      }
+    }
+    expect(Flagged.getDefaultModel()).toBe('the-default');
+  });
+
+  it('returns null when no entry is flagged', () => {
+    class Unflagged extends AIProvider {
+      static getModels() {
+        return [{ id: 'a', tier: 'fast' }, { id: 'b', tier: 'balanced' }];
+      }
+    }
+    expect(Unflagged.getDefaultModel()).toBeNull();
+  });
+
+  it('returns null for an empty catalog', () => {
+    class Empty extends AIProvider {
+      static getModels() {
+        return [];
+      }
+    }
+    expect(Empty.getDefaultModel()).toBeNull();
+  });
+
+  it('reads the catalog of the subclass it is called on', () => {
+    class Parent extends AIProvider {
+      static getModels() {
+        return [{ id: 'parent-default', tier: 'balanced', default: true }];
+      }
+    }
+    class Child extends Parent {
+      static getModels() {
+        return [{ id: 'child-default', tier: 'balanced', default: true }];
+      }
+    }
+    expect(Parent.getDefaultModel()).toBe('parent-default');
+    expect(Child.getDefaultModel()).toBe('child-default');
+  });
+});
+
+describe('built-in provider catalogs', () => {
+  const BUILT_IN_PROVIDERS = {
+    claude: require('../../src/ai/claude-provider'),
+    codex: require('../../src/ai/codex-provider'),
+    antigravity: require('../../src/ai/antigravity-provider'),
+    copilot: require('../../src/ai/copilot-provider'),
+    'cursor-agent': require('../../src/ai/cursor-agent-provider'),
+    opencode: require('../../src/ai/opencode-provider'),
+    pi: require('../../src/ai/pi-provider'),
+    omp: require('../../src/ai/omp-provider'),
+    muse: require('../../src/ai/muse-provider')
+  };
+
+  it.each(Object.entries(BUILT_IN_PROVIDERS))('%s flags at most one model as the default', (id, ProviderClass) => {
+    // getDefaultModel() takes the first flagged entry, so a second flag would
+    // be silently ignored rather than rejected.
+    const flagged = ProviderClass.getModels().filter(m => m.default).map(m => m.id);
+    expect(flagged.length).toBeLessThanOrEqual(1);
+    expect(ProviderClass.getDefaultModel()).toBe(flagged[0] ?? null);
+  });
+});

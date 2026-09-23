@@ -160,8 +160,6 @@ const ANTIGRAVITY_MODELS = [
   }
 ];
 
-const DEFAULT_ANTIGRAVITY_MODEL = 'gemini-3.8-flash-high';
-
 class AntigravityProvider extends AIProvider {
   /**
    * @param {string} model - Model identifier (clean id from ANTIGRAVITY_MODELS)
@@ -171,7 +169,7 @@ class AntigravityProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = DEFAULT_ANTIGRAVITY_MODEL, configOverrides = {}) {
+  constructor(model = AntigravityProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -622,10 +620,6 @@ class AntigravityProvider extends AIProvider {
 
   static getModels() {
     return ANTIGRAVITY_MODELS;
-  }
-
-  static getDefaultModel() {
-    return DEFAULT_ANTIGRAVITY_MODEL;
   }
 
   static getInstallInstructions() {

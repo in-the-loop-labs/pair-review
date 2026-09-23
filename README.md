@@ -211,7 +211,7 @@ pair-review --local [path]
 | `--scope <start>..<end>` | **Local mode only.** Set the diff range a local review covers. Stops (in order): `branch`, `staged`, `unstaged`, `untracked`. Six valid ranges (contiguous, must include `unstaged`); default `unstaged..untracked`. `branch..*` diffs from the merge-base with the base branch. See [Local review scope](#local-review-scope). |
 | `--base <branch>` | **Local mode only.** With a `branch..*` scope, override base-branch auto-detection. Errors if used without a branch-start scope. |
 | `--model <name>` | Override the AI model for any provider. Model availability depends on provider configuration. |
-| `--provider <name>` | Override the AI provider. Applies to headless modes (`--ai-draft` / `--ai-review`) **and** to browser-driven auto-analysis (`--ai`), where it overrides the repo/app default the browser would otherwise use — including across single-port delegation to an already-running server. Defaults to the repo/app default provider (`claude`). Pair with `--model` when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). |
+| `--provider <name>` | Override the AI provider. Applies to headless modes (`--ai-draft` / `--ai-review`) **and** to browser-driven auto-analysis (`--ai`), where it overrides the repo/app default the browser would otherwise use — including across single-port delegation to an already-running server. Defaults to the repo/app default provider (`claude`). Pair with `--model` when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.6-sol-high`). |
 | `--register` | Register `pair-review://` URL scheme handler (macOS only) |
 | `--unregister` | Unregister `pair-review://` URL scheme handler (macOS only) |
 | `--command <cmd>` | Custom CLI command for `--register` (default: `npx @in-the-loop-labs/pair-review`) |
@@ -227,7 +227,7 @@ pair-review 123 --ai                   # Auto-run AI analysis
 pair-review 123 --ai --provider codex  # Auto-run analysis in the browser with a specific provider
 pair-review --list-councils            # List saved councils and their handles
 pair-review 123 --ai-draft --council security-review  # Headless draft with a council
-pair-review 123 --ai-draft --provider codex --model gpt-5.5  # Headless draft with a specific provider + model
+pair-review 123 --ai-draft --provider codex --model gpt-5.6-sol-high  # Headless draft with a specific provider + model
 pair-review --local --ai --council security-review    # Local review with a council
 pair-review --local --headless         # Analyze local changes, print a summary, exit
 pair-review --local --headless --json  # Analyze local changes, emit JSON, exit
@@ -500,7 +500,7 @@ Configuration is stored in `~/.pair-review/config.json`:
   "port": 7247,
   "theme": "light",
   "default_provider": "claude",
-  "default_model": "opus"
+  "default_model": "opus-5.5-high"
 }
 ```
 
@@ -583,7 +583,7 @@ pair-review supports several environment variables for customizing behavior:
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
-**Note:** Choose the AI provider and model with the `--provider` and `--model` CLI flags. There is no environment-variable equivalent (the provider/model env vars were removed in v5 — see the changeset for migration). The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.5`). The flag override outranks saved repository settings (`CLI flag > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead. To set a persistent default without passing a flag every time, use the `default_provider` / `default_model` config keys or the repo/global [settings pages](#global-settings-page).
+**Note:** Choose the AI provider and model with the `--provider` and `--model` CLI flags. There is no environment-variable equivalent (the provider/model env vars were removed in v5 — see the changeset for migration). The `--provider` flag selects which provider runs the analysis; `--model` selects the model within that provider, so set both when the model belongs to a non-default provider (e.g. `--provider codex --model gpt-5.6-sol-high`). The flag override outranks saved repository settings (`CLI flag > repo settings`); if the repo's default is a Review Council, an active `--provider`/`--model` override forces the single-provider path instead. To set a persistent default without passing a flag every time, use the `default_provider` / `default_model` config keys or the repo/global [settings pages](#global-settings-page).
 
 **Delegation caveat:** With single-port mode (the default `single_port: true`), a new invocation delegates to an already-running server. On that path the `--provider`/`--model` override is carried to the running server only alongside browser auto-analysis (`--ai`). Delegating without `--ai` (just opening the review) does not seed the override into the other process's manual analysis dialog — use `--ai`, or a headless mode, to pin the provider on the delegated path.
 
@@ -610,7 +610,7 @@ PAIR_REVIEW_ANTIGRAVITY_CMD="/usr/local/bin/agy" pair-review --local
 pair-review 123 --model opus
 
 # Force a specific provider + model for a headless review
-pair-review 123 --ai-draft --provider codex --model gpt-5.5
+pair-review 123 --ai-draft --provider codex --model gpt-5.6-sol-high
 
 # Combine a custom CLI path with a model flag
 PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" pair-review 123 --model haiku
@@ -762,7 +762,7 @@ Use the provider-level `default_model` and `disabled_models` fields to tailor wh
 }
 ```
 
-- `disabled_models` removes those models from the picker. It matches by model id or alias, so either a canonical id (`opus-4.8-xhigh`) or a convenience alias (`opus`) works. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus-4.8-xhigh`, `sonnet-4.6`, `haiku`, …).
+- `disabled_models` removes those models from the picker. It matches by model id or alias, so either a canonical id (`opus-5.5-xhigh`) or a convenience alias (`opus`) works. The bare `opus` and `fable` aliases follow the newest generation, so list the canonical id to keep hiding one exact entry. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus-4.8-xhigh`, `sonnet-4.6`, `haiku`, …).
 - `default_model` selects which of the *remaining* models is the default. If it points at a model that is unknown or also disabled, the provider falls back to automatic selection (the model marked `default: true`, then the first `balanced`-tier model, then the first model).
 - Prefer `default_model` over the per-model `default: true` flag, which is deprecated. Setting `default_model` suppresses the deprecation warning.
 

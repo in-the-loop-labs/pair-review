@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const { GlobalSettingsService, redactSecrets } = require('../../src/settings/global-settings-service.js');
 const { GlobalSettingsRepository } = require('../../src/database.js');
 const { resolveSingleProviderModel } = require('../../src/review-config.js');
+const { getEntry } = require('../../src/settings/registry.js');
 const { createTestDatabase, closeTestDatabase } = require('../utils/schema.js');
 const logger = require('../../src/utils/logger.js');
 
@@ -453,7 +454,7 @@ describe('GlobalSettingsService', () => {
     it('resolve on a final key with no file layer falls to the default', () => {
       const layers = makeLayers({ cfg: { final: ['default_model'] } });
       const svc = makeService({ layers });
-      expect(svc.resolve('default_model')).toEqual({ value: 'opus', source: 'default' });
+      expect(svc.resolve('default_model')).toEqual({ value: getEntry('default_model').default, source: 'default' });
     });
 
     it('is a union across raw layers — a higher layer cannot un-final', () => {

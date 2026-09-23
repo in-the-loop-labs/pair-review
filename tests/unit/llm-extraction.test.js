@@ -49,42 +49,17 @@ describe('LLM-based JSON extraction fallback', () => {
     process.env = { ...originalEnv };
   });
 
+  // Per-provider fast-tier ids live in the 'Model tier consistency' table.
   describe('AIProvider.getFastTierModel', () => {
-    it('should return fast-tier model for Claude (haiku)', () => {
-      const provider = new ClaudeProvider('sonnet');
-      expect(provider.getFastTierModel()).toBe('haiku');
-    });
-
-    it('should return fast-tier model for Antigravity (gemini-3.8-flash-low)', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
-      expect(provider.getFastTierModel()).toBe('gemini-3.8-flash-low');
-    });
-
-    it('should keep gemini-3.8-flash-low as the extraction model now that 3.8 Flash (High) is the thorough default', () => {
-      const provider = new AntigravityProvider();
-      expect(provider.model).toBe('gemini-3.8-flash-high');
-      expect(provider.getFastTierModel()).toBe('gemini-3.8-flash-low');
-      expect(provider.getFastTierModel()).not.toBe(provider.model);
-    });
-
-    it('should return fast-tier model for Codex (gpt-5.4-mini)', () => {
-      const provider = new CodexProvider('gpt-5.6-sol-high');
-      expect(provider.getFastTierModel()).toBe('gpt-5.4-mini');
-    });
-
-    it('should return fast-tier model for Copilot (claude-haiku-4.6)', () => {
-      const provider = new CopilotProvider('claude-sonnet-4.5');
-      expect(provider.getFastTierModel()).toBe('claude-haiku-4.6');
-    });
-
     it('should fall back to analysis model when no fast tier exists', () => {
-      // All current providers have fast tiers, so this tests the fallback logic
-      // by verifying it at least returns a valid model
-      const provider = new ClaudeProvider('opus');
-      const fastModel = provider.getFastTierModel();
-      expect(fastModel).toBeTruthy();
-      // Since Claude has haiku as fast tier, it returns that
-      expect(fastModel).toBe('haiku');
+      // Every shipped provider has a fast tier, so the fallback needs a
+      // catalog without one.
+      class NoFastTierProvider extends AIProvider {
+        static getProviderId() { return 'no-fast-tier'; }
+        static getModels() { return [{ id: 'thorough-model', tier: 'thorough' }]; }
+      }
+      const provider = new NoFastTierProvider('analysis-model');
+      expect(provider.getFastTierModel()).toBe('analysis-model');
     });
   });
 
@@ -157,7 +132,7 @@ describe('LLM-based JSON extraction fallback', () => {
     describe('CodexProvider', () => {
       it('should return valid config', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-mini');
+        const config = provider.getExtractionConfig(provider.getFastTierModel());
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -166,17 +141,19 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should use read-only sandbox for extraction', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-mini');
+        const config = provider.getExtractionConfig(provider.getFastTierModel());
 
         // For extraction, we don't need shell commands
         expect(config.args).toContain('read-only');
       });
 
-      it('should include model in args', () => {
+      it('should include model and reasoning effort in args', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.4-mini');
+        const config = provider.getExtractionConfig(provider.getFastTierModel());
 
-        expect(config.args).toContain('gpt-5.4-mini');
+        // The effort variant resolves to its base CLI model plus a -c override
+        expect(config.args).toContain('gpt-5.6-luna');
+        expect(config.args).toContain('model_reasoning_effort="low"');
       });
     });
 
@@ -215,11 +192,12 @@ describe('LLM-based JSON extraction fallback', () => {
   });
 
   describe('Model tier consistency', () => {
-    it('all providers should have fast-tier models defined', () => {
+    // The single place each provider's fast-tier (extraction) model is pinned.
+    it('all providers should define and resolve their fast-tier model', () => {
       const providers = [
         { Class: ClaudeProvider, expectedFast: 'haiku' },
         { Class: AntigravityProvider, expectedFast: 'gemini-3.8-flash-low' },
-        { Class: CodexProvider, expectedFast: 'gpt-5.4-mini' },
+        { Class: CodexProvider, expectedFast: 'gpt-5.6-luna-low' },
         { Class: CopilotProvider, expectedFast: 'claude-haiku-4.6' },
       ];
 
@@ -229,6 +207,12 @@ describe('LLM-based JSON extraction fallback', () => {
 
         expect(fastModel).toBeDefined();
         expect(fastModel.id).toBe(expectedFast);
+
+        // The instance resolver extraction actually calls agrees with the
+        // static catalog, and never lands on the default analysis model.
+        const provider = new Class();
+        expect(provider.getFastTierModel()).toBe(expectedFast);
+        expect(provider.getFastTierModel()).not.toBe(provider.model);
       }
     });
 

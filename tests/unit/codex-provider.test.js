@@ -70,25 +70,31 @@ describe('CodexProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(9);
+      expect(models.length).toBe(13);
 
       // Check that we have the expected model IDs, ordered thorough → balanced → fast
       const modelIds = models.map(m => m.id);
       expect(modelIds).toEqual([
         'gpt-6-astra-high',
         'gpt-6-astra-xhigh',
+        'gpt-6-sol-high',
+        'gpt-6-sol-xhigh',
         'gpt-5.6-sol-high',
         'gpt-5.6-sol-xhigh',
         'gpt-5.5-high',
         'gpt-5.5-xhigh',
         'gpt-5.6-terra-xhigh',
         'gpt-5.6-luna-max',
-        'gpt-5.4-mini'
+        'gpt-6-luna-max',
+        'gpt-5.6-luna-low',
+        'gpt-6-luna-low'
       ]);
       // Bare GPT-6 / GPT-5.6 / gpt-5.5 (unspecified reasoning effort) are not
       // exposed as picker entries — users pick an explicit reasoning variant
       // instead.
       expect(modelIds).not.toContain('gpt-6-astra');
+      expect(modelIds).not.toContain('gpt-6-sol');
+      expect(modelIds).not.toContain('gpt-6-luna');
       expect(modelIds).not.toContain('gpt-5.5');
       expect(modelIds).not.toContain('gpt-5.6-sol');
       expect(modelIds).not.toContain('gpt-5.6-terra');
@@ -97,12 +103,15 @@ describe('CodexProvider', () => {
       // Retired by OpenAI (Aug 2026) — Codex rejects them with a 400. They must
       // be gone from the picker AND not aliased onto any surviving model, so a
       // saved council fails loudly instead of silently running another model.
-      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-xhigh', 'gpt-5.4-nano', 'gpt-5.3-codex']) {
+      // gpt-5.4-mini followed on 2026-08-31 for ChatGPT sign-in (still valid for
+      // API keys); OpenAI names gpt-6-luna as its replacement, but a different
+      // model line at a different price is never an alias target.
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-xhigh', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini']) {
         expect(modelIds, `${retired} should be removed`).not.toContain(retired);
         expect(models.some(m => m.aliases?.includes(retired)), `${retired} should not be aliased`).toBe(false);
       }
 
-      // GPT-6 Astra is the new flagship but NOT the default (several times Sol's cost)
+      // GPT-6 Astra is the flagship but NOT the default (about five times GPT-6 Sol's cost)
       const astraHigh = models.find(m => m.id === 'gpt-6-astra-high');
       expect(astraHigh).toMatchObject({
         cli_model: 'gpt-6-astra',
@@ -121,32 +130,116 @@ describe('CodexProvider', () => {
         badge: 'Extra High'
       });
 
-      // gpt-5.4-mini is the sole fast-tier model (nano was retired)
-      const fastModels = models.filter(m => m.tier === 'fast').map(m => m.id);
-      expect(fastModels).toEqual(['gpt-5.4-mini']);
-      const mini = models.find(m => m.id === 'gpt-5.4-mini');
-      expect(mini.cli_model).toBeUndefined();
-      expect(mini.description).not.toContain('400k');
+      // Two fast entries: GPT-5.6 Luna Low (the extraction model, see the
+      // fast-tier test below) and GPT-6 Luna Low as a pickable opt-in
+      expect(models.find(m => m.id === 'gpt-5.6-luna-low')).toMatchObject({
+        cli_model: 'gpt-5.6-luna',
+        extra_args: ['-c', 'model_reasoning_effort="low"'],
+        name: 'GPT-5.6 Luna Low',
+        tier: 'fast',
+        tagline: 'Quick Scan',
+        badge: 'Fastest',
+        badgeClass: 'badge-speed'
+      });
+      expect(models.find(m => m.id === 'gpt-6-luna-low')).toMatchObject({
+        cli_model: 'gpt-6-luna',
+        extra_args: ['-c', 'model_reasoning_effort="low"'],
+        name: 'GPT-6 Luna Low',
+        tier: 'fast',
+        badge: 'Newest',
+        badgeClass: 'badge-speed'
+      });
+      expect(models.find(m => m.id === 'gpt-6-luna-low').tagline).not.toBe('Quick Scan');
 
-      // Check model structure — default is GPT-5.6 Sol with explicit high reasoning
+      // GPT-6 Sol and Luna Max carry their launch metadata
+      expect(models.find(m => m.id === 'gpt-6-sol-xhigh')).toMatchObject({
+        name: 'GPT-6 Sol XHigh',
+        tagline: 'Frontier Depth',
+        badge: 'Extra High',
+        badgeClass: 'badge-power'
+      });
+      expect(models.find(m => m.id === 'gpt-6-luna-max')).toMatchObject({
+        name: 'GPT-6 Luna Max',
+        tagline: 'High-Volume Value',
+        badge: 'Lowest Cost',
+        badgeClass: 'badge-speed'
+      });
+
+      // GPT-6 Sol/Luna access is still rolling out and Enterprise admins must
+      // enable it; every GPT-6 Sol/Luna entry says so
+      for (const m of models.filter(m => /^gpt-6-(sol|luna)$/.test(m.cli_model))) {
+        expect(m.description, m.id).toContain('GPT-6 access');
+      }
+
+      // Check model structure — default is GPT-5.6 Sol with explicit high
+      // reasoning while GPT-6 access rolls out
       const defaultModel = models.find(m => m.default === true);
       expect(defaultModel).toMatchObject({
         id: 'gpt-5.6-sol-high',
+        cli_model: 'gpt-5.6-sol',
+        extra_args: ['-c', 'model_reasoning_effort="high"'],
         name: 'GPT-5.6 Sol High',
         tier: 'thorough',
+        tagline: 'Frontier Review',
+        badge: 'Recommended',
+        badgeClass: 'badge-recommended',
         default: true
       });
-      // Only one entry should carry default: true
-      expect(models.filter(m => m.default === true).length).toBe(1);
+      expect(defaultModel.description).not.toMatch(/previous/i);
+
+      // GPT-6 Sol High is the newest frontier pick, but opt-in
+      const sol6High = models.find(m => m.id === 'gpt-6-sol-high');
+      expect(sol6High).toMatchObject({
+        cli_model: 'gpt-6-sol',
+        tagline: 'Newest Frontier',
+        badge: 'Newest',
+        badgeClass: 'badge-power'
+      });
+      expect(sol6High.default).toBeUndefined();
+
+      // GPT-5.5 leaves Codex on 2026-10-14; its copy says so
+      for (const id of ['gpt-5.5-high', 'gpt-5.5-xhigh']) {
+        expect(models.find(m => m.id === id).description).toContain('2026-10-14');
+      }
+    });
+
+    it('the first balanced and fast entries do not need GPT-6 access', () => {
+      // The UI picks the first model of the matching tier when a user switches
+      // provider, and resolveDefaultModel falls back to the first balanced
+      // entry, so those picks must stay on a model every account can run.
+      const models = CodexProvider.getModels();
+      const firstBalanced = models.find(m => m.tier === 'balanced');
+      const firstFast = models.find(m => m.tier === 'fast');
+      expect(firstBalanced.cli_model).not.toMatch(/^gpt-6-/);
+      expect(firstFast.cli_model).not.toMatch(/^gpt-6-/);
+    });
+
+    it('fast tier (the extraction model) is gpt-5.6-luna-low', () => {
+      // Kept on GPT-5.6 while GPT-6 access rolls out: extraction and hunk
+      // summaries must run for every account. This is the one literal pin of
+      // the Codex extraction model; other tests read getFastTierModel().
+      const provider = new CodexProvider();
+      expect(provider.getFastTierModel()).toBe('gpt-5.6-luna-low');
+      // The extraction spawn runs GPT-5.6 Luna at low effort
+      const config = provider.getExtractionConfig(provider.getFastTierModel());
+      const mIdx = config.args.indexOf('-m');
+      expect(config.args[mIdx + 1]).toBe('gpt-5.6-luna');
+      expect(config.args).toContain('model_reasoning_effort="low"');
+      expect(config.args[config.args.length - 1]).toBe('-');
     });
 
     it('reasoning-effort variants should declare cli_model and -c reasoning effort', () => {
       const models = CodexProvider.getModels();
       const variants = [
+        { id: 'gpt-6-sol-high', cliModel: 'gpt-6-sol', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-6-sol-xhigh', cliModel: 'gpt-6-sol', effort: 'xhigh', tier: 'thorough' },
+        { id: 'gpt-6-luna-max', cliModel: 'gpt-6-luna', effort: 'max', tier: 'balanced' },
+        { id: 'gpt-6-luna-low', cliModel: 'gpt-6-luna', effort: 'low', tier: 'fast' },
         { id: 'gpt-5.6-sol-high', cliModel: 'gpt-5.6-sol', effort: 'high', tier: 'thorough' },
         { id: 'gpt-5.6-sol-xhigh', cliModel: 'gpt-5.6-sol', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-5.6-terra-xhigh', cliModel: 'gpt-5.6-terra', effort: 'xhigh', tier: 'balanced' },
         { id: 'gpt-5.6-luna-max', cliModel: 'gpt-5.6-luna', effort: 'max', tier: 'balanced' },
+        { id: 'gpt-5.6-luna-low', cliModel: 'gpt-5.6-luna', effort: 'low', tier: 'fast' },
         { id: 'gpt-6-astra-high', cliModel: 'gpt-6-astra', effort: 'high', tier: 'thorough' },
         { id: 'gpt-6-astra-xhigh', cliModel: 'gpt-6-astra', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-5.5-high', cliModel: 'gpt-5.5', effort: 'high', tier: 'thorough' },
@@ -172,35 +265,38 @@ describe('CodexProvider', () => {
     it('should create instance with default model', () => {
       const provider = new CodexProvider();
       expect(provider.model).toBe('gpt-5.6-sol-high');
+      const mIdx = provider.args.indexOf('-m');
+      expect(provider.args[mIdx + 1]).toBe('gpt-5.6-sol');
+      expect(provider.args).toContain('model_reasoning_effort="high"');
     });
 
     it('should create instance with specified model', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
-      expect(provider.model).toBe('gpt-5.4-mini');
+      const provider = new CodexProvider('gpt-6-luna-low');
+      expect(provider.model).toBe('gpt-6-luna-low');
     });
 
     it('should use default codex command', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       expect(provider.command).toBe('codex');
       expect(provider.useShell).toBe(false);
     });
 
     it('should respect PAIR_REVIEW_CODEX_CMD environment variable', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/custom/codex';
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       expect(provider.command).toBe('/custom/codex');
     });
 
     it('should use shell mode for multi-word commands', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex';
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       expect(provider.useShell).toBe(true);
       expect(provider.command).toContain('devx codex');
     });
 
     it('should quote shell-sensitive extra_args in shell mode command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex --';
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         extra_args: ['--flag', 'value(test)']
       });
       // In shell mode, the command string should have parentheses-containing args quoted
@@ -209,10 +305,9 @@ describe('CodexProvider', () => {
     });
 
     it('should configure base args correctly', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       expect(provider.args).toContain('exec');
       expect(provider.args).toContain('-m');
-      expect(provider.args).toContain('gpt-5.4-mini');
       expect(provider.args).toContain('--json');
       expect(provider.args).toContain('--sandbox');
       expect(provider.args).toContain('workspace-write');
@@ -221,7 +316,7 @@ describe('CodexProvider', () => {
     });
 
     it('should merge provider extra_args from config', () => {
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         extra_args: ['--custom-flag', '--timeout', '60']
       });
       expect(provider.args).toContain('--custom-flag');
@@ -230,9 +325,9 @@ describe('CodexProvider', () => {
     });
 
     it('should merge model-specific extra_args from config', () => {
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         models: [
-          { id: 'gpt-5.4-mini', extra_args: ['--special-flag'] }
+          { id: CodexProvider.getDefaultModel(), extra_args: ['--special-flag'] }
         ]
       });
       expect(provider.args).toContain('--special-flag');
@@ -277,10 +372,15 @@ describe('CodexProvider', () => {
       });
 
       it.each([
+        ['gpt-6-sol-high', 'gpt-6-sol', 'high'],
+        ['gpt-6-sol-xhigh', 'gpt-6-sol', 'xhigh'],
+        ['gpt-6-luna-max', 'gpt-6-luna', 'max'],
+        ['gpt-6-luna-low', 'gpt-6-luna', 'low'],
         ['gpt-5.6-sol-high', 'gpt-5.6-sol', 'high'],
         ['gpt-5.6-sol-xhigh', 'gpt-5.6-sol', 'xhigh'],
         ['gpt-5.6-terra-xhigh', 'gpt-5.6-terra', 'xhigh'],
-        ['gpt-5.6-luna-max', 'gpt-5.6-luna', 'max']
+        ['gpt-5.6-luna-max', 'gpt-5.6-luna', 'max'],
+        ['gpt-5.6-luna-low', 'gpt-5.6-luna', 'low']
       ])('should resolve %s to base model %s with %s reasoning effort', (modelId, cliModel, effort) => {
         const provider = new CodexProvider(modelId);
         const mIdx = provider.args.indexOf('-m');
@@ -325,7 +425,7 @@ describe('CodexProvider', () => {
       });
 
       it('getExtractionConfig should also apply cli_model + reasoning effort', () => {
-        const provider = new CodexProvider('gpt-5.4-mini');
+        const provider = new CodexProvider();
         const config = provider.getExtractionConfig('gpt-5.5-xhigh');
         const mIdx = config.args.indexOf('-m');
         expect(config.args[mIdx + 1]).toBe('gpt-5.5');
@@ -336,7 +436,7 @@ describe('CodexProvider', () => {
     });
 
     it('should use config command over default', () => {
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         command: '/path/to/codex'
       });
       expect(provider.command).toBe('/path/to/codex');
@@ -344,14 +444,14 @@ describe('CodexProvider', () => {
 
     it('should prefer ENV command over config command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/env/codex';
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         command: '/config/codex'
       });
       expect(provider.command).toBe('/env/codex');
     });
 
     it('should merge env from provider config', () => {
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         env: { CUSTOM_VAR: 'value' }
       });
       expect(provider.extraEnv).toEqual({ CUSTOM_VAR: 'value' });
@@ -379,10 +479,10 @@ describe('CodexProvider', () => {
     });
 
     it('should merge model-specific env over provider env', () => {
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         env: { VAR1: 'provider' },
         models: [
-          { id: 'gpt-5.4-mini', env: { VAR1: 'model', VAR2: 'extra' } }
+          { id: CodexProvider.getDefaultModel(), env: { VAR1: 'model', VAR2: 'extra' } }
         ]
       });
       expect(provider.extraEnv.VAR1).toBe('model');
@@ -391,7 +491,7 @@ describe('CodexProvider', () => {
 
     describe('yolo mode', () => {
       it('should include sandbox restrictions by default and no dangerously-bypass flag', () => {
-        const provider = new CodexProvider('gpt-5.4-mini');
+        const provider = new CodexProvider();
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).not.toContain('--full-auto');
@@ -399,7 +499,7 @@ describe('CodexProvider', () => {
       });
 
       it('should use --dangerously-bypass-approvals-and-sandbox when yolo is true', () => {
-        const provider = new CodexProvider('gpt-5.4-mini', { yolo: true });
+        const provider = new CodexProvider(undefined, { yolo: true });
         expect(provider.args).toContain('--dangerously-bypass-approvals-and-sandbox');
         expect(provider.args).not.toContain('--sandbox');
         expect(provider.args).not.toContain('workspace-write');
@@ -407,7 +507,7 @@ describe('CodexProvider', () => {
       });
 
       it('should include sandbox restrictions when yolo is explicitly false', () => {
-        const provider = new CodexProvider('gpt-5.4-mini', { yolo: false });
+        const provider = new CodexProvider(undefined, { yolo: false });
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('workspace-write');
         expect(provider.args).not.toContain('--full-auto');
@@ -420,7 +520,7 @@ describe('CodexProvider', () => {
     let provider;
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.4-mini');
+      provider = new CodexProvider();
     });
 
     describe('single agent_message extraction', () => {
@@ -691,7 +791,7 @@ describe('CodexProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const spy = vi.spyOn(provider, 'extractJSONWithLLM')
         .mockResolvedValue({ success: true, data: { suggestions: [] } });
       const controller = new AbortController();
@@ -712,7 +812,7 @@ describe('CodexProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const controller = new AbortController();
       vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
         controller.abort();
@@ -734,7 +834,7 @@ describe('CodexProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const controller = new AbortController();
       vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
         controller.abort();
@@ -754,7 +854,7 @@ describe('CodexProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       vi.spyOn(provider, 'extractJSONWithLLM').mockRejectedValue(new Error('extractor blew up'));
 
       const promise = provider.execute('prompt', {});
@@ -766,7 +866,7 @@ describe('CodexProvider', () => {
 
   describe('createExitError', () => {
     it('should include Codex auth recovery steps for 401 Unauthorized failures', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const stderr = [
         'ERROR codex_api::endpoint::responses_websocket:',
         'failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses'
@@ -782,7 +882,7 @@ describe('CodexProvider', () => {
     });
 
     it('should preserve the generic exit error for non-auth failures', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const error = provider.createExitError(2, 'some other failure', '[Level 1]');
 
       expect(error.message).toBe('[Level 1] Codex CLI exited with code 2: some other failure');
@@ -793,7 +893,7 @@ describe('CodexProvider', () => {
     it('should resolve cli_model for gpt-6-astra-high variant', () => {
       // Reasoning variants pass the base model to `-m` and add effort via
       // `-c model_reasoning_effort="..."`, with the stdin marker `-` last.
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const args = provider.buildArgsForModel('gpt-6-astra-high');
       const mIdx = args.indexOf('-m');
       expect(mIdx).toBeGreaterThanOrEqual(0);
@@ -804,11 +904,11 @@ describe('CodexProvider', () => {
       expect(args[args.length - 1]).toBe('-');
     });
 
-    it('should pass retired ids (gpt-5.4, gpt-5.4-high, gpt-5.4-nano, gpt-5.3-codex) through unaliased', () => {
+    it('should pass retired ids (gpt-5.4, gpt-5.4-high, gpt-5.4-nano, gpt-5.3-codex, gpt-5.4-mini) through unaliased', () => {
       // Retired models are deliberately not aliased: the id goes to `-m`
       // verbatim with no reasoning-effort override, so Codex fails loudly.
-      const provider = new CodexProvider('gpt-5.4-mini');
-      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-nano', 'gpt-5.3-codex']) {
+      const provider = new CodexProvider();
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini']) {
         const args = provider.buildArgsForModel(retired);
         const mIdx = args.indexOf('-m');
         expect(args[mIdx + 1], retired).toBe(retired);
@@ -818,8 +918,8 @@ describe('CodexProvider', () => {
     });
 
     it('should use read-only sandbox for extraction (distinct from workspace-write)', () => {
-      const provider = new CodexProvider('gpt-5.4-mini');
-      const args = provider.buildArgsForModel('gpt-5.4-mini');
+      const provider = new CodexProvider();
+      const args = provider.buildArgsForModel(provider.getFastTierModel());
       const sandboxIdx = args.indexOf('--sandbox');
       expect(sandboxIdx).toBeGreaterThanOrEqual(0);
       expect(args[sandboxIdx + 1]).toBe('read-only');
@@ -849,7 +949,7 @@ describe('CodexProvider', () => {
       // because gpt-5.5 is brand new — there is no legacy data recorded under
       // the bare model ID to preserve. Adding an alias later would silently
       // change the meaning of `gpt-5.5` for any consumer that stored it.
-      const provider = new CodexProvider('gpt-5.4-mini');
+      const provider = new CodexProvider();
       const args = provider.buildArgsForModel('gpt-5.5');
       const effortArg = args.find(a => typeof a === 'string' && a.startsWith('model_reasoning_effort='));
       expect(effortArg).toBeUndefined();
@@ -859,12 +959,11 @@ describe('CodexProvider', () => {
   describe('getExtractionConfig', () => {
     it('should return correct config for default command', () => {
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.4-mini');
+      const config = provider.getExtractionConfig(provider.getFastTierModel());
 
       expect(config.command).toBe('codex');
       expect(config.args).toContain('exec');
       expect(config.args).toContain('-m');
-      expect(config.args).toContain('gpt-5.4-mini');
       expect(config.args).toContain('--sandbox');
       expect(config.args).toContain('read-only');
       expect(config.useShell).toBe(false);
@@ -874,7 +973,7 @@ describe('CodexProvider', () => {
     it('should use shell mode for multi-word command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'docker run codex';
       const provider = new CodexProvider();
-      const config = provider.getExtractionConfig('gpt-5.4-mini');
+      const config = provider.getExtractionConfig(provider.getFastTierModel());
 
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run codex');
@@ -885,22 +984,23 @@ describe('CodexProvider', () => {
       // env is merged built-in → provider → per-model. Extraction spawn
       // must receive it so reasoning/env-driven variants (claude-style
       // effort envs, user config env, etc.) take effect.
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const extractionModel = new CodexProvider().getFastTierModel();
+      const provider = new CodexProvider(undefined, {
         env: { PROVIDER_VAR: 'p' },
         models: [
-          { id: 'gpt-5.4-mini', env: { MODEL_VAR: 'm' } }
+          { id: extractionModel, env: { MODEL_VAR: 'm' } }
         ]
       });
-      const config = provider.getExtractionConfig('gpt-5.4-mini');
+      const config = provider.getExtractionConfig(extractionModel);
       expect(config.env).toEqual({ PROVIDER_VAR: 'p', MODEL_VAR: 'm' });
     });
 
     it('should include env in shell-mode return value', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'docker run codex';
-      const provider = new CodexProvider('gpt-5.4-mini', {
+      const provider = new CodexProvider(undefined, {
         env: { FROM_PROVIDER: '1' }
       });
-      const config = provider.getExtractionConfig('gpt-5.4-mini');
+      const config = provider.getExtractionConfig(provider.getFastTierModel());
       expect(config.useShell).toBe(true);
       expect(config.env).toEqual({ FROM_PROVIDER: '1' });
     });
@@ -911,7 +1011,7 @@ describe('CodexProvider', () => {
     const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.4-mini');
+      provider = new CodexProvider();
       vi.clearAllMocks();
     });
 

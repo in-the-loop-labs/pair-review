@@ -103,8 +103,6 @@ const COPILOT_MODELS = [
   }
 ];
 
-const DEFAULT_COPILOT_MODEL = 'claude-sonnet-4.6';
-
 class CopilotProvider extends AIProvider {
   /**
    * @param {string} model - Model identifier
@@ -114,7 +112,7 @@ class CopilotProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = DEFAULT_COPILOT_MODEL, configOverrides = {}) {
+  constructor(model = CopilotProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -539,10 +537,6 @@ class CopilotProvider extends AIProvider {
 
   static getModels() {
     return COPILOT_MODELS;
-  }
-
-  static getDefaultModel() {
-    return DEFAULT_COPILOT_MODEL;
   }
 
   static getInstallInstructions() {
