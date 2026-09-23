@@ -430,6 +430,7 @@ class AnalysisHistoryManager {
 
     // Format status
     const statusInfo = this.formatStatus(run.status);
+    if (run.level_outcomes?.exec === 'partial') statusInfo.text = 'Complete with limited coverage';
 
     // Format model in lowercase
     const modelDisplay = run.model ? run.model.toLowerCase() : 'unknown';
@@ -509,6 +510,11 @@ class AnalysisHistoryManager {
         <span class="analysis-preview-value">${this.renderLevelIndicators(run)}</span>
       </div>
       `;
+    }
+
+    const warnings = run.level_outcomes?.warnings || [];
+    if (warnings.length) {
+      html += `<div class="analysis-preview-row" role="status"><span class="analysis-preview-label">Coverage</span><span class="analysis-preview-value">${warnings.map(w => this.escapeHtml(w)).join('<br>')}</span></div>`;
     }
 
     // Add collapsible summary section if present
@@ -904,6 +910,7 @@ class AnalysisHistoryManager {
     };
 
     if (outcomes) {
+      addSlot('Review', outcomes.exec);
       addSlot('L1', outcomes.level1);
       addSlot('L2', outcomes.level2);
       addSlot('L3', outcomes.level3);
@@ -922,10 +929,11 @@ class AnalysisHistoryManager {
       return '';
     }
 
-    const icon = { success: '\u2713', failed: '\u2717', skipped: '\u00B7' };
+    const icon = { success: '\u2713', partial: '\u26A0', failed: '\u2717', skipped: '\u00B7' };
     const cls = {
       success: 'level-success',
       failed: 'level-failed',
+      partial: 'level-failed',
       skipped: 'level-skipped'
     };
 

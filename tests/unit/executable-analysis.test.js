@@ -65,11 +65,15 @@ const mockCreateProvider = vi.spyOn(providerModule, 'createProvider');
 
 const databaseModule = require('../../src/database');
 const mockAnalysisRunRepoCreate = vi.fn().mockResolvedValue({});
+const mockAnalysisRunRepoUpdate = vi.fn().mockResolvedValue(true);
+const mockBulkInsert = vi.fn().mockResolvedValue([]);
 vi.spyOn(databaseModule, 'AnalysisRunRepository').mockImplementation(function () {
   this.create = mockAnalysisRunRepoCreate;
+  this.update = mockAnalysisRunRepoUpdate;
 });
 vi.spyOn(databaseModule, 'CommentRepository').mockImplementation(function () {
   this.batchInsert = vi.fn();
+  this.bulkInsertAISuggestions = mockBulkInsert;
 });
 
 // Import source module after all spies are set up
@@ -611,6 +615,39 @@ describe('getChangedFiles', () => {
 });
 
 describe('runExecutableAnalysis', () => {
+  beforeEach(() => { mockCreateProvider.mockClear(); });
+  it.each(['completed', 'failed', 'cancelled'])('records an executable terminal stage on %s', async (outcome) => {
+    mockAnalysisRunRepoUpdate.mockClear();
+    mockExec.mockImplementation((cmd, opts, cb) => cb(null, { stdout: '', stderr: '' }));
+    const shared = {
+      activeAnalyses: new Map(), reviewToAnalysisId: new Map(),
+      broadcastProgress: vi.fn(), broadcastReviewEvent: vi.fn(), registerProcessForCancellation: vi.fn()
+    };
+    const warnings = ['Incident-memory verification did not complete.'];
+    mockCreateProvider.mockReturnValue({ contextArgs: {}, execute: async (_, options) => {
+      options.onStreamEvent({ type: 'assistant_text', text: 'working' });
+      if (outcome === 'cancelled') shared.activeAnalyses.get('terminal').status = 'cancelled';
+      if (outcome !== 'completed') throw Object.assign(new Error('stopped'), { isCancellation: outcome === 'cancelled' });
+      return { success: true, data: { summary: '', suggestions: [], warnings } };
+    } });
+    await runExecutableAnalysis({ app: { get: key => key === 'db' ? {} : {} } }, { json: vi.fn() }, {
+      reviewId: 1, review: { id: 1 }, selectedProvider: 'test-exec', selectedModel: 'default',
+      runId: 'terminal', analysisId: 'terminal', repository: 'owner/repo', reviewType: 'pr'
+    }, shared, { buildContext: () => ({}), buildHookPayload: () => ({}), onSuccess: async () => {}, logLabel: 'Test' });
+    await vi.waitFor(() => expect(shared.reviewToAnalysisId.has(1)).toBe(false));
+    const status = shared.activeAnalyses.get('terminal');
+    expect(status.status).toBe(outcome);
+    expect(status.levels.exec.status).toBe(outcome);
+    expect(status.levels.exec.streamEvent).toBeUndefined();
+    if (outcome === 'completed') {
+      expect(status.warnings).toEqual(warnings);
+      expect(status.progress).toContain('limited coverage');
+      expect(mockAnalysisRunRepoUpdate).toHaveBeenCalledWith('terminal', expect.objectContaining({
+        levelOutcomes: { exec: 'partial', warnings }
+      }));
+    }
+  });
+
   it('should pass providerOverrides to createProvider', async () => {
     // Set up createProvider to return a minimal provider that will reject
     // (we only care about the createProvider call args, not the full execution)
