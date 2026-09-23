@@ -284,9 +284,9 @@ describe('resolveReviewConfig', () => {
     it('falls back to claude with the provider\'s own default model when nothing is configured', async () => {
       // The provider-default rung ranks above the hardcoded 'claude'/'opus'
       // rescue, so the zero-config case resolves Claude's built-in default id
-      // (opus-5-high), not the 'opus' alias target (opus-4.8-xhigh).
+      // (opus-5.5-high), not the 'opus' alias target (opus-5.5-xhigh).
       const result = await resolveReviewConfig(db, REPOSITORY, {}, {});
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-5-high' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-5.5-high' });
     });
   });
 
@@ -553,11 +553,11 @@ describe('resolveReviewConfig', () => {
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5-xhigh' });
     });
 
-    it('does not resurrect a disabled default: opus-5-high in disabled_models resolves another model', async () => {
-      applyConfigOverrides({ providers: { claude: { disabled_models: ['opus-5-high'] } } });
+    it('does not resurrect a disabled default: opus-5.5-high in disabled_models resolves another model', async () => {
+      applyConfigOverrides({ providers: { claude: { disabled_models: ['opus-5.5-high'] } } });
 
       const result = await resolveReviewConfig(db, REPOSITORY, { provider: 'claude' }, {});
-      // With the default (opus-5-high) disabled, resolution falls to the
+      // With the default (opus-5.5-high) disabled, resolution falls to the
       // first balanced-tier model in Claude's built-in list.
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5-xhigh' });
     });
@@ -617,7 +617,7 @@ describe('resolveReviewConfig', () => {
 
     it('defaults explicit and config args to empty objects', async () => {
       const result = await resolveReviewConfig(db, REPOSITORY);
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-5-high' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-5.5-high' });
     });
   });
 });

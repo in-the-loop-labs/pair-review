@@ -168,7 +168,6 @@ describe('AntigravityProvider', () => {
     it('should create instance with default model', () => {
       const provider = new AntigravityProvider();
       expect(provider.model).toBe('gemini-3.8-flash-high');
-      expect(provider.model).toBe(AntigravityProvider.getDefaultModel());
     });
 
     it('should create instance with a specified model', () => {

@@ -213,7 +213,7 @@ describe('MuseProvider', () => {
     it('marks exactly one model as the default and it is not a contributor model', () => {
       const defaults = MuseProvider.getModels().filter(m => m.default === true);
       expect(defaults).toHaveLength(1);
-      expect(defaults[0].id).toBe(MuseProvider.getDefaultModel());
+      expect(defaults[0].id).toBe('muse-spark-1.3-high');
       // Reviews carry potentially proprietary source, so the data-sharing tier
       // must never be the silent default even though muse's own CLI default is
       // the contributor model.

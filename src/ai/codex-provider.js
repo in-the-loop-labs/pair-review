@@ -21,36 +21,59 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 /**
  * Codex model definitions with tier mappings
  *
- * Based on OpenAI's GPT-6 Astra launch (Sept 2026), the GPT-5.6 launch, and the
- * Models guide (developers.openai.com/api/docs/models). Verified against the
- * Codex CLI 0.144.0 model catalog.
+ * Based on OpenAI's GPT-6 launches (Astra in September 2026; Sol and Luna on
+ * 2026-09-22) and the Models guide (developers.openai.com/api/docs/models).
+ * Verified against the Codex CLI 0.155.1 model catalog with a ChatGPT sign-in.
+ * - gpt-5.6-sol: the default (gpt-5.6-sol-high; $4/$20 per MTok). GPT-5.6 Sol
+ *   stays the default, and GPT-5.6 Luna Low the first fast entry, while GPT-6
+ *   access rolls out: GPT-6 Sol/Luna access depends on workspace settings and
+ *   Enterprise admins must enable it, testAvailability() only checks
+ *   `codex --version`, and nothing falls back to GPT-5.6 at runtime. A GPT-6
+ *   default would fail every default analysis for users without access.
  * - gpt-6-astra: GPT-6 flagship, the most capable model for complex, demanding
- *   work (272k context). Priced several times above Sol, so it is offered as an
- *   opt-in thorough choice rather than the default.
- * - gpt-5.6-sol: Strong frontier model for complex professional work (default)
- * - gpt-5.6-terra: Balances intelligence and cost for everyday work
- * - gpt-5.6-luna: Fast, affordable model for cost-sensitive, high-volume work
- * - gpt-5.5: Previous-generation frontier model
- * - gpt-5.4-mini: Small, fast, cost-efficient model for simpler coding tasks
- *   (272k context) — the sole fast-tier model
- * - GPT-6, GPT-5.6, and GPT-5.5 models are exposed only through explicit
- *   reasoning-effort variants.
+ *   work ($10/$50 per MTok, same context as Sol). About five times GPT-6 Sol's
+ *   price, so it stays an opt-in thorough choice rather than the default.
+ * - gpt-6-sol: Frontier model built for complex coding and agentic workflows
+ *   ($2/$10 per MTok; 1.05M API context, capped at 272K in the Codex catalog;
+ *   128K output; API input above 272K bills at 2x, output at 1.5x). Newer than
+ *   GPT-5.6 Sol at half its price, but opt-in until GPT-6 access is universal.
+ * - gpt-6-luna: GPT-6's most efficient model for focused, high-volume work
+ *   ($0.10/$0.50 per MTok, same context as Sol). Per OpenAI, GPT-6 Luna (max)
+ *   exceeds GPT-5.6 Sol (medium) at a tenth of its cost. No `ultra` effort.
+ *   Opt-in, like GPT-6 Sol.
+ * - gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna: "legacy" in Codex but still
+ *   available (no retirement date announced)
+ * - gpt-5.5: older frontier model. OpenAI retires it from Codex on ALL plans
+ *   on 2026-10-14 (the API is unaffected); remove the gpt-5.5-* entries then.
+ * - Every model is exposed only through explicit reasoning-effort variants.
  *
- * Tiers: thorough (Astra, Sol, GPT-5.5), balanced (Terra, Luna), fast (Mini).
- * Entries are ordered thorough → balanced → fast; the first `fast` entry is the
- * extraction model (see AIProvider.getFastTierModel).
+ * Tiers: thorough (Astra, GPT-6 Sol, GPT-5.6 Sol, GPT-5.5), balanced (Terra,
+ * GPT-5.6 Luna, GPT-6 Luna Max), fast (GPT-5.6 Luna Low, GPT-6 Luna Low). In
+ * the balanced and fast tiers GPT-6 goes last: the first entry of a tier is an
+ * automatic pick (provider switch in the UI, extraction, default fallback).
+ * Entries are ordered thorough → balanced → fast; the first `fast` entry
+ * serves JSON extraction and hunk summaries (see AIProvider.getFastTierModel).
+ * Guided tours use the provider default, not the fast tier.
  *
- * Reasoning-effort variants (-high / -xhigh / -max) use `cli_model` to pass the base
- * model ID to `codex exec -m` and add `-c model_reasoning_effort="..."` via
- * extra_args so Codex picks up the effort level through its config override.
+ * Reasoning-effort variants (-low / -high / -xhigh / -max) use `cli_model` to pass
+ * the base model ID to `codex exec -m` and add `-c model_reasoning_effort="..."`
+ * via extra_args so Codex picks up the effort level through its config override.
  *
  * Deprecated (April 2026): gpt-5.1-codex-mini, gpt-5.1-codex-max, gpt-5.1-codex
  * Deprecated (August 2026): gpt-5.4 (gpt-5.4-high / gpt-5.4-xhigh), gpt-5.4-nano,
  *   gpt-5.3-codex — retired by OpenAI; Codex rejects them with a 400. They are
  *   intentionally NOT aliased onto other models so saved councils fail loudly
  *   instead of silently running a different model.
+ * Deprecated (August 31, 2026): gpt-5.4-mini — retired for ChatGPT sign-in
+ *   (Codex rejects it with a 400) but still valid for API keys. OpenAI names
+ *   gpt-6-luna as its replacement; it is NOT aliased onto any Luna entry
+ *   (different model line and price). An unrecognized id reaches `codex exec -m`
+ *   verbatim with no effort override, so API-key users can still name it raw
+ *   (`--model gpt-5.4-mini`, or a `providers.codex.models` entry for the web UI
+ *   picker).
  */
 const CODEX_MODELS = [
+  // ── Thorough tier ───────────────────────────────────────────────────────
   {
     id: 'gpt-6-astra-high',
     cli_model: 'gpt-6-astra',
@@ -58,7 +81,7 @@ const CODEX_MODELS = [
     name: 'GPT-6 Astra High',
     tier: 'thorough',
     tagline: 'Most Capable',
-    description: 'OpenAI\'s GPT-6 flagship with high reasoning effort for the hardest reviews: deep cross-file analysis, subtle regressions, and demanding architectural work. Costs several times more than Sol.',
+    description: 'OpenAI\'s GPT-6 flagship with high reasoning effort for the hardest reviews: deep cross-file analysis, subtle regressions, and demanding architectural work. Costs about five times more than GPT-6 Sol.',
     badge: 'Most Capable',
     badgeClass: 'badge-power'
   },
@@ -69,7 +92,29 @@ const CODEX_MODELS = [
     name: 'GPT-6 Astra XHigh',
     tier: 'thorough',
     tagline: 'Maximum Depth',
-    description: 'GPT-6 Astra with extra-high reasoning effort for the most difficult reviews: concurrency, security-sensitive changes, and large codebase context. Premium pricing.',
+    description: 'GPT-6 Astra with extra-high reasoning effort for the most difficult reviews: concurrency, security-sensitive changes, and large codebase context. Premium pricing, about five times GPT-6 Sol.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6-sol-high',
+    cli_model: 'gpt-6-sol',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-6 Sol High',
+    tier: 'thorough',
+    tagline: 'Newest Frontier',
+    description: 'GPT-6 frontier model built for complex coding and agentic work, with high reasoning effort for demanding PR reviews and cross-file analysis, at about a fifth of Astra\'s price. Needs GPT-6 access, which is still rolling out (Enterprise admins must enable it).',
+    badge: 'Newest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6-sol-xhigh',
+    cli_model: 'gpt-6-sol',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-6 Sol XHigh',
+    tier: 'thorough',
+    tagline: 'Frontier Depth',
+    description: 'GPT-6 Sol with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Needs GPT-6 access, which is still rolling out (Enterprise admins must enable it).',
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
@@ -80,7 +125,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.6 Sol High',
     tier: 'thorough',
     tagline: 'Frontier Review',
-    description: 'Strong frontier reviewer at a fraction of Astra\'s cost, with high reasoning effort for demanding PR reviews, complex professional work, and cross-file analysis.',
+    description: 'Strong frontier reviewer with high reasoning effort for demanding PR reviews, complex professional work, and cross-file analysis. The default while GPT-6 access rolls out.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
@@ -103,7 +148,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.5 High',
     tier: 'thorough',
     tagline: 'Previous Flagship',
-    description: 'Previous-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis.',
+    description: 'Previous-generation GPT model with high reasoning effort for demanding PR reviews, strong code understanding, and careful cross-file analysis. OpenAI retires GPT-5.5 from Codex on 2026-10-14.',
     badge: 'Previous Gen',
     badgeClass: 'badge-power'
   },
@@ -114,10 +159,14 @@ const CODEX_MODELS = [
     name: 'GPT-5.5 XHigh',
     tier: 'thorough',
     tagline: 'Frontier Depth',
-    description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context.',
+    description: 'GPT-5.5 with extra-high reasoning effort for the hardest reviews: architecture, concurrency, security-sensitive changes, and large codebase context. OpenAI retires GPT-5.5 from Codex on 2026-10-14.',
     badge: 'Max Reasoning',
     badgeClass: 'badge-power'
   },
+  // ── Balanced tier ───────────────────────────────────────────────────────
+  // The first balanced entry is what the UI picks when a user switches to Codex
+  // from a balanced model, and resolveDefaultModel's fallback when the flagged
+  // default is disabled, so it must run for every account: GPT-6 goes last.
   {
     id: 'gpt-5.6-terra-xhigh',
     cli_model: 'gpt-5.6-terra',
@@ -135,18 +184,45 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="max"'],
     name: 'GPT-5.6 Luna Max',
     tier: 'balanced',
+    tagline: 'Previous Gen',
+    description: 'Previous-generation Luna, GPT-5.6\'s most cost-efficient model, with max reasoning effort for high-volume reviews and broad codebase scans.',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-6-luna-max',
+    cli_model: 'gpt-6-luna',
+    extra_args: ['-c', 'model_reasoning_effort="max"'],
+    name: 'GPT-6 Luna Max',
+    tier: 'balanced',
     tagline: 'High-Volume Value',
-    description: 'GPT-5.6 fastest, most cost-efficient model with max reasoning effort for high-volume reviews and broad codebase scans.',
+    description: 'GPT-6\'s most efficient model at max reasoning effort. Per OpenAI it beats GPT-5.6 Sol (medium) at a tenth of the cost, for high-volume reviews and broad codebase scans. Needs GPT-6 access, which is still rolling out (Enterprise admins must enable it).',
     badge: 'Lowest Cost',
     badgeClass: 'badge-speed'
   },
+  // ── Fast tier ───────────────────────────────────────────────────────────
+  // The first fast entry serves JSON extraction and hunk summaries, so it must
+  // run for every account: keep it on GPT-5.6 until GPT-6 access is universal.
   {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4 Mini',
+    id: 'gpt-5.6-luna-low',
+    cli_model: 'gpt-5.6-luna',
+    extra_args: ['-c', 'model_reasoning_effort="low"'],
+    name: 'GPT-5.6 Luna Low',
     tier: 'fast',
     tagline: 'Quick Scan',
-    description: 'Small, fast, cost-efficient model for surface scans: obvious bugs, style issues, and lint-level feedback.',
+    description: 'GPT-5.6\'s most cost-efficient model at low reasoning effort for surface scans: obvious bugs, style issues, and lint-level feedback.',
     badge: 'Fastest',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'gpt-6-luna-low',
+    cli_model: 'gpt-6-luna',
+    extra_args: ['-c', 'model_reasoning_effort="low"'],
+    name: 'GPT-6 Luna Low',
+    tier: 'fast',
+    tagline: 'Newest Quick Scan',
+    description: 'GPT-6\'s most efficient model at low reasoning effort for surface scans: obvious bugs, style issues, and lint-level feedback. Needs GPT-6 access, which is still rolling out (Enterprise admins must enable it).',
+    badge: 'Newest',
     badgeClass: 'badge-speed'
   }
 ];
@@ -161,7 +237,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.6-sol-high', configOverrides = {}) {
+  constructor(model = CodexProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -911,10 +987,6 @@ class CodexProvider extends AIProvider {
 
   static getModels() {
     return CODEX_MODELS;
-  }
-
-  static getDefaultModel() {
-    return 'gpt-5.6-sol-high';
   }
 
   static getInstallInstructions() {

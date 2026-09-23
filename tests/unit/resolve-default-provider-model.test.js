@@ -16,7 +16,7 @@ const { getAllProvidersInfo } = require('../../src/ai');
 const providers = getAllProvidersInfo();
 const claude = providers.find(p => p.id === 'claude');
 // A claude model that exposes at least one alias, used to exercise the
-// alias-named default_model path (e.g. 'opus' → canonical 'opus-4.8-xhigh').
+// alias-named default_model path (e.g. 'opus' → canonical 'opus-5.5-xhigh').
 const aliasedModel = claude.models.find(m => Array.isArray(m.aliases) && m.aliases.length > 0);
 // Pick any non-claude provider whose model list does NOT contain claude's default
 // model id, so we can exercise the "foreign inherited model" path.

@@ -294,11 +294,6 @@ class PiProvider extends PiStyleProvider {
     return PI_MODELS;
   }
 
-  static getDefaultModel() {
-    const defaultModel = PI_MODELS.find(m => m.default);
-    return defaultModel ? defaultModel.id : null;
-  }
-
   static getInstallInstructions() {
     return 'Install Pi: npm install -g @mariozechner/pi-coding-agent\n' +
            'Or visit: https://github.com/badlogic/pi-mono';

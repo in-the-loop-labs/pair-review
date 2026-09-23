@@ -690,11 +690,6 @@ class OpenCodeProvider extends AIProvider {
     return OPENCODE_MODELS;
   }
 
-  static getDefaultModel() {
-    // No built-in default - must be configured via config.json
-    return null;
-  }
-
   static getInstallInstructions() {
     return 'Install OpenCode: curl -fsSL https://opencode.ai/install | bash\n' +
            'Or visit: https://opencode.ai';

@@ -174,8 +174,6 @@ const CURSOR_AGENT_MODELS = [
   }
 ];
 
-const DEFAULT_CURSOR_AGENT_MODEL = 'sonnet-4.6-thinking';
-
 class CursorAgentProvider extends AIProvider {
   /**
    * @param {string} model - Model identifier
@@ -186,7 +184,7 @@ class CursorAgentProvider extends AIProvider {
    * @param {Object[]} configOverrides.models - Custom model definitions
    * @param {boolean} configOverrides.yolo - When true, use --yolo instead of --trust/--sandbox
    */
-  constructor(model = DEFAULT_CURSOR_AGENT_MODEL, configOverrides = {}) {
+  constructor(model = CursorAgentProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -883,10 +881,6 @@ class CursorAgentProvider extends AIProvider {
 
   static getModels() {
     return CURSOR_AGENT_MODELS;
-  }
-
-  static getDefaultModel() {
-    return DEFAULT_CURSOR_AGENT_MODEL;
   }
 
   static getInstallInstructions() {

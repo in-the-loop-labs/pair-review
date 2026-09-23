@@ -3545,8 +3545,8 @@ describe('Config Endpoints', () => {
       // rejects the foreign value and returns claude's coherent default rather than
       // publishing a model id no model-card can match — matching what the modal's
       // selectModel() guard does with 'sonnet' anyway. Claude's coherent default is
-      // 'opus-5-high'.
-      expect(response.body.default_model).toBe('opus-5-high');
+      // 'opus-5.5-high'.
+      expect(response.body.default_model).toBe('opus-5.5-high');
     });
 
     // The landing page, its URL-validation errors, and the local-path "that's
