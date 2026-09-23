@@ -442,6 +442,45 @@ describe('ReviewModal', () => {
     });
   });
 
+  describe('review submission viewed-file sync', () => {
+    it('persists the current viewed-file state before submitting', async () => {
+      const { modal } = createTestReviewModal();
+      modal.hideError = vi.fn();
+      modal.updateLargeReviewWarning = vi.fn();
+      modal.setSubmittingState = vi.fn();
+      modal.hide = vi.fn();
+
+      global.window.prManager = {
+        currentPR: {
+          owner: 'owner',
+          repo: 'repo',
+          number: 7,
+          pendingDraft: null
+        },
+        viewedFiles: new Set(['src/utils.js', 'context:src/utils.js']),
+        updatePendingDraftIndicator: vi.fn()
+      };
+      global.window.toast = {
+        showSuccess: vi.fn()
+      };
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          reviewUrl: 'https://github.com/owner/repo/pull/7#review-1'
+        })
+      });
+
+      await modal.submitReview();
+
+      const requestOptions = globalThis.fetch.mock.calls[0][1];
+      expect(JSON.parse(requestOptions.body)).toMatchObject({
+        event: 'COMMENT',
+        viewedFiles: ['src/utils.js', 'context:src/utils.js']
+      });
+    });
+  });
+
   describe('Cmd/Ctrl+Enter keyboard shortcut', () => {
     /**
      * Create a ReviewModal via its real constructor with document.addEventListener

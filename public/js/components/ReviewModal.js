@@ -520,6 +520,9 @@ class ReviewModal {
       if (!pr) {
         throw new Error('No PR loaded');
       }
+
+      const viewedFiles = Array.from(window.prManager.viewedFiles || [])
+        .filter(filePath => typeof filePath === 'string' && filePath.length > 0);
       
       const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`, {
         method: 'POST',
@@ -528,7 +531,8 @@ class ReviewModal {
         },
         body: JSON.stringify({
           event: reviewEvent,
-          body: finalBody
+          body: finalBody,
+          viewedFiles
         })
       });
       
