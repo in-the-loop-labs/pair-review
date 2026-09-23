@@ -152,7 +152,7 @@ function sanitizeSingleConfig(config) {
   // to the provider's own default rather than forwarding an invalid pair. Unknown
   // providers (custom/unavailable, not in the registry) pass through unchanged.
   // A model "belongs" to the provider if config.model matches a model id OR one of
-  // its aliases (e.g. 'opus' is an alias of the canonical 'opus-4.8-xhigh'). Matching
+  // its aliases (e.g. 'opus' is an alias of the canonical 'opus-5.5-xhigh'). Matching
   // id-only would wrongly treat a valid alias as a mismatched pair and silently coerce
   // it to the provider default.
   let normalizedModel = config.model;

@@ -66,7 +66,7 @@ class ChatSessionManager {
     const selector = model || providerDef?.model || null;
 
     // Canonicalise BEFORE the INSERT. Both the request and `chat_providers.<id>.model`
-    // may name a model by alias (`opus` -> `opus-4.8-xhigh`); storing the alias would
+    // may name a model by alias (`opus` -> `opus-5.5-xhigh`); storing the alias would
     // leave the sessions list, the hook payload, and the picker's checkmark disagreeing
     // with the catalog. `resolution.id` is exactly what to store: the canonical id when
     // known, the raw selector for a passthrough (raw CLI strings are supported), and

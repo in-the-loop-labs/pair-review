@@ -25,6 +25,7 @@ const {
 } = require('../../src/interactive-analysis-config.js');
 const bulkConfigs = require('../../src/routes/bulk-analysis-configs.js');
 const { CouncilRepository } = require('../../src/database.js');
+const CodexProvider = require('../../src/ai/codex-provider.js');
 
 const REPOSITORY = 'owner/repo';
 
@@ -122,7 +123,7 @@ describe('buildInteractiveAnalysisConfig (pure builder, no storage)', () => {
       repository: REPOSITORY
     });
 
-    expect(cfg).toEqual({ provider: 'codex', model: 'gpt-5.6-sol-high', customInstructions: 'be terse' });
+    expect(cfg).toEqual({ provider: 'codex', model: CodexProvider.getDefaultModel(), customInstructions: 'be terse' });
   });
 
   it('an explicit --provider overrides a repo default council (regression: no silent council switch)', async () => {

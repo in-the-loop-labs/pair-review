@@ -271,11 +271,6 @@ class OmpProvider extends PiStyleProvider {
     return OMP_MODELS;
   }
 
-  static getDefaultModel() {
-    const defaultModel = OMP_MODELS.find(m => m.default);
-    return defaultModel ? defaultModel.id : null;
-  }
-
   static getInstallInstructions() {
     return 'Install OMP (Oh My Pi): npm install -g @oh-my-pi/pi-coding-agent\n' +
            'Or visit: https://github.com/can1357/oh-my-pi';

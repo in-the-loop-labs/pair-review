@@ -68,12 +68,12 @@ const DEFAULT_CONFIG = {
   single_port: true,  // When true, reuse a single server on the configured port; new invocations delegate to the running server
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'antigravity', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi', 'omp', 'muse'
-  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-3.8-flash-high' for Antigravity)
+  default_model: "opus-5.5-high",  // Model within the provider (e.g., 'opus-5.5-high' for Claude, 'gemini-3.8-flash-high' for Antigravity)
   tours: {
     enabled: false,            // When true, the guided-tour feature is available (toolbar button visible, etc.)
     auto_generate: true,       // When true, a tour generation job is kicked off automatically on review load
     provider: "",              // Provider for agentic tour generation. Empty = falls back to summaries.provider, then default_provider
-    model: ""                  // Model for tour generation. Empty = falls back to summaries.model resolution
+    model: ""                  // Model for tour generation. Empty = uses summaries.model, then the provider's default model, then default_model
   },
   summaries: {
     enabled: false,            // When true, the hunk-summaries feature is available (toolbar button + per-file toggles visible)
@@ -233,7 +233,7 @@ function getSummaryProvider(config) {
 }
 
 /**
- * Gets the summary model for summary/tour generation
+ * Gets the model for hunk-summary generation
  * Resolution order: summaries.model → providerClass fast-tier → provider
  * default (when the summary provider differs from the global default
  * provider) → default_model
@@ -291,15 +291,36 @@ function getTourProvider(config) {
 
 /**
  * Gets the model for tour generation.
- * Resolution order: tours.model → summaries.model → providerClass fast-tier → default_model
+ * Resolution order: tours.model → summaries.model → providerClass built-in
+ * default → default_model
+ *
+ * Unlike getSummaryModel, this does not pick the fast tier: a tour is an
+ * agentic walk of the codebase, which calls for the provider's default model.
+ * The provider default wins even when the tour provider IS the global
+ * default provider — configs written before a default-model change still
+ * carry the old global `default_model`, and that should not decide the tour
+ * model. An explicit `summaries.model` still applies. Providers with no
+ * built-in default (e.g. OpenCode returns null) fall through to
+ * default_model.
+ *
+ * Known limitation (same as getSummaryModel): this reads the provider class's
+ * STATIC built-in default, so per-provider config overrides
+ * (`providers.<id>.models` / `default_model` / `disabled_models`) are not
+ * applied here.
+ *
  * @param {Object} config - Configuration object
- * @param {Function} [providerClass] - Optional provider class with static getModels()
+ * @param {Function} [providerClass] - Optional provider class with static getDefaultModel()
  * @returns {string} - Model name
  */
 function getTourModel(config, providerClass = null) {
-  const explicit = config && config.tours && config.tours.model;
+  const explicit = (config && config.tours && config.tours.model)
+    || (config && config.summaries && config.summaries.model);
   if (explicit) return explicit;
-  return getSummaryModel(config, providerClass);
+  if (providerClass && typeof providerClass.getDefaultModel === 'function') {
+    const providerDefault = providerClass.getDefaultModel();
+    if (providerDefault) return providerDefault;
+  }
+  return getDefaultModel(config);
 }
 
 /**

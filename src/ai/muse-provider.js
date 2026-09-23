@@ -150,17 +150,6 @@ function attemptIdOf(record) {
 }
 
 /**
- * The provider's default model.
- *
- * DELIBERATE: this is the NON-contributor model, even though the muse CLI's own
- * default is `muse-spark-1.3-contributor`. Pair-review sends potentially
- * proprietary source code to the model, and the contributor tier is discounted
- * precisely because Meta may use that content for product improvement. Opting
- * into data sharing must be an explicit user choice, never a silent default.
- */
-const DEFAULT_MUSE_MODEL = 'muse-spark-1.3-high';
-
-/**
  * Muse model definitions with tier mappings.
  *
  * Muse exposes two real CLI model IDs per generation; everything below is a
@@ -258,6 +247,12 @@ const MUSE_MODELS = [
     description: 'Meta\'s coding model with high reasoning effort and roughly 1M tokens of context—strong everyday PR review across large diffs.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
+    // DELIBERATE: the default is the NON-contributor model, even though the
+    // muse CLI's own default is `muse-spark-1.3-contributor`. Pair-review sends
+    // potentially proprietary source code to the model, and the contributor
+    // tier is discounted precisely because Meta may use that content for
+    // product improvement. Opting into data sharing must be an explicit user
+    // choice, never a silent default.
     default: true
   },
   {
@@ -308,7 +303,7 @@ class MuseProvider extends AIProvider {
    * @param {Object[]} configOverrides.models - Custom model definitions
    * @param {boolean} configOverrides.yolo - Bypass approval and sandbox
    */
-  constructor(model = DEFAULT_MUSE_MODEL, configOverrides = {}) {
+  constructor(model = MuseProvider.getDefaultModel(), configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default. A blank or whitespace-only
@@ -1234,10 +1229,6 @@ class MuseProvider extends AIProvider {
 
   static getModels() {
     return MUSE_MODELS;
-  }
-
-  static getDefaultModel() {
-    return DEFAULT_MUSE_MODEL;
   }
 
   static getInstallInstructions() {

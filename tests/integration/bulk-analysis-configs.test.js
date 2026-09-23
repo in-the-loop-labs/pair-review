@@ -238,7 +238,7 @@ describe('bulk analysis config routes', () => {
 
   it('preserves a valid model alias instead of coercing it to the provider default', async () => {
     // Regression: the server-side "does this model belong to the provider" guard must
-    // recognize aliases (e.g. 'opus' is an alias of the canonical 'opus-4.8-xhigh'),
+    // recognize aliases (e.g. 'opus' is an alias of the canonical 'opus-5.5-xhigh'),
     // not just canonical ids. Matching id-only treated valid aliases as mismatched
     // pairs and silently rewrote them to the provider default.
     const claude = getAllProvidersInfo().find(p => p.id === 'claude');

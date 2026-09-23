@@ -129,7 +129,7 @@ const REGISTRY = [
     description: "Model within the default provider for the Default Provider/Model analysis and single-model tasks.",
     group: 'ai',
     type: 'string',
-    default: 'opus',
+    default: 'opus-5.5-high',
     editable: true,
     restartRequired: false
   },
@@ -230,7 +230,7 @@ const REGISTRY = [
   {
     key: 'tours.model',
     label: 'Tours model',
-    description: 'Model for tour generation. Empty falls back to summaries model resolution.',
+    description: "Model for tour generation. Empty uses the summaries model if set, then the provider's default model.",
     group: 'tours',
     type: 'string',
     default: '',

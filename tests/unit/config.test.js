@@ -5,7 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
-const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, getRepoFetchTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoCloneUrl, getRepoCloneUrlForHost, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, isExclusiveAltHost, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig, shouldSkipUpdateNotifier, _resetTokenCache, getRepoConfig, getRepoPath, getRepoCheckoutScript, getRepoWorktreeDirectory, getRepoWorktreeNameTemplate, getRepoCheckoutTimeout, getRepoFetchTimeout, resolveRepoOptions, getRepoResetScript, getRepoSkipBulkFetch, getRepoCloneUrl, getRepoCloneUrlForHost, getRepoPoolSize, getRepoPoolFetchInterval, resolvePoolConfig, getWorktreeDisplayName, getConfigDir, getRepoLoadSkills, resolveLoadSkills, buildCouncilProviderOverrides, getSummaryProvider, getSummaryModel, getTourProvider, getTourModel, getSummaryEnabled, getSummaryAutoGenerate, getTourEnabled, getTourAutoGenerate, resolveHostBinding, isExclusiveAltHost, invalidateTokenCache, validateRepoConfig, matchRepoByUrl, resolveBindingRepositoryFromPR, DEFAULT_CONFIG } = require('../../src/config');
+const ClaudeProvider = require('../../src/ai/claude-provider');
+const { getEntry } = require('../../src/settings/registry');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -2162,7 +2164,7 @@ describe('config.js', () => {
 
     it('falls back to DEFAULT_CONFIG.default_model when neither is set', () => {
       const config = {};
-      expect(getSummaryModel(config)).toBe('opus');
+      expect(getSummaryModel(config)).toBe(DEFAULT_CONFIG.default_model);
     });
 
     // The global default_model pairs with default_provider. A summary provider
@@ -2232,28 +2234,81 @@ describe('config.js', () => {
   });
 
   describe('getTourModel', () => {
-    it('returns tours.model when set', () => {
-      const config = { tours: { model: 'opus' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
-      expect(getTourModel(config)).toBe('opus');
-    });
-
-    it('falls back to summaries.model when tours.model empty', () => {
-      const config = { tours: { model: '' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
-      expect(getTourModel(config)).toBe('haiku');
-    });
-
-    it('falls back to providerClass fast-tier when both empty', () => {
-      const config = { tours: { model: '' }, summaries: { model: '' }, default_model: 'opus' };
-      const FakeProvider = { getModels: () => [
+    // A provider with both a fast tier and a built-in default, so each test
+    // can tell which rung answered.
+    const FakeProvider = {
+      getProviderId: () => 'fake',
+      getDefaultModel: () => 'big',
+      getModels: () => [
         { id: 'big', tier: 'thorough' },
         { id: 'small', tier: 'fast' }
-      ]};
-      expect(getTourModel(config, FakeProvider)).toBe('small');
+      ]
+    };
+
+    it('returns tours.model over everything else', () => {
+      const config = { tours: { model: 'opus' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
+      expect(getTourModel(config, FakeProvider)).toBe('opus');
     });
 
-    it('falls back to default_model when nothing matches', () => {
+    it('falls back to summaries.model when tours.model is empty', () => {
+      const config = { tours: { model: '' }, summaries: { model: 'haiku' }, default_model: 'sonnet' };
+      expect(getTourModel(config, FakeProvider)).toBe('haiku');
+    });
+
+    it('uses the provider default, not its fast tier, when both models are empty', () => {
+      const config = { tours: { model: '' }, summaries: { model: '' }, default_model: 'opus' };
+      expect(getTourModel(config, FakeProvider)).toBe('big');
+    });
+
+    // An existing config still carries the stock global default_model it was
+    // written with; the tour uses the provider's built-in default instead.
+    it('uses the provider default even when the tour provider is the global default provider', () => {
+      const config = { default_provider: 'fake', default_model: 'opus' };
+      expect(getTourModel(config, FakeProvider)).toBe('big');
+    });
+
+    it('falls back to default_model when the provider has no default (null)', () => {
+      const config = { default_provider: 'claude', default_model: 'opus' };
+      const FakeOpenCode = {
+        getProviderId: () => 'opencode',
+        getDefaultModel: () => null,
+        getModels: () => []
+      };
+      expect(getTourModel(config, FakeOpenCode)).toBe('opus');
+    });
+
+    it('falls back to default_model when the provider class lacks getDefaultModel', () => {
+      const config = { default_model: 'opus' };
+      const Bare = { getModels: () => [{ id: 'small', tier: 'fast' }] };
+      expect(getTourModel(config, Bare)).toBe('opus');
+    });
+
+    it('falls back to default_model when no providerClass is given', () => {
       const config = { default_model: 'opus' };
       expect(getTourModel(config)).toBe('opus');
+    });
+
+    it('falls back to DEFAULT_CONFIG.default_model when nothing is set', () => {
+      expect(getTourModel({})).toBe(DEFAULT_CONFIG.default_model);
+    });
+
+    it("resolves the real Claude provider's built-in default", () => {
+      expect(getTourModel({ default_model: 'opus' }, ClaudeProvider)).toBe(ClaudeProvider.getDefaultModel());
+    });
+  });
+
+  describe('DEFAULT_CONFIG.default_model', () => {
+    // New installs get DEFAULT_CONFIG written to ~/.pair-review/config.json, so
+    // the global default_model rung always outranks the provider default. Pin
+    // it to Claude's built-in default (the default provider) so a future
+    // default change cannot update one and miss the other.
+    it("matches the default provider's built-in default model", () => {
+      expect(DEFAULT_CONFIG.default_provider).toBe(ClaudeProvider.getProviderId());
+      expect(DEFAULT_CONFIG.default_model).toBe(ClaudeProvider.getDefaultModel());
+    });
+
+    it('matches the settings registry default', () => {
+      expect(getEntry('default_model').default).toBe(DEFAULT_CONFIG.default_model);
     });
   });
 
