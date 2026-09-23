@@ -1,5 +1,5 @@
 ---
-"@in-the-loop-labs/pair-review": minor
+"@in-the-loop-labs/pair-review": patch
 ---
 
 Add Claude Opus 5.5 models (`opus-5.5-xhigh`, `opus-5.5-high`) and make `opus-5.5-high` the default for new installs
