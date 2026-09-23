@@ -229,6 +229,27 @@ describe('renderMarkdown fallback (no DOMPurify, html disabled)', () => {
   });
 });
 
+describe('linkify performance (CVE-2026-48801 / GHSA-22p9-wv53-3rq4)', () => {
+  // linkify-it <= 5.0.0 (bundled by markdown-it 13.x) re-scans the remaining
+  // text for every link LinkifyIt#match finds, so one run of email-like text
+  // costs O(N^2). ~125 KB of space-separated emails took ~5.3 s to render on
+  // markdown-it 13.0.2 and under 100 ms on 14.3.2 (linkify-it 5.0.2).
+  // Times md.render alone: that is where linkify runs, and jsdom-backed
+  // DOMPurify would add hundreds of ms of unrelated, load-sensitive cost.
+  it('linkifies a large run of email addresses in linear time', () => {
+    const md = configureMarkdownIt(markdownit, { html: true });
+    const count = 16000;
+    const input = 'a@b.com '.repeat(count);
+
+    const start = performance.now();
+    const html = md.render(input);
+    const elapsed = performance.now() - start;
+
+    expect(elapsed).toBeLessThan(1000);
+    expect(html.match(/href="mailto:a@b\.com"/g)).toHaveLength(count);
+  });
+});
+
 describe('sanitizeHtml', () => {
   it('applies the allowlist and removes comments', () => {
     const purify = createDOMPurify(new JSDOM('').window);
