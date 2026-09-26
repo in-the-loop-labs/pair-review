@@ -944,6 +944,75 @@ describe('ChatSessionManager', () => {
       await expect(manager.sendMessage(session.id, 'hello'))
         .rejects.toThrow('currently processing a message');
     });
+
+    it('should tag the busy error and store nothing', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[_createdBridges.length - 1];
+      bridge.isBusy.mockReturnValue(true);
+
+      const err = await manager.sendMessage(session.id, 'hello', { contextData: { type: 'file' } })
+        .catch((e) => e);
+
+      expect(err.code).toBe(ChatSessionManager.SESSION_BUSY);
+      expect(bridge.sendMessage).not.toHaveBeenCalled();
+      expect(manager.getMessages(session.id)).toEqual([]);
+    });
+
+    it('should reject a message while a real OMP bridge is paused, and accept one after the run ends', async () => {
+      const session = await manager.createSession({ provider: 'omp', reviewId: 1 });
+      // Swap in the real bridge so its own isBusy() answers; only process I/O is faked.
+      const bridge = new originalOmpBridgeExport();
+      bridge._ready = true;
+      bridge._process = { stdin: { writable: true, write: vi.fn() } };
+      manager._sessions.get(session.id).bridge = bridge;
+      const writes = () => bridge._process.stdin.write.mock.calls.map(([line]) => JSON.parse(line).type);
+
+      bridge._handleLine(JSON.stringify({ type: 'message_end' }));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end', isTerminal: false }));
+      const err = await manager.sendMessage(session.id, 'while paused').catch((e) => e);
+
+      expect(err.code).toBe(ChatSessionManager.SESSION_BUSY);
+      expect(writes()).toEqual([]);
+
+      bridge._handleLine(JSON.stringify({ type: 'agent_end' }));
+      await manager.sendMessage(session.id, 'after the run');
+
+      expect(writes()).toEqual(['prompt']);
+    });
+  });
+
+  describe('closeSession during a paused OMP run', () => {
+    it('should store the reply kept at the pause', async () => {
+      const session = await manager.createSession({ provider: 'omp', reviewId: 1 });
+      // Swap in a real bridge, wired the way createSession wires its own, so
+      // its close() runs against the manager's complete handler. Only process
+      // I/O is faked; the process exits as soon as it is signalled.
+      const bridge = new originalOmpBridgeExport();
+      const proc = new EventEmitter();
+      proc.stdin = { writable: true, write: vi.fn() };
+      proc.kill = vi.fn(() => proc.emit('close', null, 'SIGTERM'));
+      bridge._ready = true;
+      bridge._process = proc;
+      const managed = manager._sessions.get(session.id);
+      managed.bridge = bridge;
+      manager._wireBridgeEvents(session.id, bridge, managed.listeners);
+
+      bridge._handleLine(JSON.stringify({ type: 'message_start' }));
+      bridge._handleLine(JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: 'Waiting on the test run.' }
+      }));
+      bridge._handleLine(JSON.stringify({ type: 'message_end' }));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end', isTerminal: false }));
+
+      await manager.closeSession(session.id);
+
+      expect(manager.getMessages(session.id)).toEqual([
+        expect.objectContaining({ role: 'assistant', type: 'message', content: 'Waiting on the test run.' }),
+      ]);
+      const row = db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.status).toBe('closed');
+    });
   });
 
   describe('saveContextMessage', () => {

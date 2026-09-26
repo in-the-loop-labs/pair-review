@@ -76,6 +76,12 @@ class PiBridge extends EventEmitter {
     // Accumulate text across streaming deltas for each turn
     this._accumulatedText = '';
     this._inMessage = false;
+    // OMP pause tracking (see _handleAgentEnd). _continuing: a non-terminal
+    // agent_end arrived and the run's terminal agent_end has not, so the agent
+    // still owns the turn. _paused: the part of that window before the resumed
+    // run's agent_start, while OMP has no agent loop running.
+    this._continuing = false;
+    this._paused = false;
     // Pending callbacks for RPC responses keyed by command type
     this._pendingCallbacks = new Map();
   }
@@ -133,11 +139,18 @@ class PiBridge extends EventEmitter {
 
         if (!this._closing) {
           logger.warn(`[${this.logName}] Process exited unexpectedly (code=${code}, signal=${signal})`);
+          // A paused run's reply up to the pause is finished text that OMP
+          // reported with an agent_end; save it rather than lose it with the
+          // process. No terminal agent_end can follow now.
+          if (this._continuing) this._handleAgentEnd({});
           this.emit('error', { error: new Error(`${this.cliName} process exited (code=${code}, signal=${signal})`) });
         } else {
           logger.info(`[${this.logName}] Process exited (code=${code}, signal=${signal})`);
         }
 
+        this._inMessage = false;
+        this._continuing = false;
+        this._paused = false;
         this.emit('close');
       });
 
@@ -206,6 +219,14 @@ class PiBridge extends EventEmitter {
     const command = JSON.stringify({ type: 'abort' });
     logger.debug(`[${this.logName}] Sending abort`);
     this._write(command);
+    // OMP answers an abort during a pause with no agent_end: no agent loop is
+    // running for it to stop. End the paused run here so its reply so far is
+    // saved and 'complete' fires. Once the run has resumed (agent_start), OMP
+    // ends the aborted loop with its own terminal agent_end instead.
+    if (this._paused) {
+      logger.debug(`[${this.logName}] Abort during a pause; ending the run`);
+      this._handleAgentEnd({});
+    }
   }
 
   /**
@@ -216,6 +237,10 @@ class PiBridge extends EventEmitter {
     if (!this._process) return;
 
     this._closing = true;
+    // Emit the paused reply while the session manager is still listening,
+    // so its complete handler saves it to chat_messages. The process close
+    // event cannot: listeners are gone by then, and _closing skips it.
+    if (this._continuing) this._handleAgentEnd({});
     this.removeAllListeners();
 
     // Try to abort any in-flight work first
@@ -262,11 +287,14 @@ class PiBridge extends EventEmitter {
   }
 
   /**
-   * Check if the bridge is currently processing a message.
+   * Check if the bridge is currently processing a message. A run paused by a
+   * non-terminal agent_end stays busy until its terminal agent_end: a prompt
+   * sent in the gap would start a new turn and drop the reply accumulated so
+   * far, which has not been saved yet.
    * @returns {boolean}
    */
   isBusy() {
-    return this._inMessage;
+    return this._inMessage || this._continuing;
   }
 
   // ---------------------------------------------------------------------------
@@ -462,6 +490,10 @@ class PiBridge extends EventEmitter {
           callback(event);
         } else if (!event.success) {
           logger.error(`[${this.logName}] Command failed: ${event.error}`);
+          // OMP reports a failed prompt after the run's last agent_end. If
+          // that was a pause, nothing may resume it, and a run left paused
+          // keeps the bridge busy for good.
+          if (event.command === 'prompt' && this._paused) this._handleAgentEnd({});
           this.emit('error', { error: new Error(event.error || 'Unknown command error') });
         } else {
           logger.debug(`[${this.logName}] Command acknowledged: ${JSON.stringify(event).substring(0, 200)}`);
@@ -469,6 +501,11 @@ class PiBridge extends EventEmitter {
         break;
 
       case 'agent_start':
+        // A paused OMP run resumes in a new agent loop (see _handleAgentEnd)
+        this._paused = false;
+        logger.debug(`[${this.logName}] ${type}`);
+        this.emit('status', { status: 'working' });
+        break;
       case 'turn_start':
         logger.debug(`[${this.logName}] ${type}`);
         this.emit('status', { status: 'working' });
@@ -486,8 +523,18 @@ class PiBridge extends EventEmitter {
         break;
 
       default:
-        logger.debug(`[${this.logName}] Unhandled event type: ${type}`);
+        this._handleOtherEvent(event);
     }
+  }
+
+  /**
+   * Handle an event type the shared switch in _handleLine does not recognize.
+   * Subclasses override this for CLI-specific events (see OmpBridge) and fall
+   * back to super for anything they do not recognize either.
+   * @param {Object} event - The parsed event
+   */
+  _handleOtherEvent(event) {
+    logger.debug(`[${this.logName}] Unhandled event type: ${event.type}`);
   }
 
   /**
@@ -547,12 +594,32 @@ class PiBridge extends EventEmitter {
   /**
    * Handle agent_end event which signals the completion of the agent's work.
    * Emits 'complete' with the full accumulated text.
-   * @param {Object} _event - The agent_end event
+   *
+   * OMP marks a scheduling pause with `isTerminal: false` — an async job
+   * result, a queued advisor steer, or a compaction/retry continuation will
+   * resume the loop, and a terminal agent_end follows. Completing on the pause
+   * would persist a truncated reply and finalize the chat UI while the agent
+   * keeps working, so keep accumulating instead. Pi never sets the field, so
+   * every Pi agent_end is terminal.
+   *
+   * The pause stays open (isBusy) until the terminal agent_end, or until
+   * abort(), a failed prompt, close(), or process exit ends it through this
+   * method.
+   * @param {Object} event - The agent_end event
    */
-  _handleAgentEnd(_event) {
+  _handleAgentEnd(event) {
+    if (event?.isTerminal === false) {
+      this._continuing = true;
+      this._paused = true;
+      logger.debug(`[${this.logName}] Non-terminal agent_end; waiting for the agent to resume`);
+      return;
+    }
+
     const fullText = this._accumulatedText;
     this._accumulatedText = '';
     this._inMessage = false;
+    this._continuing = false;
+    this._paused = false;
 
     logger.debug(`[${this.logName}] Agent ended, accumulated ${fullText.length} chars`);
     this.emit('complete', { fullText });

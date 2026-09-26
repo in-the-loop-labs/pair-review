@@ -18,10 +18,37 @@
  * - OMP's `autoResume` setting reopens the most recent session in the cwd
  *   when no session flag is passed, so new chats must explicitly request a
  *   fresh session via the `new_session` RPC command before session discovery.
+ * - OMP emits session events Pi does not: `notice` diagnostics and status-line
+ *   updates (advisor, compaction, retry, ...). See _handleOtherEvent.
  */
 
 const PiBridge = require('./pi-bridge');
 const logger = require('../utils/logger');
+
+/**
+ * OMP session events that only drive its TUI status line. They carry nothing
+ * the chat panel renders, so they are acknowledged at debug level rather than
+ * reported as unhandled. Mirrors the informational members of OMP's
+ * `AgentSessionEvent` union (src/session/agent-session-events.ts).
+ */
+const OMP_STATUS_EVENTS = new Set([
+  'advisor_cost_changed',
+  'advisor_yielded',
+  'auto_compaction_end',
+  'auto_compaction_start',
+  'auto_retry_end',
+  'auto_retry_start',
+  'config_warnings_changed',
+  'goal_updated',
+  'irc_message',
+  'model_changed',
+  'retry_fallback_applied',
+  'retry_fallback_succeeded',
+  'thinking_level_changed',
+  'todo_auto_clear',
+  'todo_reminder',
+  'ttsr_triggered',
+]);
 
 class OmpBridge extends PiBridge {
   /**
@@ -53,6 +80,35 @@ class OmpBridge extends PiBridge {
     // either — otherwise the same config value would mean different things in
     // analysis and chat.
     this._splitProviderModel = false;
+  }
+
+  /**
+   * Handle OMP-only session events. A `notice` is OMP reporting a problem or
+   * status of its own (config warnings, advisor quota, session persistence
+   * failures), so it is logged at its own level; status-line events are
+   * acknowledged quietly.
+   * @param {Object} event - The parsed event
+   */
+  _handleOtherEvent(event) {
+    if (event.type === 'notice') {
+      const source = event.source ? ` (${event.source})` : '';
+      const text = `[${this.logName}] OMP notice${source}: ${event.message}`;
+      if (event.level === 'error') {
+        logger.error(text);
+      } else if (event.level === 'warning') {
+        logger.warn(text);
+      } else {
+        logger.debug(text);
+      }
+      return;
+    }
+
+    if (OMP_STATUS_EVENTS.has(event.type)) {
+      logger.debug(`[${this.logName}] ${event.type}`);
+      return;
+    }
+
+    super._handleOtherEvent(event);
   }
 
   /**

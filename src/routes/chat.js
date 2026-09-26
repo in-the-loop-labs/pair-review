@@ -23,6 +23,7 @@ const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, 
 const { resolveFormat } = require('../utils/comment-formatter');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const { getChatModelCatalog, canonicalChatModel } = require('../chat/chat-models');
+const { SESSION_BUSY } = require('../chat/session-manager');
 const { resolveLoadSkills } = require('../config');
 
 /**
@@ -511,6 +512,15 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via WebSocket`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {
+    if (error.code === SESSION_BUSY) {
+      // The agent still owns its previous turn — e.g. an OMP run paused on a
+      // background job, seen from a page reloaded mid-reply. The message was
+      // not stored, so the client can send it again once the reply finishes.
+      logger.warn(`Chat message rejected: ${error.message}`);
+      return res.status(409).json({
+        error: 'The agent is still working on its previous reply. Wait for it to finish, then send your message again.'
+      });
+    }
     logger.error(`Error sending chat message: ${error.message}`);
     res.status(500).json({ error: 'Failed to send message' });
   }

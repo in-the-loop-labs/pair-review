@@ -10,6 +10,7 @@
  * - _startNewConversation(): calls _finalizeStreaming, resets all state
  * - open() with mutually exclusive contexts: suggestion vs comment (if/else if)
  * - Background WS accumulation: delta events accumulate when isOpen === false
+ * - Agent-initiated turns: events with no streaming bubble open one, except after a user Stop
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -1968,6 +1969,551 @@ describe('ChatPanel', () => {
 
       // tool_use was not a delta, so streamingContent should remain empty.
       expect(tab.streamingContent).toBe('');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Agent-initiated turns
+  //
+  // An agent can start a turn after the previous one completed (OMP resumes
+  // when an advisor steers it or an async job delivers its result). No
+  // sendMessage() created a bubble for that turn, so its first event must
+  // open one — otherwise the turn is invisible until a page refresh and its
+  // 'working' status silently blocks sends.
+  // -----------------------------------------------------------------------
+  describe('Agent-initiated turns', () => {
+    let tab;
+
+    beforeEach(() => {
+      chatPanel.currentSessionId = 'sess-1';
+      tab = chatPanel._getActiveTab();
+      tab.isStreaming = false;
+      tab.streamingContent = '';
+      tab.streamingMsgEl = null;
+      chatPanel.isOpen = true;
+      chatPanel.sendBtn.style.display = '';
+      chatPanel.stopBtn.style.display = 'none';
+    });
+
+    function emitEvent(data) {
+      chatPanel._handleChatMessageForTab(tab, { sessionId: 'sess-1', ...data });
+    }
+
+    /** A GET /messages response carrying the given saved rows. */
+    function messagesResponse(messages) {
+      return { ok: true, json: () => Promise.resolve({ data: { messages } }) };
+    }
+
+    it('opens a streaming bubble and shows Stop on a working status after completion', () => {
+      emitEvent({ type: 'status', status: 'working' });
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(tab.messagesEl.appendChild).toHaveBeenCalledWith(tab.streamingMsgEl);
+      expect(tab.isStreaming).toBe(true);
+      expect(chatPanel.sendBtn.style.display).toBe('none');
+      expect(chatPanel.sendBtn.disabled).toBe(true);
+      expect(chatPanel.stopBtn.style.display).toBe('');
+    });
+
+    it('streams the turn into the new bubble and finalizes it on complete', async () => {
+      const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+      global.fetch.mockResolvedValueOnce(messagesResponse([
+        { id: 7, type: 'message', role: 'assistant', content: 'Advisor flagged a blocker.' },
+      ]));
+
+      emitEvent({ type: 'status', status: 'working' });
+      emitEvent({ type: 'delta', text: 'Advisor flagged ' });
+      emitEvent({ type: 'delta', text: 'a blocker.' });
+      emitEvent({ type: 'complete', messageId: 7 });
+
+      expect(tab.messages).toEqual([{ role: 'assistant', content: 'Advisor flagged a blocker.', id: 7 }]);
+      expect(tab.streamingMsgEl).toBeNull();
+      expect(tab.isStreaming).toBe(false);
+      expect(chatPanel.sendBtn.style.display).toBe('');
+      expect(chatPanel.stopBtn.style.display).toBe('none');
+      await showSavedSpy.mock.results[0].value;
+      expect(tab.messages).toEqual([{ role: 'assistant', content: 'Advisor flagged a blocker.', id: 7 }]);
+    });
+
+    /** Put the user 500px above the bottom; returns the scrollTop setter spy. */
+    function scrollUserAway() {
+      const setScrollTop = vi.fn();
+      Object.defineProperty(tab.messagesEl, 'scrollTop', { get: () => 100, set: setScrollTop, configurable: true });
+      Object.defineProperty(tab.messagesEl, 'scrollHeight', { value: 1000, configurable: true });
+      Object.defineProperty(tab.messagesEl, 'clientHeight', { value: 400, configurable: true });
+      tab.userScrolledAway = true;
+      return setScrollTop;
+    }
+
+    it('does not pull a user who scrolled up back down when agent output opens a bubble', () => {
+      const setScrollTop = scrollUserAway();
+      chatPanel.newContentPill.style.display = 'none';
+
+      emitEvent({ type: 'status', status: 'working' });
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(setScrollTop).not.toHaveBeenCalled();
+      expect(chatPanel.newContentPill.style.display).toBe('');
+    });
+
+    it('still scrolls to the bottom for the bubble of a message the user sent', () => {
+      const setScrollTop = scrollUserAway();
+
+      chatPanel._addStreamingPlaceholder(tab);
+
+      expect(setScrollTop).toHaveBeenCalledWith(1000);
+    });
+
+    // A bubble opened by agent output may have missed the start of the turn
+    // (page reloaded mid-reply; OMP resuming text accumulated before its
+    // pause). The saved reply replaces the streamed text on complete.
+    describe('a bubble opened mid-turn', () => {
+      let showSavedSpy;
+
+      beforeEach(() => {
+        showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+      });
+
+      /** Expose the bubble inside a mock message element so its HTML can be checked. */
+      function trackBubble(msgEl) {
+        const bubble = createMockElement('div');
+        msgEl.querySelector = vi.fn((sel) => (sel === '.chat-panel__bubble' ? bubble : null));
+        return bubble;
+      }
+
+      const savedReply = { id: 7, type: 'message', role: 'assistant', content: 'The start, and the tail.' };
+
+      it('shows the saved reply in place of the streamed tail', async () => {
+        emitEvent({ type: 'status', status: 'working' });
+        expect(tab.streamJoinedMidTurn).toBe(true);
+        emitEvent({ type: 'delta', text: 'the tail.' });
+        const bubble = trackBubble(tab.streamingMsgEl);
+        global.fetch.mockResolvedValueOnce(messagesResponse([
+          { id: 6, type: 'message', role: 'user', content: 'Q' },
+          savedReply,
+        ]));
+
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        // The turn ends at once; only its text is replaced afterwards.
+        expect(tab.isStreaming).toBe(false);
+        expect(tab.streamJoinedMidTurn).toBe(false);
+        expect(chatPanel.stopBtn.style.display).toBe('none');
+        await showSavedSpy.mock.results[0].value;
+        expect(global.fetch).toHaveBeenCalledWith('/api/chat/session/sess-1/messages');
+        expect(tab.messages).toEqual([{ role: 'assistant', content: 'The start, and the tail.', id: 7 }]);
+        expect(bubble.innerHTML).toContain('The start, and the tail.');
+      });
+
+      it('shows the saved reply on a background tab too', async () => {
+        chatPanel.isOpen = false;
+        emitEvent({ type: 'status', status: 'working' });
+        emitEvent({ type: 'delta', text: 'the tail.' });
+        global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        expect(tab.isStreaming).toBe(false);
+        await showSavedSpy.mock.results[0].value;
+        expect(tab.messages).toEqual([{ role: 'assistant', content: 'The start, and the tail.', id: 7 }]);
+      });
+
+      it('records the saved reply when none of it streamed to this page', async () => {
+        emitEvent({ type: 'status', status: 'working' });
+        global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        expect(tab.messages).toEqual([]);
+        await showSavedSpy.mock.results[0].value;
+        expect(tab.messages).toEqual([{ role: 'assistant', content: 'The start, and the tail.', id: 7 }]);
+      });
+
+      it('ignores the saved reply once the tab has moved to another session', async () => {
+        emitEvent({ type: 'status', status: 'working' });
+        emitEvent({ type: 'delta', text: 'the tail.' });
+        let resolveFetch;
+        global.fetch.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        tab.sessionId = 'sess-2';
+        resolveFetch(messagesResponse([savedReply]));
+        await showSavedSpy.mock.results[0].value;
+
+        expect(tab.messages).toEqual([{ role: 'assistant', content: 'the tail.', id: 7 }]);
+      });
+
+      it('keeps the streamed text of a turn the user started', () => {
+        chatPanel._addStreamingPlaceholder(tab);
+        tab.isStreaming = true;
+        emitEvent({ type: 'delta', text: 'All of it.' });
+
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        expect(showSavedSpy).not.toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(tab.messages).toEqual([{ role: 'assistant', content: 'All of it.', id: 7 }]);
+      });
+
+      it('forgets the mark when the tab switches to another session', async () => {
+        vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+        emitEvent({ type: 'status', status: 'working' });
+
+        await chatPanel._switchToSession('sess-2', { message_count: 0 });
+
+        expect(tab.streamJoinedMidTurn).toBe(false);
+      });
+    });
+
+    // A page that loaded its history during an OMP pause has no bubble for
+    // the paused reply, which is not saved yet. A Stop from another window,
+    // an OMP exit or a failed prompt can then end the pause with a bare
+    // complete.
+    describe('a complete that arrives with no bubble', () => {
+      let showSavedSpy;
+      const savedReply = { id: 7, type: 'message', role: 'assistant', content: 'The paused reply.' };
+
+      beforeEach(() => {
+        showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+        chatPanel.addMessage('user', 'Q', 5, tab);
+      });
+
+      it('adds the saved reply as a new bubble and leaves the tab idle', async () => {
+        const setScrollTop = scrollUserAway();
+        chatPanel.inputEl.value = 'next question';
+        global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+
+        emitEvent({ type: 'complete', messageId: 7 });
+        await showSavedSpy.mock.results[0].value;
+
+        const added = tab.messagesEl.children.at(-1);
+        expect(added.className).toContain('chat-panel__message--assistant');
+        expect(added.dataset.messageId).toBe(7);
+        expect(tab.messages).toEqual([
+          { role: 'user', content: 'Q', id: 5 },
+          { role: 'assistant', content: 'The paused reply.', id: 7 },
+        ]);
+        expect(tab.isStreaming).toBe(false);
+        expect(tab.status).toBe('idle');
+        expect(chatPanel.sendBtn.style.display).toBe('');
+        expect(chatPanel.stopBtn.style.display).toBe('none');
+        expect(chatPanel.sendBtn.disabled).toBe(false);
+        // Agent output does not pull the user back down.
+        expect(setScrollTop).not.toHaveBeenCalled();
+      });
+
+      it('adds the saved reply to a background tab', async () => {
+        const other = attachActiveTab(chatPanel);
+        global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+
+        emitEvent({ type: 'complete', messageId: 7 });
+        await showSavedSpy.mock.results[0].value;
+
+        const added = tab.messagesEl.children.at(-1);
+        expect(added.dataset.messageId).toBe(7);
+        expect(tab.messages.at(-1)).toEqual({ role: 'assistant', content: 'The paused reply.', id: 7 });
+        expect(tab.isStreaming).toBe(false);
+        expect(other.messagesEl.children).toHaveLength(0);
+      });
+
+      it('does not repeat a reply this tab stopped, when its complete follows the abort response', async () => {
+        chatPanel._addStreamingPlaceholder(tab);
+        tab.isStreaming = true;
+        emitEvent({ type: 'delta', text: 'Partial' });
+        global.fetch.mockResolvedValueOnce({ ok: true });
+        await chatPanel._stopAgent();
+        const childCount = tab.messagesEl.children.length;
+
+        emitEvent({ type: 'complete', messageId: 7 });
+
+        expect(showSavedSpy).not.toHaveBeenCalled();
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(tab.messagesEl.children).toHaveLength(childCount);
+        expect(tab.messages.at(-1)).toEqual({ role: 'assistant', content: 'Partial', id: null });
+        expect(tab.abortPending).toBe(false);
+      });
+
+      it('does nothing for a reply the tab already has', async () => {
+        chatPanel.addMessage('assistant', 'The paused reply.', 7, tab);
+        const childCount = tab.messagesEl.children.length;
+
+        emitEvent({ type: 'complete', messageId: 7 });
+        await showSavedSpy.mock.results[0].value;
+
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(tab.messagesEl.children).toHaveLength(childCount);
+        expect(tab.messages.filter((m) => m.id === 7)).toHaveLength(1);
+      });
+
+      it('ignores the saved reply once the tab has moved to another session', async () => {
+        let resolveFetch;
+        global.fetch.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
+        emitEvent({ type: 'complete', messageId: 7 });
+        const childCount = tab.messagesEl.children.length;
+
+        tab.sessionId = 'sess-2';
+        resolveFetch(messagesResponse([savedReply]));
+        await showSavedSpy.mock.results[0].value;
+
+        expect(tab.messagesEl.children).toHaveLength(childCount);
+        expect(tab.messages).toEqual([{ role: 'user', content: 'Q', id: 5 }]);
+      });
+    });
+
+    // The tab subscribes before its history fetch resolves (restore, session
+    // switch), so a turn already under way can render first.
+    describe('output that arrives while history is loading', () => {
+      let resolveHistory;
+      const history = [
+        { id: 1, type: 'message', role: 'user', content: 'Q' },
+        { id: 2, type: 'message', role: 'assistant', content: 'A' },
+      ];
+
+      beforeEach(() => {
+        // Like the real DOM, appending an existing child moves it to the end.
+        tab.messagesEl.appendChild = vi.fn((child) => {
+          const i = tab.messagesEl.children.indexOf(child);
+          if (i !== -1) tab.messagesEl.children.splice(i, 1);
+          tab.messagesEl.children.push(child);
+          return child;
+        });
+        global.fetch.mockReturnValueOnce(new Promise((resolve) => { resolveHistory = resolve; }));
+      });
+
+      it('keeps a live bubble below the history', async () => {
+        const load = chatPanel._loadMessageHistory('sess-1', tab);
+        emitEvent({ type: 'status', status: 'working' });
+        emitEvent({ type: 'delta', text: 'Resumed...' });
+        const live = tab.streamingMsgEl;
+
+        resolveHistory(messagesResponse(history));
+        await load;
+
+        const children = tab.messagesEl.children;
+        expect(children.map((el) => el.dataset.messageId)).toEqual([1, 2, undefined]);
+        expect(children[2]).toBe(live);
+        expect(tab.streamingMsgEl).toBe(live);
+      });
+
+      it('shows a reply that completed during the load once, below the history', async () => {
+        const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+        const reply = { id: 3, type: 'message', role: 'assistant', content: 'B' };
+        const load = chatPanel._loadMessageHistory('sess-1', tab);
+        emitEvent({ type: 'status', status: 'working' });
+        emitEvent({ type: 'delta', text: 'B' });
+        const live = tab.streamingMsgEl;
+        global.fetch.mockResolvedValueOnce(messagesResponse([...history, reply]));
+        emitEvent({ type: 'complete', messageId: 3 });
+
+        resolveHistory(messagesResponse([...history, reply]));
+        await load;
+        await showSavedSpy.mock.results[0].value;
+
+        const children = tab.messagesEl.children;
+        expect(children.map((el) => el.dataset.messageId)).toEqual([1, 2, 3]);
+        expect(children[2]).toBe(live);
+      });
+
+      it('shows a reply that completes with no bubble during the load once, below the history', async () => {
+        const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+        const reply = { id: 3, type: 'message', role: 'assistant', content: 'B' };
+        const load = chatPanel._loadMessageHistory('sess-1', tab);
+        global.fetch.mockResolvedValueOnce(messagesResponse([...history, reply]));
+        emitEvent({ type: 'complete', messageId: 3 });
+        await showSavedSpy.mock.results[0].value;
+        const added = tab.messagesEl.children.at(-1);
+        // The tab had no messages yet; the reply makes it a conversation.
+        expect(tab.status).toBe('idle');
+
+        resolveHistory(messagesResponse([...history, reply]));
+        await load;
+
+        const children = tab.messagesEl.children;
+        expect(children.map((el) => el.dataset.messageId)).toEqual([1, 2, 3]);
+        expect(children[2]).toBe(added);
+        expect(tab.messages.filter((m) => m.id === 3)).toHaveLength(1);
+      });
+
+      it('does not add a no-bubble reply that the history rendered during its fetch', async () => {
+        const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+        const reply = { id: 3, type: 'message', role: 'assistant', content: 'B' };
+        const load = chatPanel._loadMessageHistory('sess-1', tab);
+        let resolveSaved;
+        global.fetch.mockReturnValueOnce(new Promise((resolve) => { resolveSaved = resolve; }));
+        emitEvent({ type: 'complete', messageId: 3 });
+
+        resolveHistory(messagesResponse([...history, reply]));
+        await load;
+        resolveSaved(messagesResponse([...history, reply]));
+        await showSavedSpy.mock.results[0].value;
+
+        const children = tab.messagesEl.children;
+        expect(children.map((el) => el.dataset.messageId)).toEqual([1, 2, 3]);
+        expect(tab.messages.filter((m) => m.id === 3)).toHaveLength(1);
+      });
+    });
+
+    it('opens a bubble for a delta that arrives with none', () => {
+      emitEvent({ type: 'delta', text: 'Hello' });
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(tab.streamingContent).toBe('Hello');
+      expect(tab.isStreaming).toBe(true);
+    });
+
+    it('opens a bubble for a tool_use that arrives with none', () => {
+      const showSpy = vi.spyOn(chatPanel, '_showToolUse');
+
+      emitEvent({ type: 'tool_use', toolName: 'read', status: 'start' });
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(showSpy).toHaveBeenCalledWith('read', 'start', undefined, tab);
+    });
+
+    it('keeps rendering into the existing bubble of a user-started turn', () => {
+      chatPanel._addStreamingPlaceholder(tab);
+      tab.isStreaming = true;
+      const bubble = tab.streamingMsgEl;
+      const appendCount = tab.messagesEl.appendChild.mock.calls.length;
+
+      emitEvent({ type: 'status', status: 'working' });
+      emitEvent({ type: 'delta', text: 'more' });
+
+      expect(tab.streamingMsgEl).toBe(bubble);
+      expect(tab.messagesEl.appendChild).toHaveBeenCalledTimes(appendCount);
+      expect(tab.streamingContent).toBe('more');
+    });
+
+    it('does not open a bubble for a turn_complete status', () => {
+      emitEvent({ type: 'status', status: 'turn_complete' });
+
+      expect(tab.streamingMsgEl).toBeNull();
+      expect(tab.isStreaming).toBe(false);
+    });
+
+    it('opens a bubble on a background working status so a tab switch shows the turn', () => {
+      chatPanel.isOpen = false;
+
+      emitEvent({ type: 'status', status: 'working' });
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(tab.isStreaming).toBe(true);
+    });
+
+    describe('after a user Stop', () => {
+      beforeEach(async () => {
+        chatPanel._addStreamingPlaceholder(tab);
+        tab.isStreaming = true;
+        global.fetch.mockResolvedValueOnce({ ok: true });
+        await chatPanel._stopAgent();
+      });
+
+      it('finalizes the stopped bubble and marks the abort pending', () => {
+        expect(tab.streamingMsgEl).toBeNull();
+        expect(tab.isStreaming).toBe(false);
+        expect(tab.abortPending).toBe(true);
+      });
+
+      it('drops output that trails the aborted run', () => {
+        emitEvent({ type: 'delta', text: 'trailing' });
+        emitEvent({ type: 'tool_use', toolName: 'read', status: 'end' });
+        emitEvent({ type: 'status', status: 'working' });
+
+        expect(tab.streamingMsgEl).toBeNull();
+        expect(tab.streamingContent).toBe('');
+        expect(tab.isStreaming).toBe(false);
+        expect(chatPanel.sendBtn.style.display).toBe('');
+        expect(chatPanel.stopBtn.style.display).toBe('none');
+      });
+
+      it('drops trailing output on a background tab too', () => {
+        chatPanel.isOpen = false;
+
+        emitEvent({ type: 'delta', text: 'trailing' });
+        emitEvent({ type: 'status', status: 'working' });
+
+        expect(tab.streamingMsgEl).toBeNull();
+        expect(tab.streamingContent).toBe('');
+        expect(tab.isStreaming).toBe(false);
+      });
+
+      it('opens a bubble for a new agent turn once the aborted run completes', () => {
+        emitEvent({ type: 'complete', messageId: null });
+        expect(tab.abortPending).toBe(false);
+
+        emitEvent({ type: 'status', status: 'working' });
+
+        expect(tab.streamingMsgEl).not.toBeNull();
+        expect(tab.isStreaming).toBe(true);
+      });
+
+      it('clears the pending abort when the aborted run errors', () => {
+        emitEvent({ type: 'error', message: 'Aborted' });
+
+        expect(tab.abortPending).toBe(false);
+      });
+
+      it('clears the pending abort when the user sends a new message', async () => {
+        chatPanel.inputEl.value = 'next question';
+        global.fetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+
+        await chatPanel.sendMessage();
+
+        expect(tab.abortPending).toBe(false);
+        expect(tab.streamingMsgEl).not.toBeNull();
+      });
+
+      it('lets a session switched into the tab open bubbles for its own turns', async () => {
+        vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+
+        await chatPanel._switchToSession('sess-2', { message_count: 0 });
+
+        expect(tab.abortPending).toBe(false);
+        chatPanel._handleChatMessageForTab(tab, { sessionId: 'sess-2', type: 'status', status: 'working' });
+        expect(tab.streamingMsgEl).not.toBeNull();
+      });
+
+      it('clears the pending abort on reconnect when the stopped run\'s end was missed', async () => {
+        // The aborted run's complete went out while the socket was down.
+        await chatPanel._recoverAfterReconnect();
+
+        expect(tab.abortPending).toBe(false);
+        emitEvent({ type: 'status', status: 'working' });
+        expect(tab.streamingMsgEl).not.toBeNull();
+      });
+    });
+
+    it('clears the pending abort when the aborted run completes before the abort request returns', async () => {
+      chatPanel._addStreamingPlaceholder(tab);
+      tab.isStreaming = true;
+      global.fetch.mockImplementationOnce(() => {
+        emitEvent({ type: 'complete', messageId: 9 });
+        return Promise.resolve({ ok: true });
+      });
+
+      await chatPanel._stopAgent();
+
+      expect(tab.abortPending).toBe(false);
+      emitEvent({ type: 'status', status: 'working' });
+      expect(tab.streamingMsgEl).not.toBeNull();
+    });
+
+    it('leaves a newer agent turn streaming when the abort request returns after it began', async () => {
+      chatPanel._addStreamingPlaceholder(tab);
+      tab.isStreaming = true;
+      global.fetch.mockImplementationOnce(() => {
+        // The aborted run ends and the agent starts a turn of its own, both
+        // before the abort request returns.
+        emitEvent({ type: 'complete', messageId: null });
+        emitEvent({ type: 'status', status: 'working' });
+        return Promise.resolve({ ok: true });
+      });
+
+      await chatPanel._stopAgent();
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(tab.isStreaming).toBe(true);
+      expect(chatPanel.stopBtn.style.display).toBe('');
     });
   });
 
@@ -5232,6 +5778,38 @@ describe('ChatPanel', () => {
       expect(chatPanel.activeTabKey).toBe('new-sess');
     });
 
+    it('should not carry a Stop on the dead session over to the replacement session', async () => {
+      chatPanel.currentSessionId = 'stale-sess';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+      const tab = chatPanel._getActiveTab();
+
+      global.fetch
+        .mockImplementationOnce(() => {
+          // The user clicks Stop while the doomed send is in flight.
+          tab.abortPending = true;
+          return Promise.resolve({
+            ok: false,
+            status: 410,
+            json: () => Promise.resolve({ error: 'Session is not resumable' }),
+          });
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'new-sess', status: 'active' } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+
+      await chatPanel.sendMessage();
+
+      expect(tab.sessionId).toBe('new-sess');
+      expect(tab.abortPending).toBe(false);
+    });
+
     it('should show error when createSession fails during 410 retry', async () => {
       chatPanel.currentSessionId = 'stale-sess';
       chatPanel.reviewId = 1;
@@ -5317,6 +5895,262 @@ describe('ChatPanel', () => {
       expect(showErrorSpy).toHaveBeenCalled();
       // Should have made exactly 3 calls, not more
       expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // sendMessage — 409 (agent still owns its previous turn)
+  // -----------------------------------------------------------------------
+  describe('sendMessage while the agent is busy (409)', () => {
+    const busyMessage = 'The agent is still working on its previous reply. Wait for it to finish, then send your message again.';
+    const busyNotice = 'Failed to send message. The agent is still working on its previous reply. Wait for it to finish, or click Stop, then send your message again.';
+    const savedReply = { id: 7, type: 'message', role: 'assistant', content: 'The start, and the tail.' };
+    let tab;
+
+    beforeEach(() => {
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.isOpen = true;
+      tab = chatPanel._getActiveTab();
+      // Like the real DOM, appending an existing child moves it to the end.
+      tab.messagesEl.appendChild = vi.fn((child) => {
+        const i = tab.messagesEl.children.indexOf(child);
+        if (i !== -1) tab.messagesEl.children.splice(i, 1);
+        tab.messagesEl.children.push(child);
+        return child;
+      });
+    });
+
+    function busyResponse() {
+      return { ok: false, status: 409, json: () => Promise.resolve({ error: busyMessage }) };
+    }
+
+    /** A GET /messages response carrying the given saved rows. */
+    function messagesResponse(messages) {
+      return { ok: true, json: () => Promise.resolve({ data: { messages } }) };
+    }
+
+    function emitEvent(data) {
+      chatPanel._handleChatMessageForTab(tab, { sessionId: 'sess-1', ...data });
+    }
+
+    /** The last two elements in the tab's messages: [notice, bubble]. */
+    function lastTwo() {
+      return tab.messagesEl.children.slice(-2);
+    }
+
+    it('keeps the bubble streaming with Stop, below a notice, and takes the message back', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockResolvedValueOnce(busyResponse());
+      const addSpy = vi.spyOn(chatPanel, 'addMessage');
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      const bubble = tab.streamingMsgEl;
+      expect(bubble.className).toContain('chat-panel__message--streaming');
+      expect(tab.isStreaming).toBe(true);
+      expect(tab.status).toBe('streaming');
+      expect(tab.errorMessage).toBeNull();
+      expect(tab.streamJoinedMidTurn).toBe(true);
+      expect(chatPanel.stopBtn.style.display).toBe('');
+      expect(chatPanel.sendBtn.style.display).toBe('none');
+      expect(chatPanel.sendBtn.disabled).toBe(true);
+      const [notice, last] = lastTwo();
+      expect(last).toBe(bubble);
+      expect(notice.className).toContain('chat-panel__message--error');
+      expect(notice.innerHTML).toContain(busyNotice);
+      expect(showErrorSpy).not.toHaveBeenCalled();
+      expect(addSpy.mock.results[0].value.remove).toHaveBeenCalled();
+      expect(tab.messages).toEqual([]);
+      expect(chatPanel.inputEl.value).toBe('Is it done?');
+    });
+
+    it('does not pull a user who scrolled up during the request back down', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      const setScrollTop = vi.fn();
+      global.fetch.mockImplementationOnce(() => {
+        Object.defineProperty(tab.messagesEl, 'scrollTop', { get: () => 100, set: setScrollTop, configurable: true });
+        Object.defineProperty(tab.messagesEl, 'scrollHeight', { value: 1000, configurable: true });
+        Object.defineProperty(tab.messagesEl, 'clientHeight', { value: 400, configurable: true });
+        tab.userScrolledAway = true;
+        return Promise.resolve(busyResponse());
+      });
+
+      await chatPanel.sendMessage();
+
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(setScrollTop).not.toHaveBeenCalled();
+    });
+
+    it('renders the rest of the turn into that bubble and shows the saved reply on complete', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockResolvedValueOnce(busyResponse());
+      await chatPanel.sendMessage();
+      const bubble = tab.streamingMsgEl;
+      const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+
+      emitEvent({ type: 'delta', text: 'the tail.' });
+
+      expect(tab.streamingMsgEl).toBe(bubble);
+      expect(tab.streamingContent).toBe('the tail.');
+
+      global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+      emitEvent({ type: 'complete', messageId: 7 });
+
+      expect(tab.isStreaming).toBe(false);
+      expect(chatPanel.stopBtn.style.display).toBe('none');
+      expect(showSavedSpy).toHaveBeenCalledWith(tab, bubble, 7);
+      await showSavedSpy.mock.results[0].value;
+      expect(tab.messages).toEqual([{ role: 'assistant', content: 'The start, and the tail.', id: 7 }]);
+    });
+
+    it('lets Stop abort the turn and finalize the bubble', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockResolvedValueOnce(busyResponse());
+      await chatPanel.sendMessage();
+      global.fetch.mockResolvedValueOnce({ ok: true });
+
+      await chatPanel._stopAgent();
+
+      expect(global.fetch).toHaveBeenLastCalledWith('/api/chat/session/sess-1/abort', { method: 'POST' });
+      expect(tab.streamingMsgEl).toBeNull();
+      expect(tab.isStreaming).toBe(false);
+      expect(chatPanel.stopBtn.style.display).toBe('none');
+      expect(chatPanel.sendBtn.style.display).toBe('');
+      // The taken-back message is ready to send.
+      expect(chatPanel.sendBtn.disabled).toBe(false);
+    });
+
+    it('opens no bubble when the busy turn completes first, and shows its saved reply', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      let placeholder;
+      global.fetch.mockImplementationOnce(() => {
+        placeholder = tab.streamingMsgEl;
+        // Like the DOM, dataset stores strings.
+        let messageId;
+        Object.defineProperty(placeholder.dataset, 'messageId', {
+          get: () => messageId, set: (v) => { messageId = String(v); }, configurable: true, enumerable: true,
+        });
+        // The busy turn ends over the socket before this response is handled.
+        emitEvent({ type: 'delta', text: 'the tail.' });
+        emitEvent({ type: 'complete', messageId: 7 });
+        return Promise.resolve(busyResponse());
+      });
+      global.fetch.mockResolvedValueOnce(messagesResponse([savedReply]));
+      const showSavedSpy = vi.spyOn(chatPanel, '_showSavedReply');
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      expect(tab.streamingMsgEl).toBeNull();
+      expect(tab.isStreaming).toBe(false);
+      expect(chatPanel.stopBtn.style.display).toBe('none');
+      expect(chatPanel.sendBtn.style.display).toBe('');
+      expect(chatPanel.sendBtn.disabled).toBe(false);
+      expect(showErrorSpy).toHaveBeenCalledWith(
+        'Failed to send message. The agent was still finishing its previous reply, which has now ended. Send your message again.',
+        tab
+      );
+      expect(showSavedSpy).toHaveBeenCalledWith(tab, placeholder, 7);
+      await showSavedSpy.mock.results[0].value;
+      expect(tab.messages).toEqual([{ role: 'assistant', content: 'The start, and the tail.', id: 7 }]);
+    });
+
+    it('leaves a turn the agent starts after the busy one streaming, below the notice', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockImplementationOnce(() => {
+        emitEvent({ type: 'complete', messageId: null });
+        emitEvent({ type: 'status', status: 'working' });
+        return Promise.resolve(busyResponse());
+      });
+
+      await chatPanel.sendMessage();
+
+      const live = tab.streamingMsgEl;
+      expect(live).not.toBeNull();
+      expect(tab.isStreaming).toBe(true);
+      expect(tab.status).toBe('streaming');
+      expect(chatPanel.stopBtn.style.display).toBe('');
+      const [notice, last] = lastTwo();
+      expect(last).toBe(live);
+      expect(notice.innerHTML).toContain(busyNotice);
+    });
+
+    it('keeps the bubble live on a tab the user left during the request', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      let other;
+      global.fetch.mockImplementationOnce(() => {
+        other = attachActiveTab(chatPanel);
+        // The newly active tab is idle.
+        chatPanel.sendBtn.style.display = '';
+        chatPanel.stopBtn.style.display = 'none';
+        return Promise.resolve(busyResponse());
+      });
+
+      await chatPanel.sendMessage();
+
+      expect(chatPanel._getActiveTab()).toBe(other);
+      expect(tab.isStreaming).toBe(true);
+      expect(tab.status).toBe('streaming');
+      expect(tab.streamJoinedMidTurn).toBe(true);
+      const [notice, last] = lastTwo();
+      expect(last).toBe(tab.streamingMsgEl);
+      expect(notice.innerHTML).toContain(busyNotice);
+      expect(chatPanel.sendBtn.style.display).toBe('');
+      expect(chatPanel.stopBtn.style.display).toBe('none');
+      expect(chatPanel.inputEl.value).toBe('');
+    });
+
+    it('leaves alone a session the tab switched to during the request', async () => {
+      vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockImplementationOnce(async () => {
+        await chatPanel._switchToSession('sess-2', { message_count: 0 });
+        // The new session's agent starts a turn of its own.
+        chatPanel._handleChatMessageForTab(tab, { sessionId: 'sess-2', type: 'status', status: 'working' });
+        return busyResponse();
+      });
+      const appendErrorSpy = vi.spyOn(chatPanel, '_appendErrorBubble');
+
+      await chatPanel.sendMessage();
+
+      expect(tab.sessionId).toBe('sess-2');
+      expect(tab.streamingMsgEl).not.toBeNull();
+      expect(tab.isStreaming).toBe(true);
+      expect(chatPanel.stopBtn.style.display).toBe('');
+      expect(appendErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not overwrite text the user typed while the send was in flight', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockImplementationOnce(() => {
+        chatPanel.inputEl.value = 'Never mind';
+        return Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: busyMessage }) });
+      });
+
+      await chatPanel.sendMessage();
+
+      expect(chatPanel.inputEl.value).toBe('Never mind');
+    });
+
+    it('should keep the message for other failures, where it may have been stored', async () => {
+      chatPanel.inputEl.value = 'Is it done?';
+      global.fetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'Failed to send message' }),
+      });
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      expect(tab.messages).toEqual([{ role: 'user', content: 'Is it done?', id: undefined }]);
+      expect(chatPanel.inputEl.value).toBe('');
+      expect(showErrorSpy).toHaveBeenCalledWith('Failed to send message. Failed to send message', tab);
+      expect(tab.isStreaming).toBe(false);
+      expect(tab.status).toBe('error');
     });
   });
 

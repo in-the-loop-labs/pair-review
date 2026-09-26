@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
@@ -349,6 +349,142 @@ describe('OmpBridge', () => {
       await bridge.start();
       expect(bridge.isReady()).toBe(true);
       expect(bridge.sessionPath).toBe('/tmp/auto-session.jsonl');
+      await bridge.close();
+    });
+  });
+
+  describe('OMP-only events', () => {
+    let debugSpy;
+    let warnSpy;
+    let errorSpy;
+
+    beforeEach(() => {
+      debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      debugSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    it('should log an error-level notice as an error with its source', () => {
+      const bridge = new OmpBridge();
+
+      bridge._handleLine(JSON.stringify({
+        type: 'notice', level: 'error', message: 'Failed to persist session', source: 'session-persistence'
+      }));
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[OmpBridge] OMP notice (session-persistence): Failed to persist session'
+      );
+    });
+
+    it('should log a warning-level notice as a warning', () => {
+      const bridge = new OmpBridge();
+
+      bridge._handleLine(JSON.stringify({
+        type: 'notice', level: 'warning', message: 'Advisor "default" quota exhausted', source: 'advisor'
+      }));
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[OmpBridge] OMP notice (advisor): Advisor "default" quota exhausted'
+      );
+    });
+
+    it('should log an info-level notice without a source at debug level', () => {
+      const bridge = new OmpBridge();
+
+      bridge._handleLine(JSON.stringify({ type: 'notice', level: 'info', message: 'Loaded 3 rules' }));
+
+      expect(debugSpy).toHaveBeenCalledWith('[OmpBridge] OMP notice: Loaded 3 rules');
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not surface a notice as a chat error', () => {
+      const bridge = new OmpBridge();
+      const errorHandler = vi.fn();
+      bridge.on('error', errorHandler);
+
+      bridge._handleLine(JSON.stringify({ type: 'notice', level: 'error', message: 'boom' }));
+
+      expect(errorHandler).not.toHaveBeenCalled();
+    });
+
+    it.each(['advisor_yielded', 'advisor_cost_changed', 'auto_compaction_start', 'auto_retry_start', 'todo_reminder'])(
+      'should acknowledge the %s status event without reporting it as unhandled',
+      (type) => {
+        const bridge = new OmpBridge();
+
+        bridge._handleLine(JSON.stringify({ type }));
+
+        expect(debugSpy).toHaveBeenCalledWith(`[OmpBridge] ${type}`);
+        expect(debugSpy).not.toHaveBeenCalledWith(expect.stringContaining('Unhandled'));
+      }
+    );
+
+    it('should still report genuinely unknown events as unhandled', () => {
+      const bridge = new OmpBridge();
+
+      bridge._handleLine(JSON.stringify({ type: 'brand_new_event' }));
+
+      expect(debugSpy).toHaveBeenCalledWith('[OmpBridge] Unhandled event type: brand_new_event');
+    });
+
+    it('should complete once, after the advisor-steered continuation, not at the non-terminal pause', () => {
+      const bridge = new OmpBridge();
+      const completeHandler = vi.fn();
+      bridge.on('complete', completeHandler);
+      const textDelta = (delta) => JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta }
+      });
+
+      // Event shape observed from OMP RPC when an advisor steers the primary
+      // after its first answer: the first agent_end is a scheduling pause.
+      bridge._handleLine(JSON.stringify({ type: 'agent_start' }));
+      bridge._handleLine(textDelta('First pass.'));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end', isTerminal: false }));
+      bridge._handleLine(JSON.stringify({ type: 'advisor_yielded' }));
+      bridge._handleLine(JSON.stringify({ type: 'agent_start' }));
+      bridge._handleLine(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_start' } }));
+      bridge._handleLine(textDelta('Revised after advisor feedback.'));
+      expect(completeHandler).not.toHaveBeenCalled();
+
+      bridge._handleLine(JSON.stringify({ type: 'agent_end' }));
+
+      expect(completeHandler).toHaveBeenCalledTimes(1);
+      expect(completeHandler).toHaveBeenCalledWith({
+        fullText: 'First pass.\n\nRevised after advisor feedback.'
+      });
+    });
+
+    it('should stay busy while paused on a background job and end the run on Stop', async () => {
+      const bridge = new OmpBridge();
+      await bridge.start();
+      const completeHandler = vi.fn();
+      bridge.on('complete', completeHandler);
+
+      bridge._handleLine(JSON.stringify({ type: 'agent_start' }));
+      bridge._handleLine(JSON.stringify({ type: 'message_start' }));
+      bridge._handleLine(JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: 'Started the suite in the background.' }
+      }));
+      bridge._handleLine(JSON.stringify({ type: 'message_end' }));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end', isTerminal: false }));
+      expect(bridge.isBusy()).toBe(true);
+
+      // OMP sends no agent_end for an abort while paused: no loop is running.
+      bridge.abort();
+
+      expect(writtenFrames(fakeProc)).toContainEqual({ type: 'abort' });
+      expect(completeHandler).toHaveBeenCalledTimes(1);
+      expect(completeHandler).toHaveBeenCalledWith({ fullText: 'Started the suite in the background.' });
+      expect(bridge.isBusy()).toBe(false);
       await bridge.close();
     });
   });
