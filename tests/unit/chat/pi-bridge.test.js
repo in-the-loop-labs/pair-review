@@ -21,6 +21,7 @@ const mockSpawn = vi.fn();
 childProcess.spawn = mockSpawn;
 
 const PiBridge = require('../../../src/chat/pi-bridge');
+const logger = require('../../../src/utils/logger');
 
 /**
  * Helper to create a fake child process with real-enough streams for readline.
@@ -504,6 +505,22 @@ describe('PiBridge', () => {
       );
     });
 
+    it('should route unrecognized event types through _handleOtherEvent', () => {
+      const bridge = new PiBridge();
+      const spy = vi.spyOn(bridge, '_handleOtherEvent');
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      const event = { type: 'something_new', detail: 1 };
+
+      try {
+        bridge._handleLine(JSON.stringify(event));
+
+        expect(spy).toHaveBeenCalledWith(event);
+        expect(debugSpy).toHaveBeenCalledWith('[PiBridge] Unhandled event type: something_new');
+      } finally {
+        debugSpy.mockRestore();
+      }
+    });
+
   });
 
   describe('_handleMessageUpdate', () => {
@@ -666,6 +683,249 @@ describe('PiBridge', () => {
 
       expect(bridge._accumulatedText).toBe('');
       expect(bridge._inMessage).toBe(false);
+    });
+
+    it('should not complete on a non-terminal agent_end (isTerminal: false)', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('complete', handler);
+      bridge._accumulatedText = 'Waiting on the test run.';
+
+      bridge._handleAgentEnd({ type: 'agent_end', isTerminal: false });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(bridge._accumulatedText).toBe('Waiting on the test run.');
+    });
+
+    it('should complete on an agent_end explicitly marked terminal', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('complete', handler);
+      bridge._accumulatedText = 'Done.';
+
+      bridge._handleAgentEnd({ type: 'agent_end', isTerminal: true });
+
+      expect(handler).toHaveBeenCalledWith({ fullText: 'Done.' });
+    });
+
+    it('should complete once with text from both sides of a non-terminal pause', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('complete', handler);
+      const textDelta = (delta) => JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta }
+      });
+
+      bridge._handleLine(textDelta('Waiting on the test run.'));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end', isTerminal: false }));
+      bridge._handleLine(JSON.stringify({ type: 'agent_start' }));
+      bridge._handleLine(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_start' } }));
+      bridge._handleLine(textDelta('All items are addressed.'));
+      bridge._handleLine(JSON.stringify({ type: 'agent_end' }));
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith({
+        fullText: 'Waiting on the test run.\n\nAll items are addressed.'
+      });
+    });
+  });
+
+  // OMP pauses a run with `agent_end { isTerminal: false }` and resumes it in
+  // a new agent loop (agent_start). The bridge must stay busy across the gap
+  // and must end the run itself on the paths where OMP will not.
+  describe('paused run (non-terminal agent_end)', () => {
+    let debugSpy;
+    let warnSpy;
+    let errorSpy;
+
+    beforeEach(() => {
+      debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      debugSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    const emitLine = (bridge, event) => bridge._handleLine(JSON.stringify(event));
+    const textDelta = (delta) => ({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta }
+    });
+
+    /** Record complete/error/close in emission order. */
+    function recordEvents(bridge) {
+      const events = [];
+      bridge.on('complete', (data) => events.push(['complete', data]));
+      bridge.on('error', (data) => events.push(['error', data.error.message]));
+      bridge.on('close', () => events.push(['close']));
+      return events;
+    }
+
+    /** Start a bridge and put it in a paused run with some reply text. */
+    async function startPausedBridge(text = 'Waiting on the test run.') {
+      const bridge = new PiBridge();
+      await bridge.start();
+      emitLine(bridge, { type: 'agent_start' });
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, textDelta(text));
+      emitLine(bridge, { type: 'message_end' });
+      emitLine(bridge, { type: 'agent_end', isTerminal: false });
+      return bridge;
+    }
+
+    it('should report busy from the pause until the terminal agent_end', () => {
+      const bridge = new PiBridge();
+
+      emitLine(bridge, { type: 'agent_start' });
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, textDelta('Waiting on the test run.'));
+      emitLine(bridge, { type: 'message_end' });
+      emitLine(bridge, { type: 'agent_end', isTerminal: false });
+      expect(bridge.isBusy()).toBe(true);
+
+      emitLine(bridge, { type: 'agent_end' });
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should stay busy through the resumed run, between its messages', () => {
+      const bridge = new PiBridge();
+      emitLine(bridge, { type: 'agent_end', isTerminal: false });
+
+      emitLine(bridge, { type: 'agent_start' });
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, { type: 'message_end' });
+      emitLine(bridge, { type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash' });
+      expect(bridge.isBusy()).toBe(true);
+
+      emitLine(bridge, { type: 'agent_end' });
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should end a paused run on abort so the reply so far is saved', async () => {
+      const bridge = await startPausedBridge('Partial answer.');
+      const events = recordEvents(bridge);
+
+      bridge.abort();
+
+      expect(fakeProc.stdin.write).toHaveBeenCalledWith(expect.stringContaining('"type":"abort"'));
+      expect(events).toEqual([['complete', { fullText: 'Partial answer.' }]]);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should leave an abort after the run resumed to OMP\'s own terminal agent_end', async () => {
+      const bridge = await startPausedBridge('Partial answer.');
+      const events = recordEvents(bridge);
+      emitLine(bridge, { type: 'agent_start' });
+      emitLine(bridge, textDelta(' More.'));
+
+      bridge.abort();
+      expect(events).toEqual([]);
+      expect(bridge.isBusy()).toBe(true);
+
+      emitLine(bridge, { type: 'agent_end' });
+      expect(events).toEqual([['complete', { fullText: 'Partial answer. More.' }]]);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should not end the run itself on an abort outside a pause', async () => {
+      const bridge = new PiBridge();
+      await bridge.start();
+      const events = recordEvents(bridge);
+      emitLine(bridge, { type: 'agent_start' });
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, textDelta('Streaming...'));
+
+      bridge.abort();
+
+      expect(events).toEqual([]);
+    });
+
+    it('should save a paused run\'s reply before reporting an unexpected exit', async () => {
+      const bridge = await startPausedBridge('Partial answer.');
+      const events = recordEvents(bridge);
+
+      fakeProc.emit('close', 1, null);
+
+      expect(events).toEqual([
+        ['complete', { fullText: 'Partial answer.' }],
+        ['error', 'Pi process exited (code=1, signal=null)'],
+        ['close'],
+      ]);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should not save a partial reply on an unexpected exit outside a pause', async () => {
+      const bridge = new PiBridge();
+      await bridge.start();
+      const events = recordEvents(bridge);
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, textDelta('Streaming...'));
+
+      fakeProc.emit('close', 1, null);
+
+      expect(events).toEqual([
+        ['error', 'Pi process exited (code=1, signal=null)'],
+        ['close'],
+      ]);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should save the paused reply once and clear the pause when closed deliberately', async () => {
+      const bridge = await startPausedBridge('Partial answer.');
+      const events = recordEvents(bridge);
+      const emitSpy = vi.spyOn(bridge, 'emit');
+
+      const closed = bridge.close();
+      fakeProc.emit('close', 0, null);
+      await closed;
+
+      // Emitted before close() detaches the session manager's listeners.
+      expect(events).toEqual([['complete', { fullText: 'Partial answer.' }]]);
+      // The process close event that follows adds no second complete.
+      expect(emitSpy.mock.calls.filter(([name]) => name === 'complete')).toHaveLength(1);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should not save a partial reply when closed deliberately outside a pause', async () => {
+      const bridge = new PiBridge();
+      await bridge.start();
+      emitLine(bridge, { type: 'message_start' });
+      emitLine(bridge, textDelta('Streaming...'));
+      const emitSpy = vi.spyOn(bridge, 'emit');
+
+      const closed = bridge.close();
+      fakeProc.emit('close', 0, null);
+      await closed;
+
+      expect(emitSpy.mock.calls.map(([name]) => name)).not.toContain('complete');
+    });
+
+    it('should end a paused run when OMP reports its prompt failed', async () => {
+      const bridge = await startPausedBridge('Partial answer.');
+      const events = recordEvents(bridge);
+
+      emitLine(bridge, { type: 'response', command: 'prompt', success: false, error: 'Post-run failure' });
+
+      expect(events).toEqual([
+        ['complete', { fullText: 'Partial answer.' }],
+        ['error', 'Post-run failure'],
+      ]);
+      expect(bridge.isBusy()).toBe(false);
+    });
+
+    it('should only report the error for a failed prompt outside a pause', async () => {
+      const bridge = new PiBridge();
+      await bridge.start();
+      const events = recordEvents(bridge);
+
+      emitLine(bridge, { type: 'response', command: 'prompt', success: false, error: 'Busy' });
+
+      expect(events).toEqual([['error', 'Busy']]);
     });
   });
 

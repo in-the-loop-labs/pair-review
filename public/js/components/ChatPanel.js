@@ -61,6 +61,8 @@ function getChatSpinnerHTML() {
  * @property {string|null} sessionAnalysisRunId
  * @property {HTMLElement} messagesEl - Per-tab scrollable messages container
  * @property {HTMLElement|null} streamingMsgEl - Reference to the in-progress assistant bubble
+ * @property {boolean} abortPending - True from a user Stop until the aborted run's complete/error arrives
+ * @property {boolean} streamJoinedMidTurn - True while the streaming bubble was opened by agent output rather than sendMessage (see _ensureStreamingMessage)
  * @property {boolean} userScrolledAway - Auto-scroll engagement flag
  * @property {Function|null} wsUnsub - Unsubscribe handle for the per-session WS topic
  * @property {Promise<void>|null} historyLoadPromise - Set while history is loading
@@ -167,6 +169,8 @@ class ChatPanel {
       sessionAnalysisRunId: null,
       messagesEl: null,
       streamingMsgEl: null,
+      abortPending: false,
+      streamJoinedMidTurn: false,
       userScrolledAway: false,
       wsUnsub: null,
       titleFromUser: false,
@@ -1969,6 +1973,9 @@ class ChatPanel {
     // before writing.
     const capturedEl = tab.messagesEl;
     if (!capturedEl) return;
+    // The tab is already subscribed, so live output can land while the fetch
+    // is in flight. Remember what was here so that output can be told apart.
+    const elsBeforeFetch = new Set(capturedEl.children);
 
     let response;
     try {
@@ -2015,6 +2022,13 @@ class ChatPanel {
     const emptyState = capturedEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
+    // Elements added during the fetch — an agent turn already under way when
+    // the tab subscribed, its errors, anything the user sent meanwhile — are
+    // newer than the history. A reply that finished live may also be in the
+    // fetched history; the live bubble stands in for it.
+    const liveEls = Array.from(capturedEl.children).filter(el => !elsBeforeFetch.has(el));
+    const liveMessageIds = new Set(liveEls.map(el => Number(el.dataset?.messageId)).filter(Boolean));
+
     // Render into the target tab. The helper methods (_addContextCard,
     // addMessage, etc.) read `this.messagesEl` via the active-tab getter, so
     // we temporarily redirect the active marker for the synchronous render
@@ -2043,10 +2057,13 @@ class ChatPanel {
             // Not JSON — skip malformed context
           }
         } else if (msg.type === 'message') {
+          if (liveMessageIds.has(msg.id)) continue;
           this.addMessage(msg.role, msg.content, msg.id);
         }
       }
     });
+    // History was appended after the live elements; move them back below it.
+    for (const el of liveEls) capturedEl.appendChild(el);
 
     // The tab was initialized as 'pending' (gray dot) before history loaded.
     // Now that messages exist, promote to 'idle' (blue dot) — but don't
@@ -3021,6 +3038,9 @@ class ChatPanel {
     tab.messages = [];
     tab.streamingContent = '';
     tab.streamingMsgEl = null;
+    tab.streamJoinedMidTurn = false;
+    // A Stop on the old session must not swallow the new session's turns.
+    tab.abortPending = false;
     tab.pendingContext = [];
     tab.pendingContextData = [];
     tab.latestDiffState = null;
@@ -3127,6 +3147,7 @@ class ChatPanel {
       </div>
     `;
     tab.streamingMsgEl = null;
+    tab.streamJoinedMidTurn = false;
   }
 
   /**
@@ -3329,6 +3350,7 @@ class ChatPanel {
 
     // Display user message (just the user's actual text)
     const msgElRef = this.addMessage('user', content, undefined, tab);
+    const userMsgEntry = msgElRef ? tab.messages[tab.messages.length - 1] : null;
 
     // Lazy session creation: create on first message, not on panel open
     if (tab.sessionId == null) {
@@ -3357,8 +3379,11 @@ class ChatPanel {
     }
     // If sessionId is set (from MRU), just send — server auto-resumes
 
-    // Prepare streaming UI. Clear any previous error on this tab.
+    // Prepare streaming UI. Clear any previous error on this tab, and any
+    // Stop still waiting on its aborted run — this bubble is a new turn.
     tab.errorMessage = null;
+    tab.abortPending = false;
+    tab.streamJoinedMidTurn = false;
     tab.isStreaming = true;
     this._updateTabStatus(tab, 'streaming');
     if (this._getActiveTab() === tab) {
@@ -3369,6 +3394,7 @@ class ChatPanel {
     }
     tab.streamingContent = '';
     this._addStreamingPlaceholder(tab);
+    const placeholderEl = tab.streamingMsgEl;
 
     // Build the API payload — may include pending context from "Ask about this"
     const payload = { content };
@@ -3437,6 +3463,10 @@ class ChatPanel {
       this._showStatusFlash('Resuming Agent Client Protocol');
     }
 
+    // The session the message is posted to. A tab switched to another session
+    // mid-request has torn this send's bubble down.
+    let sentSessionId = tab.sessionId;
+
     // Send to API
     try {
       console.debug('[ChatPanel] Sending message to session', tab.sessionId);
@@ -3462,6 +3492,9 @@ class ChatPanel {
         // _localKey check (rather than orphaning this tab and spawning a new).
         const wasActive = this._getActiveTab() === tab;
         tab.sessionId = null;
+        // Per-session flags: a Stop clicked on the dead session must not
+        // swallow the replacement session's output.
+        tab.abortPending = false;
         if (wasActive) this.activeTabKey = tab._localKey;
         const sessionData = await this._createSessionForTab(tab);
         if (!this.tabs.includes(tab)) return;
@@ -3469,6 +3502,7 @@ class ChatPanel {
           throw new Error('Failed to create replacement session');
         }
 
+        sentSessionId = tab.sessionId;
         response = await fetch(`/api/chat/session/${tab.sessionId}/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3479,12 +3513,31 @@ class ChatPanel {
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to send message');
+        const sendError = new Error(err.error || 'Failed to send message');
+        // 409: the agent still owns its previous turn and the server did not
+        // store this message.
+        sendError.notStored = response.status === 409;
+        throw sendError;
       }
       console.debug('[ChatPanel] Message accepted, waiting for WebSocket events');
     } catch (error) {
       if (!this.tabs.includes(tab)) return;
       if (acpResuming) this._hideStatusFlash();
+      if (error.notStored) {
+        // Take the unsent message back into the input so it can be sent once
+        // the reply finishes — unless the user has moved on or typed again.
+        if (msgElRef) msgElRef.remove();
+        const idx = tab.messages.indexOf(userMsgEntry);
+        if (idx !== -1) tab.messages.splice(idx, 1);
+        if (this._getActiveTab() === tab && !this.inputEl.value) {
+          this.inputEl.value = messageText;
+          this._autoResizeTextarea();
+        }
+        // A tab switched to another session mid-request already dropped this
+        // send's bubbles and pending state; the new session's streaming state
+        // and context are not this send's to touch.
+        if (tab.sessionId !== sentSessionId) return;
+      }
       // Restore pending state on the originating tab so it's not lost.
       tab.pendingContext = savedContext;
       tab.pendingContextData = savedContextData;
@@ -3496,6 +3549,30 @@ class ChatPanel {
       // Restore removability on context cards that were locked before the failed send
       this._restoreRemovableCards(tab);
       console.error('[ChatPanel] Error sending message:', error);
+      if (error.notStored) {
+        // The busy turn's complete can beat this response (it is sent after
+        // the server's busy check) and finalize this send's bubble with only
+        // the output seen during the request. Show all of that reply.
+        const savedId = Number(placeholderEl?.dataset.messageId);
+        if (savedId) this._showSavedReply(tab, placeholderEl, savedId);
+        if (tab.streamingMsgEl) {
+          // The agent is still mid-turn — e.g. an OMP run paused on a
+          // background job, seen from a page reloaded mid-reply. Keep the
+          // bubble streaming, with Stop, so the rest of the turn renders
+          // there; this page missed the turn's start, so complete swaps in
+          // the saved reply. The notice goes above the bubble and, unlike
+          // _showError, leaves the tab 'streaming'.
+          if (tab.streamingMsgEl === placeholderEl) tab.streamJoinedMidTurn = true;
+          if (this._appendErrorBubble('Failed to send message. The agent is still working on its previous reply. Wait for it to finish, or click Stop, then send your message again.', tab)) {
+            tab.messagesEl.appendChild(tab.streamingMsgEl);
+            if (this._getActiveTab() === tab) this.scrollToBottom();
+          }
+          return;
+        }
+        this._showError('Failed to send message. The agent was still finishing its previous reply, which has now ended. Send your message again.', tab);
+        this._finalizeStreaming(tab);
+        return;
+      }
       this._showError('Failed to send message. ' + error.message, tab);
       this._finalizeStreaming(tab);
     }
@@ -4888,7 +4965,17 @@ class ChatPanel {
   }
 
   async _recoverTabAfterReconnect(tab) {
-    if (!tab?.isStreaming || tab.sessionId == null) return;
+    if (!tab) return;
+    if (!tab.isStreaming) {
+      // A Stop's aborted run may have sent its complete/error while the
+      // socket was down; left set, abortPending would drop every later
+      // agent-started turn until the next send. Tradeoff: output still
+      // trailing the stopped run after the reconnect can open a bubble.
+      // Streaming tabs keep it: their Stop request is still in flight.
+      tab.abortPending = false;
+      return;
+    }
+    if (tab.sessionId == null) return;
     const capturedSessionId = tab.sessionId;
     try {
       const response = await fetch(`/api/chat/session/${tab.sessionId}/messages`);
@@ -4946,22 +5033,32 @@ class ChatPanel {
       if (!isActive) {
         switch (data.type) {
           case 'delta':
-            if (!tab.streamingMsgEl) this._addStreamingPlaceholder(tab);
+            if (!this._ensureStreamingMessage(tab)) break;
             tab.streamingContent += data.text;
             this.updateStreamingMessage(tab.streamingContent, tab);
             this._markStreaming(tab);
             break;
           case 'status':
-            if (data.status === 'working') this._markStreaming(tab);
+            if (data.status === 'working' && this._ensureStreamingMessage(tab)) this._markStreaming(tab);
             break;
-          case 'complete':
+          case 'complete': {
+            // Read before the finalize clears them; see _showSavedReply.
+            const wasAborting = tab.abortPending;
+            const hadBubble = !!tab.streamingMsgEl;
+            const joinedMsgEl = tab.streamJoinedMidTurn ? tab.streamingMsgEl : null;
+            tab.abortPending = false;
             this._finalizeTabStream(tab, data.messageId);
             tab.streamingContent = '';
             tab.isStreaming = false;
             tab.errorMessage = null;
             this._updateTabStatus(tab, 'idle');
+            if (data.messageId && (joinedMsgEl || (!hadBubble && !wasAborting))) {
+              this._showSavedReply(tab, joinedMsgEl, data.messageId);
+            }
             break;
+          }
           case 'error':
+            tab.abortPending = false;
             // Render the error inline so the user sees what happened when
             // they switch back to this tab.
             this._showError(data.message || 'An error occurred', tab);
@@ -4976,21 +5073,34 @@ class ChatPanel {
       // Foreground path — drive the DOM directly
       switch (data.type) {
         case 'delta':
+          if (!this._ensureStreamingMessage(tab)) break;
           this._hideThinkingIndicator(tab);
           tab.streamingContent += data.text;
           this.updateStreamingMessage(tab.streamingContent, tab);
           break;
         case 'tool_use':
+          if (!this._ensureStreamingMessage(tab)) break;
           this._showToolUse(data.toolName, data.status, data.toolInput, tab);
           break;
         case 'status':
+          if (data.status === 'working' && !this._ensureStreamingMessage(tab)) break;
           this._handleAgentStatus(data.status, tab);
           break;
-        case 'complete':
+        case 'complete': {
+          // Read before the finalize clears them; see _showSavedReply.
+          const wasAborting = tab.abortPending;
+          const hadBubble = !!tab.streamingMsgEl;
+          const joinedMsgEl = tab.streamJoinedMidTurn ? tab.streamingMsgEl : null;
+          tab.abortPending = false;
           tab.errorMessage = null;
           this.finalizeStreamingMessage(data.messageId, tab);
+          if (data.messageId && (joinedMsgEl || (!hadBubble && !wasAborting))) {
+            this._showSavedReply(tab, joinedMsgEl, data.messageId);
+          }
           break;
+        }
         case 'error':
+          tab.abortPending = false;
           tab.errorMessage = data.message || 'An error occurred';
           this._updateTabStatus(tab, 'error');
           this._showError(tab.errorMessage, tab);
@@ -5022,9 +5132,11 @@ class ChatPanel {
    * @param {string} content - Message text
    * @param {number} [id] - Optional message ID
    * @param {ChatTab} [targetTab] - Explicit tab; defaults to active tab
+   * @param {{forceScroll?: boolean}} [opts] - forceScroll: false keeps the
+   *   user's scroll position when they have scrolled away from the bottom
    * @returns {HTMLElement} The message element that was appended
    */
-  addMessage(role, content, id, targetTab) {
+  addMessage(role, content, id, targetTab, { forceScroll = true } = {}) {
     const tab = targetTab || this._getActiveTab();
     if (!tab || !tab.messagesEl) return null;
 
@@ -5064,7 +5176,7 @@ class ChatPanel {
       }
     }
 
-    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: forceScroll });
     return msgEl;
   }
 
@@ -5109,8 +5221,10 @@ class ChatPanel {
   /**
    * Add a streaming placeholder for the assistant's response on a tab.
    * @param {ChatTab} [targetTab] - Defaults to active tab
+   * @param {{forceScroll?: boolean}} [opts] - forceScroll: false keeps the
+   *   user's scroll position when they have scrolled away from the bottom
    */
-  _addStreamingPlaceholder(targetTab) {
+  _addStreamingPlaceholder(targetTab, { forceScroll = true } = {}) {
     const tab = targetTab || this._getActiveTab();
     if (!tab || !tab.messagesEl) return;
     const msgEl = document.createElement('div');
@@ -5123,7 +5237,45 @@ class ChatPanel {
     msgEl.appendChild(bubble);
     tab.messagesEl.appendChild(msgEl);
     tab.streamingMsgEl = msgEl;
-    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: forceScroll });
+  }
+
+  /**
+   * Make sure a tab has a streaming bubble for incoming agent output.
+   * sendMessage() normally creates it, but an agent can start a turn on its
+   * own after the previous one completed — OMP resumes when an advisor steers
+   * it or an async job delivers its result. Without a bubble that turn's
+   * deltas and tool badges have nowhere to render, while its 'working' status
+   * still marks the tab streaming, so sends are silently dropped until a page
+   * refresh.
+   *
+   * Output that trails a user Stop is not a new turn: it belongs to the run
+   * being aborted and is dropped until that run's complete/error arrives.
+   *
+   * The bubble is marked streamJoinedMidTurn: this page may have missed the
+   * start of the turn (a reload mid-reply, or an OMP run resuming text the
+   * bridge accumulated before its pause), so on complete the saved reply
+   * replaces the streamed text. Every auto-opened bubble is marked — even
+   * one opened by a 'working' status, since OMP emits one per LLM turn
+   * inside a run — at the cost of one message fetch per such turn.
+   * @param {ChatTab} tab
+   * @returns {boolean} False when the event should be dropped
+   */
+  _ensureStreamingMessage(tab) {
+    if (tab.streamingMsgEl) return true;
+    if (tab.abortPending) return false;
+    // Agent output the user did not ask for must not yank them back down
+    // from history they are reading.
+    this._addStreamingPlaceholder(tab, { forceScroll: false });
+    tab.streamJoinedMidTurn = true;
+    this._markStreaming(tab);
+    if (this.isOpen && this._getActiveTab() === tab) {
+      this.sendBtn.disabled = true;
+      this.sendBtn.style.display = 'none';
+      this.stopBtn.style.display = '';
+      this._updateActionButtons();
+    }
+    return true;
   }
 
   /**
@@ -5201,6 +5353,72 @@ class ChatPanel {
       tab.messages.push({ role: 'assistant', content: tab.streamingContent, id: messageId });
     }
     tab.streamingMsgEl = null;
+    tab.streamJoinedMidTurn = false;
+  }
+
+  /**
+   * Show a just-completed reply as saved. Runs after the synchronous
+   * finalize, so the tab is already idle: a Stop, a send, or the agent's next
+   * turn never race this fetch for the bubble.
+   *
+   * With msgEl, replace that finalized bubble's text: a bubble opened by
+   * _ensureStreamingMessage may have seen only the tail of the turn, while
+   * the saved message holds all of it.
+   *
+   * With msgEl null, add the reply as a new bubble. A page that loaded its
+   * history mid-turn — during an OMP pause, before the reply was saved — and
+   * saw no output before 'complete' (a Stop from another window, an OMP exit
+   * or failed prompt ending the pause) has no bubble to fill. Callers skip
+   * this after a Stop on this tab, whose finalize already shows the reply;
+   * a reply already in tab.messages (history returned it) is skipped here.
+   *
+   * Message ids are numbers ('complete' and the saved rows); a dataset value
+   * is a string, so it is converted with Number() where read.
+   * @param {ChatTab} tab
+   * @param {HTMLElement|null} msgEl - The finalized reply's message element, or null to add one
+   * @param {number} messageId - Saved assistant message id from 'complete'
+   */
+  async _showSavedReply(tab, msgEl, messageId) {
+    const isShown = () => tab.messages.some(m => m.role === 'assistant' && m.id === messageId);
+    if (!msgEl && isShown()) return;
+    const capturedSessionId = tab.sessionId;
+    let saved = null;
+    try {
+      const response = await fetch(`/api/chat/session/${capturedSessionId}/messages`);
+      if (!response.ok) return;
+      const result = await response.json();
+      saved = (result.data?.messages || []).find(m => m.id === messageId) || null;
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to load saved reply:', err);
+      return;
+    }
+    if (!this.tabs.includes(tab) || tab.sessionId !== capturedSessionId) return;
+    if (!saved?.content) return;
+
+    if (!msgEl) {
+      // History that rendered during the fetch may show it by now. Otherwise
+      // the bubble carries its id, so a history render still to come skips
+      // the row and moves the bubble below the history.
+      if (isShown()) return;
+      // Agent output: don't pull a user reading history back down.
+      this.addMessage('assistant', saved.content, messageId, tab, { forceScroll: false });
+      if (tab.status === 'pending') this._updateTabStatus(tab, 'idle');
+      return;
+    }
+
+    const entry = tab.messages.find(m => m.role === 'assistant' && m.id === messageId);
+    if (entry) {
+      entry.content = saved.content;
+    } else {
+      // Nothing streamed, so the finalize recorded no message.
+      tab.messages.push({ role: 'assistant', content: saved.content, id: messageId });
+    }
+    const bubble = msgEl.querySelector('.chat-panel__bubble');
+    if (bubble) {
+      bubble.innerHTML = this.renderMarkdown(saved.content);
+      this._linkifyFileReferences(bubble);
+      bubble.appendChild(this._createCopyButton(saved.content));
+    }
   }
 
   /**
@@ -5211,12 +5429,19 @@ class ChatPanel {
   async _stopAgent() {
     const tab = this._getActiveTab();
     if (!tab || !tab.isStreaming || tab.sessionId == null) return;
+    // Output still in flight from the aborted run must not reopen a bubble
+    // after the finalize below. Set before the request so a complete that
+    // beats the response still clears it.
+    tab.abortPending = true;
     try {
       await fetch(`/api/chat/session/${tab.sessionId}/abort`, { method: 'POST' });
     } catch (error) {
       console.error('[ChatPanel] Error aborting:', error);
     }
-    if (!this.tabs.includes(tab)) return;
+    // A cleared flag means the aborted run already finished (complete/error
+    // finalized its bubble) or the tab moved to another session. Any bubble
+    // now streaming belongs to a newer turn and must be left alone.
+    if (!this.tabs.includes(tab) || !tab.abortPending) return;
     // Finalize the streaming message with whatever content we have so far.
     this.finalizeStreamingMessage(null, tab);
   }
@@ -5232,6 +5457,7 @@ class ChatPanel {
       tab.isStreaming = false;
       tab.streamingContent = '';
       tab.streamingMsgEl = null;
+      tab.streamJoinedMidTurn = false;
       this._updateTabStatus(tab, tab.errorMessage ? 'error' : 'idle');
     }
     if (!tab || this._getActiveTab() === tab) {
@@ -5431,8 +5657,21 @@ class ChatPanel {
       tab.errorMessage = message;
       this._updateTabStatus(tab, 'error');
     }
+    if (!this._appendErrorBubble(message, tab)) return;
+    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
+  }
+
+  /**
+   * Append an error bubble to a tab's messages without changing the tab's
+   * status or errorMessage — for a notice that must not mark a turn still
+   * streaming as errored. _showError does both.
+   * @param {string} message - Error text
+   * @param {ChatTab} [tab]
+   * @returns {HTMLElement|null} The bubble, or null when the tab has no messages element
+   */
+  _appendErrorBubble(message, tab) {
     const messagesEl = tab?.messagesEl;
-    if (!messagesEl) return;
+    if (!messagesEl) return null;
     const errorEl = document.createElement('div');
     errorEl.className = 'chat-panel__message chat-panel__message--error';
     errorEl.innerHTML = `
@@ -5444,7 +5683,7 @@ class ChatPanel {
       </div>
     `;
     messagesEl.appendChild(errorEl);
-    if (this._getActiveTab() === tab) this.scrollToBottom({ force: true });
+    return errorEl;
   }
 
   /**

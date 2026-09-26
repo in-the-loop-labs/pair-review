@@ -480,6 +480,36 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('content');
     });
+
+    it('should return 409 with an explanation when the agent is still busy', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'omp', 'active')"
+      ).run();
+      const busy = new Error('Session 1 is currently processing a message');
+      busy.code = ChatSessionManager.SESSION_BUSY;
+      mockManager.sendMessage.mockRejectedValueOnce(busy);
+
+      const res = await request(server)
+        .post('/api/chat/session/1/message')
+        .send({ content: 'Are you done?' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain('still working on its previous reply');
+    });
+
+    it('should return 500 for other send failures', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
+      ).run();
+      mockManager.sendMessage.mockRejectedValueOnce(new Error('bridge is not ready'));
+
+      const res = await request(server)
+        .post('/api/chat/session/1/message')
+        .send({ content: 'hello' });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('Failed to send message');
+    });
   });
 
   describe('GET /api/chat/session/:id/messages', () => {
