@@ -33,6 +33,9 @@ const CHAT_TOOLS = 'read,bash,grep,find,ls';
 // comment block in src/ai/omp-provider.js for detail.
 const OMP_CHAT_TOOLS = 'read,bash,grep,glob,task';
 
+/** Error code sendMessage() sets when the agent still owns the previous turn. */
+const SESSION_BUSY = 'SESSION_BUSY';
+
 class ChatSessionManager {
   /**
    * @param {Database} db - better-sqlite3 database instance
@@ -165,7 +168,10 @@ class ChatSessionManager {
     }
 
     if (session.bridge.isBusy()) {
-      throw new Error(`Session ${sessionId} is currently processing a message`);
+      // Checked before the message is stored, so a rejected send leaves no trace.
+      const busy = new Error(`Session ${sessionId} is currently processing a message`);
+      busy.code = SESSION_BUSY;
+      throw busy;
     }
 
     // Build the message for the agent: initialContext > context > userMessage
@@ -844,3 +850,4 @@ class ChatSessionManager {
 }
 
 module.exports = ChatSessionManager;
+module.exports.SESSION_BUSY = SESSION_BUSY;
