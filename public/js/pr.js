@@ -71,13 +71,6 @@ class PRManager {
   static PIERRE_BACKGROUND_UPGRADE_DELAY_MS = 1000;
   static PIERRE_POINTER_UPGRADE_DELAY_MS = 10000;
 
-  // Logo icon - infinity loop rotated for "in-the-loop" branding
-  static LOGO_ICON = `
-    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24">
-      <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
-    </svg>
-  `;
-
   /**
    * Forward static methods to modules
    */

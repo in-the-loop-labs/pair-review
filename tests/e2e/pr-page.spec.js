@@ -349,6 +349,30 @@ test.describe('Home Page', () => {
   });
 });
 
+test.describe('Header Logo', () => {
+  test('draws the loop logo from /logo.svg in PR and Local mode', async ({ page }) => {
+    const asset = await page.request.get('/logo.svg');
+    expect(asset.status()).toBe(200);
+    expect(asset.headers()['content-type']).toMatch(/^image\/svg\+xml\b/);
+
+    for (const url of ['/pr/test-owner/test-repo/1', '/local/2']) {
+      await page.goto(url);
+
+      const icon = page.locator('#pr-header .logo .logo-icon');
+      await expect(icon).toBeVisible();
+      await expect(icon.locator('use')).toHaveAttribute('href', '/logo.svg#logo');
+
+      const box = await icon.boundingBox();
+      expect(box.width).toBeGreaterThan(0);
+      expect(box.height).toBeGreaterThan(0);
+
+      // The outer <svg> has a 24x24 box even when the reference fails; its
+      // content bbox is non-zero only once /logo.svg#logo has loaded and drawn.
+      await expect.poll(() => icon.evaluate((el) => el.getBBox().width)).toBeGreaterThan(0);
+    }
+  });
+});
+
 test.describe('Comment Interaction', () => {
   test('should show add comment button on hover', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');

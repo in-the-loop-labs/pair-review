@@ -30,7 +30,7 @@ const LAST_MODEL_KEY_PREFIX = 'pair-review:chat-model:';
 /** Checkmark used by both the provider and model dropdown rows. */
 const DROPDOWN_CHECK_ICON = `<svg class="chat-panel__model-check" viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>`;
 
-const LOOP_SPINNER_HTML = `<span class="chat-panel__loop-spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/></svg></span>`;
+const LOOP_SPINNER_HTML = `<span class="chat-panel__loop-spinner"><svg viewBox="0 0 24 24" width="20" height="20"><use href="/logo.svg#logo"/></svg></span>`;
 const DOTS_SPINNER_HTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
 
 function getChatSpinnerHTML() {
@@ -6349,5 +6349,5 @@ window.ChatPanel = ChatPanel;
 
 // Export for CommonJS testing environments
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ChatPanel, NEAR_BOTTOM_THRESHOLD };
+  module.exports = { ChatPanel, NEAR_BOTTOM_THRESHOLD, getChatSpinnerHTML };
 }
