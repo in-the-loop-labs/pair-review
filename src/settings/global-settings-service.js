@@ -40,7 +40,7 @@ const { GlobalSettingsRepository } = require('../database');
  * `default` is handled as the final fallback (registry default), not scanned
  * here, so a raw layer's missing key falls through to the registry default.
  */
-const FILE_LAYER_ORDER = ['project.local', 'project', 'config.local', 'config', 'managed'];
+const FILE_LAYER_ORDER = ['explicit', 'project.local', 'project', 'config.local', 'config', 'managed'];
 
 /** JSON deep clone — config is always JSON-serializable (files + DEFAULT_CONFIG). */
 function deepClone(obj) {

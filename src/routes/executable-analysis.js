@@ -377,7 +377,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       const THROTTLE_MS = 300;
       const onStreamEvent = (event) => {
         const status = activeAnalyses.get(analysisId);
-        if (!status) return;
+        if (!status || status.status !== 'running') return;
         status.levels = { exec: { status: 'running', streamEvent: event } };
         const now = Date.now();
         if (now - lastBroadcastTime >= THROTTLE_MS) {
@@ -395,12 +395,18 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
         onStreamEvent
       });
 
+      if (activeAnalyses.get(analysisId)?.status === 'cancelled') {
+        throw Object.assign(new Error('Analysis cancelled'), { isCancellation: true });
+      }
+
       if (!result?.success || !result?.data) {
         throw new Error('Executable provider returned no data');
       }
 
       const rawSuggestions = result.data.suggestions || [];
       const summary = result.data.summary || '';
+      const warnings = result.data.warnings || [];
+      const levelOutcomes = { exec: warnings.length ? 'partial' : 'success', warnings };
 
       // Validate suggestions against the diff (file paths + line numbers)
       const validFiles = await getChangedFiles(cwd, executableContext);
@@ -416,6 +422,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       await analysisRunRepo.update(runId, {
         status: 'completed',
         summary,
+        levelOutcomes,
         totalSuggestions: suggestions.length,
         completedAt: new Date().toISOString()
       });
@@ -429,8 +436,10 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       const completedStatus = {
         ...activeAnalyses.get(analysisId),
         status: 'completed',
+        levels: { exec: { status: 'completed' } },
+        warnings,
         completedAt: new Date().toISOString(),
-        progress: `Analysis complete: ${suggestions.length} suggestions found`,
+        progress: `Analysis complete${warnings.length ? ' with limited coverage' : ''}: ${suggestions.length} suggestions found`,
         suggestionsCount: suggestions.length
       };
       activeAnalyses.set(analysisId, completedStatus);
@@ -451,7 +460,11 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
     } catch (error) {
       if (error.isCancellation) {
         logger.info(`Executable analysis cancelled for ${logLabel}`);
-        // Status is already set to 'cancelled' by the cancel endpoint
+        const cancelledStatus = { ...activeAnalyses.get(analysisId), status: 'cancelled',
+          completedAt: new Date().toISOString(), levels: { exec: { status: 'cancelled' } },
+          progress: 'Analysis cancelled' };
+        activeAnalyses.set(analysisId, cancelledStatus);
+        broadcastProgress(analysisId, cancelledStatus);
         if (hasHooks('analysis.completed', analysisHookConfig)) {
           getCachedUser(analysisHookConfig).then(user => {
             fireHooks('analysis.completed', buildAnalysisCompletedPayload({
@@ -480,6 +493,7 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       const failedStatus = {
         ...activeAnalyses.get(analysisId),
         status: 'failed',
+        levels: { exec: { status: 'failed' } },
         completedAt: new Date().toISOString(),
         error: error.message,
         progress: 'Analysis failed'
