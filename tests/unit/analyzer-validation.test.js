@@ -1952,12 +1952,6 @@ describe('Analyzer.buildPRContextSection', () => {
 /**
  * Tests that verify the timeout option is properly threaded through to
  * aiProvider.execute() calls instead of being hardcoded to 600000ms.
- *
- * Strategy: We read the source code of analyzer.js and verify that:
- * 1. analyzeLevel*Isolated extracts timeout from options with a 600000 default
- * 2. The execute() calls use the timeout variable, not a hardcoded literal
- * 3. _executeCouncilVoice extracts timeout from task with a 600000 default
- * 4. orchestrateWithAI extracts timeout from options with a 600000 default
  */
 describe('Analyzer timeout threading (source verification)', () => {
   const fs = require('fs');
@@ -1968,7 +1962,6 @@ describe('Analyzer timeout threading (source verification)', () => {
   );
 
   it('analyzeLevel1Isolated should destructure timeout with default 600000', () => {
-    // Find the options destructuring in analyzeLevel1Isolated
     const l1Match = analyzerSource.match(
       /async analyzeLevel1Isolated[^{]*\{[\s\S]*?const \{([^}]+)\} = options/
     );
@@ -1995,13 +1988,16 @@ describe('Analyzer timeout threading (source verification)', () => {
     expect(l3Match[1]).toMatch(/timeout\s*=\s*600000/);
   });
 
-  it('orchestrateWithAI should destructure timeout with default 600000', () => {
+  it('orchestrateWithAI should resolve the effective timeout after selecting its provider', () => {
     const orchMatch = analyzerSource.match(
       /async orchestrateWithAI[^{]*\{[\s\S]*?const \{([^}]+)\} = options/
     );
     expect(orchMatch).not.toBeNull();
     expect(orchMatch[1]).toContain('timeout');
-    expect(orchMatch[1]).toMatch(/timeout\s*=\s*600000/);
+    expect(orchMatch[1]).not.toMatch(/timeout\s*=\s*600000/);
+    expect(analyzerSource).toMatch(
+      /const executionTimeout = timeout \|\| getProviderExecutionTimeout\(providerId, providerOverrides\) \|\| 600000/
+    );
   });
 
   it('_executeCouncilVoice should destructure timeout from task with default 600000', () => {
@@ -2014,14 +2010,12 @@ describe('Analyzer timeout threading (source verification)', () => {
   });
 
   it('should NOT have any hardcoded timeout: 600000 in execute() calls', () => {
-    // Find all aiProvider.execute() calls and verify none use hardcoded 600000
     const executeCallRegex = /\.execute\(prompt,\s*\{[\s\S]*?\}\)/g;
     let match;
     const hardcodedTimeouts = [];
 
     while ((match = executeCallRegex.exec(analyzerSource)) !== null) {
       const callBlock = match[0];
-      // Check if this execute call has a hardcoded timeout: 600000
       if (/timeout:\s*600000/.test(callBlock)) {
         hardcodedTimeouts.push(callBlock.substring(0, 80));
       }
@@ -2030,31 +2024,27 @@ describe('Analyzer timeout threading (source verification)', () => {
     expect(hardcodedTimeouts).toEqual([]);
   });
 
-  it('analyzeAllLevels should extract timeout from options and pass it to level analyzers', () => {
-    // Check that analyzeAllLevels reads options.timeout with provider fallback
+  it('analyzeAllLevels should resolve configured timeout and pass it to level analyzers', () => {
     const allLevelsMatch = analyzerSource.match(
       /async analyzeAllLevels[^{]*\{[\s\S]*?const executionTimeout = options\.timeout \|\| providerTimeout \|\| 600000/
     );
     expect(allLevelsMatch).not.toBeNull();
-
-    // Check that provider's defaultTimeout is looked up
-    expect(analyzerSource).toContain('const providerTimeout = ProviderClass?.defaultTimeout');
-
-    // Check that executionTimeout is passed to level analyzers
+    expect(analyzerSource).toContain(
+      'const providerTimeout = getProviderExecutionTimeout(this.provider, this.providerOverrides)'
+    );
     expect(analyzerSource).toContain('timeout: executionTimeout');
   });
 
-  it('voice-centric council should pass voice.timeout to analyzeAllLevels', () => {
-    // Check that runReviewerCentricCouncil reads voice.timeout
-    expect(analyzerSource).toMatch(/voiceTimeout\s*=\s*voice\.timeout\s*\|\|\s*ProviderClass\?\.defaultTimeout\s*\|\|\s*600000/);
-    // Check it passes voiceTimeout in options
+  it('voice-centric council should resolve and pass the voice timeout', () => {
+    expect(analyzerSource).toMatch(
+      /voiceTimeout\s*=\s*voice\.timeout\s*\|\|\s*getProviderExecutionTimeout\(voice\.provider, effectiveOverrides\)\s*\|\|\s*600000/
+    );
     expect(analyzerSource).toContain('timeout: voiceTimeout');
   });
 
-  it('level-centric council should include timeout in voiceTasks from voice config', () => {
-    // Check that voiceTasks.push includes timeout from voice config
+  it('level-centric council should resolve timeout from per-voice overrides', () => {
     const voiceTaskPush = analyzerSource.match(
-      /voiceTasks\.push\(\{[\s\S]*?timeout:\s*voice\.timeout\s*\|\|\s*VoiceProviderClass\?\.defaultTimeout\s*\|\|\s*600000[\s\S]*?\}\)/
+      /voiceTasks\.push\(\{[\s\S]*?timeout:\s*voice\.timeout\s*\|\|\s*getProviderExecutionTimeout\(voice\.provider, voiceProviderOverrides\)\s*\|\|\s*600000[\s\S]*?providerOverrides:\s*voiceProviderOverrides[\s\S]*?\}\)/
     );
     expect(voiceTaskPush).not.toBeNull();
   });

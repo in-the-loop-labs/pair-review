@@ -22,6 +22,8 @@ import {
   applyConfigOverrides,
   getProviderConfigOverrides,
   getAllProvidersInfo,
+  getProviderDefaultTimeout,
+  getProviderExecutionTimeout,
   applyModelOverrides,
   normalizeDisabledModels,
   getRegisteredProviderIds,
@@ -859,6 +861,70 @@ describe('Provider Configuration', () => {
       const providers = getAllProvidersInfo();
       const claude = providers.find(p => p.id === 'claude');
       expect(claude.defaultTimeout).toBeUndefined();
+    });
+
+    it('should apply configured defaultTimeout to a standard provider', () => {
+      const ClaudeClass = getProviderClass('claude');
+
+      applyConfigOverrides({
+        providers: {
+          claude: { defaultTimeout: 1800000 }
+        }
+      });
+
+      expect(getProviderDefaultTimeout('claude')).toBe(1800000);
+      expect(getProviderDefaultTimeout('claude', { defaultTimeout: 1200000 })).toBe(1200000);
+      expect(getAllProvidersInfo().find(p => p.id === 'claude').defaultTimeout).toBe(1800000);
+      expect(ClaudeClass.defaultTimeout).toBeUndefined();
+
+      applyConfigOverrides({ providers: {} });
+      expect(getProviderDefaultTimeout('claude')).toBeUndefined();
+    });
+
+    it('should preserve zero metadata while execution falls through to the provider class', () => {
+      applyConfigOverrides({ providers: { pi: { defaultTimeout: 0 } } });
+
+      expect(getProviderDefaultTimeout('pi')).toBe(0);
+      expect(getAllProvidersInfo().find(p => p.id === 'pi').defaultTimeout).toBe(0);
+      expect(getProviderExecutionTimeout('pi')).toBe(900000);
+
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it.each([
+      ['a string', '30m'],
+      ['NaN', Number.NaN],
+      ['a negative number', -1]
+    ])('should ignore %s as configured defaultTimeout', (_label, value) => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      try {
+        applyConfigOverrides({ providers: { claude: { defaultTimeout: value } } });
+
+        expect(getProviderDefaultTimeout('claude')).toBeUndefined();
+        expect(getAllProvidersInfo().find(p => p.id === 'claude').defaultTimeout).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('defaultTimeout must be a finite non-negative number')
+        );
+      } finally {
+        applyConfigOverrides({ providers: {} });
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should ignore an invalid per-call timeout and use the configured default', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      applyConfigOverrides({ providers: { claude: { defaultTimeout: 1800000 } } });
+
+      try {
+        expect(getProviderDefaultTimeout('claude', { defaultTimeout: -1 })).toBe(1800000);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('per-call defaultTimeout must be a finite non-negative number')
+        );
+      } finally {
+        applyConfigOverrides({ providers: {} });
+        warnSpy.mockRestore();
+      }
     });
   });
 

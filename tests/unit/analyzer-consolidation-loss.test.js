@@ -350,6 +350,45 @@ describe('analyzeAllLevels consolidation outcome mapping (issue #560)', () => {
     expect(result.orchestrationFailed).toBeUndefined();
     expect(result.suggestions).toHaveLength(1);
   });
+
+  it('passes a configured standard-provider timeout through the full analysis', async () => {
+    const configuredTimeout = 1800000;
+    aiIndex.applyConfigOverrides({
+      providers: {
+        claude: { defaultTimeout: configuredTimeout }
+      }
+    });
+
+    try {
+      const analyzer = createWiredAnalyzer();
+      const execute = vi.fn().mockResolvedValue({ suggestions: [], summary: 'done' });
+      createProvider.mockReturnValue({ execute });
+
+      await analyzer.analyzeAllLevels(
+        1,
+        '/nonexistent-worktree',
+        prMetadata,
+        null,
+        null,
+        ['src/a.js', 'src/b.js'],
+        { runId: 'run-configured-timeout', skipRunCreation: true }
+      );
+
+      for (const analyzeLevel of [
+        analyzer.analyzeLevel1Isolated,
+        analyzer.analyzeLevel2Isolated,
+        analyzer.analyzeLevel3Isolated
+      ]) {
+        expect(analyzeLevel.mock.calls[0].at(-1).timeout).toBe(configuredTimeout);
+      }
+      expect(execute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ timeout: configuredTimeout })
+      );
+    } finally {
+      aiIndex.applyConfigOverrides({ providers: {} });
+    }
+  });
 });
 
 describe('runCouncilAnalysis intra-level consolidation failure (issue #560)', () => {
@@ -437,5 +476,142 @@ describe('runCouncilAnalysis intra-level consolidation failure (issue #560)', ()
 
     expect(result.levelOutcomes.consolidation).toBe('success');
     expect(result.orchestrationFailed).toBeUndefined();
+  });
+
+  it('uses configured standard-provider timeouts for council voices and consolidation', async () => {
+    const claudeTimeout = 1800000;
+    const codexTimeout = 1200000;
+    aiIndex.applyConfigOverrides({
+      providers: {
+        claude: { defaultTimeout: claudeTimeout },
+        codex: { defaultTimeout: codexTimeout }
+      }
+    });
+
+    try {
+      const analyzer = createCouncilAnalyzer();
+      const execute = vi.fn().mockImplementation((prompt, options) => {
+        if (options.level === 1) {
+          return Promise.resolve({ suggestions: [voiceSuggestion('Voice finding')], summary: 'voice summary' });
+        }
+        return Promise.resolve({ suggestions: [voiceSuggestion('Merged finding')], summary: 'final summary' });
+      });
+      createProvider.mockReturnValue({ execute });
+
+      await analyzer.runCouncilAnalysis(reviewContext, councilConfig, { runId: 'council-timeout-run' });
+
+      const voiceTimeouts = execute.mock.calls
+        .filter(([, options]) => options.level === 1)
+        .map(([, options]) => options.timeout)
+        .sort((a, b) => a - b);
+      expect(voiceTimeouts).toEqual([codexTimeout, claudeTimeout].sort((a, b) => a - b));
+      expect(execute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ level: 'consolidation-L1', timeout: claudeTimeout })
+      );
+      expect(execute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ level: 'orchestration', timeout: claudeTimeout })
+      );
+    } finally {
+      aiIndex.applyConfigOverrides({ providers: {} });
+    }
+  });
+
+  it('uses a configured standard-provider timeout for reviewer-centric consolidation', async () => {
+    const configuredTimeout = 1800000;
+    aiIndex.applyConfigOverrides({ providers: { claude: { defaultTimeout: configuredTimeout } } });
+
+    try {
+      const analyzer = createCouncilAnalyzer();
+      const execute = vi.fn().mockResolvedValue({ suggestions: [], summary: 'done' });
+      createProvider.mockReturnValue({ execute });
+
+      await analyzer._crossVoiceConsolidate(
+        [{
+          voiceKey: 'claude-opus',
+          provider: 'claude',
+          model: 'opus',
+          suggestionCount: 1,
+          suggestions: [voiceSuggestion('Voice finding')],
+          fileLevelSuggestions: [],
+          summary: 'voice summary'
+        }],
+        prMetadata,
+        null,
+        '/nonexistent-worktree',
+        { provider: 'claude', model: 'opus', tier: 'balanced' }
+      );
+
+      expect(execute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ level: 'cross-voice-consolidation', timeout: configuredTimeout })
+      );
+    } finally {
+      aiIndex.applyConfigOverrides({ providers: {} });
+    }
+  });
+});
+
+describe('reviewer-centric provider timeout selection', () => {
+  it('uses positive overrides and skips configured zero to the provider-class default', async () => {
+    const sharedOverrides = { load_skills: true };
+    const providerOverridesMap = {
+      claude: { load_skills: false, defaultTimeout: 1800000 },
+      pi: { load_skills: false, defaultTimeout: 0 }
+    };
+    const analyzer = new Analyzer({}, 'council', 'council', sharedOverrides, providerOverridesMap);
+    analyzer.loadGeneratedFilePatterns = vi.fn().mockResolvedValue([]);
+    analyzer.storeSuggestions = vi.fn().mockResolvedValue(undefined);
+    analyzer.validateAndFinalizeSuggestions = vi.fn().mockImplementation((suggestions) => suggestions || []);
+    analyzer._crossVoiceConsolidate = vi.fn().mockResolvedValue({ suggestions: [], summary: 'done' });
+
+    const voiceCalls = [];
+    const analyzeAllLevels = vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockImplementation(function (...args) {
+      voiceCalls.push({
+        provider: this.provider,
+        model: this.model,
+        providerOverrides: this.providerOverrides,
+        options: args.at(-1)
+      });
+      return Promise.resolve({ suggestions: [
+        { file: 'src/a.js', line_start: 1, line_end: 1, type: 'bug', title: this.model, description: 'd', confidence: 0.9 }
+      ], summary: this.model });
+    });
+
+    try {
+      await analyzer.runReviewerCentricCouncil(
+        {
+          reviewId: 1,
+          worktreePath: '/nonexistent-worktree',
+          prMetadata,
+          changedFiles: ['src/a.js'],
+          instructions: null
+        },
+        {
+          voices: [
+            { provider: 'claude', model: 'explicit', timeout: 700000 },
+            { provider: 'claude', model: 'configured' },
+            { provider: 'pi', model: 'default' }
+          ],
+          levels: { '1': true, '2': false, '3': false },
+          consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+        },
+        { runId: 'reviewer-centric-timeout-run' }
+      );
+
+      const callsByModel = Object.fromEntries(voiceCalls.map((call) => [call.model, call]));
+      expect(callsByModel.explicit.options.timeout).toBe(700000);
+      expect(callsByModel.configured.options.timeout).toBe(1800000);
+      expect(callsByModel.default.options.timeout).toBe(900000);
+      expect(callsByModel.explicit.providerOverrides).toBe(providerOverridesMap.claude);
+      expect(callsByModel.configured.providerOverrides).toBe(providerOverridesMap.claude);
+      expect(callsByModel.default.providerOverrides).toBe(providerOverridesMap.pi);
+
+      const consolidationConfig = analyzer._crossVoiceConsolidate.mock.calls[0].at(-1);
+      expect(consolidationConfig.providerOverrides).toBe(providerOverridesMap.claude);
+    } finally {
+      analyzeAllLevels.mockRestore();
+    }
   });
 });

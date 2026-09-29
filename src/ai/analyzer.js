@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { createProvider, getProviderClass } = require('./index');
+const { createProvider, getProviderClass, getProviderExecutionTimeout } = require('./index');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
@@ -101,7 +101,7 @@ function buildVoiceContext(voice, idx, instructions, progressCallback, db, provi
   const voiceProvider = isExecutable ? createProvider(voice.provider, voice.model, effectiveOverrides) : null;
 
   const voiceTier = voice.tier || 'balanced';
-  const voiceTimeout = voice.timeout || ProviderClass?.defaultTimeout || 600000;
+  const voiceTimeout = voice.timeout || getProviderExecutionTimeout(voice.provider, effectiveOverrides) || 600000;
 
   // Wrap progress callback with voice-centric metadata
   const voiceProgressCallback = progressCallback ? (update) => {
@@ -457,9 +457,8 @@ class Analyzer {
     const runId = options.runId || uuidv4();
     const { analysisId, skipRunCreation, skipLevel3, reviewerNum, excludePrevious, serverPort, githubClient } = options;
     const logPrefix = options.logPrefix || '';
-    // Respect provider-configured timeout (e.g. Pi's 15 min, executable providers)
-    const ProviderClass = getProviderClass(this.provider);
-    const providerTimeout = ProviderClass?.defaultTimeout;
+    // Respect per-call, configured, and provider-class timeout defaults.
+    const providerTimeout = getProviderExecutionTimeout(this.provider, this.providerOverrides);
     const executionTimeout = options.timeout || providerTimeout || 600000; // Default 10 minutes
 
     // Resolve enabledLevels: prefer explicit option, fall back to skipLevel3 compat
@@ -2857,7 +2856,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    *   array is the raw union of all levels rather than a curated set.
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout, logPrefix: lp = '', reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification } = options;
     // Build adapter-level log prefix: when reviewerNum is set (council mode),
     // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
     const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
@@ -2875,8 +2874,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         throw new CancellationError('Analysis was cancelled');
       }
 
-      // Create provider instance for consolidation (use overrides if provided)
-      const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model, this.providerOverrides);
+      // Create the consolidation provider with its own config, then resolve its timeout.
+      const providerId = providerOverride || this.provider;
+      const providerOverrides = this.providerOverridesMap?.[providerId] || this.providerOverrides;
+      const executionTimeout = timeout || getProviderExecutionTimeout(providerId, providerOverrides) || 600000;
+      const aiProvider = createProvider(providerId, modelOverride || this.model, providerOverrides);
 
       // Pre-fetch existing PR review comments for dedup (replaces the prior
       // `gh api` shell-out — the analyzer no longer depends on the `gh` CLI).
@@ -2903,7 +2905,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout,
+        timeout: executionTimeout,
         level: 'orchestration',
         analysisId,
         registerProcess,
@@ -3522,6 +3524,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const consolProvider = consolConfig.provider;
     const consolModel = consolConfig.model;
     const consolTier = consolConfig.tier || 'balanced';
+    const consolProviderOverrides = this.providerOverridesMap?.[consolProvider] || this.providerOverrides;
 
     // Merge consolidation-specific custom instructions with global instructions
     let consolInstructions = mergedInstructions;
@@ -3552,7 +3555,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const consolidated = await this._crossVoiceConsolidate(
         voiceReviews, prMetadata, consolInstructions, worktreePath,
-        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides: this.providerOverrides }
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides: consolProviderOverrides }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3710,7 +3713,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             : voice.customInstructions;
         }
 
-        const VoiceProviderClass = getProviderClass(voice.provider);
+        const voiceProviderOverrides = this.providerOverridesMap?.[voice.provider] || this.providerOverrides;
         voiceTasks.push({
           voiceId,
           reviewerLabel,
@@ -3719,10 +3722,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           provider: voice.provider,
           model: voice.model,
           tier,
-          timeout: voice.timeout || VoiceProviderClass?.defaultTimeout || 600000,
+          timeout: voice.timeout || getProviderExecutionTimeout(voice.provider, voiceProviderOverrides) || 600000,
           customInstructions: voiceInstructions,
           voiceCustomInstructions: voice.customInstructions || null,
-          providerOverrides: this.providerOverridesMap?.[voice.provider] || this.providerOverrides
+          providerOverrides: voiceProviderOverrides
         });
       }
     }
@@ -3840,6 +3843,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const orchProvider = orchConfig.provider;
     const orchModel = orchConfig.model;
     const orchTier = orchConfig.tier || 'balanced';
+    const orchProviderOverrides = this.providerOverridesMap?.[orchProvider] || this.providerOverrides;
 
     // Merge orchestration-specific custom instructions with global instructions
     let orchInstructions = mergedInstructions;
@@ -3892,7 +3896,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           }));
           const consolidated = await this._intraLevelConsolidate(
             level, voiceGroups, prMetadata, orchInstructions, worktreePath,
-            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length, providerOverrides: this.providerOverrides }
+            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length, providerOverrides: orchProviderOverrides }
           );
           consolidatedPerLevel[level] = consolidated;
           // Report intra-level consolidation step as completed
@@ -3928,7 +3932,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const orchestrationResult = await this.orchestrateWithAI(
         allSuggestions, prMetadata, orchInstructions, worktreePath,
-        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000, excludePrevious, dedupContext, githubClient }
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout, excludePrevious, dedupContext, githubClient }
       );
 
       // orchestrateWithAI degrades to the raw union of level suggestions when
@@ -4087,6 +4091,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   async _intraLevelConsolidate(level, voiceGroups, prMetadata, customInstructions, worktreePath, orchConfig) {
     const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount, providerOverrides } = orchConfig;
+    const executionTimeout = timeout || getProviderExecutionTimeout(provider, providerOverrides) || 300000;
 
     const aiProvider = createProvider(provider, model, providerOverrides || {});
 
@@ -4126,7 +4131,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
-      timeout: timeout || 300000,
+      timeout: executionTimeout,
       level: `consolidation-L${level}`,
       analysisId,
       registerProcess,
@@ -4273,6 +4278,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
     const { provider, model, tier, timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides } = config;
+    const executionTimeout = timeout || getProviderExecutionTimeout(provider, providerOverrides) || 300000;
 
     const aiProvider = createProvider(provider, model, providerOverrides || {});
 
@@ -4328,7 +4334,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
-      timeout: timeout || 300000,
+      timeout: executionTimeout,
       level: 'cross-voice-consolidation',
       analysisId,
       registerProcess,
