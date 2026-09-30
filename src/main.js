@@ -231,9 +231,8 @@ OPTIONS:
                             Available models: opus, sonnet, haiku (Claude Code);
                             also: fable-5.1-xhigh, fable-5.1-high,
                                   fable-5-xhigh, fable-5-high, opus-5.5-xhigh,
-                                  opus-5.5-high, opus-5-xhigh, opus-5-high,
-                                  opus-4.8-xhigh, opus-4.8-high, opus-4.7-xhigh,
-                                  opus-4.7-high, opus-4.6-high, opus-4.6-1m,
+                                  opus-5.5-high, opus-5.5-medium, opus-5.5-low,
+                                  opus-5-xhigh, opus-5-high,
                                   sonnet-5-xhigh, sonnet-5-high, sonnet-4.6
                             (default is opus-5.5-high; opus is Opus 5.5 XHigh;
                             a saved default_model wins over the default)

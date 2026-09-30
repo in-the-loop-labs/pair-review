@@ -786,7 +786,7 @@ describe('Provider Configuration', () => {
       // Replacement, not append — total count unchanged
       expect(claude.models.length).toBe(before);
       // The generation the alias left is untouched
-      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh').cli_model).toBe('claude-opus-4-8');
+      expect(claude.models.find(m => m.id === 'opus-5-xhigh').cli_model).toBe('claude-opus-5');
       applyConfigOverrides({ providers: {} });
     });
 
@@ -819,7 +819,7 @@ describe('Provider Configuration', () => {
         providers: {
           claude: {
             models: [
-              { id: 'opus-4.8-xhigh', tier: 'thorough', cli_model: 'custom-y' }
+              { id: 'opus-5-xhigh', tier: 'thorough', cli_model: 'custom-y' }
             ]
           }
         }
@@ -827,7 +827,7 @@ describe('Provider Configuration', () => {
       const overrides = getProviderConfigOverrides('claude');
       const stored = overrides.models.find(m => m.cli_model === 'custom-y');
       expect(stored).toBeDefined();
-      expect(stored.id).toBe('opus-4.8-xhigh');
+      expect(stored.id).toBe('opus-5-xhigh');
       applyConfigOverrides({ providers: {} });
     });
 
@@ -1488,46 +1488,51 @@ describe('Provider Configuration', () => {
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
       expect(claude.models.find(m => m.id === 'haiku')).toBeUndefined();
       // Other built-ins are still present
-      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeDefined();
+      expect(claude.models.find(m => m.id === 'opus-5-xhigh')).toBeDefined();
     });
 
-    it('hides the canonical model when disabled_models names an alias (fable)', () => {
-      // 'fable' is an alias of the canonical 'fable-5.1-xhigh'
-      applyConfigOverrides({
-        providers: { claude: { disabled_models: ['fable'] } }
-      });
-      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      expect(claude.models.find(m => m.id === 'fable-5.1-xhigh')).toBeUndefined();
-      // Unrelated built-ins remain — the alias names only the XHigh entry of the
-      // newest generation, and the previous Fable generation no longer carries it
-      expect(claude.models.find(m => m.id === 'fable-5.1-high')).toBeDefined();
-      expect(claude.models.find(m => m.id === 'fable-5-xhigh')).toBeDefined();
-      expect(claude.models.find(m => m.id === 'fable-5-high')).toBeDefined();
-      expect(claude.models.find(m => m.id === 'opus-5.5-xhigh')).toBeDefined();
-    });
-
-    it('hides the canonical model when disabled_models names an alias (opus)', () => {
-      // 'opus' is an alias of the canonical 'opus-5.5-xhigh'
-      applyConfigOverrides({
-        providers: { claude: { disabled_models: ['opus'] } }
-      });
-      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      expect(claude.models.find(m => m.id === 'opus-5.5-xhigh')).toBeUndefined();
-      // Unrelated built-ins remain — including the High default and the previous
-      // Opus generation the alias used to name
-      expect(claude.models.find(m => m.id === 'opus-5.5-high')).toBeDefined();
-      expect(claude.models.find(m => m.id === 'opus-4.8-xhigh')).toBeDefined();
-      expect(claude.models.find(m => m.id === 'sonnet-4.6')).toBeDefined();
-    });
-
-    it('does not warn when disabled_models names a valid alias', () => {
+    it.each([
+      ['fable', 'fable-5.1-xhigh'],
+      ['opus', 'opus-5.5-xhigh'],
+    ])('ignores an alias (%s) in disabled_models and warns that it needs the canonical id', (alias, canonicalId) => {
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       applyConfigOverrides({
-        providers: { claude: { disabled_models: ['fable'] } }
+        providers: { claude: { disabled_models: [alias] } }
       });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      // disabled_models matches canonical ids only, so the aliased model stays visible
+      expect(claude.models.find(m => m.id === canonicalId)).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`disabled_models entry "${alias}" is an alias of "${canonicalId}", not an id`)
+      );
       expect(warnSpy).not.toHaveBeenCalledWith(
         expect.stringContaining('disabled_models references unknown model')
       );
+      warnSpy.mockRestore();
+    });
+
+    it('does not hide the Opus 5.5 model that inherited a retired Opus 4.x id', () => {
+      // Regression: 'opus-4.7-high' is now an alias of the built-in default
+      // 'opus-5.5-high'. A config that hid the old model must not hide the new one.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['opus-4.7-xhigh', 'opus-4.7-high'] } }
+      });
+      const claude = getAllProvidersInfo().find(p => p.id === 'claude');
+      expect(claude.models.find(m => m.id === 'opus-5.5-xhigh')).toBeDefined();
+      const high = claude.models.find(m => m.id === 'opus-5.5-high');
+      expect(high).toBeDefined();
+      expect(high.default).toBe(true);
+      expect(claude.defaultModel).toBe('opus-5.5-high');
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when disabled_models names a canonical id', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      applyConfigOverrides({
+        providers: { claude: { disabled_models: ['fable-5.1-xhigh'] } }
+      });
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('disabled_models'));
       warnSpy.mockRestore();
     });
 

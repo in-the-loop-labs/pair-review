@@ -593,7 +593,7 @@ function resolveCliModelConfig(builtIn, configModel, modelId) {
 /**
  * Match a model definition against a selector that may be the model's canonical
  * id OR one of its aliases. Used by config-driven selectors (`default_model`,
- * `disabled_models`, `models` overrides) so legacy config naming an alias (e.g.
+ * `models` overrides) so legacy config naming an alias (e.g.
  * `opus`, an alias of the canonical `opus-5.5-xhigh`) keeps working.
  *
  * Optional-chaining is intentional: a model with no `aliases` short-circuits to
@@ -918,7 +918,8 @@ function mergeModels(builtInModels, configModels) {
 
 /**
  * Compute the effective model list for a provider: built-in models merged with
- * config-override models, then with any `disabled_models` IDs removed.
+ * config-override models, then with any `disabled_models` IDs removed. Only
+ * canonical ids disable a model; aliases are ignored (see below).
  *
  * This is the single source of truth for "which models does this provider
  * actually expose" — every call site that surfaces or selects a model should go
@@ -940,8 +941,11 @@ function applyModelOverrides(builtInModels, overrides) {
   if (!Array.isArray(disabled) || disabled.length === 0) {
     return merged;
   }
-  // Drop a model if ANY disabled selector matches it by canonical id or alias.
-  const filtered = merged.filter(m => !disabled.some(d => modelMatches(m, d)));
+  // Drop a model only when a disabled selector names its canonical id. Aliases
+  // are deliberately not matched: they include redirects for retired ids (e.g.
+  // `opus-4.7-high` -> `opus-5.5-high`), so a list that hid an old model would
+  // otherwise hide the newer model that inherited its id.
+  const filtered = merged.filter(m => !disabled.includes(m.id));
   // Never strip a provider down to zero models — fall back to the unfiltered set.
   return filtered.length > 0 ? filtered : merged;
 }
@@ -986,11 +990,15 @@ function validateModelSelectors(providerId, builtInModels, configModels, disable
 
   if (disabledModels) {
     for (const id of disabledModels) {
-      if (!isKnown(id)) {
+      if (merged.some(m => m.id === id)) continue;
+      const aliased = merged.find(m => modelMatches(m, id));
+      if (aliased) {
+        logger.warn(`Provider "${providerId}": disabled_models entry "${id}" is an alias of "${aliased.id}", not an id; disabled_models needs canonical ids. Ignored.`);
+      } else {
         logger.warn(`Provider "${providerId}": disabled_models references unknown model "${id}".`);
       }
     }
-    const remaining = merged.filter(m => !disabledModels.some(d => modelMatches(m, d)));
+    const remaining = merged.filter(m => !disabledModels.includes(m.id));
     if (merged.length > 0 && remaining.length === 0) {
       logger.warn(`Provider "${providerId}": disabled_models removes every model; the filter will be ignored.`);
     }
@@ -999,7 +1007,7 @@ function validateModelSelectors(providerId, builtInModels, configModels, disable
   if (defaultModel != null) {
     if (!isKnown(defaultModel)) {
       logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is not a known model; falling back to automatic default.`);
-    } else if (disabledModels && disabledModels.includes(defaultModel)) {
+    } else if (disabledModels && disabledModels.includes(merged.find(m => modelMatches(m, defaultModel)).id)) {
       logger.warn(`Provider "${providerId}": default_model "${defaultModel}" is also listed in disabled_models; falling back to automatic default.`);
     }
   }
