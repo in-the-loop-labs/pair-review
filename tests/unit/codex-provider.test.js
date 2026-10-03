@@ -39,6 +39,7 @@ childProcess.spawn = mockSpawn;
 
 // Import after mocks are set up
 const CodexProvider = require('../../src/ai/codex-provider');
+const { resolveDefaultModel } = require('../../src/ai/provider');
 
 describe('CodexProvider', () => {
   const originalEnv = { ...process.env };
@@ -65,16 +66,19 @@ describe('CodexProvider', () => {
 
     it('should return gpt-5.6-sol-high as default model', () => {
       expect(CodexProvider.getDefaultModel()).toBe('gpt-5.6-sol-high');
+      expect(resolveDefaultModel(CodexProvider.getModels())).toBe('gpt-5.6-sol-high');
     });
 
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(13);
+      expect(models.length).toBe(15);
 
       // Check that we have the expected model IDs, ordered thorough → balanced → fast
       const modelIds = models.map(m => m.id);
       expect(modelIds).toEqual([
+        'gpt-6.1-sol-high',
+        'gpt-6.1-sol-xhigh',
         'gpt-6-astra-high',
         'gpt-6-astra-xhigh',
         'gpt-6-sol-high',
@@ -89,9 +93,10 @@ describe('CodexProvider', () => {
         'gpt-5.6-luna-low',
         'gpt-6-luna-low'
       ]);
-      // Bare GPT-6 / GPT-5.6 / gpt-5.5 (unspecified reasoning effort) are not
+      // Bare GPT-6.1 / GPT-6 / GPT-5.6 / gpt-5.5 (unspecified reasoning effort) are not
       // exposed as picker entries — users pick an explicit reasoning variant
       // instead.
+      expect(modelIds).not.toContain('gpt-6.1-sol');
       expect(modelIds).not.toContain('gpt-6-astra');
       expect(modelIds).not.toContain('gpt-6-sol');
       expect(modelIds).not.toContain('gpt-6-luna');
@@ -111,7 +116,7 @@ describe('CodexProvider', () => {
         expect(models.some(m => m.aliases?.includes(retired)), `${retired} should not be aliased`).toBe(false);
       }
 
-      // GPT-6 Astra is the flagship but NOT the default (about five times GPT-6 Sol's cost)
+      // GPT-6 Astra remains available for the most demanding reviews.
       const astraHigh = models.find(m => m.id === 'gpt-6-astra-high');
       expect(astraHigh).toMatchObject({
         cli_model: 'gpt-6-astra',
@@ -138,7 +143,7 @@ describe('CodexProvider', () => {
         name: 'GPT-5.6 Luna Low',
         tier: 'fast',
         tagline: 'Quick Scan',
-        badge: 'Fastest',
+        badge: 'Previous Gen',
         badgeClass: 'badge-speed'
       });
       expect(models.find(m => m.id === 'gpt-6-luna-low')).toMatchObject({
@@ -146,33 +151,27 @@ describe('CodexProvider', () => {
         extra_args: ['-c', 'model_reasoning_effort="low"'],
         name: 'GPT-6 Luna Low',
         tier: 'fast',
-        badge: 'Newest',
+        badge: 'Fast',
         badgeClass: 'badge-speed'
       });
-      expect(models.find(m => m.id === 'gpt-6-luna-low').tagline).not.toBe('Quick Scan');
+      expect(models.find(m => m.id === 'gpt-6-luna-low').tagline).toBe('Quick Scan');
 
-      // GPT-6 Sol and Luna Max carry their launch metadata
+      // GPT-6 Sol and Luna Max carry the current Codex descriptions
       expect(models.find(m => m.id === 'gpt-6-sol-xhigh')).toMatchObject({
         name: 'GPT-6 Sol XHigh',
-        tagline: 'Frontier Depth',
+        tagline: 'Previous Gen Depth',
         badge: 'Extra High',
         badgeClass: 'badge-power'
       });
       expect(models.find(m => m.id === 'gpt-6-luna-max')).toMatchObject({
         name: 'GPT-6 Luna Max',
-        tagline: 'High-Volume Value',
-        badge: 'Lowest Cost',
+        tagline: 'Affordable Depth',
+        badge: 'Affordable',
         badgeClass: 'badge-speed'
       });
 
-      // GPT-6 Sol/Luna access is still rolling out and Enterprise admins must
-      // enable it; every GPT-6 Sol/Luna entry says so
-      for (const m of models.filter(m => /^gpt-6-(sol|luna)$/.test(m.cli_model))) {
-        expect(m.description, m.id).toContain('GPT-6 access');
-      }
-
-      // Check model structure — default is GPT-5.6 Sol with explicit high
-      // reasoning while GPT-6 access rolls out
+      // GPT-5.6 Sol High stays the single recommended default during rollout.
+      expect(models.filter(m => m.default)).toHaveLength(1);
       const defaultModel = models.find(m => m.default === true);
       expect(defaultModel).toMatchObject({
         id: 'gpt-5.6-sol-high',
@@ -180,22 +179,38 @@ describe('CodexProvider', () => {
         extra_args: ['-c', 'model_reasoning_effort="high"'],
         name: 'GPT-5.6 Sol High',
         tier: 'thorough',
-        tagline: 'Frontier Review',
+        tagline: 'Older Workhorse',
         badge: 'Recommended',
         badgeClass: 'badge-recommended',
         default: true
       });
-      expect(defaultModel.description).not.toMatch(/previous/i);
-
-      // GPT-6 Sol High is the newest frontier pick, but opt-in
-      const sol6High = models.find(m => m.id === 'gpt-6-sol-high');
-      expect(sol6High).toMatchObject({
-        cli_model: 'gpt-6-sol',
-        tagline: 'Newest Frontier',
+      expect(defaultModel.description).toContain('The default while GPT-6 and GPT-6.1 access rolls out');
+      expect(models.find(m => m.id === 'gpt-6.1-sol-high')).toMatchObject({
+        name: 'GPT-6.1 Sol High',
+        tier: 'thorough',
         badge: 'Newest',
         badgeClass: 'badge-power'
       });
-      expect(sol6High.default).toBeUndefined();
+      expect(models.find(m => m.id === 'gpt-6.1-sol-xhigh')).toMatchObject({
+        name: 'GPT-6.1 Sol XHigh',
+        tier: 'thorough',
+        badge: 'Extra High'
+      });
+
+      for (const model of models.filter(m => /^gpt-6[.-]/.test(m.cli_model))) {
+        expect(model.default, model.id).toBeUndefined();
+      }
+      for (const model of models.filter(m => /^gpt-6-(sol|luna)$/.test(m.cli_model))) {
+        expect(model.description, model.id).toContain('Requires GPT-6 access');
+        expect(model.description, model.id).toContain('Enterprise administrators must enable it');
+      }
+      for (const model of models.filter(m => m.cli_model === 'gpt-6.1-sol')) {
+        expect(model.description, model.id).toContain('Requires GPT-6.1 Sol access');
+        expect(model.description, model.id).toContain('Enterprise and Edu administrators must enable it');
+      }
+      expect(models.find(m => m.id === 'gpt-6-sol-high').badge).toBe('Previous Gen');
+      expect(models.find(m => m.id === 'gpt-6-sol-high').description).toContain('Previous generation workhorse model');
+      expect(models.find(m => m.id === 'gpt-5.6-sol-high').description).toContain('Older generation workhorse model');
 
       // GPT-5.5 leaves Codex on 2026-10-14; its copy says so
       for (const id of ['gpt-5.5-high', 'gpt-5.5-xhigh']) {
@@ -203,21 +218,20 @@ describe('CodexProvider', () => {
       }
     });
 
-    it('the first balanced and fast entries do not need GPT-6 access', () => {
-      // The UI picks the first model of the matching tier when a user switches
-      // provider, and resolveDefaultModel falls back to the first balanced
-      // entry, so those picks must stay on a model every account can run.
+    it('the first balanced and fast entries do not need GPT-6 or GPT-6.1 access', () => {
+      // Provider switching, resolver fallback, extraction, and hunk summaries
+      // must work for accounts without access to the newer models.
       const models = CodexProvider.getModels();
       const firstBalanced = models.find(m => m.tier === 'balanced');
       const firstFast = models.find(m => m.tier === 'fast');
-      expect(firstBalanced.cli_model).not.toMatch(/^gpt-6-/);
-      expect(firstFast.cli_model).not.toMatch(/^gpt-6-/);
+      expect(firstBalanced.cli_model).not.toMatch(/^gpt-6[.-]/);
+      expect(firstFast.cli_model).not.toMatch(/^gpt-6[.-]/);
+      expect(resolveDefaultModel(models.filter(m => !m.default))).toBe(firstBalanced.id);
     });
 
     it('fast tier (the extraction model) is gpt-5.6-luna-low', () => {
-      // Kept on GPT-5.6 while GPT-6 access rolls out: extraction and hunk
-      // summaries must run for every account. This is the one literal pin of
-      // the Codex extraction model; other tests read getFastTierModel().
+      // Kept on GPT-5.6 during rollout for access compatibility. This is the one
+      // literal pin of the Codex extraction model; other tests read getFastTierModel().
       const provider = new CodexProvider();
       expect(provider.getFastTierModel()).toBe('gpt-5.6-luna-low');
       // The extraction spawn runs GPT-5.6 Luna at low effort
@@ -231,6 +245,8 @@ describe('CodexProvider', () => {
     it('reasoning-effort variants should declare cli_model and -c reasoning effort', () => {
       const models = CodexProvider.getModels();
       const variants = [
+        { id: 'gpt-6.1-sol-high', cliModel: 'gpt-6.1-sol', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-6.1-sol-xhigh', cliModel: 'gpt-6.1-sol', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-6-sol-high', cliModel: 'gpt-6-sol', effort: 'high', tier: 'thorough' },
         { id: 'gpt-6-sol-xhigh', cliModel: 'gpt-6-sol', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-6-luna-max', cliModel: 'gpt-6-luna', effort: 'max', tier: 'balanced' },
@@ -372,6 +388,8 @@ describe('CodexProvider', () => {
       });
 
       it.each([
+        ['gpt-6.1-sol-high', 'gpt-6.1-sol', 'high'],
+        ['gpt-6.1-sol-xhigh', 'gpt-6.1-sol', 'xhigh'],
         ['gpt-6-sol-high', 'gpt-6-sol', 'high'],
         ['gpt-6-sol-xhigh', 'gpt-6-sol', 'xhigh'],
         ['gpt-6-luna-max', 'gpt-6-luna', 'max'],

@@ -288,6 +288,23 @@ describe('chat-models', () => {
       expect(model.extra_args).not.toContain('--mutated');
     });
 
+    it.each(['high', 'xhigh'])('exposes and resolves GPT-6.1 Sol %s for chat', (effort) => {
+      const id = `gpt-6.1-sol-${effort}`;
+      const { models } = getChatModelCatalog('codex');
+      expect(models.find(m => m.id === id)).toMatchObject({
+        id,
+        tier: 'thorough',
+        badge: effort === 'high' ? 'Newest' : 'Extra High',
+      });
+      expect(resolveChatModel('codex', id)).toEqual({
+        id,
+        cliModel: 'gpt-6.1-sol',
+        extraArgs: ['-c', `model_reasoning_effort="${effort}"`],
+        env: {},
+        known: true,
+      });
+    });
+
     it('maps cli_model: null to cliModel: null (no model flag)', () => {
       const model = firstWith('pi', m => m.cli_model === null);
       const resolved = resolveChatModel('pi', model.id);

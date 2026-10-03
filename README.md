@@ -632,7 +632,7 @@ pair-review integrates with AI providers via their CLI tools:
 
 - **Claude**: Uses Claude Code CLI
 - **Antigravity**: Uses the Antigravity CLI (`agy`), the successor to the Gemini CLI. Install it with `curl -fsSL https://antigravity.google/cli/install.sh | bash` (macOS/Linux; it is not an npm package) — see the [Antigravity docs](https://antigravity.google/docs). Antigravity is an analysis-only provider: it runs as an agentic reviewer in non-interactive print mode and has **no chat/ACP mode**.
-- **Codex**: Uses Codex CLI
+- **Codex**: Uses Codex CLI. GPT-5.6 Sol High (`gpt-5.6-sol-high`) remains the recommended default during rollout. GPT-6.1 Sol High (`gpt-6.1-sol-high`) and XHigh (`gpt-6.1-sol-xhigh`) are explicit choices for reviews and chat; Enterprise and Edu administrators must enable GPT-6.1 Sol access.
 - **GitHub Copilot**: Uses Copilot CLI
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
 - **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)

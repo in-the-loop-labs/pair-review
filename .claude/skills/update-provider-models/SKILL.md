@@ -217,12 +217,20 @@ account the provider serves can run it. Opus 5.5 qualified ($4/$20 over Opus 5 a
 $5/$25): the demoted entries stay as the previous generation under their explicit ids.
 The bare generation aliases (`opus`, `fable`) are separate from the default: they
 move to the newest generation at XHigh (step 5, item 4), not to the new default.
-GPT-6 Sol/Luna did not (2026-09-22): access was still rolling out, workspace-gated,
-and opt-in for Enterprise admins. Codex's `testAvailability()` only runs
-`codex --version` and nothing falls back at runtime, so a default the account
-cannot run fails every default analysis. Codex kept
-`gpt-5.6-sol-high` as the default and `gpt-5.6-luna-low` as the first fast entry, with
-the GPT-6 models as opt-in entries. The same bar applies to the first fast entry.
+GPT-6 Sol/Luna did not (2026-09-22): access was still rolling out and required
+Enterprise administrator enablement. The GPT-6.1 Sol update (2026-10-03) also
+keeps the new model opt-in: Enterprise and Edu administrators must enable it,
+and selecting it locally does not grant access. See
+[workspace model availability](https://learn.chatgpt.com/docs/enterprise/workspace-model-availability).
+Codex's `testAvailability()` only runs `codex --version`, and model rejection
+does not trigger a fallback, so an inaccessible default fails automatic analyses.
+Codex keeps `gpt-5.6-sol-high` as the default, `gpt-5.6-terra-xhigh` as the first
+balanced entry (provider-switch selection and resolver fallback), and
+`gpt-5.6-luna-low` as the first fast entry (JSON extraction and hunk summaries).
+GPT-6 and GPT-6.1 models remain explicit choices with access requirements in
+their descriptions. The same access bar applies to the first balanced and fast
+entries. GPT-5.5 retires from Codex on all plans on 2026-10-14; remove its entries
+then (the API is unaffected).
 
 ## Notes
 
