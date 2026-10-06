@@ -8240,6 +8240,28 @@ describe('ChatPanel', () => {
       return el;
     }
 
+    it('opens outside references temporarily without persisting context files', async () => {
+      const manager = global.window.prManager;
+      manager.diffFiles = [{ file: 'src/changed.js' }];
+      manager.contextFiles = [];
+      manager.openCodePreview = vi.fn();
+      const link = createLinkEl('src/helper.js', 42, 48);
+      await chatPanel._handleFileLinkClick(link);
+      expect(manager.openCodePreview).toHaveBeenCalledWith('src/helper.js', 42, 48, link);
+      expect(manager.ensureContextFile).not.toHaveBeenCalled();
+    });
+    it('routes a leading-dot alias for a changed file to the diff', async () => {
+      const manager = global.window.prManager;
+      manager.diffFiles = [{ file: 'src/app.js' }];
+      manager.openCodePreview = vi.fn();
+      const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
+      wrapper.closest = vi.fn(() => null);
+      global.document.querySelector = vi.fn(() => wrapper);
+      await chatPanel._handleFileLinkClick(createLinkEl('./src/app.js', 10, 12));
+      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10, 12);
+      expect(manager.openCodePreview).not.toHaveBeenCalled();
+    });
+
     it('should scroll to diff file when wrapper exists in DOM (no ensureContextFile call)', async () => {
       const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
       wrapper.closest = vi.fn(() => null); // not inside .context-file-wrapper

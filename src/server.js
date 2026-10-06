@@ -487,6 +487,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     const councilRoutes = require('./routes/councils');
     const chatRoutes = require('./routes/chat');
     const contextFilesRoutes = require('./routes/context-files');
+    const codePreviewRoutes = require('./routes/code-preview');
     const githubCollectionsRoutes = require('./routes/github-collections');
     const bulkAnalysisConfigsRoutes = require('./routes/bulk-analysis-configs');
     const stackAnalysisRoutes = require('./routes/stack-analysis');
@@ -506,6 +507,7 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     app.use('/', councilRoutes);
     app.use('/', reviewsRoutes);
     app.use('/', contextFilesRoutes);
+    app.use('/', codePreviewRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);

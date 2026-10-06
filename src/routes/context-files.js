@@ -16,6 +16,7 @@ const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { getDiffFileList } = require('../utils/diff-file-list');
 const validateReviewId = require('./middleware/validate-review-id');
+const { readCodePreview, resolvePreviewRepository } = require('../utils/code-preview');
 
 const router = express.Router();
 
@@ -105,7 +106,14 @@ router.post('/api/reviews/:reviewId/context-files', validateReviewId, async (req
         return res.status(400).json({ error: 'file must be a relative path without .. segments' });
       }
       if (!fs.existsSync(resolved)) {
-        return res.status(400).json({ error: 'File not found in repository' });
+        // A tracked file may be absent from a sparse checkout. Use the same
+        // source as the read-only preview instead of expanding the checkout.
+        try {
+          const location = await resolvePreviewRepository(db, req.review);
+          await readCodePreview(req.review, location, file.trim());
+        } catch (error) {
+          return res.status(error.statusCode || 400).json({ error: error.statusCode ? error.message : 'File not found in repository' });
+        }
       }
     }
 

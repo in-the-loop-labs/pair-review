@@ -1,0 +1,17 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+.code-preview-open > #diff-container { display: none; }
+.code-preview { background: var(--color-bg-primary); color: var(--color-text-primary); border: 1px solid var(--color-border-primary); border-radius: 8px; }
+.code-preview__toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--color-border-primary); position: sticky; top: var(--diff-toolbar-height, 52px); z-index: 4; background: var(--color-bg-primary); }
+.code-preview__toolbar [data-preview-keep] { margin-left: auto; }
+.code-preview__badge { color: var(--color-text-secondary); font-size: 12px; }
+.code-preview__header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 12px; background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border-primary); }
+.code-preview__header strong { font: 13px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.code-preview__header [data-preview-source] { color: var(--color-text-secondary); font-size: 12px; }
+.code-preview__status:not(:empty), .code-preview__actions:not(:empty) { padding: 12px; }
+.code-preview__code { overflow-x: auto; }
+.code-preview__table { width: 100%; border-collapse: collapse; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.code-preview__table td { padding: 1px 12px; vertical-align: top; }
+.code-preview__table code { white-space: pre; font: inherit; }
+.code-preview__line-number { width: 48px; text-align: right; color: var(--color-text-secondary); user-select: none; }
+.code-preview__highlight { background: var(--color-bg-highlight, rgba(210, 153, 34, .18)); }
+.code-preview__expand { margin: 12px; }

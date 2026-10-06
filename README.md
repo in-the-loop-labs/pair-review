@@ -786,6 +786,18 @@ The CLI command used for a provider follows this precedence (highest to lowest):
 
 ## Features
 
+### Code links in chat
+
+Click a file reference in chat to see its code. Links into changed files jump to
+the diff and expand hidden context. Links to other files open a temporary,
+read-only preview in the code pane while chat stays open. The preview highlights
+the cited range and shows its source: the reviewed PR commit or the local working
+tree. Files absent from a sparse checkout can be read from Git.
+
+Use **Back to review** to restore your previous position, or **Keep in review**
+to save the range as a context file. Opening a preview does not add context files
+or change review progress. Both PR and local reviews support previews.
+
 ### Three-Level AI Analysis
 
 pair-review's AI analysis system examines your code changes at increasing levels of context:

@@ -3932,6 +3932,7 @@ class PRManager {
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    this.codePreview?.close();
     // Abort any in-flight file content fetches from progressive loading
     this._fileContentsAbort?.abort();
     this._fileContentsAbort = null;
@@ -5383,12 +5384,13 @@ class PRManager {
    * @param {string} fileName - The file path
    * @returns {Promise<{lines: string[]}|null>} File content with lines array, or null on error
    */
-  async fetchFileContent(fileName) {
+  async fetchFileContent(fileName, { currentVersion = this.contextFiles?.some(entry => entry.file === fileName)
+    && !this.diffFiles?.some(entry => entry.file === fileName) } = {}) {
     const reviewId = this.currentPR?.id;
     if (!reviewId) return null;
 
     const response = await fetch(
-      `/api/reviews/${reviewId}/file-content/${encodeURIComponent(fileName)}`
+      `/api/reviews/${reviewId}/${currentVersion ? 'code-preview' : 'file-content'}/${encodeURIComponent(fileName)}`
     );
     const data = await response.json();
 
@@ -7863,6 +7865,7 @@ class PRManager {
   }
 
   async scrollToFile(filePath) {
+    this.codePreview?.close();
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       // Render the body so the scroll target has its real height (an empty
@@ -8975,7 +8978,7 @@ class PRManager {
     if (!diffContainer) return;
 
     // Fetch file content
-    const data = await this.fetchFileContent(contextFile.file);
+    const data = await this.fetchFileContent(contextFile.file, { currentVersion: true });
     if (!data || !data.lines) return;
 
     // Check if a wrapper already exists for this file
@@ -9226,6 +9229,7 @@ class PRManager {
    * @param {number} [lineStart] - Optional line number to highlight
    */
   async scrollToContextFile(file, lineStart, contextId) {
+    this.codePreview?.close();
     // Use contextId to find a specific chunk tbody within a merged wrapper,
     // or fall back to a standalone wrapper or the file-level wrapper.
     let target;
@@ -9269,6 +9273,11 @@ class PRManager {
         }, { once: true });
       }
     }
+  }
+
+  openCodePreview(file, lineStart, lineEnd, trigger) {
+    if (!this.codePreview) this.codePreview = new window.CodePreview(this);
+    return this.codePreview.open(file, lineStart, lineEnd, trigger);
   }
 
   async ensureContextFile(file, lineStart = null, lineEnd = null) {

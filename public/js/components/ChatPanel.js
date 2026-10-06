@@ -5771,7 +5771,8 @@ class ChatPanel {
         link.dataset.file = filePath;
         if (lineStart) link.dataset.lineStart = lineStart;
         if (lineEnd) link.dataset.lineEnd = lineEnd;
-        link.title = 'View in diff';
+        link.title = 'View code';
+        link.href = '#';
 
         // File icon SVG
         const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -5814,9 +5815,21 @@ class ChatPanel {
    * @param {HTMLElement} linkEl - The clicked .chat-file-link element
    */
   async _handleFileLinkClick(linkEl) {
-    const file = linkEl.dataset.file;
+    // Chat may cite a changed file with a leading ./ path alias.
+    const file = linkEl.dataset.file.replace(/^(?:\.\/)+/, '');
     const lineStart = linkEl.dataset.lineStart ? parseInt(linkEl.dataset.lineStart, 10) : null;
     const lineEnd = linkEl.dataset.lineEnd ? parseInt(linkEl.dataset.lineEnd, 10) : null;
+
+    // Referenced files outside the current diff open temporarily. Looking at
+    // a link must not persist a context file or change review progress.
+    const manager = window.prManager;
+    const inDiff = manager?.diffFiles?.some(entry => entry.file === file);
+    const inContext = manager?.contextFiles?.some(entry => entry.file === file);
+    if (manager?.openCodePreview && !inDiff && !inContext) {
+      await manager.openCodePreview(file, lineStart, lineEnd, linkEl);
+      return;
+    }
+    manager?.codePreview?.close();
 
     // Check if file wrapper exists in DOM
     const wrapper = document.querySelector(`[data-file-name="${CSS.escape(file)}"]`);
