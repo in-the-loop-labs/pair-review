@@ -37,6 +37,15 @@ const { PRMetadataRepository } = require('../../src/database.js');
 
 const IDS = { reviewId: 42, serverPort: 7247, runId: 'run-1' };
 
+describe('exact executable PR identity', () => {
+  it('uses the recorded upstream URL for both metadata shapes, including fork reviews', () => {
+    const html_url = 'https://github.com/upstream/project/pull/42';
+    expect(Analyzer.resolvePrUrl({ html_url, repository: { full_name: 'contributor/project' } })).toBe(html_url);
+    expect(Analyzer.resolvePrUrl({ pr_data: JSON.stringify({ html_url }), repository: 'contributor/project' })).toBe(html_url);
+    expect(Analyzer.resolvePrUrl({ local_path: '/local' })).toBeNull();
+  });
+});
+
 /** The normalized `pr_metadata` row shape (what getByPR returns). */
 const NORMALIZED_METADATA = {
   id: 7,

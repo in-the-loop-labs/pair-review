@@ -39,6 +39,7 @@ const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : 
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
 const { attemptDelegation } = require('./single-port');
 const { probeServer, runDelegatedAnalysis } = require('./headless/delegate');
+const { assertInteractivePublication } = require('./review-publication');
 
 let db = null;
 
@@ -1368,6 +1369,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
     // owner/repo before falling back to GitHub/Graphite parsers.
     const parser = new PRArgumentParser(config);
     prInfo = await parser.parsePRArguments(args);
+    assertInteractivePublication(config, resolveCliBindingRepository(prInfo, config), flags);
 
     // Resolve + validate the council FAIL-FAST, before any worktree/network
     // work, so a bad handle or invalid config surfaces immediately. The actual
