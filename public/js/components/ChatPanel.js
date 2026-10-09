@@ -1214,9 +1214,10 @@ class ChatPanel {
     let startWidth = 0;
 
     const onMouseMove = (e) => {
-      // Compute dynamic max: leave room for the sidebar and a minimum content area
-      const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
-      const dynamicMax = window.innerWidth - sidebarWidth - 100;
+      // Dynamic max: leave room for the docked sidebar and a minimum content
+      // area. Shared with the Review panel so both resize against the same
+      // bound (a collapsed/slim-screen sidebar correctly counts as 0).
+      const dynamicMax = window.PanelResizer?.getDynamicPanelMax?.() ?? (window.innerWidth - 100);
 
       // Panel is right-anchored, so dragging left (decreasing clientX) should increase width
       const delta = startX - e.clientX;

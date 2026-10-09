@@ -234,6 +234,8 @@ class PRManager {
     // Lazy-instantiated TourBar / TourRenderer; populated on first open.
     this._tourBar = null;
     this._tourRenderer = null;
+    // Re-measures the mounted tour bar; see _trackTourBarHeight().
+    this._tourBarResizeObserver = null;
     // Tri-state mirror of `tours.enabled` in /api/config. Tours are
     // independent of summaries on both the server and the client (see
     // the explanatory comment in setupEventHandlers()).
@@ -501,6 +503,29 @@ class PRManager {
     // Re-measure when toolbar resizes (e.g. analysis dots appear/disappear)
     if (typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(update).observe(toolbar);
+    }
+  }
+
+  /**
+   * Track the mounted tour bar's height (it grows when wrapped). Call after each mount.
+   */
+  _trackTourBarHeight() {
+    const bar = document.querySelector('.tour-bar');
+    if (!bar) return;
+
+    const update = () => {
+      if (bar.offsetHeight) {
+        document.documentElement.style.setProperty(
+          '--tour-bar-rendered-height', bar.offsetHeight + 'px'
+        );
+      }
+    };
+    update();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      this._tourBarResizeObserver?.disconnect();
+      this._tourBarResizeObserver = new ResizeObserver(update);
+      this._tourBarResizeObserver.observe(bar);
     }
   }
 
@@ -2291,6 +2316,7 @@ class PRManager {
     // controls stay visible.
     const diffView = document.querySelector('.main-layout .diff-view');
     this._tourBar.mount(diffView || undefined);
+    this._trackTourBarHeight();
     this._tourBar.setStops(this._tourStops);
     this._tourBar.setCompleted(false);
 
@@ -2464,6 +2490,10 @@ class PRManager {
     if (this._tourBar) {
       this._tourBar.unmount();
     }
+    // The measured height is only read under body.tour-active, so a stale
+    // value is harmless; just stop observing the removed bar.
+    this._tourBarResizeObserver?.disconnect();
+    this._tourBarResizeObserver = null;
     this._unregisterTourKeyboardHandlers();
     this._tourActiveIndex = -1;
     // Consume any pending tour stashed by `review:tour_ready` while we
@@ -7843,23 +7873,81 @@ class PRManager {
       });
     };
 
+    // Below its breakpoint pr.css hides the docked sidebar and flags that via
+    // --sidebar-overlay-only; the toolbar toggle then opens it as an overlay
+    // drawer instead. Reading the flag keeps the breakpoint in CSS only.
+    const isOverlayMode = () => getComputedStyle(document.documentElement)
+      .getPropertyValue('--sidebar-overlay-only').trim() === '1';
+
+    // --sidebar-width is the room the docked sidebar takes from the layout:
+    // 0 while collapsed, or on slim screens where it only floats.
+    const syncSidebarWidth = () => {
+      const docked = !isOverlayMode() && !sidebar.classList.contains('collapsed');
+      const width = window.PanelResizer?.getSavedWidth('sidebar')
+        || window.PanelResizer?.getDefaultWidth('sidebar')
+        || 260;
+      document.documentElement.style.setProperty('--sidebar-width', docked ? `${width}px` : '0px');
+      // Notify PanelGroup so its docked-vs-floating decision sees the change
+      window.panelGroup?._updateRightPanelGroupWidth();
+    };
+
     // Restore collapsed state from localStorage (synchronous on init is fine)
     const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
     if (isCollapsed) {
       sidebar.classList.add('collapsed');
-      document.documentElement.style.setProperty('--sidebar-width', '0px');
-    } else {
-      const savedWidth = window.PanelResizer?.getSavedWidth('sidebar')
-        || window.PanelResizer?.getDefaultWidth('sidebar')
-        || 260;
-      document.documentElement.style.setProperty('--sidebar-width', `${savedWidth}px`);
     }
+    syncSidebarWidth();
+
+    // updateFileList() re-runs this whenever the file list changes; bind the
+    // listeners only once. (The overlay toggle below is not idempotent, so
+    // stacked listeners would cancel each other out.)
+    if (sidebar.dataset.listenerAttached) return;
+    sidebar.dataset.listenerAttached = 'true';
+
+    // The drawer state is transient so it never overwrites the persisted
+    // docked (wide-screen) collapsed state.
+    const setOverlayOpen = (open) => {
+      sidebar.classList.toggle('sidebar--overlay-open', open);
+      collapsedBtn.setAttribute('aria-expanded', String(open));
+    };
 
     // Collapse button (X) in sidebar header - collapses sidebar
-    toggleBtn.addEventListener('click', () => toggleSidebar(true));
+    toggleBtn.addEventListener('click', () => {
+      if (isOverlayMode()) {
+        setOverlayOpen(false);
+        return;
+      }
+      toggleSidebar(true);
+    });
 
-    // Expand button in diff toolbar - expands sidebar
-    collapsedBtn.addEventListener('click', () => toggleSidebar(false));
+    // Expand button in diff toolbar - expands sidebar (toggles the drawer on slim screens)
+    collapsedBtn.addEventListener('click', () => {
+      if (isOverlayMode()) {
+        setOverlayOpen(!sidebar.classList.contains('sidebar--overlay-open'));
+        return;
+      }
+      toggleSidebar(false);
+    });
+
+    // Picking a file from the drawer jumps to it, so get the drawer out of the
+    // way of the diff it was covering.
+    sidebar.addEventListener('click', (e) => {
+      if (isOverlayMode() && e.target.closest?.('.file-item')) {
+        setOverlayOpen(false);
+      }
+    });
+
+    // Crossing the breakpoint: leaving slim mode docks the sidebar per its
+    // persisted state, so drop the drawer (it must not reappear when the
+    // viewport narrows again) and re-derive --sidebar-width either way.
+    let wasOverlayMode = isOverlayMode();
+    window.addEventListener('resize', () => {
+      const overlayMode = isOverlayMode();
+      if (overlayMode === wasOverlayMode) return;
+      wasOverlayMode = overlayMode;
+      if (!overlayMode) setOverlayOpen(false);
+      syncSidebarWidth();
+    });
   }
 
   async scrollToFile(filePath) {

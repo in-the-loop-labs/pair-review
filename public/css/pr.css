@@ -6121,6 +6121,11 @@ div.external-comment-row {
   --ai-panel-width: 320px;
   --chat-panel-width: 0px;
 
+  /* Set to 1 by the breakpoints below when a panel can only float as a drawer.
+     Read by PRManager.setupSidebarToggle / PanelGroup, so breakpoints stay in CSS. */
+  --sidebar-overlay-only: 0;
+  --right-panel-group-overlay-only: 0;
+
   /* Transitions */
   --transition-fast: 0.1s ease;
   --transition-default: 0.2s ease;
@@ -7261,13 +7266,8 @@ body.resizing * {
   display: flex;
 }
 
-/* Ensure toggle buttons show when panels are collapsed via responsive rules */
-@media (max-width: 900px) {
-  #ai-panel-toggle,
-  #chat-toggle-btn {
-    display: flex;
-  }
-}
+/* While the panels float as an overlay drawer both toggles stay visible
+   (see "Overlay Drawers" in the responsive section) */
 
 /* --------------------------------------------------------------------------
    Right Panel Group (Review + Chat)
@@ -9698,8 +9698,8 @@ body.resizing * {
 
    Standard Breakpoints:
    - 1400px: Large desktop - reduce AI panel width
-   - 1200px: Desktop - hide sidebar, show collapsed toggle
-   - 900px:  Small desktop/large tablet - hide AI panel and header center
+   - 1200px: Desktop - file navigator only opens as a drawer (.sidebar--overlay-open)
+   - 900px:  Small desktop/large tablet - Review/Chat always float as a drawer; hide header center
    - 768px:  Tablet - hide breadcrumb, simplify toolbar (hide separator/commit)
    - 480px:  Mobile - (reserved for future mobile-specific styles)
 
@@ -9713,6 +9713,10 @@ body.resizing * {
 }
 
 @media (max-width: 1200px) {
+  :root {
+    --sidebar-overlay-only: 1;
+  }
+
   .main-layout .sidebar {
     display: none;
   }
@@ -9720,13 +9724,37 @@ body.resizing * {
   .diff-toolbar .sidebar-toggle-collapsed {
     display: flex;
   }
+
+  /* File navigator drawer (transient, see PRManager.setupSidebarToggle). Overrides
+     the display:none above, the 768px .files-sidebar rule and .collapsed. */
+  .main-layout .sidebar.sidebar--overlay-open {
+    display: flex;
+    position: absolute;
+    top: var(--overlay-drawer-top);
+    bottom: 0;
+    left: 0;
+    /* Above the Review/Chat drawer (25): it's transient, so it's the one in use */
+    z-index: 26;
+    width: min(300px, calc(100% - 48px));
+    padding: 0;
+    border-right: 1px solid var(--color-border-primary);
+    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+  }
+
+  /* Drawer width is fixed; drag-resizing only applies to the docked sidebar */
+  .main-layout .sidebar.sidebar--overlay-open > .resize-handle {
+    display: none;
+  }
+
+  [data-theme="dark"] .main-layout .sidebar.sidebar--overlay-open {
+    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+  }
 }
 
 @media (max-width: 900px) {
-  .right-panel-group,
-  .ai-panel,
-  .chat-panel {
-    display: none;
+  :root {
+    --right-panel-group-overlay-only: 1;
   }
 
   .header-center {
@@ -9736,6 +9764,79 @@ body.resizing * {
   .header {
     justify-content: space-between;
   }
+}
+
+/* Overlay Drawers: panels that can't dock float over the diff, below the toolbar
+   (.sidebar--overlay-open, .right-panel-group--overlay set by PanelGroup).
+   z-index: drawers 25/26 < toolbar 27 (so its dropdowns paint on top) < tour bar 28. */
+:root {
+  --overlay-drawer-top: var(--toolbar-height, 57px);
+}
+
+body.tour-active {
+  --overlay-drawer-top: calc(var(--toolbar-height, 57px) + var(--tour-bar-offset));
+}
+
+/* Containing block for the drawers */
+.main-layout:has(> .sidebar--overlay-open),
+.main-layout:has(> .right-panel-group--overlay) {
+  position: relative;
+}
+
+/* Out-specify the base rules (.tour-bar is declared later at z-index 6) */
+.main-layout:has(> .sidebar--overlay-open) .diff-toolbar,
+.main-layout:has(> .right-panel-group--overlay) .diff-toolbar {
+  z-index: 27;
+}
+
+.main-layout:has(> .sidebar--overlay-open) .tour-bar,
+.main-layout:has(> .right-panel-group--overlay) .tour-bar {
+  z-index: 28;
+}
+
+/* Review/Chat drawer */
+.right-panel-group.right-panel-group--overlay {
+  position: absolute;
+  top: var(--overlay-drawer-top);
+  right: 0;
+  bottom: 0;
+  height: auto;
+  max-width: 100%;
+  z-index: 25;
+  background: var(--color-bg-primary);
+}
+
+.right-panel-group--overlay:not(.group-collapsed) {
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"] .right-panel-group--overlay:not(.group-collapsed) {
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Side-by-side panels shrink to share the drawer instead of overflowing */
+.right-panel-group--overlay .ai-panel,
+.right-panel-group--overlay .chat-panel {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* Keep both toggles visible while floating so they can close the drawer too
+   (disabled chat still hides #chat-toggle-btn via an !important rule) */
+.main-layout:has(> .right-panel-group--overlay) #ai-panel-toggle,
+.main-layout:has(> .right-panel-group--overlay) #chat-toggle-btn {
+  display: flex;
+}
+
+/* ...and give the Review toggle an active state like Chat's */
+.main-layout:has(> .right-panel-group--overlay .ai-panel:not(.collapsed)) #ai-panel-toggle {
+  background: var(--ai-subtle, rgba(217, 119, 6, 0.08));
+  border-color: var(--ai-primary, #d97706);
+}
+
+[data-theme="dark"] .main-layout:has(> .right-panel-group--overlay .ai-panel:not(.collapsed)) #ai-panel-toggle {
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  border-color: var(--ai-primary, #f59e0b);
 }
 
 @media (max-width: 768px) {
@@ -12276,13 +12377,6 @@ body.resizing * {
   border-color: rgba(248, 81, 73, 0.2);
 }
 
-/* Responsive: narrower on small screens */
-@media (max-width: 768px) {
-  .chat-panel {
-    width: 100% !important;
-  }
-}
-
 /* ==========================================================================
    Context Files
    Pinned non-diff file ranges shown below the diff for review context
@@ -13687,6 +13781,9 @@ body.tour-active .tour-annotation-row.active-stop .tour-annotation {
      vertical padding). The bar also sets `min-height: var(--tour-bar-height)`
      so its actual rendered height never drops below this value. */
   --tour-bar-height: 56px;
+  /* Live bar height (it grows when contents wrap), published by
+     PRManager._trackTourBarHeight. Kept out of min-height so the bar can shrink. */
+  --tour-bar-offset: var(--tour-bar-rendered-height, var(--tour-bar-height));
 }
 
 /* While a tour is active, push the sticky `.diff-toolbar` and the
@@ -13694,13 +13791,13 @@ body.tour-active .tour-annotation-row.active-stop .tour-annotation {
    below it instead of overlapping. The bar itself is `position: sticky;
    top: 0` inside the same scroll container (.main-layout .diff-view),
    so all three pin in order: tour bar (top: 0), diff toolbar (top:
-   --tour-bar-height), file header (top: --toolbar-height + --tour-bar-height). */
+   --tour-bar-offset), file header (top: --toolbar-height + --tour-bar-offset). */
 body.tour-active .diff-toolbar {
-  top: var(--tour-bar-height);
+  top: var(--tour-bar-offset);
 }
 
 body.tour-active .d2h-file-header {
-  top: calc(var(--toolbar-height, 0px) + var(--tour-bar-height));
+  top: calc(var(--toolbar-height, 0px) + var(--tour-bar-offset));
 }
 
 .tour-bar {

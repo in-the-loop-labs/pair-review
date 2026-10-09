@@ -13,6 +13,11 @@ class PanelGroup {
   static V_RATIO_KEY = 'panel-group-v-ratio';
   static MIN_PANEL_HEIGHT = 150;
 
+  // Panels float instead of docking when docking would leave the diff narrower
+  // than this (always below the --right-panel-group-overlay-only breakpoint).
+  // Small enough that 1280px + navigator + both panels (~300px diff) stays docked.
+  static MIN_DOCKED_DIFF_WIDTH = 280;
+
   // Tooltip text for each layout
   static LAYOUT_LABELS = {
     'h-review-chat': 'Review left, Chat right',
@@ -46,6 +51,10 @@ class PanelGroup {
     // Read persisted layout
     const savedLayout = localStorage.getItem(PanelGroup.STORAGE_KEY);
     this._layout = PanelGroup.LAYOUTS.includes(savedLayout) ? savedLayout : PanelGroup.LAYOUTS[0];
+    // Layout actually applied: _layout, or its vertical twin while a too-narrow
+    // drawer stacks side-by-side panels (see _syncLayoutClass)
+    this._effectiveLayout = null;
+    this._sideBySideFits = true;
 
     // Restore direction preferences from localStorage
     const savedLastH = localStorage.getItem('panel-group-last-h');
@@ -128,6 +137,15 @@ class PanelGroup {
         }
       });
     }
+
+    // Re-evaluate docking when the diff's room changes: viewport resizes and the
+    // docked navigator toggling or resizing (panel changes already call this).
+    const update = () => this._updateRightPanelGroupWidth();
+    window.addEventListener('resize', update);
+    const sidebar = document.getElementById('files-sidebar');
+    if (sidebar && typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(update).observe(sidebar);
+    }
   }
 
   /**
@@ -137,31 +155,44 @@ class PanelGroup {
   _applyLayout(layout) {
     if (!this.groupEl) return;
 
-    // Remove all layout classes
-    PanelGroup.LAYOUTS.forEach(l => {
-      this.groupEl.classList.remove(`layout-${l}`);
-    });
-
-    // Add the current layout class
-    this.groupEl.classList.add(`layout-${layout}`);
     this._layout = layout;
 
     // Update direction preferences
     if (layout.startsWith('h-')) {
       this._lastHorizontalLayout = layout;
       localStorage.setItem('panel-group-last-h', layout);
-      // Clear explicit heights when switching to horizontal so panels revert to flex defaults
-      this._clearVerticalHeights();
     } else {
       this._lastVerticalLayout = layout;
       localStorage.setItem('panel-group-last-v', layout);
+    }
+
+    // Recalculate group width, which applies the layout class (forced, so
+    // heights are cleared/restored as before) and updates the popover
+    this._effectiveLayout = null;
+    this._updateRightPanelGroupWidth();
+  }
+
+  /**
+   * Apply the layout class: the chosen layout, or its vertical twin when `stack`.
+   */
+  _syncLayoutClass(stack = false) {
+    if (!this.groupEl) return;
+    const effective = stack ? this._layout.replace(/^h-/, 'v-') : this._layout;
+    if (effective === this._effectiveLayout) return;
+
+    PanelGroup.LAYOUTS.forEach(l => {
+      this.groupEl.classList.remove(`layout-${l}`);
+    });
+    this.groupEl.classList.add(`layout-${effective}`);
+    this._effectiveLayout = effective;
+
+    if (effective.startsWith('h-')) {
+      // Clear explicit heights when switching to horizontal so panels revert to flex defaults
+      this._clearVerticalHeights();
+    } else {
       // Restore persisted vertical split ratio
       this._restoreVerticalRatio();
     }
-
-    // Update popover active state and recalculate group width
-    this._updatePopoverActiveState();
-    this._updateRightPanelGroupWidth();
   }
 
   /**
@@ -288,12 +319,17 @@ class PanelGroup {
   _updatePopoverActiveState() {
     if (!this._popoverEl) return;
 
+    // Reflect what is shown: while the panels are forced to stack, mark the
+    // stacked layout and hide the side-by-side options (they can't apply)
+    const active = this._effectiveLayout || this._layout;
     const thumbs = this._popoverEl.querySelectorAll('.layout-popover__thumb');
     thumbs.forEach(thumb => {
       thumb.classList.toggle(
         'layout-popover__thumb--active',
-        thumb.dataset.layout === this._layout
+        thumb.dataset.layout === active
       );
+      const hidden = !this._sideBySideFits && thumb.dataset.layout.startsWith('h-');
+      thumb.style.display = hidden ? 'none' : '';
     });
   }
 
@@ -356,8 +392,11 @@ class PanelGroup {
     const sidebar = document.getElementById('files-sidebar');
     if (!sidebar) return;
 
-    const isCollapsed = sidebar.classList.contains('collapsed');
-    if (isCollapsed) {
+    // Go by what is actually on screen rather than the `collapsed` class: on
+    // slim screens CSS hides the docked sidebar (or shows it as an overlay
+    // drawer) independently of its persisted collapsed state.
+    const isShown = sidebar.offsetWidth > 0;
+    if (!isShown) {
       // Click the expand button in the diff toolbar
       const expandBtn = document.getElementById('sidebar-toggle-collapsed');
       if (expandBtn) expandBtn.click();
@@ -507,7 +546,7 @@ class PanelGroup {
     }
 
     // Clear inline flex heights so the remaining panel fills the space
-    if (this._layout.startsWith('v-')) {
+    if ((this._effectiveLayout || this._layout).startsWith('v-')) {
       this._clearVerticalHeights();
     }
 
@@ -524,7 +563,7 @@ class PanelGroup {
     this._reviewVisible = visible;
 
     // Clear inline flex heights so the remaining panel fills the space
-    if (this._layout.startsWith('v-')) {
+    if ((this._effectiveLayout || this._layout).startsWith('v-')) {
       this._clearVerticalHeights();
     }
 
@@ -547,9 +586,49 @@ class PanelGroup {
   }
 
   /**
+   * Whether the Review/Chat group should float over the diff instead of docking (pure).
+   */
+  static shouldOverlay({ slimViewport, layoutWidth, dockedSidebarWidth, groupWidth }) {
+    if (slimViewport) return true;
+    // Nothing visible to dock, or no layout to measure (e.g. not rendered yet)
+    if (!(groupWidth > 0) || !(layoutWidth > 0)) return false;
+    const diffWidth = layoutWidth - (dockedSidebarWidth || 0) - groupWidth;
+    return diffWidth < PanelGroup.MIN_DOCKED_DIFF_WIDTH;
+  }
+
+  /**
+   * Whether side-by-side panels must stack because they'd shrink below their minimums (pure).
+   */
+  static shouldStack({ availableWidth, aiWidth, chatWidth, aiMin, chatMin }) {
+    const total = aiWidth + chatWidth;
+    if (!(aiWidth > 0) || !(chatWidth > 0) || !(availableWidth > 0) || total <= availableWidth) return false;
+    // Both panels flex-shrink in proportion to their widths
+    const scale = availableWidth / total;
+    return aiWidth * scale < aiMin || chatWidth * scale < chatMin;
+  }
+
+  /**
+   * Toggle .right-panel-group--overlay for the given docked width; returns whether it floats.
+   */
+  _updateOverlayMode(groupWidth, layoutWidth) {
+    if (!this.groupEl) return false;
+    const slimViewport = getComputedStyle(document.documentElement)
+      .getPropertyValue('--right-panel-group-overlay-only').trim() === '1';
+    const overlay = PanelGroup.shouldOverlay({
+      slimViewport,
+      layoutWidth,
+      dockedSidebarWidth: window.PanelResizer?.getDockedSidebarWidth?.() ?? 0,
+      groupWidth
+    });
+    this.groupEl.classList.toggle('right-panel-group--overlay', overlay);
+    return overlay;
+  }
+
+  /**
    * Compute and set --right-panel-group-width based on current layout and panel visibility.
    * In horizontal layouts, the group width is the SUM of visible panels.
    * In vertical layouts, the group width is the MAX of visible panels.
+   * While the group floats over the diff it takes no space, so the variable is 0.
    * This single variable is used by max-width calcs on .ai-suggestion and .user-comment.
    */
   _updateRightPanelGroupWidth() {
@@ -565,7 +644,20 @@ class PanelGroup {
       ? Math.max(aiWidth, chatWidth)
       : aiWidth + chatWidth;
 
-    document.documentElement.style.setProperty('--right-panel-group-width', `${groupWidth}px`);
+    const layoutWidth = this.groupEl?.parentElement?.clientWidth || 0;
+    const overlay = this._updateOverlayMode(groupWidth, layoutWidth);
+    // A drawer too narrow for side-by-side panels stacks them (user's layout
+    // untouched). Checked for vertical layouts too, for the popover's options.
+    this._sideBySideFits = !PanelGroup.shouldStack({
+      availableWidth: layoutWidth,
+      aiWidth,
+      chatWidth,
+      aiMin: window.PanelResizer?.getMinWidth?.('ai-panel') ?? 0,
+      chatMin: window.ChatPanel?.RESIZE_CONFIG?.min ?? 0
+    });
+    this._syncLayoutClass(overlay && !isVertical && !this._sideBySideFits);
+    this._updatePopoverActiveState();
+    document.documentElement.style.setProperty('--right-panel-group-width', `${overlay ? 0 : groupWidth}px`);
   }
 
   /**
@@ -685,7 +777,7 @@ class PanelGroup {
 
     if (!aiPanel || !chatPanel) return { topPanel: null, bottomPanel: null };
 
-    if (this._layout === 'v-review-chat') {
+    if ((this._effectiveLayout || this._layout) === 'v-review-chat') {
       return { topPanel: aiPanel, bottomPanel: chatPanel };
     }
     // v-chat-review
@@ -705,7 +797,7 @@ class PanelGroup {
 
     // Defer to next frame so flex container has settled
     requestAnimationFrame(() => {
-      if (!this.groupEl || !this._layout.startsWith('v-')) return;
+      if (!this.groupEl || !(this._effectiveLayout || this._layout).startsWith('v-')) return;
 
       const groupHeight = this.groupEl.clientHeight;
       const dividerHeight = this._dividerEl ? this._dividerEl.offsetHeight : 6;
