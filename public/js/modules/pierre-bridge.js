@@ -2024,7 +2024,7 @@ class PierreBridge {
       <div class="ai-suggestion-header">
         <div class="ai-suggestion-header-left">
           <span class="ai-suggestion-category">${escapeHtml(suggestion.type || '')}</span>
-          <span class="ai-title">${escapeHtml(suggestion.title || '')}</span>
+          <span class="ai-title smart-truncate">${escapeHtml(suggestion.title || '')}</span>
         </div>
       </div>
       <div class="ai-suggestion-body">${bodyHTML}</div>

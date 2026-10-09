@@ -1455,6 +1455,43 @@
   white-space: nowrap;
 }
 
+/* Smart truncation (js/components/SmartTruncate.js) */
+.smart-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Front truncation: RTL box clips on the left; isolated LTR text keeps order */
+.smart-truncate--start {
+  direction: rtl;
+  text-align: left;
+}
+
+.smart-truncate--start > .smart-truncate__text {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.smart-truncate-tooltip {
+  position: fixed;
+  z-index: 10000;
+  max-width: min(640px, calc(100vw - 16px));
+  padding: 6px 10px;
+  background: var(--color-bg-primary, #ffffff);
+  color: var(--color-text-primary, #1f2328);
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  border-radius: var(--radius-md, 6px);
+  box-shadow: 0 4px 12px var(--color-shadow-large, rgba(0, 0, 0, 0.3));
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
 /* File header comment button and file header chat button */
 .file-header-comment-btn,
 .file-header-chat-btn,
@@ -2090,6 +2127,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-weight: 600;
   background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
   color: var(--ai-primary, #f59e0b);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .ai-suggestion.ai-type-praise .praise-badge svg {
@@ -2192,6 +2231,12 @@ tr.newly-expanded .d2h-code-line-ctn {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* Titles (which have a tooltip) shrink before the badges beside them */
+.ai-title.smart-truncate,
+.collapsed-title.smart-truncate {
+  flex-shrink: 1000;
 }
 
 /* Confidence display removed to match cleaner prototype design (issue pair_review-7g5) */
@@ -12340,12 +12385,9 @@ body.resizing * {
   font-size: 14px;
 }
 
-/* Don't grow (keeps badge next to text), shrink for long paths, clip from the left so the filename stays visible */
+/* Don't grow (keeps badge next to text), shrink for long paths */
 .context-file-header .d2h-file-name {
   flex: 0 1 auto;
-  direction: rtl;
-  unicode-bidi: plaintext;
-  text-overflow: ellipsis;
 }
 
 /* Push viewed checkbox (and everything after it) to the right */

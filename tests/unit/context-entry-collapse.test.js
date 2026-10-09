@@ -19,6 +19,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 const { PRManager } = require('../../public/js/pr.js');
+const { SmartTruncate } = require('../../public/js/components/SmartTruncate.js');
+
+// Only the markup is under test; drop the global tooltip listeners
+window.smartTruncate.destroy();
 
 // jsdom exposes CSS.escape via window; make sure the global exists for code
 // that references bare `CSS`.
@@ -245,6 +249,15 @@ describe('context entry collapse independence (#540)', () => {
       const wrapper = document.querySelector('.d2h-file-wrapper.context-file');
       expect(wrapper.querySelector('.file-viewed-checkbox').checked).toBe(true);
       expect(wrapper.classList.contains('collapsed')).toBe(true);
+    });
+
+    it('front-truncates the file name like diff headers', async () => {
+      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
+
+      const fileName = document.querySelector('.context-file-header .d2h-file-name');
+      expect(fileName.classList.contains(SmartTruncate.START_CLASS)).toBe(true);
+      expect(fileName.querySelector(`.${SmartTruncate.TEXT_CLASS}`).textContent).toBe(FILE);
+      expect(fileName.dataset.fullText).toBe(FILE);
     });
 
     it('chevron click toggles the context wrapper only', async () => {
