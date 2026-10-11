@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const { queryOne } = require('../database');
 const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
 const { normalizePath, resolveRenamedFile } = require('./paths');
+const { parseHunkHeader } = require('./diff-annotator');
 
 const execPromise = promisify(exec);
 
@@ -35,18 +36,37 @@ function parseUnifiedDiffPatches(diff) {
 /**
  * Count additions and deletions inside a single patch body.
  *
+ * Only lines inside a hunk count: after an `@@` header and within the line
+ * counts it declares. A prefix test cannot tell headers from content — a
+ * deleted `-- x` line is emitted as `--- x` and an added `++ x` as `+++ x` —
+ * but hunk state can: `---`/`+++` are headers only outside a hunk (the same
+ * rule `buildDiffLineSet` in diff-annotator.js follows). Mirrored in the
+ * browser by `HunkParser.countPatchStats`; both suites share
+ * tests/utils/diff-stat-fixtures.js.
+ *
  * @param {string} patch - Per-file patch text
  * @returns {{ insertions: number, deletions: number }}
  */
 function countPatchStats(patch) {
   let insertions = 0;
   let deletions = 0;
+  let oldRemaining = 0;
+  let newRemaining = 0;
 
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++ ')) {
+  for (const line of (patch || '').split('\n')) {
+    const hunk = parseHunkHeader(line);
+    if (hunk) {
+      oldRemaining = hunk.oldCount;
+      newRemaining = hunk.newCount;
+    } else if (line.startsWith('+') && newRemaining > 0) {
       insertions++;
-    } else if (line.startsWith('-') && !line.startsWith('--- ')) {
+      newRemaining--;
+    } else if (line.startsWith('-') && oldRemaining > 0) {
       deletions++;
+      oldRemaining--;
+    } else if (line.startsWith(' ')) {
+      oldRemaining--;
+      newRemaining--;
     }
   }
 

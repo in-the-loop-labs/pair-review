@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const logger = require('../utils/logger');
+const { countPatchStats } = require('../utils/diff-file-list');
 
 const defaults = {
   parseUnifiedDiffHunks: require('../utils/diff-hunks').parseUnifiedDiffHunks,
@@ -24,8 +25,12 @@ const defaults = {
 };
 
 /**
- * Count '+' lines in parsed hunks to gate summary generation by added-line volume.
- * Hunk-header lines are not '+'-prefixed by `parseUnifiedDiffHunks`, so this is safe.
+ * Count added lines in parsed hunks to gate summary generation by added-line volume.
+ *
+ * Every '+' line in a hunk body is an addition — including an added `++ x`
+ * line, which the diff spells `+++ x` — so no `+++` exclusion applies here.
+ * Counting goes through `countPatchStats`, which also bounds each hunk by the
+ * line counts its `@@` header declares.
  * @param {Map<string, Array<{header: string, lines: string[]}>>} hunksByFile
  * @returns {number}
  */
@@ -33,9 +38,7 @@ function countAddedLines(hunksByFile) {
   let total = 0;
   for (const hunks of hunksByFile.values()) {
     for (const hunk of hunks) {
-      for (const line of hunk.lines) {
-        if (line.startsWith('+') && !line.startsWith('+++')) total++;
-      }
+      total += countPatchStats([hunk.header, ...hunk.lines].join('\n')).insertions;
     }
   }
   return total;

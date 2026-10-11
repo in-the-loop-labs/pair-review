@@ -207,7 +207,12 @@ BEGIN {
 }
 
 # --- and +++ headers ---
-/^--- / {
+# Only outside a hunk body: inside one these prefixes are CONTENT (a deleted
+# `-- x` line is emitted as `--- x`, an added `++ x` as `+++ x`) and must fall
+# through to the deletion/addition rules below, or the path is overwritten and
+# every later line number in the file shifts. `git diff` always opens a new
+# file with `diff --git`, which resets in_hunk before the real headers arrive.
+!in_hunk && /^--- / {
   s = $0
   sub(/^--- /, "", s)
   sub(/^a\//, "", s)
@@ -217,7 +222,7 @@ BEGIN {
   next
 }
 
-/^\+\+\+ / {
+!in_hunk && /^\+\+\+ / {
   s = $0
   sub(/^\+\+\+ /, "", s)
   sub(/^b\//, "", s)

@@ -390,6 +390,41 @@ class HunkParser {
   }
 
   /**
+   * Count added and deleted lines in a per-file patch.
+   *
+   * Counts only lines inside a hunk (a block from parseDiffIntoBlocks, within
+   * the line counts its `@@` header declares), so a prefix never decides
+   * header-vs-content: inside a hunk a deleted `-- x` line is `--- x` and an
+   * added `++ x` line is `+++ x`, and both count. Mirrors the server's
+   * `countPatchStats` (src/utils/diff-file-list.js); both suites share
+   * tests/utils/diff-stat-fixtures.js.
+   * @param {string} patch - Per-file patch text
+   * @returns {{additions: number, deletions: number}}
+   */
+  static countPatchStats(patch) {
+    let additions = 0;
+    let deletions = 0;
+    for (const block of HunkParser.parseDiffIntoBlocks(patch || '')) {
+      const counts = block.header.match(/@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/) || [];
+      let oldRemaining = counts[1] === undefined ? 1 : parseInt(counts[1], 10);
+      let newRemaining = counts[2] === undefined ? 1 : parseInt(counts[2], 10);
+      for (const line of block.lines) {
+        if (line.startsWith('+') && newRemaining > 0) {
+          additions++;
+          newRemaining--;
+        } else if (line.startsWith('-') && oldRemaining > 0) {
+          deletions++;
+          oldRemaining--;
+        } else if (line.startsWith(' ')) {
+          oldRemaining--;
+          newRemaining--;
+        }
+      }
+    }
+    return { additions, deletions };
+  }
+
+  /**
    * Remove trailing empty string artifact from a block's lines array.
    * split('\n') on newline-terminated input produces a trailing '' that has no
    * diff prefix (+/-/space) and would be misclassified as a context line.

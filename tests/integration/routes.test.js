@@ -579,7 +579,7 @@ describe('PR Management Endpoints', () => {
           'index 1111111..2222222 100644',
           `--- a/${longPath}`,
           `+++ b/${longPath}`,
-          '@@ -1 +1,2 @@',
+          '@@ -1 +1,3 @@',
           ' export const Route = {};',
           '+Route.component = View;',
           '+Route.loader = loader;'

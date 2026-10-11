@@ -235,4 +235,319 @@ describe('buildDiffLineSet', () => {
       expect(buildDiffLineSet(null).hunkOf('a.js', 1, 'RIGHT')).toBeNull();
     });
   });
+
+  describe('hunk bodies that look like file headers', () => {
+    // Captured verbatim from real `git diff` output over a two-file change.
+    // notes.md deletes the line `-- deleted marker` (emitted as `--- deleted
+    // marker`), adds `++ added marker` (emitted as `+++ added marker`) and adds
+    // an unindented `++i;` (emitted as `+++i;`).
+    //
+    // Before the `!inHunk` guard, `parseFileHeader` claimed all three:
+    //   - `--- deleted marker` overwrote oldPath with "deleted marker"
+    //   - `+++ added marker` overwrote newPath with "added marker", so every
+    //     later line in the section was keyed under that fragment of source
+    //   - `+++i;` matched no regex but was still swallowed, so `newLineNum`
+    //     never advanced and every later RIGHT anchor in the file was off by
+    //     one: a comment on real line 5 read as outside the diff, a comment on
+    //     line 4 read as INSIDE it and would have posted against the wrong line
+    const bodyLooksLikeHeaderDiff = [
+      'diff --git a/counter.c b/counter.c',
+      'index 62712c21d6cb3ba0374f8ad58af432e315f70038..698cbc1dc48558b5c86a520dac3409f4e07a3568 100644',
+      '--- a/counter.c',
+      '+++ b/counter.c',
+      '@@ -1,3 +1,4 @@',
+      ' int x;',
+      ' int y;',
+      ' int z;',
+      '+int w;',
+      'diff --git a/notes.md b/notes.md',
+      'index c332251ce08631f085ed4b4552e8b906ccff3fb1..ab9c79d312d0e50e0e15be7e62344cbf4112def1 100644',
+      '--- a/notes.md',
+      '+++ b/notes.md',
+      '@@ -1,4 +1,5 @@',
+      ' line one',
+      '--- deleted marker',
+      '+++ added marker',
+      ' line three',
+      '+++i;',
+      ' line four',
+      ''
+    ].join('\n');
+
+    it('keeps LEFT/RIGHT numbering unshifted across the disguised lines', () => {
+      const { isLineInDiff } = buildDiffLineSet(bodyLooksLikeHeaderDiff);
+      // RIGHT: 1 line one, 2 ++ added marker, 3 line three, 4 ++i;, 5 line four
+      expect(isLineInDiff('notes.md', 1, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('notes.md', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('notes.md', 3, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('notes.md', 4, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('notes.md', 5, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('notes.md', 6, 'RIGHT')).toBe(false);
+      // LEFT: 1 line one, 2 -- deleted marker, 3 line three, 4 line four
+      expect(isLineInDiff('notes.md', 2, 'LEFT')).toBe(true);
+      expect(isLineInDiff('notes.md', 4, 'LEFT')).toBe(true);
+      expect(isLineInDiff('notes.md', 5, 'LEFT')).toBe(false);
+    });
+
+    it('does not attribute the disguised lines to a bogus path', () => {
+      const { isLineInDiff } = buildDiffLineSet(bodyLooksLikeHeaderDiff);
+      expect(isLineInDiff('added marker', 3, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('deleted marker', 3, 'LEFT')).toBe(false);
+    });
+
+    it('advances RIGHT numbering past an unindented `++i;`', () => {
+      // The quiet variant: `+++i;` matches no header regex, so the path
+      // survives — but the line was still swallowed and everything after it
+      // shifted by one. Isolated here so the regression is unmissable.
+      const diff = [
+        'diff --git a/counter.c b/counter.c',
+        '--- a/counter.c',
+        '+++ b/counter.c',
+        '@@ -1,2 +1,3 @@',
+        ' int i = 0;',
+        '+++i;',
+        ' return i;',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('counter.c', 2, 'RIGHT')).toBe(true); // the ++i; line
+      expect(isLineInDiff('counter.c', 3, 'RIGHT')).toBe(true); // return i;
+      expect(isLineInDiff('counter.c', 3, 'LEFT')).toBe(false); // only 2 old lines
+      expect(isLineInDiff('counter.c', 4, 'RIGHT')).toBe(false);
+    });
+
+    it('keeps the file path after a removed SQL `-- comment` line', () => {
+      // A deleted `-- comment` is emitted as `--- comment`, which the header
+      // parser used to read as the old path "comment".
+      const diff = [
+        'diff --git a/q.sql b/q.sql',
+        '--- a/q.sql',
+        '+++ b/q.sql',
+        '@@ -1,3 +1,2 @@',
+        ' SELECT 1;',
+        '--- comment',
+        ' SELECT 2;',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('q.sql', 2, 'LEFT')).toBe(true);  // -- comment
+      expect(isLineInDiff('q.sql', 3, 'LEFT')).toBe(true);  // SELECT 2;
+      expect(isLineInDiff('q.sql', 2, 'RIGHT')).toBe(true); // SELECT 2;
+      expect(isLineInDiff('q.sql', 3, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('comment', 2, 'LEFT')).toBe(false);
+    });
+
+    it('still reads real headers after the previous file\'s hunk', () => {
+      // The guard must not overshoot: outside a hunk these prefixes ARE
+      // headers, and the next file section starts on `diff --git` even though
+      // the previous file's hunk was still open.
+      const { isLineInDiff } = buildDiffLineSet(bodyLooksLikeHeaderDiff);
+      expect(isLineInDiff('counter.c', 4, 'RIGHT')).toBe(true);
+      // counter.c's numbering must not bleed into notes.md's section.
+      expect(isLineInDiff('counter.c', 5, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('notes.md', 0, 'RIGHT')).toBe(false);
+    });
+
+    it('handles a bare unified diff with no `diff --git` line at all', () => {
+      // `diff -u` output and concatenated patch fragments separate files with
+      // the `---`/`+++`/`@@` triple alone, which arrives while the previous
+      // file's hunk is still open. That is the one header the `!inHunk` guard
+      // must still honour.
+      const bare = [
+        '--- a/first.js',
+        '+++ b/first.js',
+        '@@ -1,2 +1,2 @@',
+        ' keep',
+        '-old',
+        '+new',
+        '--- a/second.js',
+        '+++ b/second.js',
+        '@@ -10,2 +10,2 @@',
+        ' keep2',
+        '-old2',
+        '+new2',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(bare);
+      expect(isLineInDiff('first.js', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('second.js', 11, 'RIGHT')).toBe(true);
+      // Second file's lines must NOT be attributed to the first.
+      expect(isLineInDiff('first.js', 11, 'RIGHT')).toBe(false);
+    });
+
+    it('does not mistake a mid-hunk `--- ` / `+++ ` pair for a file section', () => {
+      // The disguised pair is followed by a genuine second hunk of the SAME
+      // file, so it forms the full `---`/`+++`/`@@` triple. The first hunk
+      // still owes one line on each side when the pair arrives, which proves
+      // it is content.
+      const diff = [
+        'diff --git a/queries.sql b/queries.sql',
+        '--- a/queries.sql',
+        '+++ b/queries.sql',
+        '@@ -1,2 +1,2 @@',
+        ' SELECT 1;',
+        '--- deleted marker',
+        '+++ added marker',
+        '@@ -20,2 +20,2 @@',
+        ' SELECT 2;',
+        '-old',
+        '+new',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('queries.sql', 2, 'RIGHT')).toBe(true);  // ++ added marker
+      expect(isLineInDiff('queries.sql', 2, 'LEFT')).toBe(true);   // -- deleted marker
+      expect(isLineInDiff('queries.sql', 21, 'RIGHT')).toBe(true); // second hunk
+      expect(isLineInDiff('added marker', 21, 'RIGHT')).toBe(false);
+    });
+
+    it('reads a `--unified=0` delete/add pair before the next hunk as content', () => {
+      const diff = [
+        'diff --git a/q.sql b/q.sql',
+        '--- a/q.sql',
+        '+++ b/q.sql',
+        '@@ -3 +3 @@',
+        '--- old comment',
+        '+++ new comment',
+        '@@ -10 +10 @@',
+        '-a',
+        '+b',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('q.sql', 3, 'LEFT')).toBe(true);
+      expect(isLineInDiff('q.sql', 3, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('q.sql', 10, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('new comment', 10, 'RIGHT')).toBe(false);
+    });
+
+    it('splits a bare diff only after the open hunk has delivered its lines', () => {
+      const bare = [
+        '--- a/one.sql',
+        '+++ b/one.sql',
+        '@@ -1,2 +1,2 @@',
+        '--- gone',
+        '+++ here',
+        ' same',
+        '--- a/two.sql',
+        '+++ b/two.sql',
+        '@@ -5 +5 @@',
+        '-x',
+        '+y',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(bare);
+      expect(isLineInDiff('one.sql', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('one.sql', 3, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('two.sql', 5, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('two.sql', 5, 'LEFT')).toBe(true);
+      expect(isLineInDiff('here', 5, 'RIGHT')).toBe(false);
+    });
+
+    it('skips `\\ No newline at end of file` without advancing either side', () => {
+      const diff = [
+        'diff --git a/q.sql b/q.sql',
+        '--- a/q.sql',
+        '+++ b/q.sql',
+        '@@ -1,2 +1,3 @@',
+        ' SELECT 1;',
+        '--- trailing comment',
+        '\\ No newline at end of file',
+        '+++x',
+        '+-- new trailing comment',
+        '\\ No newline at end of file',
+        'diff --git a/next.js b/next.js',
+        '--- a/next.js',
+        '+++ b/next.js',
+        '@@ -5,1 +5,2 @@',
+        ' a',
+        '+b',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('q.sql', 2, 'LEFT')).toBe(true);  // -- trailing comment
+      expect(isLineInDiff('q.sql', 3, 'LEFT')).toBe(false);
+      expect(isLineInDiff('q.sql', 2, 'RIGHT')).toBe(true); // ++x
+      expect(isLineInDiff('q.sql', 3, 'RIGHT')).toBe(true); // -- new trailing comment
+      expect(isLineInDiff('q.sql', 4, 'RIGHT')).toBe(false);
+      // The following file header is still recognized.
+      expect(isLineInDiff('next.js', 6, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('q.sql', 6, 'RIGHT')).toBe(false);
+    });
+
+    it('treats omitted hunk counts as 1 and honours zero counts', () => {
+      const diff = [
+        'diff --git a/one.sql b/one.sql',
+        '--- a/one.sql',
+        '+++ b/one.sql',
+        '@@ -3 +3 @@',
+        '--- was a comment',
+        '+++y',
+        'diff --git a/added.sql b/added.sql',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/added.sql',
+        '@@ -0,0 +1,2 @@',
+        '+-- header comment',
+        '+++z',
+        'diff --git a/gone.sql b/gone.sql',
+        'deleted file mode 100644',
+        '--- a/gone.sql',
+        '+++ /dev/null',
+        '@@ -1,2 +0,0 @@',
+        '--- only comment',
+        '-SELECT 1;',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('one.sql', 3, 'LEFT')).toBe(true);
+      expect(isLineInDiff('one.sql', 3, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('one.sql', 4, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('added.sql', 1, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('added.sql', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('gone.sql', 1, 'LEFT')).toBe(true);
+      expect(isLineInDiff('gone.sql', 2, 'LEFT')).toBe(true);
+      expect(isLineInDiff('only comment', 1, 'LEFT')).toBe(false);
+    });
+
+    it('handles hunkless binary, rename-only and mode-only sections between hunks', () => {
+      const diff = [
+        'diff --git a/first.sql b/first.sql',
+        '--- a/first.sql',
+        '+++ b/first.sql',
+        '@@ -1,2 +1,2 @@',
+        '--- old',
+        '+++new',
+        ' tail',
+        'diff --git a/bin.dat b/bin.dat',
+        'index cf0a824..dc6a6b2 100644',
+        'Binary files a/bin.dat and b/bin.dat differ',
+        'diff --git a/oldname.txt b/newname.txt',
+        'similarity index 100%',
+        'rename from oldname.txt',
+        'rename to newname.txt',
+        'diff --git a/script.sh b/script.sh',
+        'old mode 100644',
+        'new mode 100755',
+        'diff --git a/last.js b/last.js',
+        'index 83db48f..8792505 100644',
+        '--- a/last.js',
+        '+++ b/last.js',
+        '@@ -7,2 +7,2 @@',
+        ' keep',
+        '-a',
+        '+b',
+        ''
+      ].join('\n');
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('first.sql', 1, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('first.sql', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('first.sql', 3, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('bin.dat', 1, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('newname.txt', 1, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('script.sh', 1, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('last.js', 8, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('last.js', 8, 'LEFT')).toBe(true);
+    });
+  });
 });

@@ -75,6 +75,13 @@ function getLineContent(line) {
 
 /**
  * Parse file header lines to extract old and new file paths
+ *
+ * CALLER CONTRACT: only call this on lines that are OUTSIDE a hunk body. It
+ * returns `true` for anything merely starting with `---`, `+++`, `index ` or
+ * `diff --git`, and those prefixes are ordinary CONTENT inside a hunk (a
+ * deleted `-- x` is emitted as `--- x`, an added `++ x` as `+++ x`). Both
+ * loops in this file enforce that with an `!inHunk` guard.
+ *
  * @param {string} line - A diff line that might be a file header
  * @param {Object} currentFile - Current file info to update
  * @returns {boolean} Whether this was a file header line
@@ -167,6 +174,39 @@ function parseFileHeader(line, currentFile) {
 }
 
 /**
+ * Detect the start of a file section in a diff that carries NO `diff --git`
+ * line — bare `diff -u` output, a concatenation of patch fragments.
+ *
+ * Such a diff separates files with nothing but the `---` / `+++` / `@@` triple,
+ * which can arrive while the previous file's hunk is still open. That is the
+ * one case where a header legitimately appears mid-hunk, so it is the one case
+ * the `!inHunk` guard in both loops must not swallow.
+ *
+ * All THREE lines are required. The `---` / `+++` pair alone is forgeable from
+ * hunk content: a deleted `-- x` renders as `--- x` and an added `++ y` as
+ * `+++ y`, and those can sit next to each other. A bare
+ * `@@ -n,n +n,n @@` at column 0 cannot be forged — every hunk body line carries
+ * its own `+`, `-` or space marker, so content can never reach column 0 as
+ * `@@`. (A deleted header line `--- a/x` renders as `---- a/x`, four dashes,
+ * which already fails the `--- ` + whitespace test.)
+ *
+ * Callers must additionally refuse to apply this MID-hunk until the current
+ * hunk's declared line counts are exhausted. With `--unified=0` a hunk can end
+ * on a deleted line followed by an added line followed immediately by the next
+ * `@@`, which is the one shape that satisfies all three tests above from pure
+ * content. An unexhausted hunk proves the `---` is content.
+ *
+ * @param {string[]} lines - All diff lines
+ * @param {number} i - Index of the candidate `---` line
+ * @returns {boolean} Whether a new file section starts at `i`
+ */
+function isBareFileSectionStart(lines, i) {
+  return /^---\s/.test(lines[i] || '')
+    && /^\+\+\+\s/.test(lines[i + 1] || '')
+    && parseHunkHeader(lines[i + 2] || '') !== null;
+}
+
+/**
  * Calculate the maximum line number width needed for a hunk
  * @param {Object} hunkInfo - Parsed hunk header info
  * @returns {number} Width needed for line numbers
@@ -201,6 +241,16 @@ function annotateDiff(rawDiff) {
   let fileHeaderOutput = false;
 
   let isFirstFile = true;
+  // Set by every construct that opens a file section. Lets the bare-diff
+  // detection below fire for the FIRST file of a `diff --git`-less diff
+  // without re-firing on the `---`/`+++` pair that follows a real
+  // `diff --git` header (which has already opened the section).
+  let sectionStarted = false;
+  // How many lines the open hunk still owes on each side. Only consulted to
+  // prove a mid-hunk `---` is CONTENT, never to end a hunk — a diff whose
+  // counts disagree with its body must still annotate every line it carries.
+  let oldRemaining = 0;
+  let newRemaining = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -214,14 +264,37 @@ function annotateDiff(rawDiff) {
       isFirstFile = false;
       currentFile = {};
       inHunk = false;
+      sectionStarted = true;
       fileStarted = true;
       fileHeaderOutput = false;
       parseFileHeader(line, currentFile);
       continue;
     }
 
-    // Parse file header lines
-    if (parseFileHeader(line, currentFile)) {
+    // A bare unified diff has no `diff --git`; its files are separated by the
+    // `---`/`+++`/`@@` triple alone, which can land mid-hunk — but only once
+    // the open hunk has delivered every line it declared.
+    const hunkExhausted = oldRemaining <= 0 && newRemaining <= 0;
+    if ((!sectionStarted || (inHunk && hunkExhausted)) && isBareFileSectionStart(lines, i)) {
+      if (!isFirstFile && output.length > 0) {
+        output.push('');
+      }
+      isFirstFile = false;
+      currentFile = {};
+      inHunk = false;
+      sectionStarted = true;
+      fileStarted = true;
+      fileHeaderOutput = false;
+      // Falls through to the header parsing below, which now runs with
+      // inHunk === false and reads this `---` line as the header it is.
+    }
+
+    // Parse file header lines. Guarded on `!inHunk`: inside a hunk body these
+    // prefixes are content, and letting `parseFileHeader` claim them both
+    // corrupts the file path (an added `++ x` line arrives as `+++ x`) and
+    // skips the counter-advancing branches below, shifting every later anchor
+    // in the file.
+    if (!inHunk && parseFileHeader(line, currentFile)) {
       // Check if we just detected a binary file that needs output
       if (currentFile.isBinary && fileStarted && !fileHeaderOutput) {
         let filePath = currentFile.newPath || currentFile.oldPath || 'unknown';
@@ -271,6 +344,8 @@ function annotateDiff(rawDiff) {
 
       oldLineNum = hunkInfo.oldStart;
       newLineNum = hunkInfo.newStart;
+      oldRemaining = hunkInfo.oldCount;
+      newRemaining = hunkInfo.newCount;
       lineNumWidth = calculateLineNumWidth(hunkInfo);
       inHunk = true;
       continue;
@@ -313,12 +388,14 @@ function annotateDiff(rawDiff) {
       const content = getLineContent(line);
       output.push(`${formatLineNum(null, lineNumWidth)} | ${formatLineNum(newLineNum, lineNumWidth)} | ${marker} ${content}`);
       newLineNum++;
+      newRemaining--;
     } else if (line.startsWith('-')) {
       // Deletion: only old line number
       const marker = getLineMarker(line);
       const content = getLineContent(line);
       output.push(`${formatLineNum(oldLineNum, lineNumWidth)} | ${formatLineNum(null, lineNumWidth)} | ${marker} ${content}`);
       oldLineNum++;
+      oldRemaining--;
     } else if (line.startsWith(' ') || line === '') {
       // Context line: both line numbers
       // Note: The `line === ''` check handles edge cases in malformed diffs or
@@ -328,6 +405,8 @@ function annotateDiff(rawDiff) {
       output.push(`${formatLineNum(oldLineNum, lineNumWidth)} | ${formatLineNum(newLineNum, lineNumWidth)} | ${marker} ${content}`);
       oldLineNum++;
       newLineNum++;
+      oldRemaining--;
+      newRemaining--;
     }
   }
 
@@ -412,6 +491,16 @@ function parseAnnotatedDiff(annotatedDiff) {
  * Used to determine whether a comment targets a line GitHub can render inline
  * (inside a hunk) vs. one that must be submitted as file-level.
  *
+ * File headers are only headers OUTSIDE a hunk body. `parseFileHeader`
+ * returns `true` for anything starting with `---`, `+++`, `index ` or
+ * `diff --git`, and inside a hunk those are content: a deleted `-- x` line is
+ * emitted as `--- x`, an added `++ x` as `+++ x`, and an unindented `++i;` as
+ * `+++i;`. Letting the header parser claim them overwrote the section's path
+ * with a fragment of source code AND skipped the counter-advancing branch,
+ * shifting every later RIGHT anchor in the file by one. The `!inHunk` guard is
+ * what makes those lines fall through to the ordinary `+`/`-` accounting where
+ * they belong.
+ *
  * Each line also records the hunk it belongs to, so a caller can tell
  * whether two lines share a hunk: GitHub only accepts a multi-line comment
  * whose two ends are in the same hunk.
@@ -440,16 +529,42 @@ function buildDiffLineSet(rawDiff) {
   let oldLineNum = 0;
   let newLineNum = 0;
   let inHunk = false;
+  // See `isBareFileSectionStart`: tracks whether a file section is already open
+  // so the bare-diff detection cannot re-fire on a real header's `---` line.
+  let sectionStarted = false;
+  // Lines the open hunk still owes on each side. Only consulted to prove a
+  // mid-hunk `---` is CONTENT — never to end a hunk, because a diff whose
+  // declared counts disagree with its body must still register every line.
+  let oldRemaining = 0;
+  let newRemaining = 0;
 
-  for (const line of diffLines) {
+  for (let i = 0; i < diffLines.length; i++) {
+    const line = diffLines[i];
+
     if (line.startsWith('diff --git')) {
       currentFile = {};
       inHunk = false;
+      sectionStarted = true;
       parseFileHeader(line, currentFile);
       continue;
     }
 
-    if (parseFileHeader(line, currentFile)) {
+    // A bare unified diff (no `diff --git`) separates files with the
+    // `---`/`+++`/`@@` triple alone, which can arrive while the previous
+    // file's hunk is still open. This is the ONLY legitimate mid-hunk header,
+    // and only once that hunk has delivered every line it declared.
+    const hunkExhausted = oldRemaining <= 0 && newRemaining <= 0;
+    if ((!sectionStarted || (inHunk && hunkExhausted)) && isBareFileSectionStart(diffLines, i)) {
+      currentFile = {};
+      inHunk = false;
+      sectionStarted = true;
+      // Falls through: with inHunk cleared, the guard below now reads this
+      // `---` line as the file header it is.
+    }
+
+    // Header lines are headers only outside a hunk body — see the docblock.
+    // Inside one they fall through to the +/- accounting below.
+    if (!inHunk && parseFileHeader(line, currentFile)) {
       continue;
     }
 
@@ -457,6 +572,8 @@ function buildDiffLineSet(rawDiff) {
     if (hunkInfo) {
       oldLineNum = hunkInfo.oldStart;
       newLineNum = hunkInfo.newStart;
+      oldRemaining = hunkInfo.oldCount;
+      newRemaining = hunkInfo.newCount;
       inHunk = true;
       hunkIndex++;
       continue;
@@ -466,20 +583,28 @@ function buildDiffLineSet(rawDiff) {
 
     if (line.startsWith('\\ No newline')) continue;
 
+    // A pathless section still has to CONSUME its body: the counters and line
+    // numbers advance either way, only the lookup entries are withheld. One
+    // dispatch on the line marker, so the two cannot drift apart.
     const filePath = currentFile.newPath || currentFile.oldPath;
-    if (!filePath) continue;
 
     if (line.startsWith('+')) {
-      entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
+      if (filePath) entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
       newLineNum++;
+      newRemaining--;
     } else if (line.startsWith('-')) {
-      entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
+      if (filePath) entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
       oldLineNum++;
+      oldRemaining--;
     } else if (line.startsWith(' ') || line === '') {
-      entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
-      entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
+      if (filePath) {
+        entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
+        entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
+      }
       oldLineNum++;
       newLineNum++;
+      oldRemaining--;
+      newRemaining--;
     }
   }
 
