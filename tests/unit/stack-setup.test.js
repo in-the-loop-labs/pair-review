@@ -127,9 +127,10 @@ describe('setupStackPR', () => {
   it('gets changed files from worktreeManager', async () => {
     await setupStackPR(defaultParams());
 
+    // changed_files are built from the diff just generated, not a second git call
     expect(mockWorktreeManager.getChangedFiles).toHaveBeenCalledWith(
       '/tmp/worktree/test-repo',
-      fakePRData
+      'diff --git a/src/index.js b/src/index.js\n+added line'
     );
   });
 

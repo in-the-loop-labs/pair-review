@@ -20,7 +20,8 @@ const { localReviewDiffs } = require('./routes/shared');
 const summaryGenerator = require('./ai/summary-generator');
 const tourGenerator = require('./ai/tour-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
-const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY } = require('./git/diff-flags');
+const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY, GIT_PATH_CONFIG, GIT_PATH_CONFIG_ARRAY } = require('./git/diff-flags');
+const { quoteGitPath, splitNulPaths } = require('./utils/git-paths');
 // Namespace import (not destructured) so detectBaseBranch is resolved off the
 // module object at call time — this keeps it interceptable by vi.spyOn on the
 // base-branch module in tests, unlike a destructured binding captured at load.
@@ -292,13 +293,13 @@ function isBinaryFile(buffer) {
 async function getUntrackedFiles(repoPath) {
   try {
     // Get list of untracked files (excluding ignored files)
-    const output = execSync('git ls-files --others --exclude-standard', {
+    const output = execSync(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
-    const files = output.trim().split('\n').filter(f => f.length > 0);
+    const files = splitNulPaths(output);
 
     // Process files in parallel for better performance
     // Use Promise.allSettled to process all files even if some fail
@@ -399,6 +400,24 @@ async function findMergeBase(repoPath, baseBranch) {
 }
 
 /**
+ * Rewrite the file headers of a `git diff --no-index /dev/null <abs path>`
+ * patch to name the repo-relative path, spelled the way git spells a header
+ * (C-quoted only when the name contains a control character, `"` or `\`).
+ * The `+++` path gets git's trailing tab when it contains a space.
+ * @param {string} fileDiff - Patch for one untracked file
+ * @param {string} file - Repo-relative path
+ * @returns {string} Patch with repo-relative headers
+ */
+function respellUntrackedDiffHeaders(fileDiff, file) {
+  const newPath = quoteGitPath(`b/${file}`);
+  const header = `diff --git ${quoteGitPath(`a/${file}`)} ${newPath}`;
+  const plusLine = `+++ ${newPath}${file.includes(' ') ? '\t' : ''}`;
+  return fileDiff
+    .replace(/^diff --git .*$/m, () => header)
+    .replace(/^\+\+\+ .*$/m, () => plusLine);
+}
+
+/**
  * Generate diff output for untracked files using git diff --no-index.
  * @param {string} repoPath - Path to the git repository
  * @param {Array} untrackedFiles - Array from getUntrackedFiles()
@@ -426,7 +445,7 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, options = {}) {
         const filePath = path.join(repoPath, untracked.file);
         let fileDiff;
         try {
-          fileDiff = execFileSync('git', [...diffArgs, filePath], {
+          fileDiff = execFileSync('git', [...GIT_PATH_CONFIG_ARRAY, ...diffArgs, filePath], {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -447,9 +466,7 @@ function generateUntrackedDiffs(repoPath, untrackedFiles, options = {}) {
         }
 
         if (fileDiff && fileDiff.trim()) {
-          const normalizedDiff = fileDiff
-            .replace(/^diff --git a\/.+? b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
-            .replace(/^\+\+\+ b\/.+$/m, `+++ b/${untracked.file}`);
+          const normalizedDiff = respellUntrackedDiffHeaders(fileDiff, untracked.file);
 
           if (diff) {
             diff += '\n';
@@ -522,19 +539,19 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   try {
     if (hasBranch) {
       // Branch scope → working tree vs merge-base (includes committed + staged + unstaged)
-      diff = execSync(`git diff ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
+      diff = execSync(`git ${GIT_PATH_CONFIG} diff ${mergeBaseSha} ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else if (hasStaged) {
       // Staged + Unstaged scope → all changes vs HEAD
-      diff = execSync(`git diff HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
+      diff = execSync(`git ${GIT_PATH_CONFIG} diff HEAD ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
     } else {
       // Unstaged only (or Unstaged–Untracked) → working tree changes
-      diff = execSync(`git diff ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
+      diff = execSync(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS}${contextFlag}${extraArgsStr}${wFlag}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 50 * 1024 * 1024
       });
@@ -553,7 +570,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   // Count staged/unstaged for stats when relevant
   if (hasStaged) {
     try {
-      const stagedDiff = execSync(`git diff --cached --stat ${GIT_DIFF_FLAGS}`, {
+      const stagedDiff = execSync(`git ${GIT_PATH_CONFIG} diff --cached --stat ${GIT_DIFF_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (stagedDiff.trim()) {
@@ -563,7 +580,7 @@ async function generateScopedDiff(repoPath, scopeStart, scopeEnd, baseBranch, op
   }
   if (hasUnstaged) {
     try {
-      const unstagedDiff = execSync(`git diff --stat ${GIT_DIFF_FLAGS}`, {
+      const unstagedDiff = execSync(`git ${GIT_PATH_CONFIG} diff --stat ${GIT_DIFF_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (unstagedDiff.trim()) {
@@ -615,7 +632,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Staged in scope → cached diff content
   if (scopeIncludes(scopeStart, scopeEnd, 'staged')) {
     try {
-      const result = await execAsync(`git diff --cached ${GIT_DIFF_FLAGS}`, {
+      const result = await execAsync(`git ${GIT_PATH_CONFIG} diff --cached ${GIT_DIFF_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('STAGED:' + result.stdout);
@@ -627,7 +644,7 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Unstaged in scope → working tree diff
   if (scopeIncludes(scopeStart, scopeEnd, 'unstaged')) {
     try {
-      const result = await execAsync(`git diff ${GIT_DIFF_FLAGS}`, {
+      const result = await execAsync(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', maxBuffer: 50 * 1024 * 1024
       });
       parts.push('UNSTAGED:' + result.stdout);
@@ -639,10 +656,10 @@ async function computeScopedDigest(repoPath, scopeStart, scopeEnd) {
   // Untracked in scope → file list with sizes/mtimes
   if (scopeIncludes(scopeStart, scopeEnd, 'untracked')) {
     try {
-      const result = await execAsync('git ls-files --others --exclude-standard', {
+      const result = await execAsync(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, {
         cwd: repoPath, encoding: 'utf8'
       });
-      const files = result.stdout.trim().split('\n').filter(f => f.length > 0);
+      const files = splitNulPaths(result.stdout);
       let untrackedInfo = '';
       for (const file of files) {
         try {
@@ -682,7 +699,7 @@ async function generateLocalDiff(repoPath, options = {}) {
   // Always count staged changes for CLI info message, even when staged is out of scope
   if (!result.stats.stagedChanges) {
     try {
-      const stagedStat = execSync(`git diff --cached --stat ${GIT_DIFF_FLAGS}`, {
+      const stagedStat = execSync(`git ${GIT_PATH_CONFIG} diff --cached --stat ${GIT_DIFF_FLAGS}`, {
         cwd: repoPath, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
       });
       if (stagedStat.trim()) {

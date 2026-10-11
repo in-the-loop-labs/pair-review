@@ -4,12 +4,20 @@ import { describe, it, expect } from 'vitest';
 const {
   parseUnifiedDiffPatches,
   countPatchStats,
+  buildChangedFileEntries,
   mergeChangedFilesWithDiff
 } = require('../../src/utils/diff-file-list');
 const {
   LOOKALIKE_DIFF, LOOKALIKE_STATS, EXHAUSTED_HUNK_PATCH, EXHAUSTED_HUNK_STATS,
   CR_CONTEXT_DIFF, CR_CONTEXT_STATS
 } = require('../utils/diff-stat-fixtures');
+const {
+  QUOTEPATH_FALSE_DIFF,
+  QUOTEPATH_FALSE_CHANGED_FILES,
+  QUOTEPATH_TRUE_DIFF,
+  B_SLASH_RENAME_DIFF,
+  B_SLASH_RENAME_CHANGED_FILES
+} = require('../utils/git-path-fixtures');
 
 describe('diff-file-list utils', () => {
   it('parses full file paths from unified diff headers', () => {
@@ -130,6 +138,111 @@ describe('diff-file-list utils', () => {
       insertions: 2,
       deletions: 0,
       changes: 2
+    });
+  });
+
+  it('keys patches by the decoded new path', () => {
+    expect([...parseUnifiedDiffPatches(QUOTEPATH_FALSE_DIFF).keys()]).toEqual(
+      QUOTEPATH_FALSE_CHANGED_FILES.map(entry => entry.file)
+    );
+    expect([...parseUnifiedDiffPatches(QUOTEPATH_TRUE_DIFF).keys()]).toEqual([
+      'src/café.js',
+      'ñew dir/moved é.js'
+    ]);
+  });
+
+  it('counts a deleted "-- x" and an added "++ x" line as content, like --numstat', () => {
+    const patch = parseUnifiedDiffPatches(QUOTEPATH_FALSE_DIFF).get('schema.sql');
+    expect(countPatchStats(patch)).toEqual({ insertions: 1, deletions: 1 });
+  });
+
+  it('counts nothing for a patch without hunks', () => {
+    expect(countPatchStats('diff --git a/x b/x\nold mode 100644\nnew mode 100755\n')).toEqual({
+      insertions: 0,
+      deletions: 0
+    });
+  });
+
+  describe('buildChangedFileEntries', () => {
+    it('builds changed_files from the diff: paths, renames, counts and binary flag', () => {
+      expect(buildChangedFileEntries(QUOTEPATH_FALSE_DIFF)).toEqual(
+        QUOTEPATH_FALSE_CHANGED_FILES.map(entry => ({ ...entry, generated: false }))
+      );
+    });
+
+    it('records a rename whose old and new paths share nothing', () => {
+      const entry = buildChangedFileEntries(QUOTEPATH_FALSE_DIFF)
+        .find(file => file.file === 'totally/different.txt');
+      expect(entry).toMatchObject({ renamed: true, renamedFrom: 'old/thing.js' });
+    });
+
+    it('names a rename out of a path containing " b/" from its rename lines', () => {
+      // `diff --git a/x b/y.js b/z.js` alone would split as `x` -> `y.js b/z.js`
+      expect(buildChangedFileEntries(B_SLASH_RENAME_DIFF)).toEqual(
+        B_SLASH_RENAME_CHANGED_FILES.map(entry => ({ ...entry, generated: false }))
+      );
+      expect([...parseUnifiedDiffPatches(B_SLASH_RENAME_DIFF).keys()]).toEqual(['r b/s.js', 'z.js']);
+    });
+
+    it('keeps a literal "a => b.md" filename as one unrenamed file', () => {
+      const entry = buildChangedFileEntries(QUOTEPATH_FALSE_DIFF).find(file => file.file === 'a => b.md');
+      expect(entry).toBeDefined();
+      expect(entry.renamed).toBeUndefined();
+      expect(entry.renamedFrom).toBeUndefined();
+    });
+
+    it('decodes quoted renames in diffs cached with core.quotePath=true', () => {
+      expect(buildChangedFileEntries(QUOTEPATH_TRUE_DIFF)).toEqual([
+        { file: 'src/café.js', insertions: 1, deletions: 1, changes: 2, binary: false, generated: false },
+        {
+          file: 'ñew dir/moved é.js', insertions: 1, deletions: 1, changes: 2, binary: false,
+          generated: false, renamed: true, renamedFrom: 'lib/moved.js'
+        }
+      ]);
+    });
+
+    it('marks generated files with the .gitattributes matcher', () => {
+      const gitattributes = { isGenerated: file => file === 'logo.png' };
+      const entries = buildChangedFileEntries(QUOTEPATH_FALSE_DIFF, gitattributes);
+      expect(entries.filter(entry => entry.generated).map(entry => entry.file)).toEqual(['logo.png']);
+    });
+
+    it('returns no entries for an empty diff', () => {
+      expect(buildChangedFileEntries('')).toEqual([]);
+      expect(buildChangedFileEntries(undefined)).toEqual([]);
+    });
+  });
+
+  describe('mergeChangedFilesWithDiff with entries cached by older versions', () => {
+    it('re-spells a cached C-quoted entry instead of adding a duplicate', () => {
+      const merged = mergeChangedFilesWithDiff([
+        { file: String.raw`"src/caf\303\251.js"`, insertions: 1, deletions: 1, changes: 2 },
+        String.raw`"\303\261ew dir/moved \303\251.js"`
+      ], QUOTEPATH_TRUE_DIFF);
+
+      expect(merged).toEqual([
+        { file: 'src/café.js', insertions: 1, deletions: 1, changes: 2 },
+        'ñew dir/moved é.js'
+      ]);
+    });
+
+    it('never mangles a real name that only looks quoted', () => {
+      const diff = [
+        'diff --git "a/\\"x\\"" "b/\\"x\\""',
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        ''
+      ].join('\n');
+      expect([...parseUnifiedDiffPatches(diff).keys()]).toEqual(['"x"']);
+
+      const merged = mergeChangedFilesWithDiff([{ file: '"x"', insertions: 1, deletions: 1 }], diff);
+      expect(merged).toEqual([{ file: '"x"', insertions: 1, deletions: 1 }]);
+    });
+
+    it('keeps a quoted-looking entry the diff does not confirm', () => {
+      const merged = mergeChangedFilesWithDiff([{ file: '"other.js"' }], QUOTEPATH_TRUE_DIFF);
+      expect(merged.map(entry => entry.file)).toEqual(['"other.js"', 'src/café.js', 'ñew dir/moved é.js']);
     });
   });
 });

@@ -882,7 +882,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
   // ------------------------------------------------------------------
   progress({ step: 'diff', status: 'running', message: 'Generating unified diff...' });
   const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
   progress({ step: 'diff', status: 'completed', message: 'Diff generated.' });
 
   // ------------------------------------------------------------------

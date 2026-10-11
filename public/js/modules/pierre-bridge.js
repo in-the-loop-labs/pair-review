@@ -314,7 +314,16 @@ class PierreBridge {
 
     const parsed = window.PierreDiffs.parsePatchFiles(input);
     if (parsed && parsed.length > 0 && parsed[0].files && parsed[0].files.length > 0) {
-      return parsed[0].files[0];
+      const metadata = parsed[0].files[0];
+      // Pierre keeps git's C-quoted spelling of a header path. Respell the
+      // names it reports with the decoded paths pair-review keys on; prevName
+      // also picks the old side's highlighting language.
+      const paths = window.GitPaths?.parsePatchPaths(input);
+      if (paths) {
+        metadata.name = paths.newPath;
+        if (metadata.prevName != null) metadata.prevName = paths.oldPath;
+      }
+      return metadata;
     }
     // Fallback: try getSingularPatch
     return window.PierreDiffs.getSingularPatch(patch);

@@ -7,30 +7,7 @@
  * rendered patch, even if cached PR metadata drifts.
  */
 
-function parseDiffGitPaths(headerLine) {
-  if (!headerLine.startsWith('diff --git ')) {
-    return null;
-  }
-
-  const rest = headerLine.slice('diff --git '.length);
-  const quotedMatch = rest.match(/^"a\/(.+)" "b\/(.+)"$/);
-  if (quotedMatch) {
-    return {
-      oldPath: quotedMatch[1].replace(/\\"/g, '"'),
-      newPath: quotedMatch[2].replace(/\\"/g, '"')
-    };
-  }
-
-  const plainMatch = rest.match(/^a\/(.+?) b\/(.+)$/);
-  if (!plainMatch) {
-    return null;
-  }
-
-  return {
-    oldPath: plainMatch[1],
-    newPath: plainMatch[2]
-  };
-}
+const { parseDiffGitPaths, parsePatchPaths } = require('./git-paths');
 
 function findFileBlobInfoInDiff(diffText, fileName) {
   if (!diffText || !fileName) {
@@ -40,9 +17,10 @@ function findFileBlobInfoInDiff(diffText, fileName) {
   const lines = diffText.split('\n');
   let matchedPaths = null;
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (line.startsWith('diff --git ')) {
-      const paths = parseDiffGitPaths(line);
+      const paths = parsePatchPaths(lines, i);
       matchedPaths = paths && (paths.oldPath === fileName || paths.newPath === fileName)
         ? paths
         : null;

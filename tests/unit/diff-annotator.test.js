@@ -147,6 +147,30 @@ describe('diff-annotator', () => {
   });
 
   describe('annotateDiff', () => {
+    it('labels files with decoded paths when git quoted the headers', () => {
+      const { QUOTEPATH_FALSE_DIFF, QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
+
+      const current = annotateDiff(QUOTEPATH_FALSE_DIFF);
+      expect(current).toContain('=== quo"te.js ===');
+      expect(current).toContain('=== x b/y.js ===');
+      expect(current).toContain('=== a => b.md ===');
+      expect(current).toContain('=== lib/moved.js -> ñew dir/moved é.js ===');
+      expect(current).not.toContain('\t ===');
+
+      const cached = annotateDiff(QUOTEPATH_TRUE_DIFF);
+      expect(cached).toContain('=== src/café.js ===');
+      expect(cached).toContain('=== lib/moved.js -> ñew dir/moved é.js ===');
+      expect(cached).not.toContain('\\303');
+    });
+
+    it('labels a rename out of a path containing " b/" with its rename lines', () => {
+      const { B_SLASH_RENAME_DIFF } = require('../utils/git-path-fixtures');
+
+      const annotated = annotateDiff(B_SLASH_RENAME_DIFF);
+      expect(annotated).toContain('=== x b/y.js -> z.js ===');
+      expect(annotated).not.toContain('y.js b/z.js');
+    });
+
     it('should return empty string for empty input', () => {
       expect(annotateDiff('')).toBe('');
       expect(annotateDiff('   ')).toBe('');

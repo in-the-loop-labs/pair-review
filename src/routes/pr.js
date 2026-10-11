@@ -20,7 +20,7 @@ const { GitHubClient } = require('../github/client');
 const { PRArgumentParser } = require('../github/parser');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { getShaAbbrevLength, DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
-const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
+const { normalizeRepository } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -37,7 +37,7 @@ const { broadcastReviewEvent } = require('../events/review-events');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
-const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
+const { GIT_DIFF_FLAGS_ARRAY, SIMPLE_GIT_PATH_OPTIONS } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
 const { buildSubmitPrContext } = require('../github/submit-pr-context');
 const summaryGenerator = require('../ai/summary-generator');
@@ -54,7 +54,7 @@ const {
   registerProcess: registerProcessForCancellation
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
-const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches } = require('../utils/diff-file-list');
+const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches, buildChangedFileEntries } = require('../utils/diff-file-list');
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
@@ -620,7 +620,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       head_sha: prData.head_sha
     };
     const diff = await worktreeManager.generateUnifiedDiff(worktreePath, diffPrData);
-    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diffPrData);
+    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
 
     // Prepare extended data
     const extendedData = {
@@ -1175,7 +1175,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
       try {
         const worktreePath = worktreeRecord.path;
         await fs.access(worktreePath);
-        const git = simpleGit(worktreePath);
+        const git = simpleGit(worktreePath, SIMPLE_GIT_PATH_OPTIONS);
 
         const baseSha = prData.base_sha;
         const headSha = prData.head_sha;
@@ -1184,25 +1184,8 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
           const diffArgs = [`${baseSha}...${headSha}`, '--unified=3', ...GIT_DIFF_FLAGS_ARRAY, '-w'];
           diffContent = await git.diff(diffArgs);
 
-          const summaryArgs = [`${baseSha}...${headSha}`, ...GIT_DIFF_SUMMARY_FLAGS_ARRAY, '-w'];
-          const diffSummary = await git.diffSummary(summaryArgs);
           gitattributes = await getGeneratedFilePatterns(worktreePath);
-          changedFiles = diffSummary.files.map(file => {
-            const resolvedFile = resolveRenamedFile(file.file);
-            const isRenamed = resolvedFile !== file.file;
-            const result = {
-              file: resolvedFile,
-              insertions: file.insertions,
-              deletions: file.deletions,
-              changes: file.changes,
-              generated: gitattributes.isGenerated(resolvedFile)
-            };
-            if (isRenamed) {
-              result.renamed = true;
-              result.renamedFrom = resolveRenamedFileOld(file.file);
-            }
-            return result;
-          });
+          changedFiles = buildChangedFileEntries(diffContent, gitattributes);
         }
       } catch (wsError) {
         logger.warn(`Could not generate diff for PR #${prNumber}: ${wsError.message}`);

@@ -2,6 +2,7 @@
 const { Octokit } = require('@octokit/rest');
 const logger = require('../utils/logger');
 const { DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
+const { parsePatchPaths } = require('../utils/git-paths');
 const { GitHubApiError, isComplexityError } = require('./errors');
 const pendingReviewOps = require('./operations/pending-review');
 const reviewLifecycleOps = require('./operations/review-lifecycle');
@@ -1015,9 +1016,9 @@ class GitHubClient {
       const line = lines[i];
 
       if (line.startsWith('diff --git')) {
-        const match = line.match(/diff --git a\/(.+) b\/(.+)/);
-        if (match) {
-          currentFile = match[2];
+        const paths = parsePatchPaths(lines, i);
+        if (paths) {
+          currentFile = paths.newPath;
           inFile = currentFile === filePath;
           position = 0;
           newLineNumber = 0;

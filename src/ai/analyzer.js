@@ -15,7 +15,8 @@ const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../uti
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
 const { ADVERSARIAL_VERIFICATION_SECTION } = require('./prompts/shared/adversarial-verification');
-const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
+const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
+const { splitNulPaths } = require('../utils/git-paths');
 const {
   buildAnalysisLineNumberGuidance,
   buildOrchestrationLineNumberGuidance: buildOrchestrationGuidance,
@@ -1003,10 +1004,10 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   async getChangedFilesList(worktreePath, prMetadata) {
     try {
       const { stdout } = await execPromise(
-        `git diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
+        `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only -z`,
         { cwd: worktreePath }
       );
-      return stdout.trim().split('\n').filter(f => f.length > 0);
+      return splitNulPaths(stdout);
     } catch (error) {
       logger.warn(`Could not get changed files list: ${error.message}`);
       return [];
@@ -1027,27 +1028,27 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     try {
       // Get modified tracked files (unstaged)
       const { stdout: unstaged } = await execPromise(
-        `git diff ${GIT_DIFF_FLAGS} --name-only`,
+        `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`,
         { cwd: localPath }
       );
 
       // Get untracked files
       const { stdout: untracked } = await execPromise(
-        'git ls-files --others --exclude-standard',
+        `git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`,
         { cwd: localPath }
       );
 
-      const unstagedFiles = unstaged.trim().split('\n').filter(f => f.length > 0);
-      const untrackedFiles = untracked.trim().split('\n').filter(f => f.length > 0);
+      const unstagedFiles = splitNulPaths(unstaged);
+      const untrackedFiles = splitNulPaths(untracked);
       const allFiles = [...unstagedFiles, ...untrackedFiles];
 
       // Include staged files when scope includes staged
       if (options.includeStaged) {
         const { stdout: staged } = await execPromise(
-          `git diff ${GIT_DIFF_FLAGS} --cached --name-only`,
+          `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`,
           { cwd: localPath }
         );
-        const stagedFiles = staged.trim().split('\n').filter(f => f.length > 0);
+        const stagedFiles = splitNulPaths(staged);
         allFiles.push(...stagedFiles);
       }
 
@@ -1341,10 +1342,11 @@ ${description || '(No description provided)'}
     const isLocal = prMetadata.reviewType === 'local';
     if (isLocal) {
       // For local mode, diff against HEAD to see working directory changes
-      return suffix ? `git diff ${GIT_DIFF_FLAGS} HEAD ${suffix}` : `git diff ${GIT_DIFF_FLAGS} HEAD`;
+      const localCmd = `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} HEAD`;
+      return suffix ? `${localCmd} ${suffix}` : localCmd;
     }
     // For PR mode, diff between base and head commits
-    const baseCmd = `git diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    const baseCmd = `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} ${prMetadata.base_sha}...${prMetadata.head_sha}`;
     return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 
@@ -2408,9 +2410,9 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     try {
       // Step 1: Detect primary language(s) from changed files
       // For local mode, use git diff HEAD; for PR mode, use base...head
-      const diffCmd = this.buildGitDiffCommand(prMetadata, '--name-only');
+      const diffCmd = this.buildGitDiffCommand(prMetadata, '--name-only -z');
       const { stdout: changedFiles } = await execPromise(diffCmd, { cwd: worktreePath });
-      const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
+      const files = splitNulPaths(changedFiles);
       
       const languages = this.detectLanguages(files);
       logger.info(`Detected languages: ${languages.join(', ')}`);

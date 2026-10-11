@@ -925,11 +925,9 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       try {
         const gitattributes = await getGeneratedFilePatterns(review.local_path);
         if (gitattributes.getPatterns().length > 0) {
-          // Extract file paths from the diff header lines (--- a/path and +++ b/path)
-          const filePathRegex = /^diff --git a\/.+? b\/(.+)$/gm;
-          let match;
-          while ((match = filePathRegex.exec(diffContent)) !== null) {
-            const filePath = match[1];
+          // Decoded new paths from the diff --git headers, spelled the way
+          // the browser keys files (see public/js/utils/git-paths.js)
+          for (const filePath of parseUnifiedDiffPatches(diffContent).keys()) {
             if (gitattributes.isGenerated(filePath)) {
               generatedFiles.push(filePath);
             }

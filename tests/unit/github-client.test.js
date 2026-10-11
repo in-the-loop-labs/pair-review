@@ -1303,6 +1303,27 @@ describe('GitHubClient', () => {
   });
 
   describe('calculateDiffPosition', () => {
+    it('finds files by their decoded path when git quoted the header', () => {
+      const client = new GitHubClient('test-token');
+      const { QUOTEPATH_FALSE_DIFF, QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
+
+      // "quo\"te.js": @@ is position 0, " base" is 1, "+changed" (new line 2) is 2
+      expect(client.calculateDiffPosition(QUOTEPATH_FALSE_DIFF, 'quo"te.js', 2)).toBe(2);
+      // A name containing " b/" resolves to the whole name
+      expect(client.calculateDiffPosition(QUOTEPATH_FALSE_DIFF, 'x b/y.js', 2)).toBe(2);
+      // Octal-escaped headers cached by older versions
+      expect(client.calculateDiffPosition(QUOTEPATH_TRUE_DIFF, 'src/café.js', 2)).toBe(3);
+    });
+
+    it('finds a rename out of a path containing " b/" by its rename to path', () => {
+      const client = new GitHubClient('test-token');
+      const { B_SLASH_RENAME_DIFF } = require('../utils/git-path-fixtures');
+
+      // @@ is position 0; " more" (new line 2) .. "+extra" (new line 5) are 1..4
+      expect(client.calculateDiffPosition(B_SLASH_RENAME_DIFF, 'z.js', 5)).toBe(4);
+      expect(client.calculateDiffPosition(B_SLASH_RENAME_DIFF, 'y.js b/z.js', 5)).toBe(-1);
+    });
+
     it('should return -1 for missing parameters', () => {
       const client = new GitHubClient('test-token');
       expect(client.calculateDiffPosition(null, 'file.js', 10)).toBe(-1);

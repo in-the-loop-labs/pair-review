@@ -29,13 +29,14 @@ const { includesBranch, parseScopeArg, VALID_SCOPE_RANGES, EMPTY_SCOPE_MESSAGE }
 const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { resolvePreflightBinding, setupHostParam, bindingRepositoryForHost } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
-const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
+const { normalizeRepository } = require('./utils/paths');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { buildReviewComments } = require('./utils/diff-annotator');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
-const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('./git/diff-flags');
+const { GIT_DIFF_FLAGS_ARRAY, SIMPLE_GIT_PATH_OPTIONS } = require('./git/diff-flags');
+const { buildChangedFileEntries } = require('./utils/diff-file-list');
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => process.env.PAIR_REVIEW_NO_OPEN ? Promise.resolve() : import('open').then(({default: open}) => open(...args));
 const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
@@ -1486,7 +1487,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
       // Generate diff directly from current checkout
       console.log('Generating unified diff from checkout...');
-      const git = simpleGit(worktreePath);
+      const git = simpleGit(worktreePath, SIMPLE_GIT_PATH_OPTIONS);
 
       // Ensure we have the base SHA available (fetch if needed)
       try {
@@ -1506,30 +1507,9 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
         ...GIT_DIFF_FLAGS_ARRAY
       ]);
 
-      // Get changed files
-      const diffSummary = await git.diffSummary([
-        `${prData.base_sha}...${prData.head_sha}`,
-        ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
-      ]);
+      // Build changed files from the diff (one source of path spelling)
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
-
-      changedFiles = diffSummary.files.map(file => {
-        const resolvedFile = resolveRenamedFile(file.file);
-        const isRenamed = resolvedFile !== file.file;
-        const result = {
-          file: resolvedFile,
-          insertions: file.insertions,
-          deletions: file.deletions,
-          changes: file.changes,
-          binary: file.binary || false,
-          generated: gitattributes.isGenerated(resolvedFile)
-        };
-        if (isRenamed) {
-          result.renamed = true;
-          result.renamedFrom = resolveRenamedFileOld(file.file);
-        }
-        return result;
-      });
+      changedFiles = buildChangedFileEntries(diff, gitattributes);
     } else {
       // Use worktree approach - only use cwd if it matches the target repo
       const currentDir = parser.getCurrentDirectory();
@@ -1616,7 +1596,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
 
       console.log('Generating unified diff...');
       diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-      changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+      changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
     }
 
     // Store PR data in database
@@ -2110,7 +2090,7 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
     console.log(`Using current checkout at ${worktreePath}`);
 
     console.log('Generating unified diff from checkout...');
-    const git = simpleGit(worktreePath);
+    const git = simpleGit(worktreePath, SIMPLE_GIT_PATH_OPTIONS);
     try {
       await fetchNoTags(git, ['origin', prData.base_sha]);
     } catch (fetchError) {
@@ -2125,28 +2105,8 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
       '--unified=3',
       ...GIT_DIFF_FLAGS_ARRAY
     ]);
-    const diffSummary = await git.diffSummary([
-      `${prData.base_sha}...${prData.head_sha}`,
-      ...GIT_DIFF_SUMMARY_FLAGS_ARRAY
-    ]);
     const gitattributes = await getGeneratedFilePatterns(worktreePath);
-    changedFiles = diffSummary.files.map(file => {
-      const resolvedFile = resolveRenamedFile(file.file);
-      const isRenamed = resolvedFile !== file.file;
-      const result = {
-        file: resolvedFile,
-        insertions: file.insertions,
-        deletions: file.deletions,
-        changes: file.changes,
-        binary: file.binary || false,
-        generated: gitattributes.isGenerated(resolvedFile)
-      };
-      if (isRenamed) {
-        result.renamed = true;
-        result.renamedFrom = resolveRenamedFileOld(file.file);
-      }
-      return result;
-    });
+    changedFiles = buildChangedFileEntries(diff, gitattributes);
   } else {
     const currentDir = parser.getCurrentDirectory();
     const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
@@ -2222,7 +2182,7 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
 
     console.log('Generating unified diff...');
     diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-    changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
   }
 
   console.log('Storing pull request data...');

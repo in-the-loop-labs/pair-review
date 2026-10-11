@@ -84,7 +84,8 @@ GIT_CMD=(git)
 if [[ -n "$GIT_CWD" ]]; then
   GIT_CMD+=(-C "$GIT_CWD")
 fi
-GIT_CMD+=(diff --no-ext-diff)
+# Print non-ASCII paths verbatim instead of octal-escaped and quoted
+GIT_CMD+=(-c core.quotePath=false diff --no-ext-diff)
 # Guard: expanding an empty array with set -u fails in Bash < 4.4
 if [[ ${#GIT_ARGS[@]} -gt 0 ]]; then
   GIT_CMD+=("${GIT_ARGS[@]}")

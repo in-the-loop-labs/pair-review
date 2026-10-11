@@ -1,6 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE } = require('../../src/git/worktree');
 
 function createMockGit(overrides = {}) {
@@ -11,7 +14,6 @@ function createMockGit(overrides = {}) {
     revparse: vi.fn().mockResolvedValue('head-sha\n'),
     branch: vi.fn().mockResolvedValue(undefined),
     diff: vi.fn().mockResolvedValue('diff --git a/file.js b/file.js'),
-    diffSummary: vi.fn().mockResolvedValue({ files: [] }),
     ...overrides,
   };
 }
@@ -548,29 +550,40 @@ describe('GitWorktreeManager base SHA availability', () => {
     );
   });
 
-  it('uses --numstat when collecting changed files so long paths are not abbreviated', async () => {
+  it('builds changed files from the given diff without running git', async () => {
     const longPath = 'areas/internal-services/meteorite/ui/app/frontend/src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
-    const worktreeGit = createMockGit({
-      diffSummary: vi.fn().mockResolvedValue({
-        files: [{ file: longPath, insertions: 12, deletions: 3, changes: 15, binary: false }]
-      })
-    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worktree-changed-files-'));
+    try {
+      fs.writeFileSync(path.join(dir, '.gitattributes'), 'gen/** linguist-generated\n');
+      manager._gitFor = vi.fn();
+      const diff = [
+        `diff --git a/${longPath} b/${longPath}`,
+        'index 1111111..2222222 100644',
+        `--- a/${longPath}`,
+        `+++ b/${longPath}`,
+        '@@ -1 +1,2 @@',
+        '-old',
+        '+new',
+        '+more',
+        'diff --git a/gen/out.js b/gen/out.js',
+        'index 3333333..4444444 100644',
+        '--- a/gen/out.js',
+        '+++ b/gen/out.js',
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        ''
+      ].join('\n');
 
-    manager._gitFor = vi.fn().mockReturnValue(worktreeGit);
-    manager.assertCommitAvailableLocally = vi.fn().mockResolvedValue(undefined);
+      const result = await manager.getChangedFiles(dir, diff);
 
-    const result = await manager.getChangedFiles('/tmp/worktrees/existing', {
-      base_sha: 'base-sha',
-      head_sha: 'head-sha'
-    });
-
-    expect(worktreeGit.diffSummary).toHaveBeenCalledWith([
-      'base-sha...head-sha',
-      '--no-color',
-      '--no-ext-diff',
-      '--no-relative',
-      '--numstat'
-    ]);
-    expect(result[0].file).toBe(longPath);
+      expect(manager._gitFor).not.toHaveBeenCalled();
+      expect(result).toEqual([
+        { file: longPath, insertions: 2, deletions: 1, changes: 3, binary: false, generated: false },
+        { file: 'gen/out.js', insertions: 1, deletions: 1, changes: 2, binary: false, generated: true }
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

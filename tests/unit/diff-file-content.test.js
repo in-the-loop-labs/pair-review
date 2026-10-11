@@ -45,6 +45,18 @@ describe('diff-file-content', () => {
       });
     });
 
+    it('matches a rename out of a path containing " b/" by its real new and old paths', () => {
+      const { B_SLASH_RENAME_DIFF } = require('../utils/git-path-fixtures');
+
+      expect(findFileBlobInfoInDiff(B_SLASH_RENAME_DIFF, 'z.js')).toEqual({
+        oldPath: 'x b/y.js',
+        newPath: 'z.js',
+        oldBlob: 'c5f8446',
+        newBlob: 'ae2a63a'
+      });
+      expect(findFileBlobInfoInDiff(B_SLASH_RENAME_DIFF, 'y.js b/z.js')).toBeNull();
+    });
+
     it('matches renamed files by the new path', () => {
       const diff = [
         'diff --git a/src/old.js b/src/new.js',

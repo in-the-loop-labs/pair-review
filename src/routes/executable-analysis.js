@@ -27,7 +27,8 @@ const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
 const { normalizePath, resolveRenamedFile } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
-const { GIT_DIFF_FLAGS } = require('../git/diff-flags');
+const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
+const { splitNulPaths } = require('../utils/git-paths');
 const { generateScopedDiff, findMergeBase } = require('../local-review');
 const { scopeIncludes } = require('../local-scope');
 
@@ -72,14 +73,14 @@ async function generateDiffForExecutable(cwd, context, diffArgs, outputPath) {
   } else if (context.baseSha && context.headSha) {
     // PR mode: straightforward base...head diff
     const { stdout } = await execPromise(
-      `git diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
+      `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS}${extraFlags} ${context.baseSha}...${context.headSha}`,
       { cwd, maxBuffer: 50 * 1024 * 1024 }
     );
     diff = stdout;
   } else {
     // Fallback: simple working-tree diff
     const { stdout } = await execPromise(
-      `git diff ${GIT_DIFF_FLAGS}${extraFlags}`,
+      `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS}${extraFlags}`,
       { cwd, maxBuffer: 50 * 1024 * 1024 }
     );
     diff = stdout;
@@ -108,10 +109,10 @@ async function getChangedFiles(cwd, context, { throwOnError = false } = {}) {
   try {
     if (context.baseSha && context.headSha) {
       const { stdout } = await execPromise(
-        `git diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only`,
+        `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} ${context.baseSha}...${context.headSha} --name-only -z`,
         { cwd }
       );
-      return stdout.trim().split('\n').filter(f => f.length > 0);
+      return splitNulPaths(stdout);
     }
 
     // Local mode: scope-aware file list
@@ -127,37 +128,35 @@ async function getChangedFiles(cwd, context, { throwOnError = false } = {}) {
       if (hasBranch && baseBranch) {
         const mergeBase = await findMergeBase(cwd, baseBranch);
         commands.push(
-          execPromise(`git diff ${GIT_DIFF_FLAGS} ${mergeBase}..HEAD --name-only`, { cwd }).then(r => r.stdout)
+          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} ${mergeBase}..HEAD --name-only -z`, { cwd }).then(r => r.stdout)
         );
       }
       if (hasStaged) {
         commands.push(
-          execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
+          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`, { cwd }).then(r => r.stdout)
         );
       }
       if (hasUnstaged) {
         commands.push(
-          execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout)
+          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`, { cwd }).then(r => r.stdout)
         );
       }
       if (hasUntracked) {
         commands.push(
-          execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout)
+          execPromise(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, { cwd }).then(r => r.stdout)
         );
       }
     } else {
       // Fallback: no scope info — include unstaged + untracked + staged
       commands.push(
-        execPromise(`git diff ${GIT_DIFF_FLAGS} --name-only`, { cwd }).then(r => r.stdout),
-        execPromise('git ls-files --others --exclude-standard', { cwd }).then(r => r.stdout),
-        execPromise(`git diff ${GIT_DIFF_FLAGS} --cached --name-only`, { cwd }).then(r => r.stdout)
+        execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`, { cwd }).then(r => r.stdout),
+        execPromise(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, { cwd }).then(r => r.stdout),
+        execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`, { cwd }).then(r => r.stdout)
       );
     }
 
     const results = await Promise.all(commands);
-    const all = results
-      .flatMap(output => output.trim().split('\n'))
-      .filter(f => f.length > 0);
+    const all = results.flatMap(output => splitNulPaths(output));
     return [...new Set(all)];
   } catch (error) {
     if (throwOnError) {

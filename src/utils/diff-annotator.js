@@ -3,6 +3,7 @@
  * Diff annotation utility for adding explicit line numbers to unified diffs
  * Provides two-column format showing both OLD (base) and NEW (head) line numbers
  */
+const { parseDiffGitPaths, decodeDiffLinePath } = require('./git-paths');
 
 const logger = require('./logger');
 
@@ -93,28 +94,30 @@ function getLineContent(line) {
 function parseFileHeader(line, currentFile) {
   // Handle diff --git header
   if (line.startsWith('diff --git')) {
-    const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-    if (match) {
-      currentFile.oldPath = match[1];
-      currentFile.newPath = match[2];
+    const paths = parseDiffGitPaths(line);
+    if (paths) {
+      currentFile.oldPath = paths.oldPath;
+      currentFile.newPath = paths.newPath;
     }
     return true;
   }
 
   // Handle --- header
   if (line.startsWith('---')) {
-    const match = line.match(/^---\s+(?:a\/)?(.+)$/);
-    if (match && match[1] !== '/dev/null') {
-      currentFile.oldPath = match[1];
+    const match = line.match(/^---\s+(.+)$/);
+    const oldPath = match ? decodeDiffLinePath(match[1], 'a/') : null;
+    if (oldPath !== null) {
+      currentFile.oldPath = oldPath;
     }
     return true;
   }
 
   // Handle +++ header
   if (line.startsWith('+++')) {
-    const match = line.match(/^\+\+\+\s+(?:b\/)?(.+)$/);
-    if (match && match[1] !== '/dev/null') {
-      currentFile.newPath = match[1];
+    const match = line.match(/^\+\+\+\s+(.+)$/);
+    const newPath = match ? decodeDiffLinePath(match[1], 'b/') : null;
+    if (newPath !== null) {
+      currentFile.newPath = newPath;
     }
     return true;
   }
@@ -150,7 +153,7 @@ function parseFileHeader(line, currentFile) {
   if (line.startsWith('rename from')) {
     const match = line.match(/^rename from (.+)$/);
     if (match) {
-      currentFile.renamedFrom = match[1];
+      currentFile.renamedFrom = decodeDiffLinePath(match[1]);
     }
     return true;
   }
@@ -158,7 +161,7 @@ function parseFileHeader(line, currentFile) {
   if (line.startsWith('rename to')) {
     const match = line.match(/^rename to (.+)$/);
     if (match) {
-      currentFile.renamedTo = match[1];
+      currentFile.renamedTo = decodeDiffLinePath(match[1]);
     }
     return true;
   }

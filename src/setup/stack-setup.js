@@ -88,7 +88,7 @@ async function setupStackPR({ db, owner, repo, prNumber, githubToken, binding, b
   const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
 
   // 5. Get changed files with stats
-  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
 
   // 6. Store via storePRData (creates/updates pr_metadata, reviews, worktrees records).
   // Stamp the host of the binding used to fetch this stack PR (null for

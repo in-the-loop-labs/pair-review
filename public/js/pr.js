@@ -2889,11 +2889,14 @@ class PRManager {
     for (const part of parts) {
       if (!part.trim()) continue;
 
-      // Extract filename from diff --git line
-      const match = part.match(/^diff --git a\/(.+?) b\/(.+)/);
-      if (match) {
-        const fileName = match[2]; // Use the 'b' path (new file path)
-        filePatchMap.set(fileName, part);
+      // Key by the decoded new path: the `rename to` line when there is one,
+      // otherwise the 'b' side of the diff --git line. Git C-quotes names
+      // containing control characters, `"` or `\` (`"b/tab\tname.js"`), and
+      // the server keys changed_files, comments and suggestions by the
+      // decoded spelling.
+      const paths = window.GitPaths.parsePatchPaths(part);
+      if (paths) {
+        filePatchMap.set(paths.newPath, part);
       }
     }
 

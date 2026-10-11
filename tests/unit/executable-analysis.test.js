@@ -107,7 +107,7 @@ describe('generateDiffForExecutable', () => {
       );
 
       const cmd = mockExec.mock.calls[0][0];
-      expect(cmd).toContain('git diff');
+      expect(cmd).toContain('git -c core.quotePath=false diff');
       expect(cmd).toContain('--no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index');
       expect(cmd).toContain('abc123...def456');
     });
@@ -225,7 +225,7 @@ describe('generateDiffForExecutable', () => {
       );
 
       const cmd = mockExec.mock.calls[0][0];
-      expect(cmd).toBe('git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index');
+      expect(cmd).toBe('git -c core.quotePath=false diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --no-relative --full-index');
     });
 
     it('appends diffArgs to fallback git diff', async () => {
@@ -316,7 +316,7 @@ describe('getChangedFiles', () => {
 
   describe('PR mode (baseSha + headSha)', () => {
     it('runs git diff --name-only with baseSha...headSha', async () => {
-      mockExecForCalls({ '...': 'file1.js\nfile2.js\n' });
+      mockExecForCalls({ '...': 'file1.js\0file2.js\0' });
 
       const files = await getChangedFiles('/repo', { baseSha: 'abc', headSha: 'def' });
 
@@ -324,6 +324,31 @@ describe('getChangedFiles', () => {
       const cmd = mockExec.mock.calls[0][0];
       expect(cmd).toContain('abc...def');
       expect(cmd).toContain('--name-only');
+    });
+
+    it('lists paths with -z and core.quotePath=false and keeps them verbatim', async () => {
+      mockExecForCalls({ '...': 'café.js\0 lead space.js\0new\nline.js\0a => b.md\0' });
+
+      const files = await getChangedFiles('/repo', { baseSha: 'abc', headSha: 'def' });
+
+      expect(files).toEqual(['café.js', ' lead space.js', 'new\nline.js', 'a => b.md']);
+      const cmd = mockExec.mock.calls[0][0];
+      expect(cmd).toMatch(/^git -c core\.quotePath=false diff /);
+      expect(cmd).toMatch(/--name-only -z$/);
+    });
+
+    it('lists untracked files with ls-files -z in local mode', async () => {
+      mockExec.mockImplementation((cmd, opts, cb) => {
+        const callback = typeof opts === 'function' ? opts : cb;
+        const stdout = cmd.includes('ls-files') ? 'näme.js\0' : '';
+        process.nextTick(() => callback(null, { stdout, stderr: '' }));
+      });
+
+      const files = await getChangedFiles('/repo', { scopeStart: 'unstaged', scopeEnd: 'untracked' });
+
+      expect(files).toEqual(['näme.js']);
+      const lsFiles = mockExec.mock.calls.map(call => call[0]).find(cmd => cmd.includes('ls-files'));
+      expect(lsFiles).toBe('git -c core.quotePath=false ls-files -z --others --exclude-standard');
     });
   });
 
@@ -335,9 +360,9 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('merge-base-sha..HEAD')) {
-          process.nextTick(() => callback(null, { stdout: 'branch-file.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'branch-file.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged-file.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged-file.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -356,9 +381,9 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('--cached')) {
-          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'staged.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -377,7 +402,7 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -394,9 +419,9 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('ls-files')) {
-          process.nextTick(() => callback(null, { stdout: 'untracked.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'untracked.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -416,13 +441,13 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('mb-sha..HEAD')) {
-          process.nextTick(() => callback(null, { stdout: 'branch.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'branch.js\0', stderr: '' }));
         } else if (cmd.includes('--cached')) {
-          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'staged.js\0', stderr: '' }));
         } else if (cmd.includes('ls-files')) {
-          process.nextTick(() => callback(null, { stdout: 'untracked.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'untracked.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -440,19 +465,19 @@ describe('getChangedFiles', () => {
 
     it('deduplicates files across scope stops', async () => {
       mockExecForCalls({
-        '--cached': 'shared.js\n',
-        'ls-files': 'shared.js\n'
+        '--cached': 'shared.js\0',
+        'ls-files': 'shared.js\0'
       });
 
       // staged–untracked scope: same file in both
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('--cached')) {
-          process.nextTick(() => callback(null, { stdout: 'shared.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'shared.js\0', stderr: '' }));
         } else if (cmd.includes('ls-files')) {
-          process.nextTick(() => callback(null, { stdout: 'shared.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'shared.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only')) {
-          process.nextTick(() => callback(null, { stdout: 'shared.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'shared.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -471,13 +496,13 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('mb-sha..HEAD')) {
-          process.nextTick(() => callback(null, { stdout: 'branch.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'branch.js\0', stderr: '' }));
         } else if (cmd.includes('--cached')) {
-          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'staged.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only') && !cmd.includes('--cached') && !cmd.includes('..')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
-          process.nextTick(() => callback(null, { stdout: 'should-not-appear.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'should-not-appear.js\0', stderr: '' }));
         }
       });
 
@@ -501,11 +526,11 @@ describe('getChangedFiles', () => {
       mockExec.mockImplementation((cmd, opts, cb) => {
         const callback = typeof opts === 'function' ? opts : cb;
         if (cmd.includes('--cached')) {
-          process.nextTick(() => callback(null, { stdout: 'staged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'staged.js\0', stderr: '' }));
         } else if (cmd.includes('ls-files')) {
-          process.nextTick(() => callback(null, { stdout: 'untracked.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'untracked.js\0', stderr: '' }));
         } else if (cmd.includes('--name-only')) {
-          process.nextTick(() => callback(null, { stdout: 'unstaged.js\n', stderr: '' }));
+          process.nextTick(() => callback(null, { stdout: 'unstaged.js\0', stderr: '' }));
         } else {
           process.nextTick(() => callback(null, { stdout: '', stderr: '' }));
         }
@@ -589,7 +614,7 @@ describe('getChangedFiles', () => {
       });
 
       it('still returns the file list normally when git succeeds', async () => {
-        mockExecForCalls({ '...': 'a.js\nb.js\n' });
+        mockExecForCalls({ '...': 'a.js\0b.js\0' });
 
         const files = await getChangedFiles('/repo', { baseSha: 'x', headSha: 'y' }, { throwOnError: true });
 

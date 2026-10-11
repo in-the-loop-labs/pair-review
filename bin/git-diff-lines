@@ -17,6 +17,7 @@
 
 const { spawn } = require('child_process');
 const { annotateDiff } = require('../src/utils/diff-annotator');
+const { GIT_PATH_CONFIG_ARRAY } = require('../src/git/diff-flags');
 
 /**
  * Print help text and exit
@@ -68,7 +69,7 @@ function executeGitDiff(args, cwd = null) {
     if (cwd) {
       spawnOptions.cwd = cwd;
     }
-    const gitProcess = spawn('git', ['diff', '--no-ext-diff', ...args], spawnOptions);
+    const gitProcess = spawn('git', [...GIT_PATH_CONFIG_ARRAY, 'diff', '--no-ext-diff', ...args], spawnOptions);
 
     let stdout = '';
     let stderr = '';
