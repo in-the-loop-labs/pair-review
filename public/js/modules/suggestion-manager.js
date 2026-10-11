@@ -358,8 +358,10 @@ class SuggestionManager {
         }
       });
 
-      // Handle file-level suggestions via FileCommentManager
-      if (fileLevelSuggestions.length > 0 && this.prManager?.fileCommentManager) {
+      // Handle file-level suggestions via FileCommentManager. Call it even
+      // when the list is empty so file-level cards from the previous set
+      // are cleared.
+      if (this.prManager?.fileCommentManager) {
         console.log('[UI] Routing file-level suggestions to FileCommentManager:', fileLevelSuggestions.length);
         this.prManager.fileCommentManager.loadFileComments([], fileLevelSuggestions);
       }

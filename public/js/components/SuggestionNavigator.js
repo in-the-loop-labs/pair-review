@@ -141,9 +141,15 @@ class SuggestionNavigator {
    * Update suggestions and rebuild the list
    */
   updateSuggestions(suggestions) {
+    // Keep the selection on the same suggestion (by id) across refreshes,
+    // e.g. after adopting/dismissing or reloading; clear it only when the
+    // selected suggestion is gone.
+    const selectedId = this.suggestions[this.currentSuggestionIndex]?.id;
     // Keep all suggestions visible (adopted and dismissed are de-emphasized but navigatable)
     this.suggestions = suggestions;
-    this.currentSuggestionIndex = -1;
+    this.currentSuggestionIndex = selectedId == null
+      ? -1
+      : suggestions.findIndex(item => item.id === selectedId);
     this.renderSuggestionsList();
     this.updateCounter();
     this.updateNavigationButtons();
@@ -182,7 +188,7 @@ class SuggestionNavigator {
       const tooltip = locationInfo || 'Location unknown';
 
       return `
-        <div class="suggestion-item ${statusClass}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}" title="${this.escapeHtml(tooltip)}">
+        <div class="suggestion-item ${statusClass}${index === this.currentSuggestionIndex ? ' current' : ''}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}" title="${this.escapeHtml(tooltip)}">
           <div class="suggestion-type-icon">${typeIcon}</div>
           <div class="suggestion-content">
             <div class="suggestion-preview">${this.escapeHtml(preview)}</div>
@@ -401,6 +407,7 @@ class SuggestionNavigator {
   scrollToSuggestion() {
     if (this.currentSuggestionIndex >= 0) {
       const currentSuggestion = this.suggestions[this.currentSuggestionIndex];
+      if (!currentSuggestion) return;
       const suggestionEl = document.querySelector(`[data-suggestion-id="${currentSuggestion.id}"]`);
       
       if (suggestionEl) {
@@ -422,6 +429,10 @@ class SuggestionNavigator {
         } else {
           scrollTarget.scrollIntoView(options);
         }
+      } else {
+        // The finding has no card in the diff (file or line not shown).
+        // Say so instead of silently doing nothing.
+        window.toast?.showError?.(currentSuggestion._displayError || 'Could not reveal this finding');
       }
     }
   }

@@ -1343,6 +1343,42 @@ function formatAISuggestion(text, category) {
 }
 
 /**
+ * Build the GitHub inline comments for a headless (--ai-draft / --ai-review)
+ * submission from the final AI suggestions.
+ *
+ * Suggestions without a usable path or a positive line are skipped and
+ * reported. Each comment keeps the suggestion's diff side: a finding on a
+ * deleted line is stored with side LEFT and an old-file line number, and
+ * submitting it as RIGHT would anchor it to the wrong line or fail.
+ *
+ * @param {Array<Object>|null} aiSuggestions - Rows from the comments table
+ * @returns {{validSuggestions: Array<Object>, githubComments: Array<Object>}}
+ */
+function prepareHeadlessReviewComments(aiSuggestions) {
+  const validSuggestions = (aiSuggestions || []).filter(suggestion => {
+    const hasValidLine = suggestion?.line_start > 0;
+    const hasValidPath = typeof suggestion?.file === 'string' && suggestion.file.trim() !== '';
+    if (!hasValidLine || !hasValidPath) {
+      logger.warn(`Skipping suggestion for ${suggestion?.file || 'unknown file'}:${suggestion?.line_start || 'unknown line'} - missing valid line or path information`);
+      return false;
+    }
+    return true;
+  });
+
+  // Diff positions are recalculated fresh by the GitHub client.
+  const githubComments = validSuggestions.map(suggestion => ({
+    path: suggestion.file,
+    line: suggestion.line_start,
+    // Same emoji + category prefix as adopted suggestions
+    body: formatAISuggestion(suggestion.body, suggestion.type),
+    side: suggestion.side === 'LEFT' ? 'LEFT' : 'RIGHT',
+    isFileLevel: false // AI suggestions here always target specific lines
+  }));
+
+  return { validSuggestions, githubComments };
+}
+
+/**
  * Shared implementation for headless (non-interactive) review modes.
  * Used by both --ai-draft and --ai-review.
  *
@@ -1687,6 +1723,7 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
         line_start,
         body,
         diff_position,
+        side,
         title,
         type
       FROM comments
@@ -1701,19 +1738,9 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       return; // Exit gracefully without creating a review
     }
 
-    // Filter out suggestions without valid line information
-    // Note: diff positions will be recalculated fresh by GitHub client
-    const validSuggestions = aiSuggestions.filter(suggestion => {
-      const hasValidLine = suggestion.line_start && suggestion.line_start > 0;
-      const hasValidPath = suggestion.file && suggestion.file.trim() !== '';
-
-      if (!hasValidLine || !hasValidPath) {
-        console.warn(`Skipping suggestion for ${suggestion.file || 'unknown file'}:${suggestion.line_start || 'unknown line'} - missing valid line or path information`);
-        return false;
-      }
-
-      return true;
-    });
+    // Skip suggestions without valid line/path information and keep each
+    // suggestion's diff side (LEFT for deleted lines).
+    const { validSuggestions, githubComments } = prepareHeadlessReviewComments(aiSuggestions);
 
     console.log(`Filtered to ${validSuggestions.length} suggestions with valid line information`);
 
@@ -1721,20 +1748,6 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       console.log('No suggestions with valid line information. Exiting without creating review.');
       return; // Exit gracefully without creating a review
     }
-
-    // Format AI suggestions for GitHub
-    const githubComments = validSuggestions.map(suggestion => {
-      // Format with emoji and category prefix, same as adopted suggestions
-      const formattedBody = formatAISuggestion(suggestion.body, suggestion.type);
-
-      return {
-        path: suggestion.file,
-        line: suggestion.line_start,
-        body: formattedBody,
-        side: 'RIGHT',    // AI suggestions always target added/modified code
-        isFileLevel: false // AI suggestions always target specific lines
-      };
-    });
 
     // Build review body with AI-generated summary
     const footerFlag = options.mode === 'draft' ? '--ai-draft' : '--ai-review';
@@ -3035,4 +3048,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, resolveCliInstructions, resolveCliBindingRepository, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, prepareHeadlessReviewComments, resolveCliInstructions, resolveCliBindingRepository, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };

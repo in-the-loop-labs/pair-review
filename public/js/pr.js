@@ -6634,7 +6634,9 @@ class PRManager {
 
       // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
-        this.fileCommentManager.loadFileComments(fileLevelComments, []);
+        // null suggestions: leave the file-level AI cards alone. Any array,
+        // even an empty one, replaces them.
+        this.fileCommentManager.loadFileComments(fileLevelComments, null);
       }
 
       // Populate AI Panel with all comments (including dismissed if requested)

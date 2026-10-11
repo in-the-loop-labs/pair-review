@@ -1172,7 +1172,9 @@ class FileCommentManager {
   /**
    * Load and display file-level comments for all files
    * @param {Array} comments - Array of file-level comments
-   * @param {Array} suggestions - Array of file-level AI suggestions
+   * @param {Array|null} suggestions - Replacement list of file-level AI
+   *   suggestions. Any array, including an empty one, replaces the rendered AI
+   *   cards; pass null to leave them untouched (user-comment-only reloads).
    */
   loadFileComments(comments, suggestions) {
     // Group by rendered file comments zone so path variants still attach to the
@@ -1218,9 +1220,10 @@ class FileCommentManager {
       // Selectively clear existing cards based on what we're about to reload
       // This prevents user comments from being cleared when only reloading AI suggestions
       if (container) {
-        // Only clear AI suggestions if we have suggestions to display
-        // (prevents stale suggestions from persisting when reloading or changing levels)
-        if (suggestions && suggestions.length > 0) {
+        // A supplied suggestions list replaces the previous AI cards, even
+        // when it is empty (a new run or level with no file-level findings
+        // must not leave the old cards behind). null leaves them alone.
+        if (suggestions) {
           const existingAISuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion');
           for (const card of existingAISuggestions) {
             card.remove();
