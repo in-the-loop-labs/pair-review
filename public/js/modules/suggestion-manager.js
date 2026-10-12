@@ -10,6 +10,11 @@ class SuggestionManager {
     this.prManager = prManagerRef;
     // Concurrency guard for displayAISuggestions
     this._isDisplayingSuggestions = false;
+    // Latest list requested while a display was running; shown when it ends
+    this._pendingSuggestions = null;
+    // Bumped by clearAISuggestions so a display already running stops
+    // instead of putting the cleared findings back
+    this._displayEpoch = 0;
 
     // Event delegation for "Ask about this" chat button on suggestions
     document.addEventListener('click', (e) => {
@@ -206,27 +211,107 @@ class SuggestionManager {
   }
 
   /**
-   * Display AI suggestions inline with diff
-   * Uses a concurrency guard to prevent multiple simultaneous executions
+   * Remove every rendered AI suggestion card: inline rows (legacy renderer),
+   * Pierre `suggestion` annotations and file-level AI cards. User comment
+   * cards are untouched. The navigator list is left alone; see
+   * clearAISuggestions for the full clear.
+   * @returns {number} Number of inline rows removed
+   * @private
+   */
+  _removeRenderedSuggestions() {
+    const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
+    existingSuggestionRows.forEach(row => row.remove());
+
+    // Replace suggestion annotations, but preserve expanded context. These
+    // ranges are shared with user comments, external threads and navigation;
+    // clearing them here can leave those cards without a rendered anchor.
+    const pierreBridge = this.prManager?.pierreBridge;
+    if (pierreBridge) {
+      for (const [fileName] of pierreBridge.files) {
+        pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
+      }
+    }
+
+    // An empty suggestions list clears the file-level AI cards; null
+    // comments leaves the user's file-level comment cards alone.
+    this.prManager?.fileCommentManager?.loadFileComments(null, []);
+
+    return existingSuggestionRows.length;
+  }
+
+  /**
+   * Remove every displayed AI suggestion: the rendered cards (inline rows,
+   * Pierre annotations, file-level cards) and the navigator list. Used when a
+   * new analysis starts, so nothing from the previous run stays on screen
+   * while it runs. User comments are untouched.
+   *
+   * A display that is running, or queued behind one, would put the cleared
+   * findings back when it finishes, so both are abandoned.
+   */
+  clearAISuggestions() {
+    this._displayEpoch = (this._displayEpoch || 0) + 1;
+    this._pendingSuggestions = null;
+    this._closeReasoningPopover();
+    const removed = this._removeRenderedSuggestions();
+    console.log(`[UI] Cleared AI suggestions (${removed} inline rows)`);
+
+    const navigator = this.prManager?.suggestionNavigator;
+    if (navigator) {
+      navigator.updateSuggestions([]);
+      this._syncNavigatorLayout([]);
+    }
+  }
+
+  /**
+   * Reserve room for the navigator only while it has visible suggestions
+   * and is not collapsed.
+   * @param {Array} suggestions - The suggestions the navigator now shows
+   * @private
+   */
+  _syncNavigatorLayout(suggestions) {
+    const mainContent = document.querySelector('.main-content');
+    if (mainContent && this.prManager?.suggestionNavigator) {
+      const visibleSuggestions = suggestions.filter(s => s.status !== 'dismissed');
+      // Only add navigator-visible if we have suggestions AND the navigator is not collapsed
+      if (visibleSuggestions.length > 0 && !this.prManager.suggestionNavigator.isCollapsed) {
+        mainContent.classList.add('navigator-visible');
+      } else {
+        mainContent.classList.remove('navigator-visible');
+      }
+    }
+  }
+
+  /**
+   * Display AI suggestions inline with diff.
+   *
+   * Displays never interleave. A call made while one is running does not
+   * wait: it records its list and returns at once, and the latest recorded
+   * list is displayed when the running one ends. Returning at once (rather
+   * than awaiting the queued display) matters: a running display can itself
+   * be awaiting work that requests a display, and waiting there would
+   * deadlock.
    * @param {Array} suggestions - Array of suggestions to display
    */
   async displayAISuggestions(suggestions) {
-    // Concurrency guard: prevent multiple simultaneous executions
-    // This avoids duplicated/interleaved suggestions when called rapidly
     if (this._isDisplayingSuggestions) {
-      console.log('[UI] displayAISuggestions already in progress, skipping');
+      console.log('[UI] displayAISuggestions already in progress, queued the latest request');
+      this._pendingSuggestions = suggestions;
       return;
     }
     this._isDisplayingSuggestions = true;
+    // clearAISuggestions bumps the epoch; a display it interrupts must stop
+    // after its awaits rather than show the cleared list.
+    const epoch = this._displayEpoch;
 
     try {
       this._closeReasoningPopover();
       console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
 
-      // Clear existing AI suggestion rows before displaying new ones
-      const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
-      existingSuggestionRows.forEach(row => row.remove());
-      console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
+      // Clear the previous set's cards before displaying new ones. The
+      // navigator keeps its list (and selection) until the new list replaces
+      // it below.
+      const removedRows = this._removeRenderedSuggestions();
+      console.log(`[UI] Removed ${removedRows} existing suggestion rows`);
 
       // Only inline (line-targeted) suggestions need the diff body rendered
       // ahead of time. File-level findings (is_file_level === 1 or no
@@ -250,15 +335,6 @@ class SuggestionManager {
         }
       }
 
-      // Replace suggestion annotations, but preserve expanded context. These
-      // ranges are shared with user comments, external threads and navigation;
-      // clearing them here can leave those cards without a rendered anchor.
-      if (this.prManager.pierreBridge) {
-        for (const [fileName] of this.prManager.pierreBridge.files) {
-          this.prManager.pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
-        }
-      }
-
       const lineTargets = suggestions
         .filter(suggestion =>
           suggestion.file
@@ -274,6 +350,12 @@ class SuggestionManager {
         }));
       if (lineTargets.length > 0 && this.prManager?.ensureLinesVisible) {
         await this.prManager.ensureLinesVisible(lineTargets);
+      }
+
+      // The findings were cleared while we awaited (a new analysis started).
+      if (epoch !== this._displayEpoch) {
+        console.log('[UI] Suggestions were cleared during display; not showing the stale list');
+        return;
       }
 
       // For files rendered by @pierre/diffs, use annotation-based display.
@@ -335,16 +417,7 @@ class SuggestionManager {
       }
 
       // Adjust main content layout when navigator is visible
-      const mainContent = document.querySelector('.main-content');
-      if (mainContent && this.prManager?.suggestionNavigator) {
-        const visibleSuggestions = suggestions.filter(s => s.status !== 'dismissed');
-        // Only add navigator-visible if we have suggestions AND the navigator is not collapsed
-        if (visibleSuggestions.length > 0 && !this.prManager.suggestionNavigator.isCollapsed) {
-          mainContent.classList.add('navigator-visible');
-        } else {
-          mainContent.classList.remove('navigator-visible');
-        }
-      }
+      this._syncNavigatorLayout(suggestions);
 
       // Separate file-level and line-level suggestions
       const fileLevelSuggestions = [];
@@ -358,12 +431,12 @@ class SuggestionManager {
         }
       });
 
-      // Handle file-level suggestions via FileCommentManager. Call it even
-      // when the list is empty so file-level cards from the previous set
-      // are cleared.
+      // Handle file-level suggestions via FileCommentManager. The list
+      // replaces the previous AI cards even when it is empty; null comments
+      // leaves the user's file-level comment cards alone.
       if (this.prManager?.fileCommentManager) {
         console.log('[UI] Routing file-level suggestions to FileCommentManager:', fileLevelSuggestions.length);
-        this.prManager.fileCommentManager.loadFileComments([], fileLevelSuggestions);
+        this.prManager.fileCommentManager.loadFileComments(null, fileLevelSuggestions);
       }
 
       // Group line-level suggestions by file, line, and side
@@ -473,7 +546,27 @@ class SuggestionManager {
     } finally {
       // Always clear the guard, even if an error occurred
       this._isDisplayingSuggestions = false;
+      this._runPendingDisplay();
     }
+  }
+
+  /**
+   * Start the display queued while another one ran, if any. Not awaited by
+   * the display that just ended, and its errors are logged here, so they
+   * never replace that display's own outcome.
+   * @private
+   */
+  _runPendingDisplay() {
+    const pending = this._pendingSuggestions;
+    if (!pending) return;
+    this._pendingSuggestions = null;
+    // Through PRManager when present, so its post-display refresh runs too.
+    const display = typeof this.prManager?.displayAISuggestions === 'function'
+      ? this.prManager.displayAISuggestions(pending)
+      : this.displayAISuggestions(pending);
+    Promise.resolve(display).catch(error => {
+      console.error('[UI] Queued suggestion display failed:', error);
+    });
   }
 
   /**

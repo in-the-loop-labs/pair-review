@@ -4,6 +4,8 @@
  * Provides two-column format showing both OLD (base) and NEW (head) line numbers
  */
 
+const logger = require('./logger');
+
 /**
  * Parse a hunk header to extract line number information
  * Format: @@ -oldStart,oldCount +newStart,newCount @@ [function context]
@@ -477,6 +479,84 @@ function buildDiffLineSet(rawDiff) {
   };
 }
 
+/**
+ * Map stored comment rows to the GitHub review comments that a review
+ * submission sends. The one mapping for both submit paths: the web submit
+ * route (src/routes/pr.js) and headless --ai-draft / --ai-review
+ * (src/main.js). Both GitHub transports (GraphQL and the host REST
+ * extension) accept the result.
+ *
+ * - `is_file_level = 1` rows become file-level comments.
+ * - A line (or both ends of a range) inside a diff hunk becomes a line
+ *   comment on its side; a range carries `start_line`.
+ * - A line outside every hunk (e.g. expanded context) cannot be an inline
+ *   comment, so it becomes a file-level comment whose body starts with
+ *   `(Ref Line N)` or `(Ref Lines N-M)`.
+ *
+ * @param {Array<Object>|null} rows - Comment rows: file, line_start,
+ *   line_end, side, body, is_file_level
+ * @param {string} diffContent - Raw unified diff used for the hunk check
+ * @param {Object} [options]
+ * @param {(row: Object) => string} [options.formatBody] - Comment text for a
+ *   row, before any line reference prefix. Defaults to `row.body`.
+ * @returns {Array<{path: string, body: string, isFileLevel: boolean,
+ *   line?: number, side?: string, start_line?: number}>}
+ */
+function buildReviewComments(rows, diffContent, { formatBody = row => row.body } = {}) {
+  const diffLineSet = buildDiffLineSet(diffContent);
+
+  return (rows || []).map(comment => {
+    const side = comment.side || 'RIGHT';
+    const isRange = comment.line_end && comment.line_end !== comment.line_start;
+    const body = formatBody(comment);
+
+    // Explicit file-level comment: about the whole file, not tied to lines
+    if (comment.is_file_level === 1) {
+      logger.debug(`Formatting file-level comment: ${comment.file}`);
+      return {
+        path: comment.file,
+        body,
+        isFileLevel: true
+      };
+    }
+
+    // Check whether the target line actually appears in a diff hunk rather
+    // than relying on diff_position, which may be absent (e.g. comments
+    // created by the chat agent). For a range both endpoints must be inside
+    // the diff: a start outside a hunk would give GitHub a position it
+    // cannot render.
+    const isExpandedContext = isRange
+      ? !diffLineSet.isLineInDiff(comment.file, comment.line_start, side) || !diffLineSet.isLineInDiff(comment.file, comment.line_end, side)
+      : !diffLineSet.isLineInDiff(comment.file, comment.line_start, side);
+
+    if (isExpandedContext) {
+      const lineRef = isRange
+        ? `(Ref Lines ${comment.line_start}-${comment.line_end})`
+        : `(Ref Line ${comment.line_start})`;
+      logger.debug(`Formatting file-level comment (expanded context): ${comment.file} ${lineRef}`);
+      return {
+        path: comment.file,
+        body: `${lineRef} ${body}`,
+        isFileLevel: true
+      };
+    }
+
+    logger.debug(`Formatting line comment: ${comment.file}:${comment.line_start}${isRange ? `-${comment.line_end}` : ''} side=${side}`);
+
+    const commentObj = {
+      path: comment.file,
+      line: isRange ? comment.line_end : comment.line_start,
+      body,
+      side,
+      isFileLevel: false
+    };
+    if (isRange) {
+      commentObj.start_line = comment.line_start;
+    }
+    return commentObj;
+  });
+}
+
 module.exports = {
   annotateDiff,
   parseAnnotatedDiff,
@@ -484,5 +564,6 @@ module.exports = {
   formatLineNum,
   getLineMarker,
   getLineContent,
-  buildDiffLineSet
+  buildDiffLineSet,
+  buildReviewComments
 };

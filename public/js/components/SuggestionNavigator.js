@@ -429,9 +429,11 @@ class SuggestionNavigator {
         } else {
           scrollTarget.scrollIntoView(options);
         }
-      } else {
+      } else if (!window.prManager?.suggestionManager?._isDisplayingSuggestions) {
         // The finding has no card in the diff (file or line not shown).
-        // Say so instead of silently doing nothing.
+        // Say so instead of silently doing nothing. Not while suggestions
+        // are being redisplayed: every card is removed first and re-added
+        // when the display ends, so a miss then is not an error.
         window.toast?.showError?.(currentSuggestion._displayError || 'Could not reveal this finding');
       }
     }

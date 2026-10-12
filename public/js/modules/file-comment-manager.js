@@ -1170,11 +1170,16 @@ class FileCommentManager {
   }
 
   /**
-   * Load and display file-level comments for all files
-   * @param {Array} comments - Array of file-level comments
+   * Load and display file-level comments for all files.
+   *
+   * Both arguments follow one rule: any array, including an empty one,
+   * replaces that kind of card; null leaves it untouched. A user-comment
+   * reload passes null suggestions, and an AI suggestion display passes null
+   * comments, so neither wipes the other's cards.
+   * @param {Array|null} comments - Replacement list of file-level user
+   *   comments, or null to leave the user comment cards alone
    * @param {Array|null} suggestions - Replacement list of file-level AI
-   *   suggestions. Any array, including an empty one, replaces the rendered AI
-   *   cards; pass null to leave them untouched (user-comment-only reloads).
+   *   suggestions, or null to leave the AI cards alone
    */
   loadFileComments(comments, suggestions) {
     // Group by rendered file comments zone so path variants still attach to the
@@ -1230,8 +1235,9 @@ class FileCommentManager {
           }
         }
 
-        // Only clear user comments if we have comments to display
-        if (comments && comments.length > 0) {
+        // Same rule for user comments: a supplied list replaces them, even
+        // when empty (the last file-level comment was deleted or dismissed).
+        if (comments) {
           const existingUserComments = container.querySelectorAll('.file-comment-card.user-comment');
           for (const card of existingUserComments) {
             card.remove();

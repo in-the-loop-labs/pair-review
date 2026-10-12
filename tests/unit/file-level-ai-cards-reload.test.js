@@ -4,15 +4,17 @@
 /**
  * File-level AI suggestion cards and user comment reloads.
  *
- * FileCommentManager.loadFileComments(comments, suggestions) treats the
- * suggestions argument as a replacement list: any array (even an empty one)
- * replaces the rendered AI cards, and null leaves them alone. Its two callers
- * rely on that:
- *   - PRManager.loadUserComments (PR and Local mode share it) passes null, so
- *     reloading user comments never wipes the AI cards.
- *   - SuggestionManager.displayAISuggestions (PR and Local mode share it)
- *     always passes the current file-level list, so a new run or level with
- *     no file-level findings clears the previous cards.
+ * FileCommentManager.loadFileComments(comments, suggestions) treats both
+ * arguments the same way: any array (even an empty one) replaces that kind
+ * of card, and null leaves it alone. Its callers rely on that:
+ *   - PRManager.loadUserComments (PR and Local mode share it) always passes
+ *     the file-level comment list and null suggestions, so reloading user
+ *     comments never wipes the AI cards, and removing the last file-level
+ *     comment removes its card.
+ *   - SuggestionManager.displayAISuggestions and clearAISuggestions (PR and
+ *     Local mode share them) pass null comments and the current file-level
+ *     list (empty to clear), so a new run or level with no file-level
+ *     findings clears the previous AI cards without touching user cards.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -73,17 +75,35 @@ describe('FileCommentManager.loadFileComments suggestion replacement', () => {
     expect(fcm.displayAISuggestion).not.toHaveBeenCalled();
   });
 
-  it('clears AI cards when suggestions is an empty array', () => {
+  it('clears AI cards when suggestions is an empty array and comments is null', () => {
+    const { zone, container } = buildZone();
+    const fcm = makeFileCommentManager(zone);
+
+    fcm.loadFileComments(null, []);
+
+    expect(cardIds(container)).toEqual(['old-user']);
+    expect(fcm.displayAISuggestion).not.toHaveBeenCalled();
+    expect(fcm.updateCommentCount).toHaveBeenCalledWith(zone);
+  });
+
+  it('clears user comment cards when comments is an empty array and suggestions is null', () => {
+    const { zone, container } = buildZone();
+    const fcm = makeFileCommentManager(zone);
+
+    fcm.loadFileComments([], null);
+
+    expect(cardIds(container)).toEqual(['old-ai']);
+    expect(fcm.displayUserComment).not.toHaveBeenCalled();
+    expect(fcm.updateCommentCount).toHaveBeenCalledWith(zone);
+  });
+
+  it('clears both kinds of card when both arguments are empty arrays', () => {
     const { zone, container } = buildZone();
     const fcm = makeFileCommentManager(zone);
 
     fcm.loadFileComments([], []);
 
-    // User comments are managed independently: an empty comments list
-    // leaves them in place.
-    expect(cardIds(container)).toEqual(['old-user']);
-    expect(fcm.displayAISuggestion).not.toHaveBeenCalled();
-    expect(fcm.updateCommentCount).toHaveBeenCalledWith(zone);
+    expect(cardIds(container)).toEqual([]);
   });
 
   it('replaces AI cards with a non-empty suggestions list', () => {
@@ -91,7 +111,7 @@ describe('FileCommentManager.loadFileComments suggestion replacement', () => {
     const fcm = makeFileCommentManager(zone);
     const suggestion = { id: 'new-ai', file: 'src/a.js', is_file_level: 1 };
 
-    fcm.loadFileComments([], [suggestion]);
+    fcm.loadFileComments(null, [suggestion]);
 
     expect(cardIds(container)).toEqual(['old-user']);
     expect(fcm.displayAISuggestion).toHaveBeenCalledWith(zone, suggestion);
@@ -133,6 +153,36 @@ describe('PRManager.loadUserComments', () => {
   });
 });
 
+describe('PRManager.loadUserComments with no file-level comments', () => {
+  it('passes an empty list so the card of a deleted last comment is removed', async () => {
+    const lineComment = { id: 8, file: 'src/a.js', line_start: 4, side: 'RIGHT', is_file_level: 0, status: 'active' };
+    const dismissedFileComment = { id: 9, file: 'src/a.js', is_file_level: 1, status: 'inactive' };
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ comments: [lineComment, dismissedFileComment] })
+    })));
+
+    const { zone, container } = buildZone();
+    const fcm = makeFileCommentManager(zone);
+    const loadSpy = vi.spyOn(fcm, 'loadFileComments');
+
+    const manager = Object.create(PRManager.prototype);
+    manager.currentPR = { id: 'review-1' };
+    manager.pierreBridge = null;
+    manager.fileCommentManager = fcm;
+    manager.updateCommentCount = vi.fn();
+    manager.ensureLinesVisible = vi.fn(async () => {});
+    manager.findFileElement = vi.fn(() => null);
+
+    await manager.loadUserComments(true);
+
+    expect(loadSpy).toHaveBeenCalledWith([], null);
+    // The stale user card is gone; the AI card stays.
+    expect(cardIds(container)).toEqual(['old-ai']);
+    expect(fcm.displayUserComment).not.toHaveBeenCalled();
+  });
+});
+
 describe('SuggestionManager.displayAISuggestions file-level routing', () => {
   function makeSuggestionManager(fileCommentManager) {
     const sm = Object.create(SuggestionManager.prototype);
@@ -156,7 +206,8 @@ describe('SuggestionManager.displayAISuggestions file-level routing', () => {
 
     await sm.displayAISuggestions([{ id: 1, file: 'src/a.js', line_start: 3, side: 'RIGHT' }]);
 
-    expect(loadSpy).toHaveBeenCalledWith([], []);
+    expect(loadSpy).toHaveBeenLastCalledWith(null, []);
+    expect(loadSpy).not.toHaveBeenCalledWith([], expect.anything());
     expect(cardIds(container)).toEqual(['old-user']);
   });
 
@@ -179,7 +230,7 @@ describe('SuggestionManager.displayAISuggestions file-level routing', () => {
 
     await sm.displayAISuggestions([fileLevel]);
 
-    expect(loadSpy).toHaveBeenCalledWith([], [fileLevel]);
+    expect(loadSpy).toHaveBeenLastCalledWith(null, [fileLevel]);
     expect(fcm.displayAISuggestion).toHaveBeenCalledWith(zone, fileLevel);
   });
 });

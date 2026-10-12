@@ -316,6 +316,32 @@ describe('AIPanel collapsed state persistence', () => {
       ]);
     });
 
+    it('clears the diff view through SuggestionManager.clearAISuggestions', () => {
+      const panel = createTestPanel({ findings: [{ id: 1 }], comments: [] });
+      panel.segmentBtns = [];
+      panel.resetLevelFilter = vi.fn();
+      const clearAISuggestions = vi.fn();
+      global.window.prManager = { suggestionManager: { clearAISuggestions } };
+
+      try {
+        panel.clearAllFindings();
+      } finally {
+        delete global.window.prManager;
+      }
+
+      expect(clearAISuggestions).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw when there is no suggestion manager', () => {
+      const panel = createTestPanel({ findings: [{ id: 1 }], comments: [] });
+      panel.segmentBtns = [];
+      panel.resetLevelFilter = vi.fn();
+      delete global.window.prManager;
+
+      expect(() => panel.clearAllFindings()).not.toThrow();
+      expect(panel.findings).toEqual([]);
+    });
+
     it('resets navigation index when clearing findings', () => {
       const panel = createTestPanel({
         findings: [{ id: 1 }],

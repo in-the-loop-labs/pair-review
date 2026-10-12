@@ -6632,10 +6632,11 @@ class PRManager {
         });
       }
 
-      // Load file-level comments into their zones (only active comments reach here)
-      if (this.fileCommentManager && fileLevelComments.length > 0) {
-        // null suggestions: leave the file-level AI cards alone. Any array,
-        // even an empty one, replaces them.
+      // Load file-level comments into their zones (only active comments reach
+      // here). Always pass the list, even when empty, so the cards of a
+      // deleted or dismissed last comment are removed. null suggestions
+      // leaves the file-level AI cards alone.
+      if (this.fileCommentManager) {
         this.fileCommentManager.loadFileComments(fileLevelComments, null);
       }
 
@@ -8332,6 +8333,27 @@ class PRManager {
   }
 
   /**
+   * Clear the previous run's AI findings when a new analysis starts: the AI
+   * panel list and, through SuggestionManager.clearAISuggestions, every
+   * suggestion card in the diff (inline rows, Pierre annotations, file-level
+   * cards) and the navigator list. User comments stay. Shared by PR mode
+   * (startAnalysis) and Local mode (startLocalAnalysis in local.js).
+   */
+  clearFindingsForNewAnalysis() {
+    if (typeof window.aiPanel?.clearAllFindings === 'function') {
+      try {
+        // Also clears the diff view
+        window.aiPanel.clearAllFindings();
+        return;
+      } catch (e) {
+        console.warn('Error clearing AI panel findings:', e);
+        // Fall through so the diff view is still cleared
+      }
+    }
+    this.suggestionManager?.clearAISuggestions();
+  }
+
+  /**
    * Start the actual AI analysis with the given config
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -8354,16 +8376,7 @@ class PRManager {
       }
 
       // Clear existing AI suggestions from UI immediately when starting new analysis
-      if (window.aiPanel && typeof window.aiPanel.clearAllFindings === 'function') {
-        try {
-          window.aiPanel.clearAllFindings();
-        } catch (e) {
-          console.warn('Error clearing AI panel findings:', e);
-          // Fall through to manual DOM cleanup
-        }
-      }
-      // Always do manual DOM cleanup as backup
-      document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
+      this.clearFindingsForNewAnalysis();
 
       // Determine endpoint and body based on whether this is a council analysis
       let analyzeUrl, analyzeBody;

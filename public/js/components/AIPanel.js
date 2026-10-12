@@ -2018,8 +2018,9 @@ class AIPanel {
         this.renderFindings();
         this.resetLevelFilter();
 
-        // Also clear suggestions from the diff view
-        document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
+        // Also clear suggestions from the diff view: inline rows, Pierre
+        // annotations, file-level cards and the navigator list
+        window.prManager?.suggestionManager?.clearAISuggestions?.();
     }
 
     // ========================================

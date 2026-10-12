@@ -624,6 +624,10 @@ class LocalManager {
 
       // Staleness is now checked in triggerAIAnalysis before showing config modal
 
+      // Clear existing AI suggestions from UI immediately when starting new
+      // analysis (same as PR mode's startAnalysis)
+      manager.clearFindingsForNewAnalysis();
+
       // Determine endpoint and body based on whether this is a council analysis
       let analyzeUrl, analyzeBody;
       if (config.isCouncil) {

@@ -106,6 +106,24 @@ describe('SuggestionNavigator.scrollToSuggestion', () => {
     expect(window.toast.showError).toHaveBeenCalledWith('Line 9 (RIGHT) not found in diff for file "a.js"');
   });
 
+  it('shows no error while suggestions are being redisplayed', () => {
+    // displayAISuggestions removes every card first and re-adds them when it
+    // ends, so a lookup miss during a display is not an error.
+    window.toast = { showError: vi.fn() };
+    window.prManager = { suggestionManager: { _isDisplayingSuggestions: true } };
+    const nav = new SuggestionNavigator();
+    nav.suggestions = [{ id: 'reloading' }];
+    nav.currentSuggestionIndex = 0;
+
+    nav.scrollToSuggestion();
+    expect(window.toast.showError).not.toHaveBeenCalled();
+
+    // Once the display has ended a miss is reported again.
+    window.prManager.suggestionManager._isDisplayingSuggestions = false;
+    nav.scrollToSuggestion();
+    expect(window.toast.showError).toHaveBeenCalledWith('Could not reveal this finding');
+  });
+
   it('falls back to a generic message without a display error', () => {
     window.toast = { showError: vi.fn() };
     const nav = new SuggestionNavigator();
