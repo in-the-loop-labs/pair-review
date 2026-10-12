@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect } from 'vitest';
 
-const { buildDiffLineSet } = require('../../src/utils/diff-annotator');
+const { buildDiffLineSet, buildReviewComments } = require('../../src/utils/diff-annotator');
 
 describe('buildDiffLineSet', () => {
   const simpleDiff = [
@@ -521,6 +521,78 @@ describe('buildDiffLineSet', () => {
       expect(isLineInDiff('script.sh', 1, 'RIGHT')).toBe(false);
       expect(isLineInDiff('last.js', 8, 'RIGHT')).toBe(true);
       expect(isLineInDiff('last.js', 8, 'LEFT')).toBe(true);
+    });
+  });
+
+  describe('header-lookalike lines with hunk tracking', () => {
+    // schema.sql hunk 1 removes the SQL comment `-- old comment` (emitted as
+    // `--- old comment`) and adds `++x` (emitted as `+++x`). A second hunk in
+    // the same file and a hunk in a second file follow. Reading either line as
+    // a file header would skip it, so `id int` and `);` would land one line
+    // early on each side and line 4 would fall outside the first hunk.
+    const diff = [
+      'diff --git a/schema.sql b/schema.sql',
+      '--- a/schema.sql',
+      '+++ b/schema.sql',
+      '@@ -1,4 +1,4 @@',
+      ' create table t (',
+      '--- old comment',
+      '+++x',
+      '   id int',
+      ' );',
+      '@@ -10,3 +10,3 @@',
+      ' select 1;',
+      '-select 2;',
+      '+select 3;',
+      ' select 4;',
+      'diff --git a/b.js b/b.js',
+      '--- a/b.js',
+      '+++ b/b.js',
+      '@@ -1,2 +1,2 @@',
+      '-one',
+      '+ONE',
+      ' two',
+      ''
+    ].join('\n');
+
+    it('keeps line numbers, hunk indexes and inline ranges right past the lookalike lines', () => {
+      const { isLineInDiff, hunkOf } = buildDiffLineSet(diff);
+
+      // Line numbers after the lookalike lines: RIGHT 1 create, 2 ++x,
+      // 3 id int, 4 ); and LEFT 1 create, 2 -- old comment, 3 id int, 4 );
+      for (const line of [1, 2, 3, 4]) {
+        expect(isLineInDiff('schema.sql', line, 'RIGHT')).toBe(true);
+        expect(isLineInDiff('schema.sql', line, 'LEFT')).toBe(true);
+      }
+      expect(isLineInDiff('schema.sql', 5, 'RIGHT')).toBe(false);
+      expect(isLineInDiff('schema.sql', 5, 'LEFT')).toBe(false);
+      expect(isLineInDiff('old comment', 2, 'LEFT')).toBe(false);
+
+      // Hunks are indexed in diff order. Every line of the first hunk,
+      // including the ones after the lookalike lines, is in hunk 0.
+      for (const line of [1, 2, 3, 4]) {
+        expect(hunkOf('schema.sql', line, 'RIGHT')).toBe(0);
+        expect(hunkOf('schema.sql', line, 'LEFT')).toBe(0);
+      }
+      expect(hunkOf('schema.sql', 5, 'RIGHT')).toBeNull();
+      expect(hunkOf('schema.sql', 10, 'RIGHT')).toBe(1);
+      expect(hunkOf('schema.sql', 12, 'LEFT')).toBe(1);
+      expect(hunkOf('b.js', 1, 'RIGHT')).toBe(2);
+
+      const comments = buildReviewComments([
+        // Spans the added `++x` line on the new side
+        { file: 'schema.sql', line_start: 1, line_end: 4, side: 'RIGHT', body: 'new side' },
+        // Spans the removed `-- old comment` line on the old side, written backwards
+        { file: 'schema.sql', line_start: 4, line_end: 1, side: 'LEFT', body: 'old side' },
+        // Crosses into the second hunk, so it anchors on line_start alone
+        { file: 'schema.sql', line_start: 3, line_end: 10, side: 'RIGHT', body: 'cross hunk' }
+      ], diff);
+
+      expect(comments).toEqual([
+        { path: 'schema.sql', line: 4, start_line: 1, side: 'RIGHT', start_side: 'RIGHT', body: 'new side', isFileLevel: false },
+        { path: 'schema.sql', line: 4, start_line: 1, side: 'LEFT', start_side: 'LEFT', body: 'old side', isFileLevel: false },
+        { path: 'schema.sql', line: 3, side: 'RIGHT', body: 'cross hunk', isFileLevel: false }
+      ]);
     });
   });
 });
