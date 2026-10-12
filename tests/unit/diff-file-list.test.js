@@ -7,7 +7,8 @@ const {
   mergeChangedFilesWithDiff
 } = require('../../src/utils/diff-file-list');
 const {
-  LOOKALIKE_DIFF, LOOKALIKE_STATS, EXHAUSTED_HUNK_PATCH, EXHAUSTED_HUNK_STATS
+  LOOKALIKE_DIFF, LOOKALIKE_STATS, EXHAUSTED_HUNK_PATCH, EXHAUSTED_HUNK_STATS,
+  CR_CONTEXT_DIFF, CR_CONTEXT_STATS
 } = require('../utils/diff-stat-fixtures');
 
 describe('diff-file-list utils', () => {
@@ -84,6 +85,11 @@ describe('diff-file-list utils', () => {
     it('stops counting once a hunk has delivered its declared lines', () => {
       const { insertions, deletions } = countPatchStats(EXHAUSTED_HUNK_PATCH);
       expect({ additions: insertions, deletions }).toEqual(EXHAUSTED_HUNK_STATS);
+    });
+
+    it('counts a hunk whose `@@` context contains a carriage return', () => {
+      const { insertions, deletions } = countPatchStats(parseUnifiedDiffPatches(CR_CONTEXT_DIFF).get('f.js'));
+      expect({ additions: insertions, deletions }).toEqual(CR_CONTEXT_STATS['f.js']);
     });
 
     it('returns zeros for an empty or missing patch', () => {

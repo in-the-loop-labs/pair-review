@@ -201,8 +201,10 @@ class HunkParser {
     if (!header) return null;
     // Match: @@ followed by line info, then @@ and optional trailing context
     // The [^@]+ between @@ markers ensures we stop at the closing @@, so even
-    // if the function name contains @ characters, they're captured correctly
-    const match = header.match(/^@@[^@]+@@\s*(.*)$/);
+    // if the function name contains @ characters, they're captured correctly.
+    // The `s` flag keeps a lone `\r` inside the context line (git keeps it)
+    // from failing the match, mirroring the server's parseHunkHeader.
+    const match = header.match(/^@@[^@]+@@\s*(.*)$/s);
     const context = match ? match[1].trim() : null;
     return context || null; // Return null for empty strings too
   }

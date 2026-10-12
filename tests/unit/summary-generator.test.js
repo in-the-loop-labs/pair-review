@@ -9,7 +9,9 @@ const {
   countAddedLines
 } = require('../../src/ai/summary-generator.js');
 const { parseUnifiedDiffHunks } = require('../../src/utils/diff-hunks.js');
-const { LOOKALIKE_DIFF, LOOKALIKE_STATS } = require('../utils/diff-stat-fixtures.js');
+const {
+  LOOKALIKE_DIFF, LOOKALIKE_STATS, CR_CONTEXT_DIFF, CR_CONTEXT_STATS
+} = require('../utils/diff-stat-fixtures.js');
 const { HunkSummaryRepository } = require('../../src/database.js');
 
 const REVIEW_ID = 42;
@@ -127,6 +129,11 @@ describe('countAddedLines', () => {
       { header: '@@ -1 +1,2 @@', lines: ['--- gone', '+++ here', '+++ again', '+beyond'] }
     ]]]);
     expect(countAddedLines(hunks)).toBe(2);
+  });
+
+  it('counts a hunk whose `@@` context contains a carriage return', () => {
+    expect(countAddedLines(parseUnifiedDiffHunks(CR_CONTEXT_DIFF)))
+      .toBe(CR_CONTEXT_STATS['f.js'].additions);
   });
 
   it('returns 0 for no hunks', () => {

@@ -47,9 +47,10 @@ const LOOKALIKE_STATS = {
 };
 
 /**
- * A bare concatenation of two patches (no `diff --git`). The second file's
- * `---`/`+++` pair follows a hunk that has delivered every line it declared,
- * so it is a header; the lookalikes inside the first hunk are content.
+ * Two patches joined with no `diff --git` between them. Exercises the counters'
+ * line-count bound only: the lookalikes inside the first hunk are counted, and
+ * the second patch's `---`/`+++` pair, which arrives after that hunk has
+ * delivered every line it declared, is not.
  */
 const EXHAUSTED_HUNK_PATCH = [
   '--- a/one.sql',
@@ -67,4 +68,39 @@ const EXHAUSTED_HUNK_PATCH = [
 
 const EXHAUSTED_HUNK_STATS = { additions: 2, deletions: 2 };
 
-module.exports = { LOOKALIKE_DIFF, LOOKALIKE_STATS, EXHAUSTED_HUNK_PATCH, EXHAUSTED_HUNK_STATS };
+/**
+ * A hunk header whose function context carries a lone carriage return.
+ *
+ * git trims trailing whitespace from the context line but keeps a `\r` in the
+ * middle of it, so the header is `@@ -3,5 +3,5 @@ function foo() {\r  // x`.
+ * A header regex ending in `(.*)$` without the dotAll flag rejects that line,
+ * and a counter that relies on it then counts the hunk as +0/-0.
+ *
+ * Verbatim `git diff` output (git 2.x) for a file whose line 1 is
+ * `function foo() {\r  // x`.
+ */
+const CR_CONTEXT_DIFF = [
+  'diff --git a/f.js b/f.js',
+  'index 38895eb..9755c24 100644',
+  '--- a/f.js',
+  '+++ b/f.js',
+  '@@ -3,5 +3,5 @@ function foo() {\r  // x',
+  '   b',
+  '   c',
+  '   d',
+  '-  e',
+  '+  E',
+  ' }',
+  ''
+].join('\n');
+
+const CR_CONTEXT_STATS = { 'f.js': { additions: 1, deletions: 1 } };
+
+module.exports = {
+  LOOKALIKE_DIFF,
+  LOOKALIKE_STATS,
+  EXHAUSTED_HUNK_PATCH,
+  EXHAUSTED_HUNK_STATS,
+  CR_CONTEXT_DIFF,
+  CR_CONTEXT_STATS
+};

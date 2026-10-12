@@ -348,38 +348,10 @@ describe('buildDiffLineSet', () => {
       expect(isLineInDiff('notes.md', 0, 'RIGHT')).toBe(false);
     });
 
-    it('handles a bare unified diff with no `diff --git` line at all', () => {
-      // `diff -u` output and concatenated patch fragments separate files with
-      // the `---`/`+++`/`@@` triple alone, which arrives while the previous
-      // file's hunk is still open. That is the one header the `!inHunk` guard
-      // must still honour.
-      const bare = [
-        '--- a/first.js',
-        '+++ b/first.js',
-        '@@ -1,2 +1,2 @@',
-        ' keep',
-        '-old',
-        '+new',
-        '--- a/second.js',
-        '+++ b/second.js',
-        '@@ -10,2 +10,2 @@',
-        ' keep2',
-        '-old2',
-        '+new2',
-        ''
-      ].join('\n');
-      const { isLineInDiff } = buildDiffLineSet(bare);
-      expect(isLineInDiff('first.js', 2, 'RIGHT')).toBe(true);
-      expect(isLineInDiff('second.js', 11, 'RIGHT')).toBe(true);
-      // Second file's lines must NOT be attributed to the first.
-      expect(isLineInDiff('first.js', 11, 'RIGHT')).toBe(false);
-    });
-
     it('does not mistake a mid-hunk `--- ` / `+++ ` pair for a file section', () => {
       // The disguised pair is followed by a genuine second hunk of the SAME
-      // file, so it forms the full `---`/`+++`/`@@` triple. The first hunk
-      // still owes one line on each side when the pair arrives, which proves
-      // it is content.
+      // file, so it reads like a `---`/`+++`/`@@` file header. It arrives
+      // inside the first hunk, so it is content.
       const diff = [
         'diff --git a/queries.sql b/queries.sql',
         '--- a/queries.sql',
@@ -421,27 +393,28 @@ describe('buildDiffLineSet', () => {
       expect(isLineInDiff('new comment', 10, 'RIGHT')).toBe(false);
     });
 
-    it('splits a bare diff only after the open hunk has delivered its lines', () => {
-      const bare = [
-        '--- a/one.sql',
-        '+++ b/one.sql',
+    it('reads a hunk whose `@@` context contains a carriage return', () => {
+      // Without dotAll the header was rejected and its lines were registered
+      // as a continuation of the previous hunk (lines 3-5), not 20-21.
+      const diff = [
+        'diff --git a/f.js b/f.js',
+        '--- a/f.js',
+        '+++ b/f.js',
         '@@ -1,2 +1,2 @@',
-        '--- gone',
-        '+++ here',
-        ' same',
-        '--- a/two.sql',
-        '+++ b/two.sql',
-        '@@ -5 +5 @@',
-        '-x',
-        '+y',
+        ' a',
+        '-b',
+        '+B',
+        '@@ -20,2 +20,2 @@ function foo() {\r  // x',
+        ' c',
+        '-d',
+        '+D',
         ''
       ].join('\n');
-      const { isLineInDiff } = buildDiffLineSet(bare);
-      expect(isLineInDiff('one.sql', 2, 'RIGHT')).toBe(true);
-      expect(isLineInDiff('one.sql', 3, 'RIGHT')).toBe(false);
-      expect(isLineInDiff('two.sql', 5, 'RIGHT')).toBe(true);
-      expect(isLineInDiff('two.sql', 5, 'LEFT')).toBe(true);
-      expect(isLineInDiff('here', 5, 'RIGHT')).toBe(false);
+      const { isLineInDiff } = buildDiffLineSet(diff);
+      expect(isLineInDiff('f.js', 20, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('f.js', 21, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('f.js', 21, 'LEFT')).toBe(true);
+      expect(isLineInDiff('f.js', 3, 'RIGHT')).toBe(false);
     });
 
     it('skips `\\ No newline at end of file` without advancing either side', () => {

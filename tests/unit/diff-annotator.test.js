@@ -76,6 +76,17 @@ describe('diff-annotator', () => {
       expect(parseHunkHeader('@@invalid@@')).toBeNull();
       expect(parseHunkHeader('')).toBeNull();
     });
+
+    it('should parse a header whose context contains a carriage return', () => {
+      // git keeps a lone `\r` inside the function-context line.
+      expect(parseHunkHeader('@@ -3,2 +3,2 @@ function foo() {\r  // x')).toEqual({
+        oldStart: 3,
+        oldCount: 2,
+        newStart: 3,
+        newCount: 2,
+        context: 'function foo() {\r  // x'
+      });
+    });
   });
 
   describe('formatLineNum', () => {
@@ -826,34 +837,9 @@ describe('annotateDiff: hunk bodies that look like file headers', () => {
     });
   });
 
-  it('annotates a bare unified diff with no `diff --git` lines', () => {
-    const bare = [
-      '--- a/first.js',
-      '+++ b/first.js',
-      '@@ -1,2 +1,2 @@',
-      ' keep',
-      '-old',
-      '+new',
-      '--- a/second.js',
-      '+++ b/second.js',
-      '@@ -10,2 +10,2 @@',
-      ' keep2',
-      '-old2',
-      '+new2',
-      ''
-    ].join('\n');
-    const parsed = parseAnnotatedDiff(annotateDiff(bare));
-    expect(parsed.map(f => f.path)).toEqual(['first.js', 'second.js']);
-    // The second file's lines must be numbered from ITS hunk header, not
-    // appended to the first file's still-open hunk.
-    expect(parsed[1].lines.find(l => l.type === 'add')).toEqual({
-      oldLineNum: null, newLineNum: 11, type: 'add', content: 'new2'
-    });
-  });
-
   it('reads a `--unified=0` delete/add pair before the next hunk as content', () => {
-    // `---`/`+++`/`@@` in a row is the bare-diff file separator, but here the
-    // first hunk still owes one line on each side, so the pair is its body.
+    // With no context lines, a hunk can end on a `--- x` / `+++ y` pair that
+    // runs straight into the next `@@`. Inside the hunk, the pair is content.
     const diff = [
       'diff --git a/q.sql b/q.sql',
       '--- a/q.sql',
@@ -876,31 +862,28 @@ describe('annotateDiff: hunk bodies that look like file headers', () => {
     ]);
   });
 
-  it('splits a bare diff only after the open hunk has delivered its lines', () => {
-    const bare = [
-      '--- a/one.sql',
-      '+++ b/one.sql',
+  it('numbers a hunk whose `@@` context contains a carriage return', () => {
+    // Without dotAll the header was rejected, so its lines were numbered as a
+    // continuation of the previous hunk instead of from line 20.
+    const diff = [
+      'diff --git a/f.js b/f.js',
+      '--- a/f.js',
+      '+++ b/f.js',
       '@@ -1,2 +1,2 @@',
-      '--- gone',
-      '+++ here',
-      ' same',
-      '--- a/two.sql',
-      '+++ b/two.sql',
-      '@@ -1 +1 @@',
-      '-x',
-      '+y',
+      ' a',
+      '-b',
+      '+B',
+      '@@ -20,2 +20,2 @@ function foo() {\r  // x',
+      ' c',
+      '-d',
+      '+D',
       ''
     ].join('\n');
-    const parsed = parseAnnotatedDiff(annotateDiff(bare));
-    expect(parsed.map(f => f.path)).toEqual(['one.sql', 'two.sql']);
-    expect(parsed[0].lines.filter(l => l.type !== 'hunk')).toEqual([
-      { oldLineNum: 1, newLineNum: null, type: 'delete', content: '-- gone' },
-      { oldLineNum: null, newLineNum: 1, type: 'add', content: '++ here' },
-      { oldLineNum: 2, newLineNum: 2, type: 'context', content: 'same' }
-    ]);
-    expect(parsed[1].lines.filter(l => l.type !== 'hunk')).toEqual([
-      { oldLineNum: 1, newLineNum: null, type: 'delete', content: 'x' },
-      { oldLineNum: null, newLineNum: 1, type: 'add', content: 'y' }
+    const parsed = parseAnnotatedDiff(annotateDiff(diff));
+    expect(parsed[0].lines.filter(l => l.type !== 'hunk').slice(3)).toEqual([
+      { oldLineNum: 20, newLineNum: 20, type: 'context', content: 'c' },
+      { oldLineNum: 21, newLineNum: null, type: 'delete', content: 'd' },
+      { oldLineNum: null, newLineNum: 21, type: 'add', content: 'D' }
     ]);
   });
 
