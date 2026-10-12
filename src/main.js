@@ -7,6 +7,7 @@ const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepo
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
+const { buildSubmitPrContext } = require('./github/submit-pr-context');
 const { GitWorktreeManager } = require('./git/worktree');
 const { fetchNoTags } = require('./git/fetch-helpers');
 const { cleanupOrphanedKeepFiles } = require('./git/pack-cleanup');
@@ -1789,12 +1790,17 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
 
     const prNodeId = storedPRData.node_id ?? null;
 
-    const submitPrContext = {
+    // Same builder as the web submit route: carries the draft's numeric review
+    // id and the PR head SHA that alt-hosts require as each inline comment's
+    // commit_id (without it they reject the comments with a 422).
+    const submitPrContext = buildSubmitPrContext({
       owner: prInfo.owner,
       repo: prInfo.repo,
       prNumber: prInfo.number,
-      reviewId: existingDraft?.databaseId
-    };
+      existingDraft,
+      prData: storedPRData,
+      prMetadata
+    });
 
     let githubReview;
     if (options.reviewEvent === 'DRAFT') {

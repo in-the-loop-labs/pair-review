@@ -39,6 +39,7 @@ const { buildReviewStartedPayload, buildReviewLoadedPayload, buildAnalysisStarte
 const simpleGit = require('simple-git');
 const { GIT_DIFF_FLAGS_ARRAY, GIT_DIFF_SUMMARY_FLAGS_ARRAY } = require('../git/diff-flags');
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
+const { buildSubmitPrContext } = require('../github/submit-pr-context');
 const summaryGenerator = require('../ai/summary-generator');
 const tourGenerator = require('../ai/tour-generator');
 const {
@@ -1610,31 +1611,17 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     const prNodeId = prData.node_id ?? null;
 
-    // The PR head SHA is required by the host pending-review-comments path
-    // (GitHub-compatible alt-hosts validate each inline comment like
-    // `pulls.createReviewComment`, which mandates `commit_id`). The GraphQL
-    // path on github.com ignores it (the pending review pins the commit
-    // implicitly), so threading it through is harmless there.
-    // `prData.head_sha` is the canonical source (merged from the cached PR
-    // JSON); `prMetadata.head_sha` is a defensive fallback for callers whose
-    // record exposes it as a column. If neither is present, proceed without
-    // it but warn loudly so the resulting 422 is diagnosable.
-    const headSha = prData.head_sha || prMetadata.head_sha || null;
-    if (!headSha) {
-      logger.warn(
-        `Submit review for ${repository}#${prNumber}: PR head SHA is missing ` +
-        `(prData.head_sha and prMetadata.head_sha both absent). Host inline-comment ` +
-        `posting will likely fail with a 422 missing commit_id error.`
-      );
-    }
-
-    const submitPrContext = {
+    // Shared with headless --ai-draft / --ai-review (src/main.js): carries the
+    // draft's numeric review id and the PR head SHA that alt-hosts require as
+    // each inline comment's commit_id.
+    const submitPrContext = buildSubmitPrContext({
       owner,
       repo,
       prNumber,
-      reviewId: existingDraft?.databaseId,
-      headSha
-    };
+      existingDraft,
+      prData,
+      prMetadata
+    });
 
     if (event === 'DRAFT') {
       // Delegate to createDraftReviewGraphQL (handles both new and existing drafts)
