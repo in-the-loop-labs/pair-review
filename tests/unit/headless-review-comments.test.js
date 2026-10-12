@@ -115,7 +115,7 @@ describe('loadHeadlessSuggestions', () => {
     insertComment({ line_start: 1, line_end: 3 });
 
     expect(await headlessComments()).toEqual([{
-      path: 'a.js', line: 3, start_line: 1, body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false
+      path: 'a.js', line: 3, start_line: 1, start_side: 'RIGHT', body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false
     }]);
   });
 

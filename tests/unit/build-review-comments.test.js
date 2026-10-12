@@ -23,6 +23,25 @@ const DIFF = [
   ''
 ].join('\n');
 
+// two.js: two hunks. Hunk 1 covers lines 1-3 and hunk 2 lines 20-22, on
+// both sides. Lines 4-19 sit between the hunks, outside the diff.
+const TWO_HUNK_DIFF = [
+  'diff --git a/two.js b/two.js',
+  '--- a/two.js',
+  '+++ b/two.js',
+  '@@ -1,3 +1,3 @@',
+  ' one',
+  '-two',
+  '+TWO',
+  ' three',
+  '@@ -20,3 +20,3 @@',
+  ' twenty',
+  '-twentyone',
+  '+TWENTYONE',
+  ' twentytwo',
+  ''
+].join('\n');
+
 const row = (overrides = {}) => ({
   file: 'file.js', line_start: 3, line_end: 3, side: 'RIGHT', body: 'Body.', is_file_level: 0, ...overrides
 });
@@ -45,9 +64,55 @@ describe('buildReviewComments', () => {
     expect(comments.map(c => c.line)).toEqual([3, 3]);
   });
 
-  it('maps an in-hunk range to line_end with start_line', () => {
+  it('maps an in-hunk range to line_end with start_line and start_side', () => {
     expect(buildReviewComments([row({ line_start: 1, line_end: 4 })], DIFF)).toEqual([
-      { path: 'file.js', line: 4, start_line: 1, body: 'Body.', side: 'RIGHT', isFileLevel: false }
+      { path: 'file.js', line: 4, start_line: 1, start_side: 'RIGHT', body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('sends a LEFT-side range with start_side LEFT', () => {
+    // Old lines 2-4 are all in the hunk on LEFT (old line 3 is the deletion).
+    expect(buildReviewComments([row({ side: 'LEFT', line_start: 2, line_end: 4 })], DIFF)).toEqual([
+      { path: 'file.js', line: 4, start_line: 2, start_side: 'LEFT', body: 'Body.', side: 'LEFT', isFileLevel: false }
+    ]);
+  });
+
+  it('orders a backwards range inside one hunk and keeps it inline', () => {
+    expect(buildReviewComments([row({ line_start: 4, line_end: 1 })], DIFF)).toEqual([
+      { path: 'file.js', line: 4, start_line: 1, start_side: 'RIGHT', body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('sends a range whose ends are in different hunks as a single line on line_start', () => {
+    expect(buildReviewComments([row({ file: 'two.js', line_start: 2, line_end: 21 })], TWO_HUNK_DIFF)).toEqual([
+      { path: 'two.js', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('anchors a backwards cross-hunk range on its original line_start', () => {
+    expect(buildReviewComments([
+      row({ file: 'two.js', line_start: 21, line_end: 2 }),
+      row({ file: 'two.js', side: 'LEFT', line_start: 21, line_end: 2 })
+    ], TWO_HUNK_DIFF)).toEqual([
+      { path: 'two.js', line: 21, body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'two.js', line: 21, body: 'Body.', side: 'LEFT', isFileLevel: false }
+    ]);
+  });
+
+  it('keeps a range inside the second hunk inline', () => {
+    expect(buildReviewComments([row({ file: 'two.js', line_start: 20, line_end: 22 })], TWO_HUNK_DIFF)).toEqual([
+      { path: 'two.js', line: 22, start_line: 20, start_side: 'RIGHT', body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('sends a range whose line_start is outside the diff as file-level, even when its end is inside', () => {
+    expect(buildReviewComments([
+      row({ file: 'two.js', line_start: 10, line_end: 21 }),
+      // Backwards: ordered to 21-25, but the finding anchors on 25
+      row({ file: 'two.js', line_start: 25, line_end: 21 })
+    ], TWO_HUNK_DIFF)).toEqual([
+      { path: 'two.js', body: '(Ref Lines 10-21) Body.', isFileLevel: true },
+      { path: 'two.js', body: '(Ref Lines 21-25) Body.', isFileLevel: true }
     ]);
   });
 
@@ -63,10 +128,18 @@ describe('buildReviewComments', () => {
     ]);
   });
 
-  it('maps a range with either end outside the hunk to a file-level comment', () => {
+  it('maps a range with one end outside the hunk by where line_start falls', () => {
+    // 2-9: line_start 2 is in the hunk, so a single-line comment on 2.
+    // 9-2: ordered to 2-9, but line_start 9 is outside, so file-level.
     expect(buildReviewComments([row({ line_start: 2, line_end: 9 }), row({ line_start: 9, line_end: 2 })], DIFF)).toEqual([
-      { path: 'file.js', body: '(Ref Lines 2-9) Body.', isFileLevel: true },
-      { path: 'file.js', body: '(Ref Lines 9-2) Body.', isFileLevel: true }
+      { path: 'file.js', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'file.js', body: '(Ref Lines 2-9) Body.', isFileLevel: true }
+    ]);
+  });
+
+  it('maps a range with both ends outside every hunk to a file-level comment', () => {
+    expect(buildReviewComments([row({ line_start: 6, line_end: 9 })], DIFF)).toEqual([
+      { path: 'file.js', body: '(Ref Lines 6-9) Body.', isFileLevel: true }
     ]);
   });
 

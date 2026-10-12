@@ -142,5 +142,36 @@ describe('impl/graphql/pending-review-comments', () => {
       expect(JSON.parse(matches[0][1])).toBe('src/foo.js');
       expect(JSON.parse(matches[1][1])).toBe('weird"file.js');
     });
+
+    it('sends startSide with startLine for a range, defaulting to the comment side', () => {
+      const mutation = buildBatchMutation([
+        { path: 'src/foo.js', start_line: 3, start_side: 'LEFT', line: 5, side: 'LEFT', body: 'deleted lines' },
+        { path: 'src/foo.js', start_line: 7, line: 9, side: 'LEFT', body: 'no start_side' },
+        { path: 'src/foo.js', start_line: 1, line: 2, body: 'no sides' }
+      ]);
+
+      const inner = mutation.split(/comment\d+:/).slice(1);
+      expect(inner).toHaveLength(3);
+      expect(inner[0]).toContain('startLine: 3');
+      expect(inner[0]).toContain('startSide: LEFT');
+      expect(inner[0]).toContain('side: LEFT');
+      // An absent start_side falls back to the end side, never GitHub's
+      // RIGHT default.
+      expect(inner[1]).toContain('startLine: 7');
+      expect(inner[1]).toContain('startSide: LEFT');
+      expect(inner[2]).toContain('startSide: RIGHT');
+      expect(inner[2]).toContain('side: RIGHT');
+    });
+
+    it('omits startLine and startSide for single-line and file-level comments', () => {
+      const mutation = buildBatchMutation([
+        { path: 'src/foo.js', line: 10, side: 'LEFT', body: 'single line' },
+        { path: 'src/foo.js', body: 'whole file', isFileLevel: true }
+      ]);
+
+      expect(mutation).not.toContain('startLine');
+      expect(mutation).not.toContain('startSide');
+      expect(mutation).toContain('side: LEFT');
+    });
   });
 });

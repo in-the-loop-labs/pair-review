@@ -45,7 +45,11 @@ function buildBatchMutation(batch) {
     }
 
     const side = comment.side || 'RIGHT';
-    const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
+    // A range sends its start side too: GitHub defaults startSide to RIGHT,
+    // which breaks a LEFT-side (deleted lines) range.
+    const startLineField = comment.start_line
+      ? `startLine: ${comment.start_line}\n            startSide: ${comment.start_side || side}\n            `
+      : '';
     return `
           comment${index}: addPullRequestReviewThread(input: {
             pullRequestId: $prId

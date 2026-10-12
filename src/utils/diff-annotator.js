@@ -412,15 +412,25 @@ function parseAnnotatedDiff(annotatedDiff) {
  * Used to determine whether a comment targets a line GitHub can render inline
  * (inside a hunk) vs. one that must be submitted as file-level.
  *
+ * Each line also records the hunk it belongs to, so a caller can tell
+ * whether two lines share a hunk: GitHub only accepts a multi-line comment
+ * whose two ends are in the same hunk.
+ *
  * @param {string} rawDiff - Raw unified diff from git
- * @returns {{ isLineInDiff: (file: string, line: number, side?: string) => boolean }}
+ * @returns {{
+ *   isLineInDiff: (file: string, line: number, side?: string) => boolean,
+ *   hunkOf: (file: string, line: number, side?: string) => number|null
+ * }} `hunkOf` returns an index that is unique per hunk across the whole
+ *   diff, or null for a line outside every hunk.
  */
 function buildDiffLineSet(rawDiff) {
   if (!rawDiff || rawDiff.trim() === '') {
-    return { isLineInDiff: () => false };
+    return { isLineInDiff: () => false, hunkOf: () => null };
   }
 
-  const entries = new Set();
+  // `${file}:${side}:${line}` -> index of the hunk that contains the line
+  const entries = new Map();
+  let hunkIndex = -1;
   const diffLines = rawDiff.split('\n');
   // Trim trailing empty element produced by split('\n') on newline-terminated input.
   // Without this, the empty string matches the context-line branch and adds phantom
@@ -448,6 +458,7 @@ function buildDiffLineSet(rawDiff) {
       oldLineNum = hunkInfo.oldStart;
       newLineNum = hunkInfo.newStart;
       inHunk = true;
+      hunkIndex++;
       continue;
     }
 
@@ -459,14 +470,14 @@ function buildDiffLineSet(rawDiff) {
     if (!filePath) continue;
 
     if (line.startsWith('+')) {
-      entries.add(`${filePath}:RIGHT:${newLineNum}`);
+      entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
       newLineNum++;
     } else if (line.startsWith('-')) {
-      entries.add(`${filePath}:LEFT:${oldLineNum}`);
+      entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
       oldLineNum++;
     } else if (line.startsWith(' ') || line === '') {
-      entries.add(`${filePath}:LEFT:${oldLineNum}`);
-      entries.add(`${filePath}:RIGHT:${newLineNum}`);
+      entries.set(`${filePath}:LEFT:${oldLineNum}`, hunkIndex);
+      entries.set(`${filePath}:RIGHT:${newLineNum}`, hunkIndex);
       oldLineNum++;
       newLineNum++;
     }
@@ -475,6 +486,10 @@ function buildDiffLineSet(rawDiff) {
   return {
     isLineInDiff(file, lineNum, side = 'RIGHT') {
       return entries.has(`${file}:${side}:${lineNum}`);
+    },
+    hunkOf(file, lineNum, side = 'RIGHT') {
+      const hunk = entries.get(`${file}:${side}:${lineNum}`);
+      return hunk === undefined ? null : hunk;
     }
   };
 }
@@ -487,11 +502,18 @@ function buildDiffLineSet(rawDiff) {
  * extension) accept the result.
  *
  * - `is_file_level = 1` rows become file-level comments.
- * - A line (or both ends of a range) inside a diff hunk becomes a line
- *   comment on its side; a range carries `start_line`.
- * - A line outside every hunk (e.g. expanded context) cannot be an inline
- *   comment, so it becomes a file-level comment whose body starts with
- *   `(Ref Line N)` or `(Ref Lines N-M)`.
+ * - A range written backwards (`line_end < line_start`) is the same span,
+ *   so its ends are put in ascending order first.
+ * - A range becomes a multi-line comment (`start_line`, `start_side`, `line`)
+ *   only when both ends are inside the diff, on the comment side, in the
+ *   SAME hunk. GitHub rejects a range that crosses hunks, and one rejected
+ *   comment discards the whole pending review.
+ * - Otherwise, a single line or a range whose `line_start` is inside a hunk
+ *   becomes a single-line comment on `line_start` (the line the finding is
+ *   anchored on).
+ * - Anything else (e.g. expanded context) cannot be inline, so it becomes a
+ *   file-level comment whose body starts with `(Ref Line N)` or
+ *   `(Ref Lines N-M)`.
  *
  * @param {Array<Object>|null} rows - Comment rows: file, line_start,
  *   line_end, side, body, is_file_level
@@ -500,14 +522,13 @@ function buildDiffLineSet(rawDiff) {
  * @param {(row: Object) => string} [options.formatBody] - Comment text for a
  *   row, before any line reference prefix. Defaults to `row.body`.
  * @returns {Array<{path: string, body: string, isFileLevel: boolean,
- *   line?: number, side?: string, start_line?: number}>}
+ *   line?: number, side?: string, start_line?: number, start_side?: string}>}
  */
 function buildReviewComments(rows, diffContent, { formatBody = row => row.body } = {}) {
   const diffLineSet = buildDiffLineSet(diffContent);
 
   return (rows || []).map(comment => {
     const side = comment.side || 'RIGHT';
-    const isRange = comment.line_end && comment.line_end !== comment.line_start;
     const body = formatBody(comment);
 
     // Explicit file-level comment: about the whole file, not tied to lines
@@ -520,40 +541,57 @@ function buildReviewComments(rows, diffContent, { formatBody = row => row.body }
       };
     }
 
-    // Check whether the target line actually appears in a diff hunk rather
-    // than relying on diff_position, which may be absent (e.g. comments
-    // created by the chat agent). For a range both endpoints must be inside
-    // the diff: a start outside a hunk would give GitHub a position it
-    // cannot render.
-    const isExpandedContext = isRange
-      ? !diffLineSet.isLineInDiff(comment.file, comment.line_start, side) || !diffLineSet.isLineInDiff(comment.file, comment.line_end, side)
-      : !diffLineSet.isLineInDiff(comment.file, comment.line_start, side);
+    // A backwards range is the same span; order it so start < end.
+    const isRange = comment.line_start != null && Boolean(comment.line_end) && comment.line_end !== comment.line_start;
+    const rangeStart = isRange ? Math.min(comment.line_start, comment.line_end) : comment.line_start;
+    const rangeEnd = isRange ? Math.max(comment.line_start, comment.line_end) : comment.line_start;
 
-    if (isExpandedContext) {
-      const lineRef = isRange
-        ? `(Ref Lines ${comment.line_start}-${comment.line_end})`
-        : `(Ref Line ${comment.line_start})`;
-      logger.debug(`Formatting file-level comment (expanded context): ${comment.file} ${lineRef}`);
+    // Check whether the target lines actually appear in a diff hunk rather
+    // than relying on diff_position, which may be absent (e.g. comments
+    // created by the chat agent or headless AI findings).
+    if (isRange) {
+      const startHunk = diffLineSet.hunkOf(comment.file, rangeStart, side);
+      const endHunk = diffLineSet.hunkOf(comment.file, rangeEnd, side);
+      if (startHunk !== null && startHunk === endHunk) {
+        logger.debug(`Formatting range comment: ${comment.file}:${rangeStart}-${rangeEnd} side=${side}`);
+        return {
+          path: comment.file,
+          line: rangeEnd,
+          body,
+          side,
+          isFileLevel: false,
+          start_line: rangeStart,
+          start_side: side
+        };
+      }
+    }
+
+    // A single line, or a range GitHub cannot render as one thread: anchor
+    // on line_start when it is inside a hunk.
+    if (diffLineSet.isLineInDiff(comment.file, comment.line_start, side)) {
+      if (isRange) {
+        logger.debug(`Range ${comment.file}:${rangeStart}-${rangeEnd} side=${side} does not fit one hunk; anchoring on line ${comment.line_start}`);
+      } else {
+        logger.debug(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side}`);
+      }
       return {
         path: comment.file,
-        body: `${lineRef} ${body}`,
-        isFileLevel: true
+        line: comment.line_start,
+        body,
+        side,
+        isFileLevel: false
       };
     }
 
-    logger.debug(`Formatting line comment: ${comment.file}:${comment.line_start}${isRange ? `-${comment.line_end}` : ''} side=${side}`);
-
-    const commentObj = {
+    const lineRef = isRange
+      ? `(Ref Lines ${rangeStart}-${rangeEnd})`
+      : `(Ref Line ${comment.line_start})`;
+    logger.debug(`Formatting file-level comment (expanded context): ${comment.file} ${lineRef}`);
+    return {
       path: comment.file,
-      line: isRange ? comment.line_end : comment.line_start,
-      body,
-      side,
-      isFileLevel: false
+      body: `${lineRef} ${body}`,
+      isFileLevel: true
     };
-    if (isRange) {
-      commentObj.start_line = comment.line_start;
-    }
-    return commentObj;
   });
 }
 

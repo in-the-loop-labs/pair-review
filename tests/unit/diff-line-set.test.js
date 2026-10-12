@@ -175,4 +175,64 @@ describe('buildDiffLineSet', () => {
     expect(isLineInDiff('new.js', 2, 'RIGHT')).toBe(true);
     expect(isLineInDiff('new.js', 3, 'RIGHT')).toBe(true);
   });
+
+  describe('hunkOf', () => {
+    const twoFileDiff = [
+      'diff --git a/a.js b/a.js',
+      '--- a/a.js',
+      '+++ b/a.js',
+      '@@ -1,3 +1,4 @@',
+      '+first',
+      ' a',
+      ' b',
+      ' c',
+      '@@ -50,3 +51,3 @@',
+      ' x',
+      '-old',
+      '+new',
+      ' z',
+      'diff --git a/b.js b/b.js',
+      '--- a/b.js',
+      '+++ b/b.js',
+      '@@ -1,2 +1,2 @@',
+      '-one',
+      '+ONE',
+      ' two',
+      ''
+    ].join('\n');
+
+    it('gives lines in the same hunk the same index, on each side', () => {
+      const { hunkOf } = buildDiffLineSet(twoFileDiff);
+      expect(hunkOf('a.js', 1, 'RIGHT')).toBe(hunkOf('a.js', 4, 'RIGHT'));
+      expect(hunkOf('a.js', 1, 'LEFT')).toBe(hunkOf('a.js', 3, 'LEFT'));
+      expect(hunkOf('a.js', 51, 'LEFT')).toBe(hunkOf('a.js', 52, 'LEFT'));
+    });
+
+    it('gives different hunks different indexes, across files too', () => {
+      const { hunkOf } = buildDiffLineSet(twoFileDiff);
+      const first = hunkOf('a.js', 1, 'RIGHT');
+      const second = hunkOf('a.js', 52, 'RIGHT');
+      const third = hunkOf('b.js', 1, 'RIGHT');
+      expect(new Set([first, second, third]).size).toBe(3);
+    });
+
+    it('returns null for a line outside every hunk, a missing side, or an unknown file', () => {
+      const { hunkOf } = buildDiffLineSet(twoFileDiff);
+      expect(hunkOf('a.js', 20, 'RIGHT')).toBeNull();
+      // Old line 53 is past the end of the second hunk's 3 old lines
+      expect(hunkOf('a.js', 53, 'LEFT')).toBeNull();
+      expect(hunkOf('c.js', 1, 'RIGHT')).toBeNull();
+    });
+
+    it('defaults side to RIGHT', () => {
+      const { hunkOf } = buildDiffLineSet(twoFileDiff);
+      expect(hunkOf('a.js', 52)).toBe(hunkOf('a.js', 52, 'RIGHT'));
+      expect(hunkOf('a.js', 52)).not.toBeNull();
+    });
+
+    it('returns null for an empty or missing diff', () => {
+      expect(buildDiffLineSet('').hunkOf('a.js', 1, 'RIGHT')).toBeNull();
+      expect(buildDiffLineSet(null).hunkOf('a.js', 1, 'RIGHT')).toBeNull();
+    });
+  });
 });

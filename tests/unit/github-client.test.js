@@ -284,6 +284,7 @@ describe('GitHubClient', () => {
       const mutationString = commentMutationCall[0];
 
       expect(mutationString).toContain('startLine: 10');
+      expect(mutationString).toContain('startSide: RIGHT');
       expect(mutationString).toContain('line: 15');
       expect(mutationString).toContain('side: RIGHT');
     });
@@ -325,6 +326,7 @@ describe('GitHubClient', () => {
       const mutationString = commentMutationCall[0];
 
       expect(mutationString).not.toContain('startLine');
+      expect(mutationString).not.toContain('startSide');
       expect(mutationString).toContain('line: 42');
     });
   });
@@ -811,6 +813,7 @@ describe('GitHubClient', () => {
       const mutationString = commentMutationCall[0];
 
       expect(mutationString).toContain('startLine: 20');
+      expect(mutationString).toContain('startSide: RIGHT');
       expect(mutationString).toContain('line: 30');
     });
 
@@ -841,6 +844,7 @@ describe('GitHubClient', () => {
       const mutationString = commentMutationCall[0];
 
       expect(mutationString).not.toContain('startLine');
+      expect(mutationString).not.toContain('startSide');
       expect(mutationString).toContain('line: 50');
     });
   });
