@@ -11,6 +11,7 @@ import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/
 const { loadHeadlessSuggestions } = require('../../src/main');
 const { buildReviewComments } = require('../../src/utils/diff-annotator');
 const logger = require('../../src/utils/logger');
+const { QUOTEPATH_FALSE_DIFF } = require('../utils/git-path-fixtures');
 
 // a.js: old line 2 is deleted and new line 2 is added, inside one hunk.
 const DIFF = [
@@ -62,9 +63,9 @@ function insertComment(fields) {
   return Number(result.lastInsertRowid);
 }
 
-async function headlessComments() {
+async function headlessComments(diff = DIFF) {
   const suggestions = await loadHeadlessSuggestions(db, reviewId);
-  return buildReviewComments(suggestions, DIFF, {
+  return buildReviewComments(suggestions, diff, {
     formatBody: suggestion => `[${suggestion.type}] ${suggestion.body}`
   });
 }
@@ -138,6 +139,17 @@ describe('loadHeadlessSuggestions', () => {
     expect(await loadHeadlessSuggestions(db, reviewId)).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(5);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('missing valid line or path information'));
+  });
+
+  it('submits findings on non-ASCII and quoted file names inline', async () => {
+    // The stored file is the real name; the diff spells `quo"te.js` C-quoted.
+    insertComment({ file: 'café.js', line_start: 2, line_end: 2 });
+    insertComment({ file: 'quo"te.js', line_start: 1, line_end: 2 });
+
+    expect(await headlessComments(QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'café.js', line: 2, body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false },
+      { path: 'quo"te.js', line: 2, start_line: 1, start_side: 'RIGHT', body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false }
+    ]);
   });
 
   it('returns an empty list when the review has no findings', async () => {

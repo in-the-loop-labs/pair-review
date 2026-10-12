@@ -7,6 +7,11 @@
 import { describe, it, expect } from 'vitest';
 
 const { buildReviewComments } = require('../../src/utils/diff-annotator');
+const {
+  QUOTEPATH_FALSE_DIFF,
+  QUOTEPATH_TRUE_DIFF,
+  B_SLASH_RENAME_DIFF
+} = require('../utils/git-path-fixtures');
 
 // file.js: lines 1-2 (both sides) are context, old line 3 deleted, new
 // line 3 added, line 4 / old 4 context. Lines beyond 4 are outside the hunk.
@@ -174,5 +179,76 @@ describe('buildReviewComments', () => {
   it('returns an empty list for no rows', () => {
     expect(buildReviewComments([], DIFF)).toEqual([]);
     expect(buildReviewComments(null, DIFF)).toEqual([]);
+  });
+});
+
+// Comment rows carry the real (decoded) file name, the spelling changed_files
+// and the diff view use. The hunk lookup must key the diff by that same
+// spelling, or an inline comment is downgraded to a file-level one.
+describe('buildReviewComments on paths git quotes or spells specially', () => {
+  it('keeps a comment on a non-ASCII file inline', () => {
+    expect(buildReviewComments([row({ file: 'café.js', line_start: 2, line_end: 2 })], QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'café.js', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('keeps a range on a file whose name contains a double quote inline', () => {
+    // git prints this header C-quoted even with core.quotePath=false
+    expect(buildReviewComments([row({ file: 'quo"te.js', line_start: 1, line_end: 2 })], QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'quo"te.js', line: 2, start_line: 1, start_side: 'RIGHT', body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('keeps comments on names containing " b/" or " => " inline', () => {
+    expect(buildReviewComments([
+      row({ file: 'x b/y.js', line_start: 2, line_end: 2 }),
+      row({ file: 'a => b.md', line_start: 2, line_end: 2 })
+    ], QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'x b/y.js', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'a => b.md', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false }
+    ]);
+  });
+
+  it('keys a deleted line of a file renamed into a non-ASCII path by the new path', () => {
+    expect(buildReviewComments([
+      row({ file: 'ñew dir/moved é.js', side: 'LEFT', line_start: 2, line_end: 2 }),
+      row({ file: 'lib/moved.js', side: 'LEFT', line_start: 2, line_end: 2 })
+    ], QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'ñew dir/moved é.js', line: 2, body: 'Body.', side: 'LEFT', isFileLevel: false },
+      { path: 'lib/moved.js', body: '(Ref Line 2) Body.', isFileLevel: true }
+    ]);
+  });
+
+  it('decodes the octal-escaped headers of a diff cached by an older version', () => {
+    expect(buildReviewComments([
+      row({ file: 'src/café.js', line_start: 2, line_end: 2 }),
+      row({ file: 'ñew dir/moved é.js', side: 'LEFT', line_start: 2, line_end: 2 })
+    ], QUOTEPATH_TRUE_DIFF)).toEqual([
+      { path: 'src/café.js', line: 2, body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'ñew dir/moved é.js', line: 2, body: 'Body.', side: 'LEFT', isFileLevel: false }
+    ]);
+  });
+
+  it('keys a rename out of a path containing " b/" by its real new name', () => {
+    // The header `diff --git a/x b/y.js b/z.js` splits ambiguously; the hunk
+    // must still belong to z.js, not to a fragment of the header.
+    expect(buildReviewComments([
+      row({ file: 'z.js', line_start: 2, line_end: 5 }),
+      row({ file: 'y.js b/z.js', line_start: 5, line_end: 5 })
+    ], B_SLASH_RENAME_DIFF)).toEqual([
+      { path: 'z.js', line: 5, start_line: 2, start_side: 'RIGHT', body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'y.js b/z.js', body: '(Ref Line 5) Body.', isFileLevel: true }
+    ]);
+  });
+
+  it('still counts header-lookalike content in a file next to quoted ones', () => {
+    // schema.sql deletes `-- note` (`--- note`) and adds `++ note` (`+++ note`)
+    expect(buildReviewComments([
+      row({ file: 'schema.sql', line_start: 3, line_end: 3 }),
+      row({ file: 'schema.sql', side: 'LEFT', line_start: 2, line_end: 3 })
+    ], QUOTEPATH_FALSE_DIFF)).toEqual([
+      { path: 'schema.sql', line: 3, body: 'Body.', side: 'RIGHT', isFileLevel: false },
+      { path: 'schema.sql', line: 3, start_line: 2, start_side: 'LEFT', body: 'Body.', side: 'LEFT', isFileLevel: false }
+    ]);
   });
 });

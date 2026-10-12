@@ -1012,6 +1012,82 @@ describe('git-diff-lines on a real repo with header-like hunk content', () => {
   }
 });
 
+describe('git-diff-lines on a real repo with names git quotes', () => {
+  // Both scripts pin core.quotePath=false, so non-ASCII names come out
+  // verbatim, and decode the paths git still C-quotes (names with `"`, `\`
+  // or control characters). The AI reads file names from this output, so
+  // the awk port must name every file exactly like the Node CLI.
+  const projectRoot = path.resolve(__dirname, '../..');
+  const nodeScript = path.join(projectRoot, 'bin', 'git-diff-lines');
+  const pluginScript = path.join(projectRoot, 'plugin-code-critic', 'skills', 'analyze', 'scripts', 'git-diff-lines');
+  const EDITED = ['café.js', 'quo"te.js', 'back\\slash.js', 'dir with space/a b.js', 'x b/y.js', 'tab\tname.js', 'ctl\x01.js'];
+  let tempDir;
+  let repo;
+  let env;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-diff-lines-quoted-'));
+    repo = path.join(tempDir, 'repo');
+    fs.mkdirSync(repo);
+    // Isolated HOME: git's default core.quotePath=true is in effect unless
+    // the scripts override it.
+    env = {
+      ...process.env,
+      HOME: tempDir,
+      XDG_CONFIG_HOME: tempDir,
+      GIT_CONFIG_NOSYSTEM: '1',
+      PAIR_REVIEW_NO_OPEN: '1'
+    };
+    const git = (...args) => execFileSync('git', args, { cwd: repo, env, stdio: 'pipe' });
+    const write = (name, content) => {
+      fs.mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
+      fs.writeFileSync(path.join(repo, name), content);
+    };
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+    for (const name of EDITED) write(name, 'a\nb\n');
+    write('plain.js', 'a\nb\nc\nd\n');
+    write('gone"d.js', 'x\n');
+    write('bin"ary.png', Buffer.from([0, 1, 2, 3]));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'initial');
+    for (const name of EDITED) write(name, 'a\nb\nc\n');
+    git('mv', 'plain.js', 'ré"named.js');
+    write('ré"named.js', 'a\nb\nc\nd\ne\n');
+    fs.rmSync(path.join(repo, 'gone"d.js'));
+    write('bin"ary.png', Buffer.from([0, 1, 2, 4]));
+    git('add', '-A');
+  });
+
+  afterAll(() => {
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const runNode = () => execFileSync('node', [nodeScript, '--cwd', repo, '--cached'], { encoding: 'utf8', env });
+  const runPlugin = () => execFileSync('bash', [pluginScript, '--cwd', repo, '--cached'], { encoding: 'utf8', env });
+  const fileHeaders = output => output.split('\n').filter(line => line.startsWith('=== '));
+
+  it('bin/git-diff-lines names every file by its real path', () => {
+    expect(fileHeaders(runNode())).toEqual([
+      '=== back\\slash.js ===',
+      '=== bin"ary.png ===',
+      '=== café.js ===',
+      '=== ctl\x01.js ===',
+      '=== dir with space/a b.js ===',
+      '=== gone"d.js ===',
+      '=== quo"te.js ===',
+      '=== plain.js -> ré"named.js ===',
+      '=== tab\tname.js ===',
+      '=== x b/y.js ==='
+    ]);
+  });
+
+  it('the plugin git-diff-lines produces the same output as bin/git-diff-lines', () => {
+    expect(runPlugin()).toBe(runNode());
+  });
+});
+
 describe('git-diff-lines CLI', () => {
   const projectRoot = path.resolve(__dirname, '../..');
   const scriptPath = path.join(projectRoot, 'bin', 'git-diff-lines');

@@ -37,17 +37,15 @@ function parseUnifiedDiffPatches(diff) {
 }
 
 /**
- * Split a per-file patch into its extended header (everything before the
- * first `@@` hunk header) and the rest.
+ * The extended header of a per-file patch: everything before the first `@@`
+ * hunk header, where git prints the rename and binary markers.
  *
  * @param {string} patch - Per-file patch text
- * @returns {{ header: string, body: string }}
+ * @returns {string} Header text (the whole patch when it has no hunk)
  */
-function splitPatchHeader(patch) {
+function patchHeader(patch) {
   const hunkStart = patch.search(/^@@/m);
-  return hunkStart === -1
-    ? { header: patch, body: '' }
-    : { header: patch.slice(0, hunkStart), body: patch.slice(hunkStart) };
+  return hunkStart === -1 ? patch : patch.slice(0, hunkStart);
 }
 
 /**
@@ -104,7 +102,7 @@ function countPatchStats(patch) {
  */
 function buildChangedFileEntry(filePath, patch) {
   const { insertions, deletions } = countPatchStats(patch);
-  const { header } = splitPatchHeader(patch);
+  const header = patchHeader(patch);
   const entry = {
     file: filePath,
     insertions,
