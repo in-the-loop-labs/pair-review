@@ -176,6 +176,44 @@ describe('buildDiffLineSet', () => {
     expect(isLineInDiff('new.js', 3, 'RIGHT')).toBe(true);
   });
 
+  describe('a path containing a space', () => {
+    // Verbatim `git diff`: git ends a ---/+++ path that contains a space with
+    // a tab. Keying lines by "dir x/a.js\t" downgraded every inline comment
+    // on such a file to a file-level comment at submit time.
+    const spaceDiff = [
+      'diff --git a/dir x/a.js b/dir x/a.js',
+      'index 1111111..2222222 100644',
+      '--- a/dir x/a.js\t',
+      '+++ b/dir x/a.js\t',
+      '@@ -1,3 +1,3 @@',
+      ' one',
+      '-two',
+      '+TWO',
+      ' three',
+      ''
+    ].join('\n');
+
+    it('keys lines by the path without the trailing tab', () => {
+      const { isLineInDiff, hunkOf } = buildDiffLineSet(spaceDiff);
+      expect(isLineInDiff('dir x/a.js', 2, 'RIGHT')).toBe(true);
+      expect(isLineInDiff('dir x/a.js', 2, 'LEFT')).toBe(true);
+      expect(isLineInDiff('dir x/a.js\t', 2, 'RIGHT')).toBe(false);
+      expect(hunkOf('dir x/a.js', 1, 'RIGHT')).not.toBeNull();
+      expect(hunkOf('dir x/a.js', 1, 'RIGHT')).toBe(hunkOf('dir x/a.js', 3, 'RIGHT'));
+    });
+
+    it('keeps line and range comments on the file inline', () => {
+      const rows = [
+        { file: 'dir x/a.js', line_start: 2, line_end: 2, side: 'RIGHT', body: 'line', is_file_level: 0 },
+        { file: 'dir x/a.js', line_start: 1, line_end: 3, side: 'RIGHT', body: 'range', is_file_level: 0 }
+      ];
+      expect(buildReviewComments(rows, spaceDiff)).toEqual([
+        { path: 'dir x/a.js', line: 2, side: 'RIGHT', body: 'line', isFileLevel: false },
+        { path: 'dir x/a.js', line: 3, side: 'RIGHT', body: 'range', isFileLevel: false, start_line: 1, start_side: 'RIGHT' }
+      ]);
+    });
+  });
+
   describe('hunkOf', () => {
     const twoFileDiff = [
       'diff --git a/a.js b/a.js',
