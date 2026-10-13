@@ -1,7 +1,13 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
+const { GIT_DIFF_FLAGS_ARRAY, GIT_PATH_CONFIG_ARRAY } = require('../../src/git/diff-flags');
 const {
+  splitUnifiedDiffPatches,
   parseUnifiedDiffPatches,
   countPatchStats,
   buildChangedFileEntries,
@@ -210,6 +216,63 @@ describe('diff-file-list utils', () => {
     it('returns no entries for an empty diff', () => {
       expect(buildChangedFileEntries('')).toEqual([]);
       expect(buildChangedFileEntries(undefined)).toEqual([]);
+    });
+  });
+
+  describe('a file <-> symlink type change', () => {
+    // git prints a type change as two blocks for the same path: the old
+    // file's deletion, then the symlink's addition.
+    let repo;
+    let typeChangeDiff;
+
+    beforeAll(() => {
+      repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-type-change-'));
+      const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: 'pipe' });
+      git('init', '-q');
+      git('config', 'user.email', 'test@test.com');
+      git('config', 'user.name', 'Test User');
+      fs.writeFileSync(path.join(repo, 'link.js'), 'hello\n');
+      fs.writeFileSync(path.join(repo, 'target.js'), 'x\n');
+      fs.writeFileSync(path.join(repo, 'plain.js'), 'a\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'base');
+      fs.rmSync(path.join(repo, 'link.js'));
+      fs.symlinkSync('target.js', path.join(repo, 'link.js'));
+      fs.appendFileSync(path.join(repo, 'plain.js'), 'b\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'head');
+      typeChangeDiff = execFileSync('git', [...GIT_PATH_CONFIG_ARRAY, 'diff', ...GIT_DIFF_FLAGS_ARRAY, 'HEAD~1...HEAD'], {
+        cwd: repo, encoding: 'utf8', stdio: 'pipe'
+      });
+    });
+
+    afterAll(() => {
+      if (repo) fs.rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('is two blocks for one path in git\'s output', () => {
+      expect(splitUnifiedDiffPatches(typeChangeDiff).map(([file]) => file)).toEqual(['link.js', 'link.js', 'plain.js']);
+    });
+
+    it('builds one entry whose counts cover both blocks, like --numstat', () => {
+      const entries = buildChangedFileEntries(typeChangeDiff);
+      expect(entries).toEqual([
+        { file: 'link.js', insertions: 1, deletions: 1, changes: 2, binary: false, generated: false },
+        { file: 'plain.js', insertions: 1, deletions: 0, changes: 1, binary: false, generated: false }
+      ]);
+    });
+
+    it('adds the same merged entry when the cache is missing the file', () => {
+      expect(mergeChangedFilesWithDiff([], typeChangeDiff)).toEqual([
+        { file: 'link.js', insertions: 1, deletions: 1, changes: 2, binary: false },
+        { file: 'plain.js', insertions: 1, deletions: 0, changes: 1, binary: false }
+      ]);
+    });
+
+    it('keeps parseUnifiedDiffPatches keyed by path, holding the last block', () => {
+      const patches = parseUnifiedDiffPatches(typeChangeDiff);
+      expect([...patches.keys()]).toEqual(['link.js', 'plain.js']);
+      expect(patches.get('link.js')).toMatch(/^new file mode 120000$/m);
     });
   });
 

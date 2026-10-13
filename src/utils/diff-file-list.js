@@ -10,30 +10,45 @@ const { decodeGitPath, parsePatchPaths, splitNulPaths } = require('./git-paths')
 const execPromise = promisify(exec);
 
 /**
- * Parse a unified diff into a map of file path -> per-file patch.
- * Uses the decoded new path as the canonical file path: the `rename to` /
- * `copy to` line when there is one, otherwise the `diff --git` header's
- * "b/" side (see parsePatchPaths in public/js/utils/git-paths.js).
+ * Split a unified diff into its per-file patches, in order, keyed by the
+ * decoded new path: the `rename to` / `copy to` line when there is one,
+ * otherwise the `diff --git` header's "b/" side (see parsePatchPaths in
+ * public/js/utils/git-paths.js).
+ *
+ * A path can appear more than once: git prints a file <-> symlink type change
+ * as a deletion block followed by an addition block for the same path. Every
+ * block is kept, so callers that need the whole change can combine them.
+ *
+ * @param {string} diff - Full unified diff
+ * @returns {Array<[string, string]>} [file path, per-file patch] pairs
+ */
+function splitUnifiedDiffPatches(diff) {
+  const patches = [];
+  if (!diff) return patches;
+
+  for (const part of diff.split(/(?=^diff --git )/m)) {
+    if (!part.trim()) continue;
+
+    const paths = parsePatchPaths(part);
+    if (paths) {
+      patches.push([paths.newPath, part]);
+    }
+  }
+
+  return patches;
+}
+
+/**
+ * Parse a unified diff into a map of file path -> per-file patch, keyed like
+ * splitUnifiedDiffPatches. When a path has more than one block (a type
+ * change), the map holds the last one, matching the browser's
+ * parseUnifiedDiff.
  *
  * @param {string} diff - Full unified diff
  * @returns {Map<string, string>} Map of file paths to full patch text
  */
 function parseUnifiedDiffPatches(diff) {
-  const filePatchMap = new Map();
-  if (!diff) return filePatchMap;
-
-  const parts = diff.split(/(?=^diff --git )/m);
-
-  for (const part of parts) {
-    if (!part.trim()) continue;
-
-    const paths = parsePatchPaths(part);
-    if (paths) {
-      filePatchMap.set(paths.newPath, part);
-    }
-  }
-
-  return filePatchMap;
+  return new Map(splitUnifiedDiffPatches(diff));
 }
 
 /**
@@ -118,6 +133,37 @@ function buildChangedFileEntry(filePath, patch) {
 }
 
 /**
+ * Describe every file of a unified diff as a `changed_files` entry, one per
+ * path. A path with more than one block (git prints a file <-> symlink type
+ * change as a deletion followed by an addition) gets one entry whose counts
+ * are the sum of its blocks, so it reads +1/-1 like `--numstat`, not as a
+ * new file.
+ *
+ * @param {Array<[string, string]>} patches - From splitUnifiedDiffPatches
+ * @returns {Map<string, object>} File path -> entry, in diff order
+ */
+function buildMergedChangedFileEntries(patches) {
+  const entries = new Map();
+  for (const [filePath, patch] of patches) {
+    const entry = buildChangedFileEntry(filePath, patch);
+    const previous = entries.get(filePath);
+    if (!previous) {
+      entries.set(filePath, entry);
+      continue;
+    }
+    previous.insertions += entry.insertions;
+    previous.deletions += entry.deletions;
+    previous.changes += entry.changes;
+    previous.binary = previous.binary || entry.binary;
+    if (entry.renamed && !previous.renamed) {
+      previous.renamed = true;
+      previous.renamedFrom = entry.renamedFrom;
+    }
+  }
+  return entries;
+}
+
+/**
  * Build PR `changed_files` from the unified diff: one entry per file, with
  * path, rename, additions/deletions and binary flag read from the diff text
  * and `generated` from .gitattributes.
@@ -130,9 +176,9 @@ function buildChangedFileEntry(filePath, patch) {
  * @returns {Array<object>} changed_files entries
  */
 function buildChangedFileEntries(diff, gitattributes = null) {
-  return [...parseUnifiedDiffPatches(diff)].map(([filePath, patch]) => ({
-    ...buildChangedFileEntry(filePath, patch),
-    generated: gitattributes ? gitattributes.isGenerated(filePath) : false
+  return [...buildMergedChangedFileEntries(splitUnifiedDiffPatches(diff)).values()].map(entry => ({
+    ...entry,
+    generated: gitattributes ? gitattributes.isGenerated(entry.file) : false
   }));
 }
 
@@ -167,7 +213,8 @@ function respellCachedEntry(entry, patchMap) {
  * @returns {Array<object|string>} Merged changed_files array
  */
 function mergeChangedFilesWithDiff(changedFiles, diff) {
-  const patchMap = parseUnifiedDiffPatches(diff);
+  const patches = splitUnifiedDiffPatches(diff);
+  const patchMap = new Map(patches);
   if (patchMap.size === 0) {
     return Array.isArray(changedFiles) ? changedFiles : [];
   }
@@ -186,13 +233,13 @@ function mergeChangedFilesWithDiff(changedFiles, diff) {
 
   const merged = [...existing];
 
-  for (const [filePath, patch] of patchMap.entries()) {
+  for (const [filePath, entry] of buildMergedChangedFileEntries(patches)) {
     const normalizedPatchPath = normalizePath(resolveRenamedFile(filePath));
     if (normalizedExisting.has(normalizedPatchPath)) {
       continue;
     }
 
-    merged.push(buildChangedFileEntry(filePath, patch));
+    merged.push(entry);
     normalizedExisting.add(normalizedPatchPath);
   }
 
@@ -248,6 +295,7 @@ async function getDiffFileList(db, review) {
 
 module.exports = {
   getDiffFileList,
+  splitUnifiedDiffPatches,
   parseUnifiedDiffPatches,
   countPatchStats,
   buildChangedFileEntries,
