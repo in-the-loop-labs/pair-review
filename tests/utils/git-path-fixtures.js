@@ -29,6 +29,9 @@ const DECODE_CASES = [
   [String.raw`"ctl\001.js"`, 'ctl\x01.js'],
   // A byte sequence that is not valid UTF-8 decodes to U+FFFD.
   [String.raw`"bad\377.js"`, 'bad�.js'],
+  // A leading U+FEFF is part of the name, not a byte order mark.
+  [String.raw`"\357\273\277name.js"`, '﻿name.js'],
+  [String.raw`"dir/\357\273\277name.js"`, 'dir/﻿name.js'],
   // Not a complete quoted string: left alone.
   ['"half.js', '"half.js'],
   ['a => b.md', 'a => b.md']

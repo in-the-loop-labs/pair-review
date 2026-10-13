@@ -42,7 +42,9 @@
         bytes.push(...encoder.encode(DECODE_ESCAPES[match[1]] ?? match[1]));
       }
     }
-    return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+    // ignoreBOM: a name that begins with U+FEFF keeps it (the default decoder
+    // would strip a leading EF BB BF as a byte order mark).
+    return new TextDecoder('utf-8', { ignoreBOM: true }).decode(new Uint8Array(bytes));
   }
 
   /**
