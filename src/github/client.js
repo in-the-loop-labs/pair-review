@@ -2,7 +2,6 @@
 const { Octokit } = require('@octokit/rest');
 const logger = require('../utils/logger');
 const { DEFAULT_SHA_ABBREV_LENGTH } = require('../git/sha-abbrev');
-const { parsePatchPaths } = require('../utils/git-paths');
 const { GitHubApiError, isComplexityError } = require('./errors');
 const pendingReviewOps = require('./operations/pending-review');
 const reviewLifecycleOps = require('./operations/review-lifecycle');
@@ -985,94 +984,6 @@ class GitHubClient {
 
       throw new Error(`Failed to create draft review (${transport}): ${error.message}`);
     }
-  }
-
-  /**
-   * Calculate diff position for a given file path and line number
-   * Position is counted from the first @@ hunk header, where position 1 = first line after @@
-   * @param {string} diffContent - The unified diff content
-   * @param {string} filePath - File path to find in diff
-   * @param {number} lineNumber - Line number in the new file
-   * @returns {number} Diff position or -1 if not found
-   */
-  calculateDiffPosition(diffContent, filePath, lineNumber) {
-    if (!diffContent || !filePath || lineNumber === undefined) {
-      console.warn('calculateDiffPosition: Missing required parameters', {
-        filePath,
-        lineNumber,
-        hasDiffContent: !!diffContent
-      });
-      return -1;
-    }
-
-    const lines = diffContent.split('\n');
-    let inFile = false;
-    let currentFile = '';
-    let position = 0;
-    let newLineNumber = 0;
-    let foundHunk = false;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      if (line.startsWith('diff --git')) {
-        const paths = parsePatchPaths(lines, i);
-        if (paths) {
-          currentFile = paths.newPath;
-          inFile = currentFile === filePath;
-          position = 0;
-          newLineNumber = 0;
-          foundHunk = false;
-        }
-        continue;
-      }
-
-      if (!inFile) continue;
-
-      if (line.startsWith('@@')) {
-        const match = line.match(/@@ -\d+,?\d* \+(\d+),?\d* @@/);
-        if (match) {
-          newLineNumber = parseInt(match[1]) - 1;
-
-          if (!foundHunk) {
-            position = 0;
-            foundHunk = true;
-          } else {
-            position++;
-          }
-        }
-        continue;
-      }
-
-      if (!foundHunk) continue;
-
-      const isDiffContentLine = line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || (line === '' && foundHunk);
-
-      if (!isDiffContentLine) continue;
-
-      position++;
-
-      if (line.startsWith('+')) {
-        newLineNumber++;
-        if (newLineNumber === lineNumber) {
-          return position;
-        }
-      } else if (line.startsWith(' ') || (line === '' && foundHunk)) {
-        newLineNumber++;
-        if (newLineNumber === lineNumber) {
-          return position;
-        }
-      }
-    }
-
-    console.warn('calculateDiffPosition: Position not found', {
-      filePath,
-      lineNumber,
-      inFile,
-      foundHunk,
-      finalNewLineNumber: newLineNumber
-    });
-    return -1;
   }
 
   /**
