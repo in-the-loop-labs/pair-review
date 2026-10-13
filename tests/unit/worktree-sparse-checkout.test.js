@@ -167,6 +167,23 @@ describe('GitWorktreeManager sparse-checkout methods', () => {
       expect(patterns).toContain('packages/utils');
     });
 
+    it('should return non-ASCII and quoted directory names verbatim', async () => {
+      // core.quotePath=true (git's default) would print "caf\303\251"; the
+      // repo sets it explicitly so the assertion proves pair-review's pin wins.
+      execSync('git config core.quotePath true', { cwd: testDir, stdio: 'pipe' });
+      for (const dir of ['café', 'quo"te']) {
+        await fs.mkdir(path.join(testDir, dir), { recursive: true });
+        await fs.writeFile(path.join(testDir, dir, 'index.js'), 'export {};\n');
+      }
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add quoted dirs"', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set --cone café quo\\"te', { cwd: testDir, stdio: 'pipe' });
+
+      const patterns = await worktreeManager.getSparseCheckoutPatterns(testDir);
+      expect(patterns).toEqual(expect.arrayContaining(['café', 'quo"te']));
+      expect(patterns.join('\n')).not.toMatch(/\\|"caf/);
+    });
+
     it('should return empty array for non-existent path', async () => {
       const patterns = await worktreeManager.getSparseCheckoutPatterns('/non/existent/path');
       expect(patterns).toEqual([]);
@@ -307,6 +324,22 @@ describe('GitWorktreeManager sparse-checkout methods', () => {
       // Should not contain child directories if parent is added
       expect(addedDirs).not.toContain('src/utils');
       expect(addedDirs).not.toContain('src/utils/deep');
+    });
+
+    it('should treat an existing non-ASCII directory pattern as covering its files', async () => {
+      execSync('git config core.quotePath true', { cwd: testDir, stdio: 'pipe' });
+      await fs.mkdir(path.join(testDir, 'café'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'café', 'index.js'), 'export {};\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add café"', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set --cone packages café', { cwd: testDir, stdio: 'pipe' });
+
+      // A quoted "caf\303\251" pattern would not match, so the directory
+      // would be re-added on every setup.
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, [
+        { filename: 'café/index.js' }
+      ]);
+      expect(addedDirs).toEqual([]);
     });
   });
 

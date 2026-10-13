@@ -8,6 +8,7 @@ const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository } = require('../utils/paths');
 const { buildChangedFileEntries } = require('../utils/diff-file-list');
+const { decodeGitPath } = require('../utils/git-paths');
 const { GIT_DIFF_FLAGS_ARRAY, SIMPLE_GIT_PATH_OPTIONS } = require('./diff-flags');
 const { rawFetchNoTags, fetchWithPruneRecovery } = require('./fetch-helpers');
 const { spawn, execSync } = require('child_process');
@@ -1423,9 +1424,12 @@ class GitWorktreeManager {
    */
   async getSparseCheckoutPatterns(repoPath) {
     try {
-      const git = simpleGit(repoPath);
+      // `sparse-checkout list` C-quotes names like a diff header does:
+      // core.quotePath=false keeps non-ASCII verbatim, and decodeGitPath
+      // undoes the quoting git still applies to `"`, `\` and control chars.
+      const git = this._gitFor(repoPath);
       const output = await git.raw(['sparse-checkout', 'list']);
-      return output.trim().split('\n').filter(Boolean);
+      return output.split('\n').filter(Boolean).map(decodeGitPath);
     } catch {
       return [];
     }
