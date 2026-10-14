@@ -107,8 +107,11 @@ if [[ -z "${RAW_DIFF}" ]]; then
   exit 0
 fi
 
-# Annotate the diff with awk
-echo "$RAW_DIFF" | awk '
+# Annotate the diff with awk. LC_ALL=C gives byte semantics: a file name that
+# is not valid UTF-8 reaches awk as raw bytes (core.quotePath=false), and BSD
+# awk in a UTF-8 locale aborts on it ("towc: multibyte conversion failure").
+# Every comparison below is against ASCII markers, so bytes are enough.
+echo "$RAW_DIFF" | LC_ALL=C awk '
 # --- Helper functions ---
 
 # Return max of two integers

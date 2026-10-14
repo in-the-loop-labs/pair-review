@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync, execFileSync } from 'child_process';
+import { execSync, execFileSync, spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -1085,6 +1085,78 @@ describe('git-diff-lines on a real repo with names git quotes', () => {
 
   it('the plugin git-diff-lines produces the same output as bin/git-diff-lines', () => {
     expect(runPlugin()).toBe(runNode());
+  });
+});
+
+describe('git-diff-lines on a real repo with a file name that is not UTF-8', () => {
+  // With core.quotePath=false a raw 0xFF byte in a file name reaches awk
+  // unescaped. BSD awk (macOS /usr/bin/awk) in a UTF-8 locale aborts on it
+  // with "towc: multibyte conversion failure" unless the plugin script runs
+  // awk under LC_ALL=C. APFS rejects such names on disk, so the commits are
+  // built with git plumbing and diffed commit to commit, never checked out.
+  const projectRoot = path.resolve(__dirname, '../..');
+  const pluginScript = path.join(projectRoot, 'plugin-code-critic', 'skills', 'analyze', 'scripts', 'git-diff-lines');
+  const BAD_NAME = Buffer.from([0x62, 0x61, 0x64, 0xff, 0x2e, 0x6a, 0x73]); // "bad\xff.js"
+  let tempDir;
+  let repo;
+  let env;
+  let oldCommit;
+  let newCommit;
+  let skipReason = null;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-diff-lines-nonutf8-'));
+    repo = path.join(tempDir, 'repo');
+    fs.mkdirSync(repo);
+    // A UTF-8 locale is what makes awk decode the name; isolated HOME keeps
+    // the developer's git config out of the diff.
+    env = {
+      ...process.env,
+      HOME: tempDir,
+      XDG_CONFIG_HOME: tempDir,
+      GIT_CONFIG_NOSYSTEM: '1',
+      LC_ALL: 'en_US.UTF-8',
+      PAIR_REVIEW_NO_OPEN: '1'
+    };
+    const git = (args, input) => execFileSync('git', args, { cwd: repo, env, input, encoding: 'utf8', stdio: 'pipe' }).trim();
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@test.com']);
+    git(['config', 'user.name', 'Test']);
+    // argv strings are UTF-8 encoded, so the raw byte goes in through a
+    // NUL-terminated --index-info record on stdin.
+    const stage = content => {
+      const blob = git(['hash-object', '-w', '--stdin'], content);
+      const record = Buffer.concat([Buffer.from(`100644 ${blob}\t`), BAD_NAME, Buffer.from([0])]);
+      git(['update-index', '-z', '--add', '--index-info'], record);
+      return git(['write-tree']);
+    };
+    try {
+      oldCommit = git(['commit-tree', stage('a\nb\n'), '-m', 'initial']);
+      newCommit = git(['commit-tree', stage('a\nb\nc\n'), '-p', oldCommit, '-m', 'add c']);
+    } catch (error) {
+      skipReason = `git refused a non-UTF-8 path on this platform: ${error.message}`;
+    }
+  });
+
+  afterAll(() => {
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('the plugin git-diff-lines annotates the file instead of crashing awk', (ctx) => {
+    if (skipReason) ctx.skip(skipReason);
+    const result = spawnSync('bash', [pluginScript, '--cwd', repo, oldCommit, newCommit], { env });
+    expect(result.stderr.toString()).toBe('');
+    expect(result.status).toBe(0);
+    // latin1 maps each byte to one char, so 0xFF survives as \xff
+    expect(result.stdout.toString('latin1')).toBe([
+      '=== bad\xff.js ===',
+      ' OLD | NEW |',
+      '@@ -1,2 +1,3 @@',
+      '   1 |    1 |     a',
+      '   2 |    2 |     b',
+      '  -- |    3 | [+] c',
+      ''
+    ].join('\n'));
   });
 });
 
