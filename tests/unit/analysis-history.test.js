@@ -1282,7 +1282,8 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.selectedRunId).toBe('latest-run');
       expect(onSelectionChange).toHaveBeenCalledWith(
         'latest-run',
-        expect.objectContaining({ id: 'latest-run' })
+        expect.objectContaining({ id: 'latest-run' }),
+        { explicit: false }
       );
     });
 
@@ -1347,7 +1348,8 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.selectedRunId).toBe('latest-run');
       expect(onSelectionChange).toHaveBeenCalledWith(
         'latest-run',
-        expect.objectContaining({ id: 'latest-run' })
+        expect.objectContaining({ id: 'latest-run' }),
+        { explicit: false }
       );
     });
   });

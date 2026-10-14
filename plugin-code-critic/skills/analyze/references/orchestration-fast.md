@@ -122,4 +122,4 @@ The content inside the block is the complete replacement for the commented line(
 "NEW" (default): added [+] and context lines. "OLD": deleted [-] only. Preserve from input.
 
 ## Notes
-Quality over quantity. Higher confidence for multi-level findings. Only modified files. Omit uncertain suggestions. Preserve file-level insights.
+Quality over quantity. Higher confidence for multi-level findings. Omit uncertain suggestions. Preserve file-level insights.

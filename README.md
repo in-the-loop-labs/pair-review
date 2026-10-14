@@ -802,6 +802,10 @@ pair-review's AI analysis system examines your code changes at increasing levels
 
 This progressive approach keeps analysis focused while catching issues at every scope.
 
+Findings can also point at files the review did not change, for example a caller that breaks because of the change. Level 3 (codebase context) is told it may report findings like this; Levels 1 and 2 stay on the changed files. pair-review keeps a finding like this when the file exists in the checkout the AI read, and adds that file to the diff panel as a context file, around the first finding in it. Other findings in the same file are revealed inside that panel. For a council run, selecting an individual reviewer in the analysis history adds the context files for that reviewer's findings. A context file can't be removed while it shows an active finding or comment; dismiss or delete them first.
+
+GitHub can only take comments on files in the PR. When you submit a review, comments on other files stay active in pair-review, and a notice lists them. Headless `--ai-review` / `--ai-draft` runs skip those findings and log each one.
+
 ### Analysis Configuration
 
 There are three ways to configure which models run your analysis, each building on the last:

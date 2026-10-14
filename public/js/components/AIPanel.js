@@ -551,6 +551,7 @@ class AIPanel {
         }
         this.updateSegmentCounts();
         this.renderFindings();
+        this._notifyFeedbackChanged();
 
         // Try to restore previous selection, or auto-select first
         if (!this.restoreSelection()) {
@@ -1197,6 +1198,12 @@ class AIPanel {
         const resolvedSide = side
             || finding?.side
             || 'RIGHT';
+        // A file outside the diff needs a context panel to jump into; an
+        // existing panel is reused.
+        if (file && window.prManager?.ensureContextPanelForJump) {
+            await window.prManager.ensureContextPanelForJump(file, finding?.line_start || parseInt(line, 10) || null);
+            if (myGen !== this._navGen) return;
+        }
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
         if (expansion && typeof expansion.then === 'function') await expansion;
@@ -1302,6 +1309,12 @@ class AIPanel {
         const resolvedSide = side
             || comment?.side
             || 'RIGHT';
+        // A file outside the diff needs a context panel to jump into; an
+        // existing panel is reused.
+        if (file && window.prManager?.ensureContextPanelForJump) {
+            await window.prManager.ensureContextPanelForJump(file, comment?.line_start || parseInt(line, 10) || null);
+            if (myGen !== this._navGen) return;
+        }
         // Expand the file first if it's collapsed
         const expansion = this.expandFileIfCollapsed(file);
         if (expansion && typeof expansion.then === 'function') await expansion;
@@ -1909,6 +1922,7 @@ class AIPanel {
         if (finding) {
             finding.status = status;
         }
+        this._notifyFeedbackChanged();
 
         // Update the DOM directly for performance (avoid full re-render)
         const findingEl = this.findingsList?.querySelector(`[data-id="${findingId}"]`);
@@ -2016,6 +2030,7 @@ class AIPanel {
         this.currentIndex = -1; // Reset navigation
         this.updateSegmentCounts();
         this.renderFindings();
+        this._notifyFeedbackChanged();
         this.resetLevelFilter();
 
         // Also clear suggestions from the diff view: inline rows, Pierre
@@ -2045,6 +2060,7 @@ class AIPanel {
 
         this.updateSegmentCounts();
         this.renderFindings();
+        this._notifyFeedbackChanged();
     }
 
     /**
@@ -2058,6 +2074,7 @@ class AIPanel {
         this.comments = comments || [];
         this.updateSegmentCounts();
         this.renderFindings();
+        this._notifyFeedbackChanged();
 
         // Try to restore previous selection, or auto-select first
         if (!this.restoreSelection()) {
@@ -2108,6 +2125,7 @@ class AIPanel {
             // trigger any button state updates (e.g., enabling/disabling).
             this.updateSegmentCounts();
             this.renderFindings();
+            this._notifyFeedbackChanged();
         }
     }
 
@@ -2121,7 +2139,17 @@ class AIPanel {
             this.comments.splice(index, 1);
             this.updateSegmentCounts();
             this.renderFindings();
+            this._notifyFeedbackChanged();
         }
+    }
+
+    /**
+     * Tell the page that the displayed findings or comments changed, so a
+     * context file's remove button can lock while the file shows feedback.
+     */
+    _notifyFeedbackChanged() {
+        if (typeof window === 'undefined') return;
+        window.prManager?.updateContextFileRemovability?.();
     }
 
     /**

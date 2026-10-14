@@ -30,6 +30,7 @@ const { storePRData, resolvePrHostBinding, registerRepositoryLocation, findRepos
 const { resolvePreflightBinding, setupHostParam, bindingRepositoryForHost } = require('./utils/host-resolution');
 const { fireReviewStartedHook } = require('./hooks/payloads');
 const { normalizeRepository } = require('./utils/paths');
+const { partitionByChangedFile } = require('./utils/changed-file-membership');
 const { rejectUrlLikeLocalReviewPath } = require('./utils/local-path-input');
 const { buildReviewComments } = require('./utils/diff-annotator');
 const logger = require('./utils/logger');
@@ -1390,6 +1391,45 @@ async function loadHeadlessSuggestions(db, reviewId) {
 }
 
 /**
+ * Map a headless review's AI findings to GitHub review comments. Findings on
+ * files outside the PR diff are skipped: GitHub cannot anchor them, so they
+ * stay active in pair-review. Each skipped finding is logged. When the PR's
+ * changed-file list is unknown, no finding is treated as outside the diff and
+ * all of them are submitted, with a warning (partitionByChangedFile; the web
+ * submit route applies the same rule).
+ *
+ * The rest is the same mapping as the web submit route (buildReviewComments):
+ * each comment keeps its side, ranges keep start_line, file-level findings
+ * stay file-level, and a line outside every diff hunk becomes a file-level
+ * comment with a "(Ref Line N)" prefix. Only the body formatting is
+ * headless-specific. Diff positions are recalculated fresh by the GitHub
+ * client.
+ *
+ * @param {Array<Object>} aiSuggestions - Rows from loadHeadlessSuggestions
+ * @param {Array<object|string>|null} changedFiles - The PR's changed files
+ * @param {string} diff - The PR's unified diff
+ * @returns {{submittedSuggestions: Array<Object>, githubComments: Array<Object>}}
+ */
+function buildHeadlessReviewComments(aiSuggestions, changedFiles, diff) {
+  const suggestions = aiSuggestions || [];
+  const { inDiff: submittedSuggestions, outsideDiff, membershipKnown } =
+    partitionByChangedFile(suggestions, changedFiles, diff);
+  if (!membershipKnown && suggestions.length > 0) {
+    logger.warn(`Could not determine the PR's changed files; submitting all ${suggestions.length} suggestion(s) without checking whether their files are in the PR diff`);
+  }
+  for (const suggestion of outsideDiff) {
+    logger.warn(`Skipping suggestion for ${suggestion.file}:${suggestion.line_start} - file is outside the PR diff; the finding remains in pair-review`);
+  }
+
+  const githubComments = buildReviewComments(submittedSuggestions, diff, {
+    // Same emoji + category prefix as adopted suggestions
+    formatBody: suggestion => formatAISuggestion(suggestion.body, suggestion.type)
+  });
+
+  return { submittedSuggestions, githubComments };
+}
+
+/**
  * Shared implementation for headless (non-interactive) review modes.
  * Used by both --ai-draft and --ai-review.
  *
@@ -1715,15 +1755,14 @@ async function performHeadlessReview(args, config, db, flags, options, externalP
       return; // Exit gracefully without creating a review
     }
 
-    // Same mapping as the web submit route: each comment keeps its side,
-    // ranges keep start_line, file-level findings stay file-level, and a line
-    // outside every diff hunk becomes a file-level comment with a
-    // "(Ref Line N)" prefix. Only the body formatting is headless-specific.
-    // Diff positions are recalculated fresh by the GitHub client.
-    const githubComments = buildReviewComments(aiSuggestions, diff, {
-      // Same emoji + category prefix as adopted suggestions
-      formatBody: suggestion => formatAISuggestion(suggestion.body, suggestion.type)
-    });
+    const { submittedSuggestions, githubComments } = buildHeadlessReviewComments(aiSuggestions, changedFiles, diff);
+
+    console.log(`Filtered to ${submittedSuggestions.length} suggestions in changed files`);
+
+    if (submittedSuggestions.length === 0) {
+      console.log('No suggestions in changed files. Exiting without creating review.');
+      return; // Exit gracefully without creating a review
+    }
 
     // Build review body with AI-generated summary
     const footerFlag = options.mode === 'draft' ? '--ai-draft' : '--ai-review';
@@ -1842,9 +1881,11 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
       });
 
       // Update AI suggestions to appropriate status (batch update for performance)
-      // Only the submitted suggestions (loadHeadlessSuggestions skipped the rest)
-      if (aiSuggestions.length > 0) {
-        const suggestionIds = aiSuggestions.map(s => s.id);
+      // Only the submitted suggestions: loadHeadlessSuggestions skipped rows
+      // without a path or line, and findings on files outside the PR diff
+      // were not submitted, so they stay active in pair-review.
+      if (submittedSuggestions.length > 0) {
+        const suggestionIds = submittedSuggestions.map(s => s.id);
         const placeholders = suggestionIds.map(() => '?').join(',');
         await run(db, `
           UPDATE comments
@@ -3009,4 +3050,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, loadHeadlessSuggestions, resolveCliInstructions, resolveCliBindingRepository, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment, printCouncilList, handleHeadlessAnalysis, handleHeadlessDelegated, runHeadlessAnalysis, buildHeadlessJson, buildHeadlessErrorJson, emitHeadlessResult, loadHeadlessSuggestions, buildHeadlessReviewComments, resolveCliInstructions, resolveCliBindingRepository, startPoolBackgroundFetches, isPoolEntryDueForFetch, POOL_FETCH_TICK_MS, MAX_POOL_FETCH_BACKOFF_MS };

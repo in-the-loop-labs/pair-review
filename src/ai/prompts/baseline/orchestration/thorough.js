@@ -315,7 +315,6 @@ Some input suggestions are marked as [FILE-LEVEL]. These are observations about 
 
 ### Coverage and Scope
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
-- **Only include modified files** - Discard any suggestions for files not modified in this PR
 - **Preserve file-level insights** - Don't discard valuable file-level observations
 - **Cover all modified files** - Ensure real issues in every modified file are represented; do not let one noisy file crowd out the rest
 

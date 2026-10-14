@@ -2,16 +2,17 @@
 /**
  * Headless (--ai-draft / --ai-review) review comments: the stored AI findings
  * loaded by loadHeadlessSuggestions, mapped by the shared buildReviewComments
- * (the web submit route's mapping) with a headless-style body formatter.
- * The database is the real test schema (tests/utils/schema.js).
+ * (the web submit route's mapping) with a headless-style body formatter, and
+ * buildHeadlessReviewComments, which also skips findings on files outside the
+ * PR diff. The database is the real test schema (tests/utils/schema.js).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema.js';
 
-const { loadHeadlessSuggestions } = require('../../src/main');
+const { loadHeadlessSuggestions, buildHeadlessReviewComments } = require('../../src/main');
 const { buildReviewComments } = require('../../src/utils/diff-annotator');
 const logger = require('../../src/utils/logger');
-const { QUOTEPATH_FALSE_DIFF } = require('../utils/git-path-fixtures');
+const { QUOTEPATH_FALSE_DIFF, QUOTEPATH_TRUE_DIFF } = require('../utils/git-path-fixtures');
 
 // a.js: old line 2 is deleted and new line 2 is added, inside one hunk.
 const DIFF = [
@@ -154,5 +155,117 @@ describe('loadHeadlessSuggestions', () => {
 
   it('returns an empty list when the review has no findings', async () => {
     expect(await loadHeadlessSuggestions(db, reviewId)).toEqual([]);
+  });
+});
+
+describe('buildHeadlessReviewComments', () => {
+  // The PR's changed_files as the headless path builds them (from the diff)
+  const CHANGED = [{ file: 'a.js' }];
+
+  async function build(changedFiles = CHANGED, diff = DIFF) {
+    return buildHeadlessReviewComments(await loadHeadlessSuggestions(db, reviewId), changedFiles, diff);
+  }
+
+  it('skips findings on unchanged files, logging each, and submits the rest', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const changed = insertComment({ line_start: 2, line_end: 2 });
+    insertComment({ file: 'unchanged.js', line_start: 12, line_end: 12 });
+
+    const { submittedSuggestions, githubComments } = await build();
+
+    expect(submittedSuggestions.map(s => s.id)).toEqual([changed]);
+    expect(githubComments).toEqual([
+      { path: 'a.js', line: 2, body: expect.stringContaining('Check this.'), side: 'RIGHT', isFileLevel: false }
+    ]);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('unchanged.js:12 - file is outside the PR diff'));
+  });
+
+  it('keeps a skipped finding active in the database', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const skipped = insertComment({ file: 'unchanged.js' });
+
+    expect((await build()).submittedSuggestions).toEqual([]);
+    expect(db.prepare('SELECT status FROM comments WHERE id = ?').get(skipped).status).toBe('active');
+  });
+
+  it('uses the shared mapping: LEFT side, ranges, file-level and out-of-hunk lines', async () => {
+    insertComment({ side: 'LEFT', line_start: 2, line_end: 2 });
+    insertComment({ line_start: 1, line_end: 3 });
+    insertComment({ is_file_level: 1, line_start: null, line_end: null });
+    insertComment({ line_start: 40, line_end: 40 });
+
+    const { githubComments } = await build();
+
+    expect(githubComments).toEqual([
+      { path: 'a.js', body: expect.stringContaining('Check this.'), isFileLevel: true },
+      { path: 'a.js', line: 3, start_line: 1, start_side: 'RIGHT', body: expect.stringContaining('Check this.'), side: 'RIGHT', isFileLevel: false },
+      { path: 'a.js', line: 2, body: expect.stringContaining('Check this.'), side: 'LEFT', isFileLevel: false },
+      { path: 'a.js', body: expect.stringMatching(/^\(Ref Line 40\) .*Check this\.$/), isFileLevel: true }
+    ]);
+  });
+
+  it('formats bodies like adopted suggestions', async () => {
+    insertComment({ type: 'bug', body: 'Null check missing.' });
+    const [comment] = (await build()).githubComments;
+    expect(comment.body).toMatch(/\*\*Bug\*\*: Null check missing\.$/);
+  });
+
+  it('submits under the changed-file entry path', async () => {
+    insertComment({ file: './a.js' });
+    expect((await build()).githubComments.map(comment => comment.path)).toEqual(['a.js']);
+  });
+
+  it('treats a file literally named like a rename as its own path', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    insertComment({ file: 'a => b.md', line_start: 2, line_end: 2 });
+    insertComment({ file: 'b.md', line_start: 2, line_end: 2 });
+
+    const { githubComments } = await build([{ file: 'a => b.md' }], QUOTEPATH_FALSE_DIFF);
+
+    expect(githubComments.map(comment => comment.path)).toEqual(['a => b.md']);
+  });
+
+  // A non-ASCII file IS in the diff even when changed_files was cached in
+  // git's old quoted spelling: the membership check reads changed_files
+  // through mergeChangedFilesWithDiff, which re-spells it from the decoded
+  // diff headers.
+  it('submits a finding on a non-ASCII changed file cached in the quoted spelling', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const id = insertComment({ file: 'src/café.js', line_start: 2, line_end: 2 });
+
+    const { submittedSuggestions, githubComments } = await build(
+      [{ file: String.raw`"src/caf\303\251.js"` }], QUOTEPATH_TRUE_DIFF
+    );
+
+    expect(submittedSuggestions.map(s => s.id)).toEqual([id]);
+    expect(githubComments).toEqual([
+      { path: 'src/café.js', line: 2, body: expect.stringContaining('Check this.'), side: 'RIGHT', isFileLevel: false }
+    ]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('recovers changed paths from the diff when changed_files is empty', async () => {
+    insertComment({ file: 'café.js', line_start: 2, line_end: 2 });
+    const { githubComments } = await build([], QUOTEPATH_FALSE_DIFF);
+    expect(githubComments).toMatchObject([{ path: 'café.js', line: 2, isFileLevel: false }]);
+  });
+
+  it('submits every finding, with one warning, when the changed-file list is unknown', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const first = insertComment({ line_start: 2, line_end: 2 });
+    const second = insertComment({ file: 'unchanged.js', line_start: 4, line_end: 4 });
+
+    const { submittedSuggestions, githubComments } = await build(null, '');
+
+    expect(submittedSuggestions.map(s => s.id)).toEqual([first, second]);
+    expect(githubComments.map(comment => comment.path)).toEqual(['a.js', 'unchanged.js']);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("Could not determine the PR's changed files; submitting all 2 suggestion(s)"));
+  });
+
+  it('does not warn about an unknown list when there are no findings', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    expect(buildHeadlessReviewComments([], null, '')).toEqual({ submittedSuggestions: [], githubComments: [] });
+    expect(buildHeadlessReviewComments(null, [], '')).toEqual({ submittedSuggestions: [], githubComments: [] });
+    expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -567,7 +567,6 @@ describe('start_analysis tool', () => {
   let client;
   let mcpServer;
   let analyzeLevel1Spy;
-  let getLocalChangedFilesSpy;
   let worktreeExistsSpy;
   let getWorktreePathSpy;
 
@@ -581,7 +580,6 @@ describe('start_analysis tool', () => {
       summary: 'Found 1 issue',
       level2Result: null,
     });
-    getLocalChangedFilesSpy = vi.spyOn(Analyzer.prototype, 'getLocalChangedFiles').mockResolvedValue(['test.js']);
 
     // Mock GitWorktreeManager prototype methods
     worktreeExistsSpy = vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
@@ -627,9 +625,10 @@ describe('start_analysis tool', () => {
     expect(content.reviewId).toBeDefined();
     expect(content.message).toContain('started');
 
-    // Verify analyzer was called
-    expect(getLocalChangedFilesSpy).toHaveBeenCalledWith('/tmp/test-repo');
+    // Verify analyzer was called with a scope-derived changed-file list
+    // (real git content is covered by tests/integration/mcp-routes.test.js)
     expect(analyzeLevel1Spy).toHaveBeenCalled();
+    expect(Array.isArray(analyzeLevel1Spy.mock.calls[0][5])).toBe(true);
 
     // Verify analysis is tracked in activeAnalyses
     const status = activeAnalyses.get(content.analysisId);
@@ -1026,7 +1025,7 @@ describe('start_analysis tool', () => {
     expect(secondContent.analysisId).toBe(firstContent.analysisId);
   });
 
-  it('should clean up tracking state when getLocalChangedFiles throws', async () => {
+  it('should clean up tracking state when local analysis setup throws', async () => {
     const reviewRepo = new ReviewRepository(db);
     const reviewId = await reviewRepo.upsertLocalReview({
       localPath: '/tmp/error-repo',
@@ -1034,7 +1033,8 @@ describe('start_analysis tool', () => {
       repository: 'error-repo',
     });
 
-    getLocalChangedFilesSpy.mockRejectedValue(new Error('git failed'));
+    // Fails after tracking state is registered, before the analyzer launches.
+    vi.spyOn(AnalysisRunRepository.prototype, 'create').mockRejectedValue(new Error('git failed'));
 
     const result = await client.callTool({
       name: 'start_analysis',

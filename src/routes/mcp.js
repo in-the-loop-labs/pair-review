@@ -13,6 +13,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
 const { getCurrentBranch, generateScopedDiff, computeScopedDigest } = require('../local-review');
 const { reviewScope } = require('../local-scope');
+const { getChangedFiles } = require('./executable-analysis');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
@@ -549,6 +550,10 @@ function createMCPServer(db, options = {}) {
           }
 
           const review = await reviewRepo.getLocalReviewById(reviewId);
+          // The review's recorded scope drives both the persisted diff and the
+          // changed-file list below, so the two always describe the same files.
+          const { start: scopeStart, end: scopeEnd } = reviewScope(review);
+          const baseBranch = review.local_base_branch || null;
 
           // Persist the diff so the web UI can display it and the manual
           // tour/summary buttons work (including after a restart). The MCP path
@@ -562,12 +567,11 @@ function createMCPServer(db, options = {}) {
           // in routes/local.js don't keep serving a stale entry. Non-fatal:
           // matches the analysis-push path.
           try {
-            const { start: scopeStart, end: scopeEnd } = reviewScope(review);
             const diffResult = await generateScopedDiff(
               localPath,
               scopeStart,
               scopeEnd,
-              review.local_base_branch || null
+              baseBranch
             );
             const digest = await computeScopedDigest(localPath, scopeStart, scopeEnd);
             localReviewDiffs.set(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
@@ -643,8 +647,11 @@ function createMCPServer(db, options = {}) {
             reviewType: 'local'
           };
 
-          // Get changed files for local mode
-          const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+          // Get changed files for local mode. Use the same scope-aware helper as
+          // the web UI's local analysis so branch-scope commits and staged files
+          // are listed as changed (otherwise findings on them would be stored as
+          // unchanged-file findings).
+          const changedFiles = await getChangedFiles(localPath, { scopeStart, scopeEnd, baseBranch });
 
           // Persist custom instructions for local mode
           if (requestInstructions) {

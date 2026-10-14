@@ -10,10 +10,12 @@ const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
-const { normalizePath, pathExistsInList, resolveRenamedFile } = require('../utils/paths');
-const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
+const { buildFileLineCountMap } = require('../utils/line-validation');
+const { partitionSuggestionPaths, filterSuggestionPaths, finalizeSuggestions } = require('../utils/suggestion-validation');
+const { seedContextFilesForSuggestions } = require('../utils/auto-context');
+const { getDiffFileList } = require('../utils/diff-file-list');
 const { getPromptBuilder } = require('./prompts');
-const { formatValidFiles } = require('./prompts/shared/valid-files');
+const { formatValidFiles, formatLevel3ChangedFilesSection } = require('./prompts/shared/valid-files');
 const { ADVERSARIAL_VERIFICATION_SECTION } = require('./prompts/shared/adversarial-verification');
 const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
 const { splitNulPaths } = require('../utils/git-paths');
@@ -23,7 +25,7 @@ const {
 } = require('./prompts/line-number-guidance');
 const { resolveTier } = require('./prompts/config');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
-const { AnalysisRunRepository, CommentRepository } = require('../database');
+const { AnalysisRunRepository, CommentRepository, queryOne } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
@@ -671,15 +673,16 @@ class Analyzer {
         }
 
         // Validate and finalize suggestions
-        const finalSuggestions = this.validateAndFinalizeSuggestions(
+        const finalSuggestions = await this.validateAndFinalizeSuggestions(
           orchestrationResult.suggestions,
           fileLineCountMap,
-          validFiles
+          validFiles,
+          worktreePath
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info(`${logPrefix}Storing consolidated suggestions in database...`);
-        await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
+        await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles, worktreePath);
 
         // Check if analysis was cancelled before updating DB status
         if (analysisId && isAnalysisCancelled(analysisId)) {
@@ -737,13 +740,14 @@ class Analyzer {
         ];
 
         // Validate and finalize suggestions
-        const finalFallbackSuggestions = this.validateAndFinalizeSuggestions(
+        const finalFallbackSuggestions = await this.validateAndFinalizeSuggestions(
           fallbackSuggestions,
           fileLineCountMap,
-          validFiles
+          validFiles,
+          worktreePath
         );
 
-        await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
+        await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles, worktreePath);
 
         // Check if analysis was cancelled before updating DB status
         if (analysisId && isAnalysisCancelled(analysisId)) {
@@ -815,59 +819,30 @@ class Analyzer {
   }
 
   /**
-   * Validate and finalize suggestions by checking file paths and line numbers
+   * Validate and finalize suggestions by checking file paths and line numbers.
+   * Findings on unchanged files are kept when the file exists in `repoRoot`
+   * (the checkout the AI read); their line numbers are checked against it.
    * @param {Array} suggestions - Array of suggestion objects
    * @param {Map<string, number>} fileLineCountMap - Map of file paths to line counts
    * @param {Array<string>} validFiles - List of valid file paths from the PR diff
-   * @returns {Array} Finalized suggestions (valid + converted)
+   * @param {string|null} [repoRoot] - Checkout the AI read
+   * @returns {Promise<Array>} Finalized suggestions (valid + converted)
    */
-  validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles) {
+  async validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles, repoRoot = null) {
     const inputCount = suggestions?.length || 0;
     logger.info(`[Validation] Starting validation with ${inputCount} input suggestions`);
 
-    // Validate suggestion file paths against PR diff
-    const validatedSuggestions = this.validateSuggestionFilePaths(
-      suggestions,
-      validFiles
-    );
-
-    const afterPathValidation = validatedSuggestions.length;
-    if (afterPathValidation < inputCount) {
-      logger.info(`[Validation] After file path validation: ${afterPathValidation} suggestions (${inputCount - afterPathValidation} filtered)`);
-    }
-
-    // Line number validation with conversion to file-level
-    const lineValidationResult = validateSuggestionLineNumbers(
-      validatedSuggestions,
+    const finalized = await finalizeSuggestions(suggestions, {
+      changedFiles: validFiles,
       fileLineCountMap,
-      { convertToFileLevel: true }
-    );
+      repoRoot
+    });
 
-    if (lineValidationResult.converted.length > 0) {
-      logger.warn(`[Line Validation] Converted ${lineValidationResult.converted.length} suggestions to file-level due to invalid line numbers`);
-    }
-
-    const finalCount = lineValidationResult.valid.length + lineValidationResult.converted.length;
-    logger.info(`[Validation] Final: ${finalCount} suggestions (${lineValidationResult.valid.length} valid, ${lineValidationResult.converted.length} converted)`);
-
-    // Debug: If all suggestions were filtered out, log details
-    if (finalCount === 0 && inputCount > 0) {
+    logger.info(`[Validation] Final: ${finalized.length} suggestions`);
+    if (finalized.length === 0 && inputCount > 0) {
       logger.warn(`[Validation] WARNING: All ${inputCount} suggestions were filtered out!`);
-      logger.warn(`[Validation] File path filtering removed: ${inputCount - afterPathValidation}`);
-      // Note: With convertToFileLevel=true, invalid line numbers are converted (not dropped)
-      // Log both converted and dropped counts for clarity
-      const droppedCount = lineValidationResult.dropped?.length || 0;
-      const convertedCount = lineValidationResult.converted?.length || 0;
-      if (droppedCount > 0) {
-        logger.warn(`[Validation] Line validation dropped: ${droppedCount}`);
-      }
-      if (convertedCount > 0) {
-        logger.warn(`[Validation] Line validation converted to file-level: ${convertedCount}`);
-      }
     }
-
-    // Return valid + converted suggestions
-    return [...lineValidationResult.valid, ...lineValidationResult.converted];
+    return finalized;
   }
 
   /**
@@ -996,6 +971,23 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   }
 
   /**
+   * Build the Level 3 changed files section. Unlike buildChangedFilesSection
+   * (Levels 1 and 2), it lists the changed files as context and allows
+   * findings in other files of the repository.
+   * @param {Array<string>} changedFiles - List of changed file paths
+   * @returns {string} Prompt section or empty string
+   */
+  buildLevel3ChangedFilesSection(changedFiles) {
+    if (!changedFiles || changedFiles.length === 0) {
+      return '';
+    }
+
+    return `
+${formatLevel3ChangedFilesSection(changedFiles)}
+`;
+  }
+
+  /**
    * Get list of changed files from git diff
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base/head SHAs
@@ -1015,101 +1007,17 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   }
 
   /**
-   * Get list of changed files for local mode analysis.
-   * By default includes unstaged changes and untracked files.
-   * When `options.includeStaged` is true, also includes staged (git add'd) files.
-   *
-   * @param {string} localPath - Path to the local git repository
-   * @param {Object} [options]
-   * @param {boolean} [options.includeStaged] - Also include staged files
-   * @returns {Promise<Array<string>>} List of changed file paths
-   */
-  async getLocalChangedFiles(localPath, options = {}) {
-    try {
-      // Get modified tracked files (unstaged)
-      const { stdout: unstaged } = await execPromise(
-        `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`,
-        { cwd: localPath }
-      );
-
-      // Get untracked files
-      const { stdout: untracked } = await execPromise(
-        `git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`,
-        { cwd: localPath }
-      );
-
-      const unstagedFiles = splitNulPaths(unstaged);
-      const untrackedFiles = splitNulPaths(untracked);
-      const allFiles = [...unstagedFiles, ...untrackedFiles];
-
-      // Include staged files when scope includes staged
-      if (options.includeStaged) {
-        const { stdout: staged } = await execPromise(
-          `git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`,
-          { cwd: localPath }
-        );
-        const stagedFiles = splitNulPaths(staged);
-        allFiles.push(...stagedFiles);
-      }
-
-      return [...new Set(allFiles)];
-    } catch (error) {
-      logger.warn(`Could not get local changed files for ${localPath}: ${error.message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Validate suggestion file paths against the PR diff
-   * Filters out suggestions that reference files not in the PR diff
+   * Validate suggestion file paths against the PR diff and the checkout.
+   * Keeps suggestions for changed files, and for unchanged files that exist
+   * inside `repoRoot` (forced to the NEW side).
    *
    * @param {Array} suggestions - Array of suggestions to validate
    * @param {Array<string>} validPaths - List of valid file paths from the PR diff
+   * @param {string|null} [repoRoot] - Checkout the AI read
    * @returns {Array} Filtered suggestions with only valid file paths
    */
-  validateSuggestionFilePaths(suggestions, validPaths) {
-    if (!suggestions || suggestions.length === 0) {
-      return [];
-    }
-
-    if (!validPaths || validPaths.length === 0) {
-      logger.warn('[Validation] No valid paths provided for validation, skipping path filtering');
-      return suggestions;
-    }
-
-    // Create a Set of normalized valid paths for efficient lookup
-    // Resolve git rename syntax (e.g., "tests/{old.js => new.js}" → "tests/new.js")
-    // so both the rename syntax path and the plain new filename will match
-    const normalizedValidPaths = new Set(validPaths.map(p => normalizePath(resolveRenamedFile(p))));
-
-    const validSuggestions = [];
-    const discardedSuggestions = [];
-
-    for (const suggestion of suggestions) {
-      const normalizedSuggestionPath = normalizePath(resolveRenamedFile(suggestion.file));
-
-      if (normalizedValidPaths.has(normalizedSuggestionPath)) {
-        validSuggestions.push(suggestion);
-      } else {
-        discardedSuggestions.push({
-          file: suggestion.file,
-          normalizedPath: normalizedSuggestionPath,
-          title: suggestion.title,
-          type: suggestion.type
-        });
-      }
-    }
-
-    // Log discarded suggestions for debugging
-    if (discardedSuggestions.length > 0) {
-      logger.warn(`[Validation] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
-      for (const discarded of discardedSuggestions) {
-        logger.warn(`  - "${discarded.file}" (normalized: "${discarded.normalizedPath}"): ${discarded.type} - ${discarded.title}`);
-      }
-      logger.info(`[Validation] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
-    }
-
-    return validSuggestions;
+  validateSuggestionFilePaths(suggestions, validPaths, repoRoot = null) {
+    return filterSuggestionPaths(suggestions, validPaths, repoRoot);
   }
 
   /**
@@ -1223,7 +1131,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 
       // Validate suggestion file paths if changedFiles provided
       const suggestions = (changedFiles && changedFiles.length > 0)
-        ? this.validateSuggestionFilePaths(parsedSuggestions, changedFiles)
+        ? this.validateSuggestionFilePaths(parsedSuggestions, changedFiles, worktreePath)
         : parsedSuggestions;
       if (changedFiles && changedFiles.length > 0) {
         logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
@@ -1231,7 +1139,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 
       // Store Level 1 suggestions
       updateProgress('Storing Level 1 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 1, changedFiles);
+      await this.storeSuggestions(prId, runId, suggestions, 1, changedFiles, worktreePath);
       logger.success(`${lp}Level 1 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -2002,41 +1910,33 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {Array} suggestions - Suggestions to store
    * @param {number|string} level - Analysis level
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode fallback
+   * @param {string|null} [repoRoot] - Checkout the AI read; findings on unchanged
+   *   files are kept only when the file exists there
    */
-  async storeSuggestions(reviewId, runId, suggestions, level, changedFiles = null) {
+  async storeSuggestions(reviewId, runId, suggestions, level, changedFiles = null, repoRoot = null) {
     // FAILSAFE: Get valid file paths to filter suggestions against
     // Prefer changedFiles parameter when available for performance (avoids DB lookup)
     // Fallback to getValidFilePaths() which properly looks up pr_metadata via review.id
-    let validFilePaths;
-    if (changedFiles && changedFiles.length > 0) {
-      validFilePaths = changedFiles.map(f => normalizePath(resolveRenamedFile(f)));
-    } else {
-      // Fallback to pr_metadata lookup via review -> pr_metadata join
-      validFilePaths = await this.getValidFilePaths(reviewId);
+    const validFilePaths = (changedFiles && changedFiles.length > 0)
+      ? changedFiles
+      : await this.getValidFilePaths(reviewId);
+
+    // Keep suggestions for changed files and for existing files in the checkout.
+    // Without any valid paths, fail open: all suggestions pass through.
+    const { kept: validSuggestions, discarded, bypassed } =
+      partitionSuggestionPaths(suggestions, validFilePaths, repoRoot);
+
+    if (bypassed && suggestions.length > 0) {
+      logger.warn('[FAILSAFE] Path validation bypassed: no valid paths available. All suggestions will pass through unfiltered.');
     }
-
-    // Create a Set of normalized valid paths for O(1) lookup
-    const validPathsSet = new Set(validFilePaths);
-
-    // Filter suggestions to only those with valid file paths
-    const validSuggestions = [];
-    let filteredCount = 0;
-
-    for (const suggestion of suggestions) {
-      // Check if the suggestion's file path exists in the PR diff
-      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
-        filteredCount++;
-        logger.warn(
-          `[FAILSAFE] Filtered AI suggestion with invalid path: "${suggestion.file}" ` +
-          `(expected one of: ${validFilePaths.slice(0, 5).join(', ')}${validFilePaths.length > 5 ? '...' : ''})`
-        );
-        continue;
-      }
-      validSuggestions.push(suggestion);
+    for (const suggestion of discarded) {
+      logger.warn(
+        `[FAILSAFE] Filtered AI suggestion with invalid path: "${suggestion.file}" ` +
+        `(expected one of: ${validFilePaths.slice(0, 5).map(f => typeof f === 'string' ? f : f?.file).join(', ')}${validFilePaths.length > 5 ? '...' : ''})`
+      );
     }
-
-    if (filteredCount > 0) {
-      logger.warn(`[FAILSAFE] Filtered ${filteredCount} suggestions with invalid file paths`);
+    if (discarded.length > 0) {
+      logger.warn(`[FAILSAFE] Filtered ${discarded.length} suggestions with invalid file paths`);
     }
 
     // Log overall suggestions at debug level (level === null means orchestrated/final suggestions)
@@ -2054,16 +1954,43 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     await commentRepo.bulkInsertAISuggestions(reviewId, runId, validSuggestions, level);
 
     logger.success(`Stored ${validSuggestions.length} suggestions in database`);
+
+    // Final results of a top-level run open a context panel for each
+    // unchanged file they target. Intermediate levels and council voices
+    // (child runs) never do; a voice's panels are created when the user
+    // selects that voice.
+    if (level === null && !bypassed) {
+      await this._seedContextFilesForFinalRun(reviewId, runId, validSuggestions, validFilePaths);
+    }
   }
 
   /**
-   * Get valid file paths from PR metadata
+   * Create context-file panels for a run's final findings on unchanged files,
+   * unless the run is a council voice (it has a parent run).
+   * @param {number} reviewId - Review ID
+   * @param {string} runId - Analysis run ID the findings were stored under
+   * @param {Array<Object>} suggestions - The stored final findings
+   * @param {Array<object|string>} changedFiles - The review's changed files
+   * @private
+   */
+  async _seedContextFilesForFinalRun(reviewId, runId, suggestions, changedFiles) {
+    if (suggestions.length === 0) return;
+    const analysisRun = await queryOne(this.db, 'SELECT parent_run_id FROM analysis_runs WHERE id = ?', [runId]);
+    if (analysisRun?.parent_run_id) return;
+    await seedContextFilesForSuggestions(this.db, reviewId, suggestions, { diffFiles: changedFiles });
+  }
+
+  /**
+   * Get valid file paths from PR metadata, read through getDiffFileList (the
+   * same reader as context files and seeding): cached changed_files merged
+   * with the cached diff, so entries cached in git's quoted spelling are
+   * re-spelled to match the decoded diff headers. Paths are the entries' own
+   * spelling, never normalized: the membership check (changed-file-membership)
+   * matches exactly first and must return the entry path unchanged.
    * @param {number} reviewId - Review ID (from reviews table, NOT pr_metadata.id)
    * @returns {Promise<Array<string>>} Array of valid file paths from the PR diff
    */
   async getValidFilePaths(reviewId) {
-    const { queryOne } = require('../database');
-
     try {
       // First, look up the review to get pr_number and repository
       // reviewId is from the reviews table, not pr_metadata.id
@@ -2082,62 +2009,17 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         return [];
       }
 
-      // Now look up pr_metadata using the natural key (pr_number + repository)
-      const prMetadata = await queryOne(this.db, `
-        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-      `, [review.pr_number, review.repository]);
-
-      if (!prMetadata || !prMetadata.pr_data) {
-        logger.warn(`[FAILSAFE] PR metadata not found for PR #${review.pr_number} in ${review.repository}`);
-        return [];
+      const files = await getDiffFileList(this.db, review);
+      if (files.length === 0) {
+        logger.warn(`[FAILSAFE] PR metadata not found, or it lists no changed files, for PR #${review.pr_number} in ${review.repository}`);
       }
-
-      const prData = JSON.parse(prMetadata.pr_data);
-      const changedFiles = prData.changed_files || [];
-
-      // Extract file paths and normalize them
-      return changedFiles.map(f => {
-        // changed_files entries can be objects with 'file' property or just strings
-        const filePath = typeof f === 'string' ? f : (f.file || '');
-        return normalizePath(filePath);
-      }).filter(p => p.length > 0);
-
+      return files;
     } catch (error) {
       logger.error(`[FAILSAFE] Error getting valid file paths: ${error.message}`);
       return [];
     }
   }
 
-  /**
-   * Check if a suggestion's file path is valid (exists in PR diff)
-   * @param {string} suggestionPath - The file path from the suggestion
-   * @param {Array<string>|Set<string>} validPaths - Array or Set of valid (normalized) file paths
-   * @returns {boolean} True if the path is valid
-   */
-  isValidSuggestionPath(suggestionPath, validPaths) {
-    // If we couldn't get valid paths, allow all suggestions (fail open for usability)
-    // This is a safety fallback - if PR metadata lookup fails, we don't want to
-    // discard all suggestions. Log prominently so this is visible for debugging.
-    if (!validPaths || (Array.isArray(validPaths) && validPaths.length === 0) || (validPaths instanceof Set && validPaths.size === 0)) {
-      logger.warn('[FAILSAFE] Path validation bypassed: no valid paths available. All suggestions will pass through unfiltered.');
-      return true;
-    }
-
-    // Check if the suggestion path is empty or invalid
-    if (!suggestionPath || typeof suggestionPath !== 'string') {
-      return false;
-    }
-
-    // Use O(1) Set lookup if validPaths is a Set, otherwise normalize and check
-    // Resolve git rename syntax so suggestions for renamed files match
-    const normalizedSuggestionPath = normalizePath(resolveRenamedFile(suggestionPath));
-    if (validPaths instanceof Set) {
-      return validPaths.has(normalizedSuggestionPath);
-    }
-    // Fallback for array (convert to Set for lookup)
-    const validPathsSet = new Set(validPaths.map(p => normalizePath(resolveRenamedFile(p))));
-    return validPathsSet.has(normalizedSuggestionPath);
-  }
 
   /**
    * Get AI suggestions for a review (PR or local)
@@ -2236,12 +2118,12 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       logger.success(`${lp}Parsed ${suggestions.length} valid Level 2 suggestions`);
 
       // Validate suggestion file paths against changed files
-      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles, worktreePath);
       logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 2 suggestions
       updateProgress('Storing Level 2 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 2, validFiles);
+      await this.storeSuggestions(prId, runId, suggestions, 2, validFiles, worktreePath);
       logger.success(`${lp}Level 2 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -2352,12 +2234,12 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       logger.success(`${lp}Parsed ${suggestions.length} valid Level 3 suggestions`);
 
       // Validate suggestion file paths against changed files
-      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles, worktreePath);
       logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 3 suggestions
       updateProgress('Storing Level 3 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 3, validFiles);
+      await this.storeSuggestions(prId, runId, suggestions, 3, validFiles, worktreePath);
       logger.success(`${lp}Level 3 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -2702,9 +2584,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Note: Level 3 uses "changedFiles" key to match the {{changedFiles}} placeholder in Level 3 prompts.
       // Level 1/2 use "validFiles" key for their {{validFiles}} placeholder. Same underlying data,
-      // different naming to reflect semantic intent: L3 emphasizes "changed files in this PR" (context
-      // perspective for architectural analysis), while L1/L2 emphasize "valid files for suggestions"
-      // (constraint perspective for focused analysis).
+      // different meaning: for L3 the list is context (the template allows findings in other
+      // repository files), while for L1/L2 it is a constraint ("valid files for suggestions").
       const context = {
         reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
         prContext: this.buildPRContextSection(prMetadata, criticalNote),
@@ -2731,7 +2612,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
-    const changedFilesSection = this.buildChangedFilesSection(changedFiles);
+    const changedFilesSection = this.buildLevel3ChangedFilesSection(changedFiles);
     const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
@@ -3221,8 +3102,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logPrefix: `[${reviewerLabel}] `
         });
 
-        const finalSuggestions = this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles);
-        await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+        const finalSuggestions = await this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles, worktreePath);
+        await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles, worktreePath);
 
         if (progressCallback) {
           progressCallback({ level: 'exec', status: 'completed', progress: `External tool complete: ${finalSuggestions.length} suggestions` });
@@ -3342,7 +3223,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           });
 
           // Validate suggestions before storage (matches single-voice path)
-          const validatedSuggestions = this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles);
+          const validatedSuggestions = await this.validateAndFinalizeSuggestions(result.suggestions, fileLineCountMap, validFiles, worktreePath);
 
           // Update child run
           try {
@@ -3480,10 +3361,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // consolidation) — only cross-voice consolidation was skipped here
       const singleLevelOutcomes = singleResult.levelOutcomes || { consolidation: 'skipped' };
 
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        singleResult.suggestions, fileLineCountMap, validFiles
+      const finalSuggestions = await this.validateAndFinalizeSuggestions(
+        singleResult.suggestions, fileLineCountMap, validFiles, worktreePath
       );
-      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles, worktreePath);
 
       try {
         await analysisRunRepo.update(parentRunId, {
@@ -3557,11 +3438,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback, excludePrevious, dedupContext, githubClient, providerOverrides: this.providerOverrides }
       );
 
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        consolidated.suggestions, fileLineCountMap, validFiles
+      const finalSuggestions = await this.validateAndFinalizeSuggestions(
+        consolidated.suggestions, fileLineCountMap, validFiles, worktreePath
       );
 
-      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles, worktreePath);
 
       const summary = consolidated.summary || `Review council complete: ${finalSuggestions.length} suggestions from ${successfulVoices.length} reviewers`;
 
@@ -3615,10 +3496,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
 
       // Fallback: use all voice suggestions combined
-      const fallbackSuggestions = this.validateAndFinalizeSuggestions(
-        [...allVoiceSuggestions, ...allVoiceFileLevelSuggestions], fileLineCountMap, validFiles
+      const fallbackSuggestions = await this.validateAndFinalizeSuggestions(
+        [...allVoiceSuggestions, ...allVoiceFileLevelSuggestions], fileLineCountMap, validFiles, worktreePath
       );
-      await this.storeSuggestions(reviewId, parentRunId, fallbackSuggestions, null, validFiles);
+      await this.storeSuggestions(reviewId, parentRunId, fallbackSuggestions, null, validFiles, worktreePath);
 
       const fallbackSummary = `Review council complete (consolidation failed): ${fallbackSuggestions.length} suggestions`;
 
@@ -3687,7 +3568,6 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     logger.info(`[Council] Using ${validFiles.length} changed files for path validation`);
 
     // Build file line count map for validation
-    const { buildFileLineCountMap } = require('../utils/line-validation');
     const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
 
     // Collect all voice tasks across enabled levels
@@ -3820,10 +3700,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       logger.info('[Council] Single reviewer result — skipping consolidation');
       const singleLevel = [...successfulVoiceLevels][0];
       const singleLevelSuggestions = levelSuggestions[singleLevel] || [];
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        singleLevelSuggestions, fileLineCountMap, validFiles
+      const finalSuggestions = await this.validateAndFinalizeSuggestions(
+        singleLevelSuggestions, fileLineCountMap, validFiles, worktreePath
       );
-      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles, worktreePath);
 
       return {
         runId,
@@ -3835,7 +3715,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     // Store raw per-reviewer suggestions before consolidation
     logger.info(`[Council] Storing ${rawSuggestions.length} raw reviewer suggestions`);
-    await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles);
+    await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles, worktreePath);
 
     // Determine orchestration provider
     const orchConfig = councilConfig.consolidation || councilConfig.orchestration || this._defaultOrchestration(councilConfig);
@@ -3947,12 +3827,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           : { level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
       }
 
-      const finalSuggestions = this.validateAndFinalizeSuggestions(
-        orchestrationResult.suggestions, fileLineCountMap, validFiles
+      const finalSuggestions = await this.validateAndFinalizeSuggestions(
+        orchestrationResult.suggestions, fileLineCountMap, validFiles, worktreePath
       );
 
       // Store final consolidated suggestions (is_raw=0, voice_id=null)
-      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles, worktreePath);
 
       logger.success(`[Council] Analysis complete: ${finalSuggestions.length} final suggestions`);
 
@@ -3976,10 +3856,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       // Fallback: combine all consolidated suggestions
       const fallbackSuggestions = Object.values(consolidatedPerLevel).flat();
-      const finalFallback = this.validateAndFinalizeSuggestions(
-        fallbackSuggestions, fileLineCountMap, validFiles
+      const finalFallback = await this.validateAndFinalizeSuggestions(
+        fallbackSuggestions, fileLineCountMap, validFiles, worktreePath
       );
-      await this.storeSuggestions(reviewId, runId, finalFallback, null, validFiles);
+      await this.storeSuggestions(reviewId, runId, finalFallback, null, validFiles, worktreePath);
 
       return {
         runId,
@@ -4158,22 +4038,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} runId - Analysis run ID
    * @param {Array} suggestions - Suggestions with voice_id and is_raw fields
    * @param {Array<string>} validFiles - Valid file paths
+   * @param {string|null} [repoRoot] - Checkout the AI read
    * @private
    */
-  async _storeCouncilSuggestions(reviewId, runId, suggestions, validFiles) {
+  async _storeCouncilSuggestions(reviewId, runId, suggestions, validFiles, repoRoot = null) {
     const { run: dbRun } = require('../database');
 
-    // FAILSAFE: Filter suggestions to only those with valid file paths (same as storeSuggestions)
-    const validPathsSet = new Set(validFiles.map(f => normalizePath(resolveRenamedFile(f))));
-    let filteredCount = 0;
+    // FAILSAFE: Keep suggestions for changed files and existing files in the
+    // checkout (same rule as storeSuggestions)
+    const { kept, discarded } = partitionSuggestionPaths(suggestions, validFiles, repoRoot);
+    const filteredCount = discarded.length;
 
-    for (const suggestion of suggestions) {
-      // Validate file path against changed files
-      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
-        filteredCount++;
-        continue;
-      }
-
+    for (const suggestion of kept) {
       const body = suggestion.description;
       const suggestionText = suggestion.suggestion || null;
 

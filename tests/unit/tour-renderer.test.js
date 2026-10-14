@@ -825,6 +825,34 @@ describe('TourRenderer', () => {
       expect(pm.removeContextFile).toHaveBeenCalledWith(11);
     });
 
+    // An analysis finishing during the tour seeds no panel of its own for a
+    // file the tour already added (one panel per file), so the tour's panel
+    // is the one showing the finding: exiting must not remove it.
+    it('keeps an auto-added file that now shows feedback', async () => {
+      buildDiff('src/other.js');
+      const pm = {
+        ensureContextFile: vi.fn()
+          .mockResolvedValueOnce({ type: 'context', contextFile: { id: 10, file: 'a.js' } })
+          .mockResolvedValueOnce({ type: 'context', contextFile: { id: 11, file: 'b.js' } }),
+        ensureLinesVisible: vi.fn().mockResolvedValue(),
+        removeContextFile: vi.fn().mockResolvedValue(),
+        contextFileRemovalBlocker: vi.fn(file => (file === 'a.js' ? "Can't remove" : null)),
+        contextFiles: [],
+      };
+      const r = new TourRenderer(pm);
+      r.setStops([
+        makeStop({ file_path: 'a.js', line_start: 5 }),
+        makeStop({ file_path: 'b.js', line_start: 6 }),
+      ]);
+      await r.prepareStop(0);
+      await r.prepareStop(1);
+      pm.contextFiles = [{ id: 10, file: 'a.js' }, { id: 11, file: 'b.js' }];
+      await r.unmountAll();
+      expect(pm.removeContextFile).toHaveBeenCalledTimes(1);
+      expect(pm.removeContextFile).toHaveBeenCalledWith(11);
+      expect(r._autoAddedContextFileIds.size).toBe(0);
+    });
+
     it('clears _autoAddedContextFileIds after cleanup', async () => {
       buildDiff('src/other.js');
       const pm = {

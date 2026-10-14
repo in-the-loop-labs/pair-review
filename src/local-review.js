@@ -22,6 +22,7 @@ const tourGenerator = require('./ai/tour-generator');
 const { getShaAbbrevLength } = require('./git/sha-abbrev');
 const { GIT_DIFF_FLAGS, GIT_DIFF_FLAGS_ARRAY, GIT_PATH_CONFIG, GIT_PATH_CONFIG_ARRAY } = require('./git/diff-flags');
 const { quoteGitPath, splitNulPaths } = require('./utils/git-paths');
+const { findMergeBase } = require('./git/scoped-changed-files');
 // Namespace import (not destructured) so detectBaseBranch is resolved off the
 // module object at call time — this keeps it interceptable by vi.spyOn on the
 // base-branch module in tests, unlike a destructured binding captured at load.
@@ -373,29 +374,6 @@ async function getUntrackedFiles(repoPath) {
   } catch (error) {
     console.warn(`Warning: Could not get untracked files: ${error.message}`);
     return [];
-  }
-}
-
-/**
- * Find merge-base between baseBranch and HEAD using local refs.
- * This is only used in local review mode where the local ref is authoritative.
- * @param {string} repoPath - Path to the git repository
- * @param {string} baseBranch - Base branch name
- * @returns {Promise<string>} Merge-base SHA
- */
-async function findMergeBase(repoPath, baseBranch) {
-  if (!baseBranch || !/^[\w.\-\/]+$/.test(baseBranch)) {
-    throw new Error(`Invalid branch name: ${baseBranch}`);
-  }
-
-  try {
-    return execSync(`git merge-base ${baseBranch} HEAD`, {
-      cwd: repoPath,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    }).trim();
-  } catch (error) {
-    throw new Error(`Could not find merge-base between ${baseBranch} and HEAD: ${error.message}`);
   }
 }
 

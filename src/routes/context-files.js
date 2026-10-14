@@ -11,40 +11,15 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { ContextFileRepository, WorktreeRepository } = require('../database');
+const { ContextFileRepository } = require('../database');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { getDiffFileList } = require('../utils/diff-file-list');
+const { createChangedFilePredicate } = require('../utils/changed-file-membership');
+const { resolveRepoRoot, isSafeRelativePath } = require('../utils/review-paths');
 const validateReviewId = require('./middleware/validate-review-id');
 
 const router = express.Router();
-
-/**
- * Resolve the repository root directory for a review.
- * Local reviews use local_path; PR reviews look up the worktree path.
- * Returns null when the root cannot be determined (e.g. worktree not set up).
- *
- * @param {object} db     - SQLite database handle
- * @param {object} review - Review row from the database
- * @returns {Promise<string|null>} Absolute path to the repo root, or null
- */
-async function resolveRepoRoot(db, review) {
-  // Local mode – the path is stored directly on the review record
-  if (review.local_path) {
-    return review.local_path;
-  }
-
-  // PR mode – look up the worktree record
-  if (review.pr_number && review.repository) {
-    const worktreeRepo = new WorktreeRepository(db);
-    const worktree = await worktreeRepo.findByPR(review.pr_number, review.repository);
-    if (worktree && worktree.path) {
-      return worktree.path;
-    }
-  }
-
-  return null;
-}
 
 /**
  * POST /api/reviews/:reviewId/context-files
@@ -60,7 +35,7 @@ router.post('/api/reviews/:reviewId/context-files', validateReviewId, async (req
       return res.status(400).json({ error: 'file is required and must be a non-empty string' });
     }
 
-    if (file.includes('..') || file.startsWith('/')) {
+    if (!isSafeRelativePath(file)) {
       return res.status(400).json({ error: 'file must be a relative path without .. segments' });
     }
 
@@ -90,7 +65,7 @@ router.post('/api/reviews/:reviewId/context-files', validateReviewId, async (req
 
     // Reject files that are already part of the review's diff
     const diffFiles = await getDiffFileList(db, req.review);
-    if (diffFiles.includes(file.trim())) {
+    if (createChangedFilePredicate(diffFiles)(file.trim())) {
       return res.status(400).json({
         error: `Cannot add context file: '${file.trim()}' is already part of the diff`
       });

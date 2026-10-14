@@ -15,6 +15,8 @@ class SuggestionManager {
     // Bumped by clearAISuggestions so a display already running stops
     // instead of putting the cleared findings back
     this._displayEpoch = 0;
+    // The list most recently requested for display (see redisplaySuggestions)
+    this._latestSuggestions = null;
 
     // Event delegation for "Ask about this" chat button on suggestions
     document.addEventListener('click', (e) => {
@@ -246,11 +248,14 @@ class SuggestionManager {
    * while it runs. User comments are untouched.
    *
    * A display that is running, or queued behind one, would put the cleared
-   * findings back when it finishes, so both are abandoned.
+   * findings back when it finishes, so both are abandoned. The remembered
+   * list is forgotten too, so a later redisplaySuggestions (a context-file
+   * reload during the new run) cannot restore the cleared findings.
    */
   clearAISuggestions() {
     this._displayEpoch = (this._displayEpoch || 0) + 1;
     this._pendingSuggestions = null;
+    this._latestSuggestions = null;
     this._closeReasoningPopover();
     const removed = this._removeRenderedSuggestions();
     console.log(`[UI] Cleared AI suggestions (${removed} inline rows)`);
@@ -282,6 +287,21 @@ class SuggestionManager {
   }
 
   /**
+   * Show the most recently requested suggestions again, e.g. after new
+   * context-file panels render so findings in those files get placed. No
+   * refetch: the list is the one already displayed (or about to be).
+   *
+   * Cleared findings stay cleared: clearAISuggestions forgets the list, so
+   * there is nothing to bring back, and the display started here runs under
+   * the current epoch, so a clear while it awaits abandons it like any other.
+   * @returns {Promise<void>}
+   */
+  async redisplaySuggestions() {
+    if (!this._latestSuggestions) return;
+    await this.displayAISuggestions(this._latestSuggestions);
+  }
+
+  /**
    * Display AI suggestions inline with diff.
    *
    * Displays never interleave. A call made while one is running does not
@@ -293,6 +313,7 @@ class SuggestionManager {
    * @param {Array} suggestions - Array of suggestions to display
    */
   async displayAISuggestions(suggestions) {
+    this._latestSuggestions = suggestions;
     if (this._isDisplayingSuggestions) {
       console.log('[UI] displayAISuggestions already in progress, queued the latest request');
       this._pendingSuggestions = suggestions;

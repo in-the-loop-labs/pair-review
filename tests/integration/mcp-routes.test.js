@@ -351,12 +351,10 @@ describe('MCP Routes Integration', () => {
     it('start_analysis (local) durably persists the diff to the local_diffs table', async () => {
       const tempRepo = createTempRepoWithChanges();
 
-      // The local branch launches the analyzer fire-and-forget AND calls
-      // getLocalChangedFiles. Mock both on the prototype so no real provider
-      // calls occur. The diff persistence runs synchronously before the launch.
+      // The local branch launches the analyzer fire-and-forget. Mock it on the
+      // prototype so no real provider calls occur. The diff persistence runs
+      // synchronously before the launch; the changed-file list is real git.
       const Analyzer = require('../../src/ai/analyzer');
-      const changedFilesSpy = vi.spyOn(Analyzer.prototype, 'getLocalChangedFiles')
-        .mockResolvedValue([{ file: 'file.js' }]);
       const level1Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel1')
         .mockResolvedValue({ suggestions: [], summary: null });
 
@@ -386,11 +384,97 @@ describe('MCP Routes Integration', () => {
         const dbDiff = await reviewRepo.getLocalDiff(content.reviewId);
         expect(dbDiff).not.toBeNull();
         expect(dbDiff.diff).toContain('diff --git');
+
+        // Default scope (unstaged..untracked): the unstaged edit is the
+        // changed-file list handed to the analyzer.
+        expect(level1Spy).toHaveBeenCalledTimes(1);
+        expect(level1Spy.mock.calls[0][5]).toEqual(['file.js']);
       } finally {
-        changedFilesSpy.mockRestore();
         level1Spy.mockRestore();
         nodeFs.rmSync(tempRepo, { recursive: true, force: true });
       }
+    });
+
+    describe('start_analysis (local) changed-file list follows the review scope', () => {
+      let tempRepo;
+      let level1Spy;
+      let headSha;
+
+      const git = cmd => execSync(`git ${cmd}`, { cwd: tempRepo, stdio: 'pipe', encoding: 'utf8' });
+      const write = (name, content) => nodeFs.writeFileSync(path.join(tempRepo, name), content);
+
+      beforeEach(() => {
+        // main: base.js. feature: one commit adding `branch.js`, then a
+        // staged file, an unstaged edit and an untracked file on top.
+        tempRepo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-mcp-scope-'));
+        git('init -b main');
+        git('config user.email "test@test.com"');
+        git('config user.name "Test User"');
+        write('base.js', 'base\n');
+        git('add base.js');
+        git('commit -m "initial"');
+        git('checkout -b feature');
+        write('branch.js', 'branch only\n');
+        git('add -A');
+        git('commit -m "branch commit"');
+        write('staged.js', 'staged\n');
+        git('add staged.js');
+        write('base.js', 'base edited\n');
+        write('untracked.js', 'untracked\n');
+        headSha = git('rev-parse HEAD').trim();
+
+        const Analyzer = require('../../src/ai/analyzer');
+        level1Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel1')
+          .mockResolvedValue({ suggestions: [], summary: null });
+      });
+
+      afterEach(() => {
+        level1Spy.mockRestore();
+        nodeFs.rmSync(tempRepo, { recursive: true, force: true });
+      });
+
+      async function startAnalysisWithScope(scopeStart, scopeEnd) {
+        const reviewRepo = new ReviewRepository(db);
+        const reviewId = await reviewRepo.upsertLocalReview({
+          localPath: tempRepo,
+          localHeadSha: headSha,
+          repository: 'scope-repo',
+          localHeadBranch: 'feature',
+          scopeStart,
+          scopeEnd,
+          localBaseBranch: 'main'
+        });
+
+        const res = await mcpRequest(server, {
+          jsonrpc: '2.0',
+          id: 30,
+          method: 'tools/call',
+          params: { name: 'start_analysis', arguments: { path: tempRepo, headSha } }
+        });
+        expect(res.status).toBe(200);
+        const content = JSON.parse(extractResult(res).result.content[0].text);
+        expect(content.status).toBe('started');
+        // The seeded (scoped) review is the one analyzed, not a fresh default-scope one.
+        expect(content.reviewId).toBe(reviewId);
+
+        expect(level1Spy).toHaveBeenCalledTimes(1);
+        return [...level1Spy.mock.calls[0][5]].sort();
+      }
+
+      it('includes branch-commit and staged files for a branch..untracked review', async () => {
+        const changedFiles = await startAnalysisWithScope('branch', 'untracked');
+        expect(changedFiles).toEqual(['base.js', 'branch.js', 'staged.js', 'untracked.js']);
+      });
+
+      it('includes staged but not branch-commit files for a staged..untracked review', async () => {
+        const changedFiles = await startAnalysisWithScope('staged', 'untracked');
+        expect(changedFiles).toEqual(['base.js', 'staged.js', 'untracked.js']);
+      });
+
+      it('excludes staged and branch-commit files for the default unstaged..untracked review', async () => {
+        const changedFiles = await startAnalysisWithScope('unstaged', 'untracked');
+        expect(changedFiles).toEqual(['base.js', 'untracked.js']);
+      });
     });
   });
 
