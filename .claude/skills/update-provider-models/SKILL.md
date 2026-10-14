@@ -257,3 +257,10 @@ then (the API is unaffected).
   Note that the cached catalog marks the `-contributor` model with `is_default: true` —
   that is muse's own default, and pair-review overrides it on purpose. Do not copy the
   catalog's `is_default` across when refreshing the model list
+- Muse Wonder (2026-10-12) adds `muse-wonder-1.0` (API + Muse Code) and
+  `muse-wonder-full-1.0` (Muse Code Power/Maximum Usage subscriptions only, never the
+  API, and absent from the cached catalog). On an account without that plan the Full
+  id fails with ``does not exist or you lack access`` — that is a plan gate, not a dead
+  id, so do not remove it on that evidence alone. Wonder has no contributor model id;
+  its entries pass `--contributor-mode off` (verified accepted by muse 1.4.7) because
+  subscriptions default contributor mode on

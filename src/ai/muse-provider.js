@@ -152,9 +152,9 @@ function attemptIdOf(record) {
 /**
  * Muse model definitions with tier mappings.
  *
- * Muse exposes two real CLI model IDs per generation; everything below is a
- * reasoning-effort variant over the current pair, using the same `cli_model` +
- * `extra_args` pattern as the Codex provider:
+ * Every entry below is a reasoning-effort variant over a real CLI model ID,
+ * using the same `cli_model` + `extra_args` pattern as the Codex provider.
+ * Muse Spark exposes two real CLI model IDs per generation:
  * - muse-spark-1.3             — $1.25/$4.25 per MTok ($0.15 cached), ~1M context
  * - muse-spark-1.3-contributor — $0.10/$0.20 per MTok ($0.002 cached), discounted
  *   because submitted content may be used by Meta for product improvement
@@ -166,6 +166,19 @@ function attemptIdOf(record) {
  * generations at the same price, so every `muse-spark-1.2-*` id is kept as an
  * alias of its 1.3 twin at the same reasoning effort. Saved councils and configs
  * upgrade in place instead of falling through to muse's own default.
+ *
+ * Muse Wonder (released 2026-10-12) is Meta's frontier line, thorough tier only:
+ * - muse-wonder-1.0      — $4/$20 per MTok ($0.20 cached), ~1M context; served
+ *   through the Meta Model API as well as Muse Code
+ * - muse-wonder-full-1.0 — the larger variant, sold ONLY inside Muse Code Power
+ *   Usage ($50/mo) and Maximum Usage ($200/mo) subscriptions, never through the
+ *   API. Accounts without that plan get "does not exist or you lack access".
+ * Meta's model card (max effort): DeepSWE 1.1 79.0 (Full) / 78.8 (Wonder),
+ * SWE-Marathon 57.5 / 53.1. Neither becomes the default: Wonder costs ~3x
+ * Spark per input token and ~5x per output token, and Full is gated by plan.
+ * Muse Code subscriptions default to contributor mode (Meta may train on the
+ * content), so every Wonder entry pins `--contributor-mode off` for that run.
+ * There is no Wonder contributor model id, so Wonder has no contributor twins.
  *
  * Do NOT treat the locally cached catalog (~/.local/share/muse/model-catalog/)
  * as authoritative: it lags the CLI and still listed only 1.2 after 1.3 worked.
@@ -182,8 +195,60 @@ function attemptIdOf(record) {
  * followed by its contributor twin, so that getFastTierModel() — which picks the
  * FIRST `fast` model — selects the non-data-sharing model for auxiliary work
  * like JSON extraction. Never put a contributor entry ahead of its twin.
+ *
+ * The first `thorough` entry matters too: switching provider in the analysis
+ * config modal or repo settings picks the FIRST model of the current tier
+ * (repo settings then saves it as the repo's default_model). It must run on
+ * every account, so `muse-wonder-1.0-high` stays first and a plan-gated
+ * `-full-` entry must never lead.
  */
 const MUSE_MODELS = [
+  {
+    id: 'muse-wonder-1.0-high',
+    aliases: ['muse-wonder-1.0', 'muse-wonder'],
+    cli_model: 'muse-wonder-1.0',
+    extra_args: ['--reasoning-effort', 'high', '--contributor-mode', 'off'],
+    name: 'Muse Wonder High',
+    tier: 'thorough',
+    tagline: 'Frontier Review',
+    description: 'Meta\'s frontier model at high reasoning effort with roughly 1M tokens of context—a big step up from Muse Spark on multi-file and long-horizon changes. Several times the cost of Muse Spark ($4/$20 per MTok).',
+    badge: 'Frontier',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'muse-wonder-1.0-max',
+    cli_model: 'muse-wonder-1.0',
+    extra_args: ['--reasoning-effort', 'max', '--contributor-mode', 'off'],
+    name: 'Muse Wonder Max',
+    tier: 'thorough',
+    tagline: 'Frontier Reasoning',
+    description: 'Meta\'s frontier model at maximum reasoning effort for architecture, concurrency, and security-sensitive reviews. Several times the cost of Muse Spark ($4/$20 per MTok).',
+    badge: 'Frontier',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'muse-wonder-full-1.0-high',
+    aliases: ['muse-wonder-full-1.0', 'muse-wonder-full'],
+    cli_model: 'muse-wonder-full-1.0',
+    extra_args: ['--reasoning-effort', 'high', '--contributor-mode', 'off'],
+    name: 'Muse Wonder Full High',
+    tier: 'thorough',
+    tagline: 'Flagship Review',
+    description: 'Meta\'s largest frontier model at high reasoning effort—flagship-quality review with less latency than Max. Requires a Muse Code Power Usage or Maximum Usage subscription; not served through the pay-as-you-go API.',
+    badge: 'Subscription',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'muse-wonder-full-1.0-max',
+    cli_model: 'muse-wonder-full-1.0',
+    extra_args: ['--reasoning-effort', 'max', '--contributor-mode', 'off'],
+    name: 'Muse Wonder Full Max',
+    tier: 'thorough',
+    tagline: 'Largest Model',
+    description: 'Meta\'s largest frontier model at maximum reasoning effort, built for long-running agentic work—the deepest Muse review of large, cross-cutting changes. Requires a Muse Code Power Usage or Maximum Usage subscription; not served through the pay-as-you-go API.',
+    badge: 'Most Capable',
+    badgeClass: 'badge-power'
+  },
   {
     id: 'muse-spark-1.3-max',
     // `-ultra` ids resolve here because ultra is gate-closed and degrades to

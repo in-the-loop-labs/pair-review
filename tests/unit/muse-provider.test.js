@@ -194,7 +194,8 @@ describe('MuseProvider', () => {
 
     it('gives every model a real cli_model and reasoning effort', () => {
       for (const model of MuseProvider.getModels()) {
-        expect(['muse-spark-1.3', 'muse-spark-1.3-contributor']).toContain(model.cli_model);
+        expect(['muse-wonder-full-1.0', 'muse-wonder-1.0', 'muse-spark-1.3', 'muse-spark-1.3-contributor'])
+          .toContain(model.cli_model);
         expect(model.extra_args[0]).toBe('--reasoning-effort');
         // `none` is rejected by `--provider meta`; `ultra` is gate-closed and
         // silently degrades to xhigh, so neither may appear in a built-in.
@@ -237,6 +238,12 @@ describe('MuseProvider', () => {
       expect(new MuseProvider().getFastTierModel()).toBe('muse-spark-1.3-low');
     });
 
+    it('orders the thorough tier so a provider switch lands on a model every account can run', () => {
+      // Provider switches pick the FIRST model of the current tier; the
+      // plan-gated Wonder Full must never lead.
+      expect(MuseProvider.getModels().find(m => m.tier === 'thorough').id).toBe('muse-wonder-1.0-high');
+    });
+
     it('offers a contributor counterpart at every reasoning effort it exposes', () => {
       const models = MuseProvider.getModels();
       const effortOf = (m) => m.extra_args[1];
@@ -247,13 +254,17 @@ describe('MuseProvider', () => {
 
       expect([...efforts].sort()).toEqual(['high', 'low', 'max', 'xhigh']);
       expect([...contributorEfforts].sort()).toEqual(['high', 'low', 'max', 'xhigh']);
-      expect(models).toHaveLength(8);
+      expect(models).toHaveLength(12);
     });
 
     it('pairs each contributor variant right after its non-contributor twin', () => {
       // Display order, and the invariant getFastTierModel() depends on: the
       // non-data-sharing model always comes first within a pairing.
       expect(MuseProvider.getModels().map(m => m.id)).toEqual([
+        'muse-wonder-1.0-high',
+        'muse-wonder-1.0-max',
+        'muse-wonder-full-1.0-high',
+        'muse-wonder-full-1.0-max',
         'muse-spark-1.3-max',
         'muse-spark-1.3-contributor-max',
         'muse-spark-1.3-xhigh',
@@ -275,6 +286,35 @@ describe('MuseProvider', () => {
       }
       expect(byId['muse-spark-1.3-contributor-max'].extra_args).toEqual(['--reasoning-effort', 'max']);
       expect(byId['muse-spark-1.3-contributor-xhigh'].extra_args).toEqual(['--reasoning-effort', 'xhigh']);
+    });
+
+    it('offers Muse Wonder and Wonder Full in the thorough tier only, at high and max effort', () => {
+      const wonder = MuseProvider.getModels().filter(m => m.cli_model.startsWith('muse-wonder'));
+      expect(wonder.map(m => [m.id, m.cli_model, m.extra_args[1]])).toEqual([
+        ['muse-wonder-1.0-high', 'muse-wonder-1.0', 'high'],
+        ['muse-wonder-1.0-max', 'muse-wonder-1.0', 'max'],
+        ['muse-wonder-full-1.0-high', 'muse-wonder-full-1.0', 'high'],
+        ['muse-wonder-full-1.0-max', 'muse-wonder-full-1.0', 'max']
+      ]);
+      for (const model of wonder) {
+        expect(model.tier).toBe('thorough');
+        expect(model.default).toBeUndefined();
+        expect(model.badgeClass).toBe('badge-power');
+      }
+    });
+
+    it('pins contributor mode off on every Wonder entry', () => {
+      // Muse Code subscriptions default to contributor mode, and Wonder has no
+      // separate contributor model id, so the run itself must opt out.
+      for (const model of MuseProvider.getModels().filter(m => m.cli_model.startsWith('muse-wonder'))) {
+        expect(model.extra_args.slice(2)).toEqual(['--contributor-mode', 'off']);
+      }
+    });
+
+    it('tells users that Wonder Full needs a Muse Code subscription', () => {
+      for (const model of MuseProvider.getModels().filter(m => m.cli_model === 'muse-wonder-full-1.0')) {
+        expect(model.description).toMatch(/Power Usage or Maximum Usage subscription/);
+      }
     });
 
     it('provides real install instructions naming the launcher and muse login', () => {
@@ -371,6 +411,36 @@ describe('MuseProvider', () => {
         .toEqual(['exec', '--json', '--model', 'muse-spark-1.3', '--disable-write', '--reasoning-effort', 'max']);
       expect(new MuseProvider('muse-spark-1.3-contributor-low').baseArgs)
         .toEqual(['exec', '--json', '--model', 'muse-spark-1.3-contributor', '--disable-write', '--reasoning-effort', 'low']);
+    });
+
+    it('maps the Wonder variants onto their cli models with contributor mode off', () => {
+      expect(new MuseProvider('muse-wonder-1.0-max').baseArgs).toEqual([
+        'exec', '--json', '--model', 'muse-wonder-1.0', '--disable-write',
+        '--reasoning-effort', 'max', '--contributor-mode', 'off'
+      ]);
+      expect(new MuseProvider('muse-wonder-full-1.0-high').baseArgs).toEqual([
+        'exec', '--json', '--model', 'muse-wonder-full-1.0', '--disable-write',
+        '--reasoning-effort', 'high', '--contributor-mode', 'off'
+      ]);
+    });
+
+    it.each([
+      ['muse-wonder-1.0', 'muse-wonder-1.0'],
+      ['muse-wonder', 'muse-wonder-1.0'],
+      ['muse-wonder-full-1.0', 'muse-wonder-full-1.0'],
+      ['muse-wonder-full', 'muse-wonder-full-1.0']
+    ])('resolves the Wonder alias %s to %s at high effort', (alias, cliModel) => {
+      expect(new MuseProvider(alias).baseArgs).toEqual([
+        'exec', '--json', '--model', cliModel, '--disable-write',
+        '--reasoning-effort', 'high', '--contributor-mode', 'off'
+      ]);
+    });
+
+    it('keeps the Wonder flags on the extraction path', () => {
+      expect(new MuseProvider().buildArgsForModel('muse-wonder-1.0-high')).toEqual([
+        'exec', '--json', '--model', 'muse-wonder-1.0', '--disable-write', '--disable-shell',
+        '--reasoning-effort', 'high', '--contributor-mode', 'off'
+      ]);
     });
 
     it('never bakes a --prompt-file pair into baseArgs', () => {

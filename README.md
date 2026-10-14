@@ -648,10 +648,14 @@ Most providers (Claude, Antigravity, Codex, Copilot, Muse) come with built-in mo
 
 ##### Muse models and the contributor tradeoff
 
-Muse exposes its built-in models as reasoning-effort variants over two underlying CLI models:
+Muse exposes its built-in models as reasoning-effort variants over four underlying CLI models:
 
 | Model ID | Tier | CLI model |
 |----------|------|-----------|
+| `muse-wonder-1.0-high` | thorough | `muse-wonder-1.0` |
+| `muse-wonder-1.0-max` | thorough | `muse-wonder-1.0` |
+| `muse-wonder-full-1.0-high` | thorough | `muse-wonder-full-1.0` |
+| `muse-wonder-full-1.0-max` | thorough | `muse-wonder-full-1.0` |
 | `muse-spark-1.3-max` | thorough | `muse-spark-1.3` |
 | `muse-spark-1.3-contributor-max` | thorough | `muse-spark-1.3-contributor` |
 | `muse-spark-1.3-xhigh` | thorough | `muse-spark-1.3` |
@@ -660,6 +664,8 @@ Muse exposes its built-in models as reasoning-effort variants over two underlyin
 | `muse-spark-1.3-contributor-high` | balanced | `muse-spark-1.3-contributor` |
 | `muse-spark-1.3-low` | fast | `muse-spark-1.3` |
 | `muse-spark-1.3-contributor-low` | fast | `muse-spark-1.3-contributor` |
+
+Muse Wonder (released October 2026) is Meta's frontier model line. `muse-wonder-1.0` costs $4/M input and $20/M output, several times Muse Spark, so it sits in the thorough tier and is not the default. `muse-wonder-full-1.0` is the larger variant. It is available only with a Muse Code Power Usage or Maximum Usage subscription and is not served through the pay-as-you-go API; other accounts get a "does not exist or you lack access" error. Muse Code subscriptions turn contributor mode on by default, so every Wonder entry passes `--contributor-mode off` for the run. `muse-wonder-1.0`/`muse-wonder` and `muse-wonder-full-1.0`/`muse-wonder-full` are aliases for the matching `-high` entries.
 
 `muse-spark-1.3` and `muse-spark` are convenience aliases for `muse-spark-1.3-high`. `muse-spark-1.3-contributor` is likewise an alias for `muse-spark-1.3-contributor-high` — worth knowing because it is the bare CLI model name, so `--model muse-spark-1.3-contributor` selects the data-sharing tier described below rather than erroring out.
 
