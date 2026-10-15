@@ -4848,6 +4848,47 @@ describe('ChatPanel', () => {
   // -----------------------------------------------------------------------
   // open() concurrency guard — race condition fix
   // -----------------------------------------------------------------------
+  describe('open() PanelGroup visibility notification', () => {
+    let savedPanelGroup;
+    beforeEach(() => {
+      savedPanelGroup = global.window.panelGroup;
+      global.window.panelGroup = { _onChatVisibilityChanged: vi.fn() };
+    });
+    afterEach(() => {
+      global.window.panelGroup = savedPanelGroup;
+    });
+
+    it('notifies PanelGroup before awaiting the session restore', async () => {
+      chatPanel.reviewId = 1;
+      clearActiveTab(chatPanel);
+      let resolveMRU;
+      vi.spyOn(chatPanel, '_loadMRUSession').mockImplementation(() => new Promise((resolve) => { resolveMRU = resolve; }));
+
+      const opening = chatPanel.open({ suppressFocus: true });
+      // Still inside the restore, yet PanelGroup already knows Chat is visible
+      expect(global.window.panelGroup._onChatVisibilityChanged).toHaveBeenCalledWith(true);
+
+      resolveMRU();
+      await opening;
+      expect(global.window.panelGroup._onChatVisibilityChanged).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not overwrite a close() that happens during the restore', async () => {
+      chatPanel.reviewId = 1;
+      clearActiveTab(chatPanel);
+      let resolveMRU;
+      vi.spyOn(chatPanel, '_loadMRUSession').mockImplementation(() => new Promise((resolve) => { resolveMRU = resolve; }));
+
+      const opening = chatPanel.open({ suppressFocus: true });
+      chatPanel.close();
+      resolveMRU();
+      await opening;
+
+      const calls = global.window.panelGroup._onChatVisibilityChanged.mock.calls;
+      expect(calls[calls.length - 1]).toEqual([false]);
+    });
+  });
+
   describe('open() concurrency guard', () => {
     it('should serialize concurrent open() calls', async () => {
       chatPanel.reviewId = 1;

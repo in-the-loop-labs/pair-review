@@ -50,6 +50,26 @@ window.PanelResizer = (function() {
     return _panelGroupConfig;
   }
 
+  // Minimum diff width a right-hand panel drag must leave visible
+  const MIN_CONTENT_WIDTH = 100;
+
+  /**
+   * Width the docked file navigator takes. A real 0 (collapsed/slim) stays 0.
+   */
+  function getDockedSidebarWidth() {
+    const parsed = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue(CONFIG.sidebar.cssVar), 10
+    );
+    return Number.isFinite(parsed) ? parsed : CONFIG.sidebar.default;
+  }
+
+  /**
+   * Max right-hand panel width: viewport minus docked sidebar minus MIN_CONTENT_WIDTH.
+   */
+  function getDynamicPanelMax() {
+    return window.innerWidth - getDockedSidebarWidth() - MIN_CONTENT_WIDTH;
+  }
+
   /**
    * Compute the effective max width for a panel.
    * For panels with a static max, returns that value.
@@ -59,8 +79,7 @@ window.PanelResizer = (function() {
     const config = CONFIG[panelName];
     if (!config) return Infinity;
     if (config.max != null) return config.max;
-    const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
-    return window.innerWidth - sidebarWidth - 100;
+    return getDynamicPanelMax();
   }
 
   /**
@@ -318,6 +337,16 @@ window.PanelResizer = (function() {
     return config ? config.default : 0;
   }
 
+  /**
+   * Get minimum width for a panel
+   * @param {string} panelName - 'sidebar' or 'ai-panel'
+   * @returns {number} Minimum width
+   */
+  function getMinWidth(panelName) {
+    const config = CONFIG[panelName];
+    return config ? config.min : 0;
+  }
+
   // Public API
   return {
     init,
@@ -325,6 +354,15 @@ window.PanelResizer = (function() {
     setPanelWidth,
     getSavedWidth,
     getDefaultWidth,
-    applySavedWidths
+    getMinWidth,
+    applySavedWidths,
+    getDockedSidebarWidth,
+    getDynamicPanelMax,
+    getEffectiveMax
   };
 })();
+
+// Export for CommonJS testing environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = window.PanelResizer;
+}
