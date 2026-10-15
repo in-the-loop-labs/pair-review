@@ -290,6 +290,7 @@ async function startTestServer(port) {
     state: 'PENDING',
     comments_count: 0
   });
+  GitHubClient.prototype.markFilesAsViewed = async () => {};
 
   // Mock worktree manager
   GitWorktreeManager.prototype.getWorktreePath = async () => mockWorktreeResponses.getWorktreePath;
