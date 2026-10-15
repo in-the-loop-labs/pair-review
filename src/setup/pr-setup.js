@@ -189,7 +189,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
       // Update existing review (preserves ID)
       await run(db, `
         UPDATE reviews
-        SET review_data = ?, updated_at = CURRENT_TIMESTAMP
+        SET review_data = json_patch(COALESCE(review_data, '{}'), ?), updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [
         JSON.stringify({
