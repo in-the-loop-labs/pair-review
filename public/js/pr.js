@@ -9033,6 +9033,7 @@ class PRManager {
     const fileName = document.createElement('span');
     fileName.className = 'd2h-file-name';
     fileName.textContent = contextFile.file;
+    window.DiffRenderer.applyFilePathTruncation(fileName, contextFile.file);
     header.appendChild(fileName);
 
     const contextLabel = document.createElement('span');

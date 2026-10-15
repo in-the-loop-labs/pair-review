@@ -552,6 +552,10 @@ class DiffRenderer {
     } else {
       fileName.textContent = filePath;
     }
+    DiffRenderer.applyFilePathTruncation(
+      fileName,
+      renamed && renamedFrom ? `${renamedFrom} \u2192 ${filePath}` : filePath
+    );
     fileHeader.appendChild(fileName);
 
     // File stats summary (visible in collapsed view)
@@ -591,6 +595,15 @@ class DiffRenderer {
     });
 
     return fileHeader;
+  }
+
+  /**
+   * Front-truncate a file path ("…/dir/file.js") with a full-path tooltip
+   * @param {HTMLElement} el - Element containing the path
+   * @param {string} fullText - Tooltip text
+   */
+  static applyFilePathTruncation(el, fullText) {
+    window.SmartTruncate?.apply(el, { mode: 'start', fullText });
   }
 
   /**

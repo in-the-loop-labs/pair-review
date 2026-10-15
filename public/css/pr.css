@@ -1447,12 +1447,33 @@
   z-index: 4;
 }
 
+/* Truncation also comes from .smart-truncate; kept here in case JS doesn't apply it */
 .d2h-file-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* Smart truncation (js/utils/smart-truncate.js) */
+.smart-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Front truncation: RTL box clips on the left; isolated LTR text keeps order */
+.smart-truncate--start {
+  direction: rtl;
+  text-align: left;
+}
+
+.smart-truncate--start > .smart-truncate__text {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 /* File header comment button and file header chat button */
@@ -2090,6 +2111,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-weight: 600;
   background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
   color: var(--ai-primary, #f59e0b);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .ai-suggestion.ai-type-praise .praise-badge svg {
@@ -2185,13 +2208,12 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-left-color: var(--category-security);
 }
 
+/* Truncation comes from .smart-truncate. Titles (which show the full text on
+   hover) shrink before the badges beside them. */
 .ai-title {
   font-weight: 600;
   color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+  flex-shrink: 1000;
 }
 
 /* Confidence display removed to match cleaner prototype design (issue pair_review-7g5) */
@@ -2649,13 +2671,10 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: relative;
 }
 
+/* Truncation comes from .smart-truncate; shrinks first, like .ai-title */
 .collapsed-title {
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 0 1000 auto;
   color: var(--color-text-secondary);
-  min-width: 0;
   font-size: 13px;
 }
 
@@ -12340,12 +12359,9 @@ body.resizing * {
   font-size: 14px;
 }
 
-/* Don't grow (keeps badge next to text), shrink for long paths, clip from the left so the filename stays visible */
+/* Don't grow (keeps badge next to text), shrink for long paths */
 .context-file-header .d2h-file-name {
   flex: 0 1 auto;
-  direction: rtl;
-  unicode-bidi: plaintext;
-  text-overflow: ellipsis;
 }
 
 /* Push viewed checkbox (and everything after it) to the right */
