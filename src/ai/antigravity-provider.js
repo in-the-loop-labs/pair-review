@@ -6,7 +6,7 @@
  * the official successor to the Gemini CLI.
  *
  * ============================================================================
- * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16)
+ * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16; models re-verified against 1.3.5)
  * ============================================================================
  * The Antigravity CLI's non-interactive "print" mode (`agy -p`) IS a real
  * agentic loop — it reads files, searches the tree, and runs shell commands to
@@ -94,16 +94,35 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * We curate the Gemini-family models here — Antigravity is the Gemini CLI's
  * successor and its native models are Gemini. Ordered thorough -> balanced ->
  * fast, matching the other providers' pickers. Gemini 3.8 Flash at high effort
- * is the thorough-tier default: it is the strongest Gemini agy exposes today
+ * is the default: it is the strongest Gemini every agy plan can run
  * (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4 — on par with GPT-6 Astra and
- * Muse 1.3), so "Flash" now describes latency, not capability. Gemini 3.1 Pro
- * (Low/High, Feb 2026) is the previous-generation Pro line and stays on the
- * balanced/thorough tiers for anyone who prefers it. Gemini 3.8 Flash at low
- * effort is the sole fast-tier entry, which also makes it the JSON-extraction
- * model (getFastTierModel() picks the first `tier: 'fast'` model — position
- * in this array does not matter). Retired ids (3.5 Flash) are kept as aliases
- * of their 3.8 Flash counterparts so saved selections keep working. `agy` also
- * exposes Claude and GPT-OSS models; those remain reachable via a
+ * Muse 1.3), so "Flash" now describes latency, not capability. Gemini 4 Argon
+ * (Oct 2026) is Google's new frontier model, but agy gates it to Google AI
+ * Ultra and eligible Enterprise subscriptions; on any other plan agy exits 1
+ * with `"Gemini 4 Argon" is unavailable: ... available to Ultra plan
+ * subscribers`, so it is an explicit thorough-tier choice and never the
+ * default. It also never LEADS the thorough tier: provider-switch paths
+ * (AnalysisConfigModal.selectProvider, RepoSettingsPage) map the previous
+ * model's tier onto the first model of that tier here, so a thorough Claude
+ * selection switched to Antigravity must land on a model every plan can run.
+ * agy (1.3.5) recognizes Argon only by its bare display name —
+ * `Gemini 4 Argon (High)`, `gemini-4-argon`, and `gemini-4-argon-high` are all
+ * "not recognized" — and runs it at the server-default effort, which is High.
+ * Gemini 3.8 Flash at medium effort is the balanced entry and at low effort
+ * the sole fast-tier entry, which also makes it the JSON-extraction model
+ * (getFastTierModel() picks the first `tier: 'fast'` model — position in this
+ * array does not matter). Retired ids (3.5 Flash) are kept as aliases of their
+ * 3.8 Flash counterparts so saved selections keep working.
+ *
+ * Deprecated: gemini-3.1-pro-high, gemini-3.1-pro-low (alias gemini-3.1-pro) —
+ * agy 1.3.5 no longer offers 3.1 Pro ("not recognized as a known model").
+ * They are deliberately NOT aliased onto another model (3.8 Flash is a
+ * different line; Argon is plan-gated). The browser resolvers fall back to the
+ * provider default for a saved selection that is no longer in the catalog;
+ * headless, MCP, and saved-council runs pass the id through and agy fails with
+ * an unknown-model error.
+ *
+ * `agy` also exposes Claude and GPT-OSS models; those remain reachable via a
  * `providers.antigravity.models` config override but are intentionally left
  * out of the default picker to keep the cross-provider model-mismatch guard
  * and the UX unambiguous.
@@ -117,30 +136,31 @@ const ANTIGRAVITY_MODELS = [
     name: '3.8 Flash (High)',
     tier: 'thorough',
     tagline: 'Frontier Review',
-    description: 'Gemini 3.8 Flash at high effort is the strongest Gemini on agy — DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4, on par with GPT-6 Astra and Muse 1.3. "Flash" now means latency, not capability. Uses the thorough prompt set.',
+    description: 'Gemini 3.8 Flash at high effort is the strongest Gemini available on every agy plan — DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4, on par with GPT-6 Astra and Muse 1.3. "Flash" now means latency, not capability. Uses the thorough prompt set.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
   },
   {
-    id: 'gemini-3.1-pro-high',
-    cliName: 'Gemini 3.1 Pro (High)',
-    name: '3.1 Pro (High)',
+    id: 'gemini-4-argon',
+    // agy rejects every effort-suffixed form for Argon; the bare display name
+    // is the only accepted --model value, and it runs at High (Argon's default).
+    cliName: 'Gemini 4 Argon',
+    name: '4 Argon',
     tier: 'thorough',
-    tagline: 'Deep Dive',
-    description: 'Previous-generation Pro (Feb 2026) at maximum reasoning effort — slower and now outscored by 3.8 Flash (High), kept for reviewers who prefer the Pro line',
-    badge: 'Deep Dive',
+    tagline: 'Frontier — Ultra Plan',
+    description: 'Gemini 4 Argon (Oct 2026), Google\'s frontier model, at its default High effort. Requires a Google AI Ultra or eligible Gemini Enterprise subscription — on other plans agy refuses it as unavailable. Uses the thorough prompt set.',
+    badge: 'Ultra Plan',
     badgeClass: 'badge-power'
   },
   {
-    id: 'gemini-3.1-pro-low',
-    cliName: 'Gemini 3.1 Pro (Low)',
-    aliases: ['gemini-3.1-pro'],
-    name: '3.1 Pro (Low)',
+    id: 'gemini-3.8-flash-medium',
+    cliName: 'Gemini 3.8 Flash (Medium)',
+    name: '3.8 Flash (Medium)',
     tier: 'balanced',
-    tagline: 'Previous-Gen Pro',
-    description: 'Previous-generation Pro (Feb 2026) at low effort — a large-context middle ground, superseded as the default by 3.8 Flash (High)',
-    badge: 'Previous Gen',
+    tagline: 'Standard Review',
+    description: 'Gemini 3.8 Flash at medium effort — a faster, cheaper middle ground for routine PRs',
+    badge: 'Balanced',
     badgeClass: 'badge-balanced'
   },
   {

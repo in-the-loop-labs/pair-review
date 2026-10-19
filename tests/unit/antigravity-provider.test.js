@@ -96,11 +96,25 @@ describe('AntigravityProvider', () => {
       expect(AntigravityProvider.getDefaultModel()).toBe('gemini-3.8-flash-high');
     });
 
-    it('should no longer treat gemini-3.1-pro-low as the default', () => {
-      expect(AntigravityProvider.getDefaultModel()).not.toBe('gemini-3.1-pro-low');
-      const proLow = AntigravityProvider.getModels().find(m => m.id === 'gemini-3.1-pro-low');
-      expect(proLow.default).toBeUndefined();
-      expect(proLow.tier).toBe('balanced');
+    it('should not make plan-gated gemini-4-argon the default', () => {
+      // Argon runs only on Google AI Ultra / eligible Enterprise plans; any
+      // other account gets agy's exit-1 "unavailable" error.
+      expect(AntigravityProvider.getDefaultModel()).not.toBe('gemini-4-argon');
+      const argon = AntigravityProvider.getModels().find(m => m.id === 'gemini-4-argon');
+      expect(argon.default).toBeUndefined();
+      expect(argon.tier).toBe('thorough');
+      expect(argon.badge).toBe('Ultra Plan');
+      expect(argon.description).toMatch(/Ultra/);
+    });
+
+    it('should drop the retired 3.1 Pro ids without aliasing them onto another model', () => {
+      const models = AntigravityProvider.getModels();
+      const allIds = models.flatMap(m => [m.id, ...(m.aliases || [])]);
+      for (const retired of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'gemini-3.1-pro']) {
+        expect(allIds).not.toContain(retired);
+      }
+      // Unknown ids pass through verbatim, so agy reports its own unknown-model error.
+      expect(new AntigravityProvider()._resolveCliModel('gemini-3.1-pro-low')).toBe('gemini-3.1-pro-low');
     });
 
     it('should return the 4 built-in models with expected ids', () => {
@@ -112,10 +126,17 @@ describe('AntigravityProvider', () => {
       // Ordered thorough -> balanced -> fast, matching the other providers.
       expect(modelIds).toEqual([
         'gemini-3.8-flash-high',
-        'gemini-3.1-pro-high',
-        'gemini-3.1-pro-low',
+        'gemini-4-argon',
+        'gemini-3.8-flash-medium',
         'gemini-3.8-flash-low'
       ]);
+    });
+
+    it('should lead the thorough tier with a model every plan can run, not plan-gated Argon', () => {
+      // Provider-switch paths map a thorough selection onto a tier's first
+      // entry; landing on Argon would fail every analysis off the Ultra plan.
+      const firstThorough = AntigravityProvider.getModels().find(m => m.tier === 'thorough');
+      expect(firstThorough.id).toBe('gemini-3.8-flash-high');
     });
 
     it('should map each model to the correct tier', () => {
@@ -123,8 +144,8 @@ describe('AntigravityProvider', () => {
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
       expect(tierMap['gemini-3.8-flash-low']).toBe('fast');
       expect(tierMap['gemini-3.8-flash-high']).toBe('thorough');
-      expect(tierMap['gemini-3.1-pro-low']).toBe('balanced');
-      expect(tierMap['gemini-3.1-pro-high']).toBe('thorough');
+      expect(tierMap['gemini-3.8-flash-medium']).toBe('balanced');
+      expect(tierMap['gemini-4-argon']).toBe('thorough');
     });
 
     it('should keep gemini-3.8-flash-low as the only fast-tier (extraction) model', () => {
@@ -138,8 +159,10 @@ describe('AntigravityProvider', () => {
       const cliNameMap = Object.fromEntries(models.map(m => [m.id, m.cliName]));
       expect(cliNameMap['gemini-3.8-flash-low']).toBe('Gemini 3.8 Flash (Low)');
       expect(cliNameMap['gemini-3.8-flash-high']).toBe('Gemini 3.8 Flash (High)');
-      expect(cliNameMap['gemini-3.1-pro-low']).toBe('Gemini 3.1 Pro (Low)');
-      expect(cliNameMap['gemini-3.1-pro-high']).toBe('Gemini 3.1 Pro (High)');
+      expect(cliNameMap['gemini-3.8-flash-medium']).toBe('Gemini 3.8 Flash (Medium)');
+      // agy recognizes Argon only by its bare display name (effort-suffixed
+      // forms are "not recognized"); it runs at the server-default High effort.
+      expect(cliNameMap['gemini-4-argon']).toBe('Gemini 4 Argon');
     });
 
     it('should mark exactly one model (gemini-3.8-flash-high) as default', () => {
@@ -152,10 +175,10 @@ describe('AntigravityProvider', () => {
       expect(defaults[0].badgeClass).toBe('badge-recommended');
     });
 
-    it('should demote gemini-3.1-pro-low to a previous-generation badge', () => {
-      const proLow = AntigravityProvider.getModels().find(m => m.id === 'gemini-3.1-pro-low');
-      expect(proLow.badge).toBe('Previous Gen');
-      expect(proLow.badgeClass).toBe('badge-balanced');
+    it('should keep gemini-3.8-flash-medium as the only balanced-tier model', () => {
+      const balanced = AntigravityProvider.getModels().filter(m => m.tier === 'balanced');
+      expect(balanced.map(m => m.id)).toEqual(['gemini-3.8-flash-medium']);
+      expect(balanced[0].badgeClass).toBe('badge-balanced');
     });
 
     it('should return install instructions with the antigravity install script', () => {
@@ -171,24 +194,24 @@ describe('AntigravityProvider', () => {
     });
 
     it('should create instance with a specified model', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-high');
-      expect(provider.model).toBe('gemini-3.1-pro-high');
+      const provider = new AntigravityProvider('gemini-4-argon');
+      expect(provider.model).toBe('gemini-4-argon');
     });
 
     it('should use the default `agy` command with no shell', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       expect(provider.agyCmd).toBe('agy');
       expect(provider.useShell).toBe(false);
     });
 
     it('should respect the PAIR_REVIEW_ANTIGRAVITY_CMD environment variable', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = '/custom/agy';
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       expect(provider.agyCmd).toBe('/custom/agy');
     });
 
     it('should use a config command over the default', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         command: '/path/to/agy'
       });
       expect(provider.agyCmd).toBe('/path/to/agy');
@@ -196,7 +219,7 @@ describe('AntigravityProvider', () => {
 
     it('should prefer ENV command over config command (ENV > config > default)', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = '/env/agy';
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         command: '/config/agy'
       });
       expect(provider.agyCmd).toBe('/env/agy');
@@ -204,23 +227,23 @@ describe('AntigravityProvider', () => {
 
     it('should use shell mode for a multi-word command', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = 'devx agy';
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       expect(provider.useShell).toBe(true);
       expect(provider.agyCmd).toBe('devx agy');
     });
 
     it('should merge env from provider config', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         env: { CUSTOM_VAR: 'value' }
       });
       expect(provider.extraEnv).toEqual({ CUSTOM_VAR: 'value' });
     });
 
     it('should merge model-specific env over provider env', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-high', {
+      const provider = new AntigravityProvider('gemini-4-argon', {
         env: { VAR1: 'provider' },
         models: [
-          { id: 'gemini-3.1-pro-high', env: { VAR1: 'model', VAR2: 'extra' } }
+          { id: 'gemini-4-argon', env: { VAR1: 'model', VAR2: 'extra' } }
         ]
       });
       expect(provider.extraEnv.VAR1).toBe('model');
@@ -230,10 +253,10 @@ describe('AntigravityProvider', () => {
     it('should merge model env for a model referenced by a built-in alias', () => {
       // Regression: the constructor once matched by id only, so requesting the
       // model via its alias silently dropped the override's env.
-      const provider = new AntigravityProvider('gemini-3.1-pro', {
+      const provider = new AntigravityProvider('gemini-3.5-flash-high', {
         env: { SHARED: 'provider' },
         models: [
-          { id: 'gemini-3.1-pro-low', env: { SHARED: 'model', MODEL_ONLY: 'yes' } }
+          { id: 'gemini-3.8-flash-high', env: { SHARED: 'model', MODEL_ONLY: 'yes' } }
         ]
       });
       expect(provider.extraEnv.SHARED).toBe('model');
@@ -244,14 +267,12 @@ describe('AntigravityProvider', () => {
   describe('_resolveCliModel', () => {
     it('should translate a clean id into its exact cliName', () => {
       const provider = new AntigravityProvider();
-      expect(provider._resolveCliModel('gemini-3.1-pro-low')).toBe('Gemini 3.1 Pro (Low)');
+      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('Gemini 3.8 Flash (Medium)');
       expect(provider._resolveCliModel('gemini-3.8-flash-high')).toBe('Gemini 3.8 Flash (High)');
     });
 
     it('should resolve a built-in alias to its cliName', () => {
       const provider = new AntigravityProvider();
-      // gemini-3.1-pro is an alias of gemini-3.1-pro-low
-      expect(provider._resolveCliModel('gemini-3.1-pro')).toBe('Gemini 3.1 Pro (Low)');
       // gemini-3.8-flash is an alias of gemini-3.8-flash-low
       expect(provider._resolveCliModel('gemini-3.8-flash')).toBe('Gemini 3.8 Flash (Low)');
     });
@@ -289,51 +310,51 @@ describe('AntigravityProvider', () => {
     });
 
     it('should prefer a config-provided cliName over the built-in', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         models: [
-          { id: 'gemini-3.1-pro-low', cliName: 'Custom Display Name' }
+          { id: 'gemini-3.8-flash-medium', cliName: 'Custom Display Name' }
         ]
       });
-      expect(provider._resolveCliModel('gemini-3.1-pro-low')).toBe('Custom Display Name');
+      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('Custom Display Name');
     });
 
     it('should honor the shared `cli_model` contract for config overrides', () => {
       // Users follow the documented custom-model shape (cli_model), not the
       // internal cliName. That exact string must reach `agy --model`.
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         models: [
-          { id: 'gemini-3.1-pro-low', cli_model: 'Gemini 3.1 Pro (High)' }
+          { id: 'gemini-3.8-flash-medium', cli_model: 'Gemini 4 Argon' }
         ]
       });
-      expect(provider._resolveCliModel('gemini-3.1-pro-low')).toBe('Gemini 3.1 Pro (High)');
+      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('Gemini 4 Argon');
     });
 
     it('should prefer `cli_model` over `cliName` when a config override sets both', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         models: [
-          { id: 'gemini-3.1-pro-low', cli_model: 'From cli_model', cliName: 'From cliName' }
+          { id: 'gemini-3.8-flash-medium', cli_model: 'From cli_model', cliName: 'From cliName' }
         ]
       });
-      expect(provider._resolveCliModel('gemini-3.1-pro-low')).toBe('From cli_model');
+      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('From cli_model');
     });
 
     it('should resolve a config override targeted by canonical id when requested via a built-in alias', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro', {
+      const provider = new AntigravityProvider('gemini-3.5-flash-high', {
         models: [
-          { id: 'gemini-3.1-pro-low', cli_model: 'Overridden Via Alias' }
+          { id: 'gemini-3.8-flash-high', cli_model: 'Overridden Via Alias' }
         ]
       });
-      // gemini-3.1-pro is an alias of gemini-3.1-pro-low; the override on the
-      // canonical id must still win.
-      expect(provider._resolveCliModel('gemini-3.1-pro')).toBe('Overridden Via Alias');
+      // gemini-3.5-flash-high is an alias of gemini-3.8-flash-high; the override
+      // on the canonical id must still win.
+      expect(provider._resolveCliModel('gemini-3.5-flash-high')).toBe('Overridden Via Alias');
     });
   });
 
   describe('_composeArgs', () => {
     it('should include --print-timeout, --model <cliName>, and -p <directive>', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         directive: 'DO THE THING',
         printTimeoutSecs: 120
       });
@@ -344,7 +365,7 @@ describe('AntigravityProvider', () => {
 
       const modelIdx = args.indexOf('--model');
       expect(modelIdx).toBeGreaterThanOrEqual(0);
-      expect(args[modelIdx + 1]).toBe('Gemini 3.1 Pro (Low)');
+      expect(args[modelIdx + 1]).toBe('Gemini 3.8 Flash (Medium)');
 
       const pIdx = args.indexOf('-p');
       expect(pIdx).toBeGreaterThanOrEqual(0);
@@ -352,9 +373,9 @@ describe('AntigravityProvider', () => {
     });
 
     it('should add --dangerously-skip-permissions when agentic:true', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         directive: 'x',
         printTimeoutSecs: 60,
         agentic: true
@@ -363,9 +384,9 @@ describe('AntigravityProvider', () => {
     });
 
     it('should NOT add --dangerously-skip-permissions when agentic:false (extraction)', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         directive: 'x',
         printTimeoutSecs: 60,
         agentic: false
@@ -374,9 +395,9 @@ describe('AntigravityProvider', () => {
     });
 
     it('should default agentic to false when omitted', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         directive: 'x',
         printTimeoutSecs: 60
       });
@@ -384,14 +405,14 @@ describe('AntigravityProvider', () => {
     });
 
     it('should merge provider-level and per-model extra_args (provider before model)', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         extra_args: ['--provider-flag'],
         models: [
-          { id: 'gemini-3.1-pro-low', extra_args: ['--model-flag'] }
+          { id: 'gemini-3.8-flash-medium', extra_args: ['--model-flag'] }
         ]
       });
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         directive: 'x',
         printTimeoutSecs: 60
       });
@@ -403,13 +424,13 @@ describe('AntigravityProvider', () => {
     it('should merge per-model extra_args for a model referenced by a built-in alias', () => {
       // Same alias-consistency guarantee as _resolveCliModel: an override keyed
       // on the canonical id must apply when the model is requested via its alias.
-      const provider = new AntigravityProvider('gemini-3.1-pro', {
+      const provider = new AntigravityProvider('gemini-3.5-flash-high', {
         models: [
-          { id: 'gemini-3.1-pro-low', extra_args: ['--model-flag'] }
+          { id: 'gemini-3.8-flash-high', extra_args: ['--model-flag'] }
         ]
       });
       const args = provider._composeArgs({
-        model: 'gemini-3.1-pro',
+        model: 'gemini-3.5-flash-high',
         directive: 'x',
         printTimeoutSecs: 60
       });
@@ -422,7 +443,7 @@ describe('AntigravityProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const registerProcess = vi.fn();
       const promise = provider.execute('THE FULL PROMPT', {
         analysisId: 'a1',
@@ -449,14 +470,14 @@ describe('AntigravityProvider', () => {
       expect(args).toContain('--dangerously-skip-permissions');
       expect(args).toContain('-p');
       const modelIdx = args.indexOf('--model');
-      expect(args[modelIdx + 1]).toBe('Gemini 3.1 Pro (Low)');
+      expect(args[modelIdx + 1]).toBe('Gemini 3.8 Flash (Medium)');
     });
 
     it('should reject when the CLI exits non-zero', async () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const promise = provider.execute('prompt', {});
       const assertion = expect(promise).rejects.toThrow(/exited with code 2/);
 
@@ -470,7 +491,7 @@ describe('AntigravityProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const promise = provider.execute('prompt', {});
       const assertion = expect(promise).rejects.toThrow(/antigravity\.google\/cli\/install\.sh/);
 
@@ -487,7 +508,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const promise = provider.execute('prompt', { timeout: 5000 });
         const assertion = expect(promise).rejects.toThrow(/timed out after 5000ms/);
 
@@ -511,7 +532,7 @@ describe('AntigravityProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const promise = provider.execute('prompt', { timeout: 120000 });
       promise.catch(() => {}); // settled below; swallow the cleanup rejection
 
@@ -535,7 +556,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const spy = vi.spyOn(provider, 'extractJSONWithLLM')
           .mockResolvedValue({ success: true, data: { suggestions: [{ id: 7 }] } });
 
@@ -553,7 +574,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         vi.spyOn(provider, 'extractJSONWithLLM')
           .mockResolvedValue({ success: false, error: 'still no json' });
 
@@ -568,7 +589,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         vi.spyOn(provider, 'extractJSONWithLLM')
           .mockRejectedValue(new Error('extractor blew up'));
 
@@ -585,7 +606,7 @@ describe('AntigravityProvider', () => {
           const child = createMockChild();
           mockSpawn.mockReturnValue(child);
 
-          const provider = new AntigravityProvider('gemini-3.1-pro-low');
+          const provider = new AntigravityProvider('gemini-3.8-flash-medium');
           // A fallback that runs LONGER than the whole agy budget would trip the
           // backstop if it were still armed. It must not.
           let resolveExtraction;
@@ -612,7 +633,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const spy = vi.spyOn(provider, 'extractJSONWithLLM')
           .mockResolvedValue({ success: true, data: { suggestions: [] } });
         const controller = new AbortController();
@@ -634,7 +655,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const controller = new AbortController();
         vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
           controller.abort();
@@ -657,7 +678,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const controller = new AbortController();
         vi.spyOn(provider, 'extractJSONWithLLM').mockImplementation(async () => {
           controller.abort();
@@ -686,7 +707,7 @@ describe('AntigravityProvider', () => {
         const controller = new AbortController();
         const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const promise = provider.execute('prompt', { abortSignal: controller.signal });
 
         // Abort mid-flight; the wiring SIGTERMs the child, which then exits 143.
@@ -706,7 +727,7 @@ describe('AntigravityProvider', () => {
         const analysisId = 'antigravity-cancel-test';
         activeAnalyses.set(analysisId, { status: 'cancelled' });
         try {
-          const provider = new AntigravityProvider('gemini-3.1-pro-low');
+          const provider = new AntigravityProvider('gemini-3.8-flash-medium');
           const promise = provider.execute('prompt', { analysisId });
 
           // SIGTERM exit code (143) + a cancelled analysis => CancellationError.
@@ -722,7 +743,7 @@ describe('AntigravityProvider', () => {
 
   describe('getExtractionConfig', () => {
     it('should deliver the prompt via stdin and bake the extraction directive into -p', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
       expect(config.command).toBe('agy');
@@ -741,7 +762,7 @@ describe('AntigravityProvider', () => {
     });
 
     it('budgets --print-timeout just under the base-class extraction cap', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const config = provider.getExtractionConfig('gemini-3.5-flash-low');
 
       const timeoutIdx = config.args.indexOf('--print-timeout');
@@ -754,14 +775,14 @@ describe('AntigravityProvider', () => {
     });
 
     it('should NOT enable tools for extraction (no --dangerously-skip-permissions)', () => {
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const config = provider.getExtractionConfig('gemini-3.8-flash-low');
       expect(config.args).not.toContain('--dangerously-skip-permissions');
     });
 
     it('should use shell mode for a multi-word command', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = 'docker run agy';
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const config = provider.getExtractionConfig('gemini-3.8-flash-low');
 
       expect(config.useShell).toBe(true);
@@ -773,7 +794,7 @@ describe('AntigravityProvider', () => {
       // The base class spreads getExtractionConfig().env into the fallback
       // spawn. Because agy emits plain text (no JSON mode), that fallback is the
       // COMMON path — dropping env here would silently run it unconfigured.
-      const provider = new AntigravityProvider('gemini-3.1-pro-low', {
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         env: { PROVIDER_VAR: 'p' },
         models: [
           { id: 'gemini-3.8-flash-low', env: { MODEL_VAR: 'm' } }
@@ -788,9 +809,9 @@ describe('AntigravityProvider', () => {
     it('should resolve env for the EXTRACTION model, not the analysis model', () => {
       // getExtractionConfig(model) can receive a different fast-tier model than
       // this.model; env must follow the argument, not the constructor's model.
-      const provider = new AntigravityProvider('gemini-3.1-pro-high', {
+      const provider = new AntigravityProvider('gemini-4-argon', {
         models: [
-          { id: 'gemini-3.1-pro-high', env: { ANALYSIS_ONLY: 'a' } },
+          { id: 'gemini-4-argon', env: { ANALYSIS_ONLY: 'a' } },
           { id: 'gemini-3.8-flash-low', env: { EXTRACT_ONLY: 'e' } }
         ]
       });
@@ -842,7 +863,7 @@ describe('AntigravityProvider', () => {
 
     it('shell-wraps a multi-word command and returns empty args', () => {
       process.env.PAIR_REVIEW_ANTIGRAVITY_CMD = 'docker run agy';
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const { command, args } = provider.getAnalysisSpawnConfig();
 
       expect(command).toContain('docker run agy');
@@ -857,7 +878,7 @@ describe('AntigravityProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const promise = provider.testAvailability(5000);
 
       child.stdout.emit('data', Buffer.from('1.0.16\n'));
@@ -870,7 +891,7 @@ describe('AntigravityProvider', () => {
       const child = createMockChild();
       mockSpawn.mockReturnValue(child);
 
-      const provider = new AntigravityProvider('gemini-3.1-pro-low');
+      const provider = new AntigravityProvider('gemini-3.8-flash-medium');
       const promise = provider.testAvailability(5000);
 
       const err = new Error('spawn agy ENOENT');
@@ -886,7 +907,7 @@ describe('AntigravityProvider', () => {
         const child = createMockChild();
         mockSpawn.mockReturnValue(child);
 
-        const provider = new AntigravityProvider('gemini-3.1-pro-low');
+        const provider = new AntigravityProvider('gemini-3.8-flash-medium');
         const promise = provider.testAvailability(5000);
 
         let settled = false;

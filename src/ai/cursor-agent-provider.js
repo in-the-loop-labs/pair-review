@@ -32,7 +32,7 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Tier structure:
  * - free (auto): Cursor's default auto-routing model
  * - fast (composer-2-fast, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
- * - balanced (composer-1.5, sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3.1-pro): Recommended for most reviews
+ * - balanced (composer-1.5 (default), sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3.1-pro): Recommended for most reviews
  * - thorough (composer-2, gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
@@ -70,7 +70,8 @@ const CURSOR_AGENT_MODELS = [
     tagline: 'Previous Composer',
     description: 'Previous generation Cursor Composer model—positioned between Sonnet and Opus for multi-file edits',
     badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
+    badgeClass: 'badge-balanced',
+    default: true
   },
   {
     id: 'gpt-5.3-codex-fast',
@@ -97,8 +98,7 @@ const CURSOR_AGENT_MODELS = [
     tagline: 'Best Balance',
     description: 'Latest Sonnet with extended thinking—excellent quality-to-cost ratio for thorough reviews',
     badge: 'Recommended',
-    badgeClass: 'badge-recommended',
-    default: true
+    badgeClass: 'badge-recommended'
   },
   {
     id: 'sonnet-4.5-thinking',

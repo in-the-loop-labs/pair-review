@@ -654,7 +654,7 @@ describe('start_analysis tool', () => {
       });
       await new RepoSettingsRepository(db).saveRepoSettings('prec-repo', {
         default_provider: 'antigravity',
-        default_model: 'gemini-3.1-pro-low',
+        default_model: 'gemini-3.8-flash-medium',
       });
 
       const result = await client.callTool({
@@ -665,7 +665,7 @@ describe('start_analysis tool', () => {
 
       const run = await new AnalysisRunRepository(db).getById(content.runId);
       expect(run.provider).toBe('antigravity');
-      expect(run.model).toBe('gemini-3.1-pro-low');
+      expect(run.model).toBe('gemini-3.8-flash-medium');
     });
 
     it('prefers a global in-app override (config._globalOverrides) over the config-file default (local mode)', async () => {
@@ -677,7 +677,7 @@ describe('start_analysis tool', () => {
         config: {
           default_provider: 'claude',
           default_model: 'sonnet',
-          _globalOverrides: { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+          _globalOverrides: { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' },
         },
       });
       client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -700,7 +700,7 @@ describe('start_analysis tool', () => {
 
       const run = await new AnalysisRunRepository(db).getById(content.runId);
       expect(run.provider).toBe('antigravity');
-      expect(run.model).toBe('gemini-3.1-pro-low');
+      expect(run.model).toBe('gemini-3.8-flash-medium');
     });
 
     it('prefers a repo default over the config default (PR mode)', async () => {
@@ -712,7 +712,7 @@ describe('start_analysis tool', () => {
       `);
       await new RepoSettingsRepository(db).saveRepoSettings('octo/prec', {
         default_provider: 'antigravity',
-        default_model: 'gemini-3.1-pro-low',
+        default_model: 'gemini-3.8-flash-medium',
       });
 
       const result = await client.callTool({
@@ -723,7 +723,7 @@ describe('start_analysis tool', () => {
 
       const analysisRun = await new AnalysisRunRepository(db).getById(content.runId);
       expect(analysisRun.provider).toBe('antigravity');
-      expect(analysisRun.model).toBe('gemini-3.1-pro-low');
+      expect(analysisRun.model).toBe('gemini-3.8-flash-medium');
     });
 
     it('falls back to the config-file default when no repo/override set', async () => {

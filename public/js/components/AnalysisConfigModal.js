@@ -558,7 +558,10 @@ class AnalysisConfigModal {
         .flatMap(p => p.models)
         .find(m => m.id === this.selectedModel)?.tier;
 
-      const matchingModel = this.models.find(m => m.tier === currentTier);
+      // Prefer the provider's default when it sits in that tier: the first
+      // entry of a tier can be plan-gated (e.g. Antigravity's Gemini 4 Argon).
+      const matchingModel = this.models.find(m => m.default && m.tier === currentTier)
+        || this.models.find(m => m.tier === currentTier);
       const defaultModel = this.models.find(m => m.default) || this.models[0];
       this.selectedModel = matchingModel?.id || defaultModel.id;
     }

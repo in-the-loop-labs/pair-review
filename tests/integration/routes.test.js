@@ -8041,7 +8041,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, tier, status, summary, started_at, completed_at)
-        VALUES (?, ?, 'antigravity', 'gemini-3.1-pro-low', 'fast', 'completed', 'Older run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
+        VALUES (?, ?, 'antigravity', 'gemini-3.8-flash-medium', 'fast', 'completed', 'Older run', datetime('now', '-10 minutes'), datetime('now', '-9 minutes'))
       `, [olderRunId, reviewId]);
 
       await run(db, `
@@ -8057,7 +8057,7 @@ describe('Share Endpoint', () => {
       expect(response.body.run).toMatchObject({
         id: olderRunId,
         provider: 'antigravity',
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         summary: 'Older run'
       });
     });
@@ -8098,7 +8098,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, started_at, completed_at)
-        VALUES (?, ?, 'antigravity', 'gemini-3.1-pro-low', 'completed', 'Completed run', datetime('now', '-5 minutes'), datetime('now', '-4 minutes'))
+        VALUES (?, ?, 'antigravity', 'gemini-3.8-flash-medium', 'completed', 'Completed run', datetime('now', '-5 minutes'), datetime('now', '-4 minutes'))
       `, [completedRunId, reviewId]);
 
       // Request the running run specifically
@@ -8125,7 +8125,7 @@ describe('Share Endpoint', () => {
 
       await run(db, `
         INSERT INTO analysis_runs (id, review_id, provider, model, status, started_at)
-        VALUES ('latest-running', ?, 'antigravity', 'gemini-3.1-pro-low', 'running', datetime('now'))
+        VALUES ('latest-running', ?, 'antigravity', 'gemini-3.8-flash-medium', 'running', datetime('now'))
       `, [reviewId]);
 
       const response = await request(server)

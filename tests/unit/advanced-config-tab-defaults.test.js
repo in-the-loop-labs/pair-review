@@ -20,7 +20,7 @@ describe('AdvancedConfigTab._defaultConfig', () => {
   function makeCtx(overrides = {}) {
     return {
       _defaultProvider: 'antigravity',
-      _defaultModel: 'gemini-3.1-pro-low',
+      _defaultModel: 'gemini-3.8-flash-medium',
       _getProviderDefaultTimeout: () => 123456,
       ...overrides
     };
@@ -35,7 +35,7 @@ describe('AdvancedConfigTab._defaultConfig', () => {
       expect(config.levels[level].voices).toHaveLength(1);
       expect(config.levels[level].voices[0]).toEqual({
         provider: 'antigravity',
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         tier: 'balanced',
         timeout: 123456
       });
@@ -47,7 +47,7 @@ describe('AdvancedConfigTab._defaultConfig', () => {
     const config = AdvancedConfigTab.prototype._defaultConfig.call(ctx);
     expect(config.consolidation).toEqual({
       provider: 'antigravity',
-      model: 'gemini-3.1-pro-low',
+      model: 'gemini-3.8-flash-medium',
       tier: 'balanced',
       timeout: 123456
     });
@@ -60,7 +60,7 @@ describe('AdvancedConfigTab._defaultConfig', () => {
 
     // Mutating one level's voice must not bleed into another.
     config.levels['1'].voices[0].model = 'mutated';
-    expect(config.levels['2'].voices[0].model).toBe('gemini-3.1-pro-low');
+    expect(config.levels['2'].voices[0].model).toBe('gemini-3.8-flash-medium');
   });
 
   it('falls back to claude/sonnet when no default provider/model is set', () => {

@@ -113,7 +113,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
           success: true,
           analysisConfig: {
             provider: 'antigravity',
-            model: 'gemini-3.1-pro-low',
+            model: 'gemini-3.8-flash-medium',
             tier: 'thorough',
             customInstructions: 'Review all selected PRs for migration risk.',
             enabledLevels: [1, 2],
@@ -136,7 +136,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     const request = await analyzeRequest;
     expect(request.postDataJSON()).toMatchObject({
       provider: 'antigravity',
-      model: 'gemini-3.1-pro-low',
+      model: 'gemini-3.8-flash-medium',
       tier: 'thorough',
       customInstructions: 'Review all selected PRs for migration risk.',
       enabledLevels: [1, 2],
@@ -273,7 +273,7 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
           success: true,
           analysisConfig: {
             provider: 'antigravity',
-            model: 'gemini-3.1-pro-low',
+            model: 'gemini-3.8-flash-medium',
             tier: 'thorough',
             customInstructions: 'Review the changes I just made for security issues.',
             enabledLevels: [1, 2],
@@ -307,7 +307,7 @@ test.describe('Auto-Analyze Query Parameter - Local Mode', () => {
     const request = await analyzeRequest;
     expect(request.postDataJSON()).toMatchObject({
       provider: 'antigravity',
-      model: 'gemini-3.1-pro-low',
+      model: 'gemini-3.8-flash-medium',
       tier: 'thorough',
       customInstructions: 'Review the changes I just made for security issues.',
       skipLevel3: true

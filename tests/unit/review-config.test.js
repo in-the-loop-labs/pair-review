@@ -37,7 +37,7 @@ const advancedConfig = {
 const voiceConfig = {
   voices: [
     { provider: 'claude', model: 'sonnet', tier: 'balanced' },
-    { provider: 'antigravity', model: 'gemini-3.1-pro-low' }
+    { provider: 'antigravity', model: 'gemini-3.8-flash-medium' }
   ],
   levels: { '1': true, '2': false, '3': false }
 };
@@ -96,7 +96,7 @@ describe('resolveReviewConfig', () => {
     it('takes precedence over an explicit model and over repo defaults', async () => {
       const councilId = uuidv4();
       await new CouncilRepository(db).create({ id: councilId, name: 'Wins', config: advancedConfig, type: 'advanced' });
-      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low', default_council_id: uuidv4() });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium', default_council_id: uuidv4() });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
@@ -119,10 +119,10 @@ describe('resolveReviewConfig', () => {
     it('returns single with the explicit provider and model', async () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
 
     it('when only model is given, resolves provider from repo defaults', async () => {
@@ -130,10 +130,10 @@ describe('resolveReviewConfig', () => {
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { model: 'gemini-3.1-pro-low' },
+        { model: 'gemini-3.8-flash-medium' },
         { default_provider: 'claude' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
 
     it('when only model is given and no repo default, resolves provider from config', async () => {
@@ -163,10 +163,10 @@ describe('resolveReviewConfig', () => {
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         {}
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
   });
 
@@ -214,14 +214,14 @@ describe('resolveReviewConfig', () => {
 
   describe('4. repo_settings.default_provider/default_model', () => {
     it('uses the repo default provider and model when no explicit pick or council', async () => {
-      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
 
     // A repo's saved default is more specific than the config-file default, so
@@ -255,10 +255,10 @@ describe('resolveReviewConfig', () => {
 
       const result = await resolveReviewConfig(
         db, REPOSITORY,
-        { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+        { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         { default_provider: 'claude', default_model: 'opus' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
   });
 
@@ -267,9 +267,9 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(
         db, REPOSITORY,
         {},
-        { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' }
+        { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
 
     it('honors the legacy config.provider / config.model keys', async () => {
@@ -408,7 +408,7 @@ describe('resolveReviewConfig', () => {
       const globalId = uuidv4();
       await new CouncilRepository(db).create({ id: globalId, name: 'Global', config: advancedConfig, type: 'advanced' });
       // Repo has only a single default (no repo council).
-      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' });
+      seedRepoSettings(db, { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' });
 
       const result = await resolveReviewConfig(
         db, REPOSITORY, {},
@@ -610,9 +610,9 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(
         db, null,
         {},
-        { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' }
+        { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' }
       );
-      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' });
+      expect(result).toEqual({ type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' });
     });
 
     it('defaults explicit and config args to empty objects', async () => {

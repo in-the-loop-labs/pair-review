@@ -76,7 +76,8 @@ script auto-updates hourly).
 
 Each CLI has different model listing commands:
 - **Antigravity**: `agy models` lists what the *installed binary* knows (e.g.
-  `Gemini 3.8 Flash (High)`, `Gemini 3.1 Pro (Low)`), which can be behind the backend.
+  `gemini-3.8-flash-high	Gemini 3.8 Flash (High)` — slug, tab, display name, as of
+  agy 1.3.5), which can be behind the backend and omits plan-gated models.
   `agy changelog` shows the newest released CLI versions, so compare it against
   `agy --version` to spot a stale install. Probe an id directly:
   ```
@@ -85,6 +86,14 @@ Each CLI has different model listing commands:
   A valid id answers with the model name and exits 0. An unknown id exits 1 and prints
   the available-model listing (agy no longer falls back to its default silently). The
   provider's clean ids (`gemini-3.8-flash-low`) work as `--model` values too.
+  A plan-gated model answers differently from an unknown one: on 2026-10-14 (agy
+  1.3.5) `--model 'Gemini 4 Argon'` failed with `"Gemini 4 Argon" is unavailable:
+  Gemini 4 Argon is currently available to Ultra plan subscribers`, while every other
+  form (`gemini-4-argon`, `gemini-4-argon-high`, `Gemini 4 Argon (High)`) failed with
+  `is not recognized`. The "unavailable" message proves the id is real; keep such an
+  entry even though our account cannot run it. agy also has `--effort`, but it is
+  rejected (`--effort is not supported for model ...`) for display names and
+  plan-gated slugs, so built-ins keep effort in the `cliName`.
 - **Codex**: No `--list-models` flag, but the CLI caches the backend catalog at
   `~/.codex/models_cache.json` (`models[]` with `slug`, `display_name`, `description`,
   `visibility` (`list`/`hide`), `supported_reasoning_levels[].effort`,
@@ -241,8 +250,9 @@ then (the API is unaffected).
 - Copilot CLI may have limited model availability depending on subscription tier
 - Some CLIs may need authentication before they can list models or respond to queries
 - Antigravity only ships Gemini models in the built-in picker; agy also exposes Claude
-  and GPT-OSS models, reachable via config override only. The Pro line is still 3.1 Pro
-  (no newer Pro exists on agy as of 2026-09-06)
+  and GPT-OSS models, reachable via config override only. Gemini 3.1 Pro was retired
+  from agy by 1.3.5 (2026-10-14); the frontier slot is Gemini 4 Argon, which is gated
+  to Google AI Ultra / eligible Enterprise plans and so is never the default
 - Codex retires models per sign-in type: a slug can be dead for ChatGPT accounts while
   still documented for API keys. Probe with the account the user actually uses
 - Muse's built-in model ids are **not** raw CLI model ids. Each one pairs an underlying CLI

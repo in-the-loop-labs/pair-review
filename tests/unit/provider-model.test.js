@@ -22,7 +22,7 @@ const PROVIDERS = [
   {
     id: 'antigravity',
     defaultModel: 'gemini-3.8-flash-high',
-    models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.1-pro-low' }, { id: 'gemini-3.8-flash-low' }]
+    models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.8-flash-medium' }, { id: 'gemini-3.8-flash-low' }]
   }
 ];
 
@@ -110,18 +110,18 @@ describe('resolveProviderModelPair', () => {
 describe('buildProviderModelScopes', () => {
   it('returns [repo, app] order when no override is present', () => {
     const scopes = buildProviderModelScopes(
-      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' },
       { default_provider: 'claude', default_model: 'opus' }
     );
     expect(scopes).toEqual([
-      { provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+      { provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
       { provider: 'claude', model: 'opus' }
     ]);
   });
 
   it('prepends the env override (appConfig.provider_override) ahead of repo settings', () => {
     const scopes = buildProviderModelScopes(
-      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' },
       { default_provider: 'claude', default_model: 'opus', provider_override: 'codex', model_override: 'gpt-5.5' }
     );
     expect(scopes[0]).toEqual({ provider: 'codex', model: 'gpt-5.5' });
@@ -131,7 +131,7 @@ describe('buildProviderModelScopes', () => {
 
   it('prepends a provider-only env override with a null model', () => {
     const scopes = buildProviderModelScopes(
-      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' },
       { provider_override: 'codex' }
     );
     expect(scopes[0]).toEqual({ provider: 'codex', model: null });
@@ -139,7 +139,7 @@ describe('buildProviderModelScopes', () => {
 
   it('ranks the per-invocation (URL) override above the env override', () => {
     const scopes = buildProviderModelScopes(
-      { default_provider: 'antigravity', default_model: 'gemini-3.1-pro-low' },
+      { default_provider: 'antigravity', default_model: 'gemini-3.8-flash-medium' },
       { provider_override: 'codex', model_override: 'gpt-5.5' },
       { provider: 'pi', model: 'multi-model' }
     );

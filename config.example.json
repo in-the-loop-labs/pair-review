@@ -147,7 +147,7 @@
     },
 
     "antigravity": {
-      "_comment": "Override Antigravity's built-in configuration. Antigravity drives the 'agy' CLI as an agentic reviewer. Built-in model IDs: gemini-3.8-flash-high (default, thorough), gemini-3.1-pro-high, gemini-3.1-pro-low, gemini-3.8-flash-low. Run 'agy models' to list everything agy exposes (Claude and GPT-OSS models included). Use 'command' for a custom path/wrapper, 'env' for environment variables, 'default_model'/'disabled_models' to shape the picker, and — on a custom model — 'cli_model' to set the exact string the 'agy --model' flag receives (an unknown name makes agy exit 1 with its model listing rather than fall back to a default).",
+      "_comment": "Override Antigravity's built-in configuration. Antigravity drives the 'agy' CLI as an agentic reviewer. Built-in model IDs: gemini-4-argon (thorough; Google AI Ultra / eligible Enterprise plans only), gemini-3.8-flash-high (default, thorough), gemini-3.8-flash-medium (balanced), gemini-3.8-flash-low (fast). Run 'agy models' to list everything agy exposes (Claude and GPT-OSS models included). Use 'command' for a custom path/wrapper, 'env' for environment variables, 'default_model'/'disabled_models' to shape the picker, and — on a custom model — 'cli_model' to set the exact string the 'agy --model' flag receives (an unknown name makes agy exit 1 with its model listing rather than fall back to a default).",
       "command": "agy",
       "extra_args": [],
       "env": {},
@@ -155,11 +155,11 @@
       "default_model": "gemini-3.8-flash-high",
       "models": [
         {
-          "_comment": "Example: define a custom model id backed by an exact 'agy --model' string. 'cli_model' is the display string printed by 'agy models' (a built-in Gemini string is shown here; agy also lists Claude and GPT-OSS models you can target the same way). The clean 'id' is what the UI and config keys use.",
-          "id": "gemini-pro-max",
-          "cli_model": "Gemini 3.1 Pro (High)",
+          "_comment": "Example: define a custom model id backed by an exact 'agy --model' string. 'cli_model' is the display string printed by 'agy models' (here one of the Claude models agy exposes; GPT-OSS models work the same way). The clean 'id' is what the UI and config keys use.",
+          "id": "agy-claude-opus-high",
+          "cli_model": "Claude Opus 5.5 (High)",
           "tier": "thorough",
-          "name": "Gemini Pro (Max effort)",
+          "name": "Claude Opus 5.5 via agy (High)",
           "description": "Custom label mapped to an exact agy model string"
         }
       ]

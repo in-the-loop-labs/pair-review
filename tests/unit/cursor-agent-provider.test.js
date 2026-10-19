@@ -64,8 +64,8 @@ describe('CursorAgentProvider', () => {
       expect(CursorAgentProvider.getProviderId()).toBe('cursor-agent');
     });
 
-    it('should return sonnet-4.6-thinking as default model', () => {
-      expect(CursorAgentProvider.getDefaultModel()).toBe('sonnet-4.6-thinking');
+    it('should return composer-1.5 as default model', () => {
+      expect(CursorAgentProvider.getDefaultModel()).toBe('composer-1.5');
     });
 
     it('should return array of models with expected structure', () => {
@@ -92,13 +92,14 @@ describe('CursorAgentProvider', () => {
       expect(modelIds).toContain('gpt-5.4-medium');
 
       // Check model structure for the default model
-      const defaultModel = models.find(m => m.id === 'sonnet-4.6-thinking');
+      const defaultModel = models.find(m => m.id === 'composer-1.5');
       expect(defaultModel).toMatchObject({
-        id: 'sonnet-4.6-thinking',
-        name: 'Claude 4.6 Sonnet (Thinking)',
+        id: 'composer-1.5',
+        name: 'Composer 1.5',
         tier: 'balanced',
         default: true
       });
+      expect(models.filter(m => m.default).map(m => m.id)).toEqual(['composer-1.5']);
     });
 
     it('should have correct tier assignments', () => {
@@ -129,7 +130,7 @@ describe('CursorAgentProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CursorAgentProvider();
-      expect(provider.model).toBe('sonnet-4.6-thinking');
+      expect(provider.model).toBe('composer-1.5');
     });
 
     it('should create instance with specified model', () => {

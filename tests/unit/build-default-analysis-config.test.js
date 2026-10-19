@@ -27,7 +27,7 @@ const { URLSearchParams: NativeURLSearchParams } = require('url');
 // shape of /api/providers (id, models, defaultModel).
 const PROVIDERS = [
   { id: 'claude', defaultModel: 'opus', models: [{ id: 'opus' }, { id: 'sonnet-4.6' }, { id: 'haiku' }] },
-  { id: 'antigravity', defaultModel: 'gemini-3.8-flash-high', models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.1-pro-low' }, { id: 'pro' }, { id: 'gemini-3.8-flash-low' }] },
+  { id: 'antigravity', defaultModel: 'gemini-3.8-flash-high', models: [{ id: 'gemini-3.8-flash-high' }, { id: 'gemini-3.8-flash-medium' }, { id: 'pro' }, { id: 'gemini-3.8-flash-low' }] },
   { id: 'pi', defaultModel: 'multi-model', models: [{ id: 'multi-model' }] }
 ];
 

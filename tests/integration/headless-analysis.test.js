@@ -217,7 +217,7 @@ describe('runHeadlessAnalysis (DB-backed)', () => {
           repoInstructions: null,
           requestInstructions: 'focus on auth bugs'
         },
-        reviewConfig: { type: 'single', provider: 'antigravity', model: 'gemini-3.1-pro-low' },
+        reviewConfig: { type: 'single', provider: 'antigravity', model: 'gemini-3.8-flash-medium' },
         providerOverrides: {},
         githubClient: undefined
       });
@@ -226,7 +226,7 @@ describe('runHeadlessAnalysis (DB-backed)', () => {
         'SELECT provider, model, request_instructions FROM analysis_runs WHERE id = ?'
       ).get(runId);
       expect(row.provider).toBe('antigravity');
-      expect(row.model).toBe('gemini-3.1-pro-low');
+      expect(row.model).toBe('gemini-3.8-flash-medium');
       expect(row.request_instructions).toBe('focus on auth bugs');
     });
 

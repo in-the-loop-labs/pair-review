@@ -2769,14 +2769,14 @@ describe('AnalysisRunRepository', () => {
         id: runId,
         reviewId: testReview.id,
         provider: 'antigravity',
-        model: 'gemini-3.1-pro-low'
+        model: 'gemini-3.8-flash-medium'
       });
 
       const retrieved = await analysisRunRepo.getById(runId);
       expect(retrieved).not.toBeNull();
       expect(retrieved.id).toBe(runId);
       expect(retrieved.provider).toBe('antigravity');
-      expect(retrieved.model).toBe('gemini-3.1-pro-low');
+      expect(retrieved.model).toBe('gemini-3.8-flash-medium');
     });
 
     it('should return null for non-existent ID', async () => {

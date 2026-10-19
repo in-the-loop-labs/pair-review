@@ -145,22 +145,10 @@ class RepoSettingsPage {
           const oldProvider = this.providers[previousProvider];
           const newProvider = this.providers[newProviderId];
 
-          if (oldProvider && newProvider) {
-            // Match by id or alias so legacy model IDs still resolve their tier
-            // when the user switches providers.
-            const currentModel = this.findModelWithAliases(oldProvider, this.currentSettings.default_model);
-            if (currentModel) {
-              const matchingModel = newProvider.models.find(m => m.tier === currentModel.tier);
-              const defaultModel = newProvider.models.find(m => m.default);
-              const fallbackModel = matchingModel || defaultModel || newProvider.models[0];
-              this.currentSettings.default_model = fallbackModel.id;
-            } else {
-              const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
-              this.currentSettings.default_model = defaultModel.id;
-            }
-          } else if (newProvider) {
-            const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
-            this.currentSettings.default_model = defaultModel.id;
+          if (newProvider) {
+            this.currentSettings.default_model = this.mapModelForProviderSwitch(
+              oldProvider, newProvider, this.currentSettings.default_model
+            );
           }
 
           // Update model select and card to reflect the mapped model
@@ -476,6 +464,28 @@ class RepoSettingsPage {
   selectProvider(providerId) {
     if (!this.providers[providerId]) return;
     this.selectedProvider = providerId;
+  }
+
+  /**
+   * Pick the model to keep when the user switches providers: the new
+   * provider's model in the same tier as the current one, else its default.
+   * Within a tier the default wins over the tier's first entry, because the
+   * first entry can be plan-gated (Antigravity's Gemini 4 Argon) and this
+   * choice is saved as the repo's default_model.
+   * @param {Object|undefined} oldProvider - Provider being switched away from
+   * @param {Object} newProvider - Provider being switched to (has `models`)
+   * @param {string} currentModelId - Current default_model (id or alias)
+   * @returns {string} Model id within newProvider
+   */
+  mapModelForProviderSwitch(oldProvider, newProvider, currentModelId) {
+    const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
+    // Match by id or alias so legacy model IDs still resolve their tier
+    // when the user switches providers.
+    const currentModel = oldProvider ? this.findModelWithAliases(oldProvider, currentModelId) : null;
+    if (!currentModel) return defaultModel.id;
+    const matchingModel = newProvider.models.find(m => m.default && m.tier === currentModel.tier)
+      || newProvider.models.find(m => m.tier === currentModel.tier);
+    return (matchingModel || defaultModel).id;
   }
 
   /**
@@ -1317,6 +1327,12 @@ class RepoSettingsPage {
 }
 
 // Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  window.repoSettings = new RepoSettingsPage();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    window.repoSettings = new RepoSettingsPage();
+  });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { RepoSettingsPage };
+}

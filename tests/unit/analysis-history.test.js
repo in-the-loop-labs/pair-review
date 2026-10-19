@@ -641,14 +641,14 @@ describe('AnalysisHistoryManager', () => {
       manager.selectedRun = {
         id: 1,
         provider: 'antigravity',
-        model: 'gemini-3.1-pro-low',
+        model: 'gemini-3.8-flash-medium',
         started_at: threeHoursAgo
       };
 
       manager.updateSelectedLabel();
 
       // Provider is lowercase per formatProviderName()
-      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · antigravity · gemini-3.1-pro-low/);
+      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · antigravity · gemini-3.8-flash-medium/);
     });
 
     it('should handle unknown provider and model', () => {
