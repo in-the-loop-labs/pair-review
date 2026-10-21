@@ -405,6 +405,16 @@ class CodexBridge extends EventEmitter {
     return this._inMessage;
   }
 
+  /**
+   * Whether a closed session can be resumed with its history (via the stored
+   * agent session ref). Always true for this bridge; the session manager uses
+   * it to decide whether an idle session may be shut down.
+   * @returns {boolean}
+   */
+  isResumable() {
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // JSON-RPC 2.0 transport
   // ---------------------------------------------------------------------------

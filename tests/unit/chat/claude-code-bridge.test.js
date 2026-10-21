@@ -166,6 +166,12 @@ describe('ClaudeCodeBridge', () => {
     });
   });
 
+  describe('isResumable', () => {
+    it('always reports resumable (resume relies on the stored agent session ref)', () => {
+      expect(new ClaudeCodeBridge().isResumable()).toBe(true);
+    });
+  });
+
   describe('isBusy', () => {
     it('should return false when not processing a message', () => {
       const bridge = new ClaudeCodeBridge();

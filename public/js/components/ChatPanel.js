@@ -5032,6 +5032,12 @@ class ChatPanel {
         console.debug('[ChatPanel] WS event:', data.type, 'tab:', tab.sessionId);
       }
 
+      // Same handling whether or not the tab is in the foreground.
+      if (data.type === 'session_closed') {
+        this._handleSessionClosed(tab);
+        return;
+      }
+
       const isActive = this.isOpen && this._getActiveTab() === tab;
 
       // Background tab (or panel closed): drive the per-tab DOM via tab-aware
@@ -5117,6 +5123,24 @@ class ChatPanel {
     } catch (e) {
       console.error('[ChatPanel] WS parse error:', e);
     }
+  }
+
+  /**
+   * The server shut down this tab's agent process (idle timeout). The session
+   * resumes transparently on the next send, so nothing is shown; clearing
+   * `sessionWarm` makes that send show the ACP "Resuming" indicator.
+   * The server does not reap a session mid-turn, but if this tab still thinks
+   * it is streaming, no 'complete' will ever arrive for it: end the stream the
+   * way 'complete' does (tab-aware, so it is correct for a background tab
+   * too — UI controls are only touched when the tab is active).
+   * @param {ChatTab} tab
+   */
+  _handleSessionClosed(tab) {
+    if (tab.isStreaming) {
+      tab.abortPending = false;
+      this.finalizeStreamingMessage(null, tab);
+    }
+    tab.sessionWarm = false;
   }
 
   /**

@@ -33,7 +33,8 @@
   "external_comments": false,
   "chat": {
     "enable_shortcuts": true,
-    "enter_to_send": true
+    "enter_to_send": true,
+    "idle_timeout_minutes": 10
   },
 
   "providers": {

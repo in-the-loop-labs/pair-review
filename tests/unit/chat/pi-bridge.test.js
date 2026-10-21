@@ -965,6 +965,12 @@ describe('PiBridge', () => {
     });
   });
 
+  describe('isResumable', () => {
+    it('always reports resumable (resume relies on the stored agent session ref)', () => {
+      expect(new PiBridge().isResumable()).toBe(true);
+    });
+  });
+
   describe('isReady', () => {
     it('should return false before start', () => {
       const bridge = new PiBridge();

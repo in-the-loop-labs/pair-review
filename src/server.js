@@ -495,9 +495,9 @@ async function startServer(sharedDb = null, sharedPoolLifecycle = null, options 
     const snippetsRoutes = require('./routes/snippets');
     const { createSoundRouter } = require('./routes/sound');
 
-    // Initialize chat session manager
-    const ChatSessionManager = require('./chat/session-manager');
-    chatSessionManager = new ChatSessionManager(db, config.chat_providers || {});
+    // Initialize chat session manager (idle chat agents are shut down after
+    // chat.idle_timeout_minutes and resumed transparently on the next message)
+    chatSessionManager = chatRoutes.createChatSessionManager(db, config);
     app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
@@ -613,6 +613,8 @@ async function gracefulShutdown(signal) {
   // Close all active chat sessions
   if (chatSessionManager) {
     try {
+      // Stop the idle reaper first so no sweep starts a close mid-shutdown
+      chatSessionManager.stopIdleReaper();
       await chatSessionManager.closeAll();
     } catch (error) {
       console.error('Error closing chat sessions:', error.message);

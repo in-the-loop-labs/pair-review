@@ -915,7 +915,7 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true });
+      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true, idle_timeout_minutes: 10 });
     });
 
     it('should three-way merge defaults, global, and project for nested objects', async () => {
@@ -926,7 +926,7 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true, some_future_key: true });
+      expect(config.chat).toEqual({ enable_shortcuts: false, enter_to_send: true, idle_timeout_minutes: 10, some_future_key: true });
     });
 
     it('should let project config override global for the same nested key', async () => {
@@ -957,7 +957,21 @@ describe('config.js', () => {
 
       const { config } = await loadConfig();
 
-      expect(config.chat).toEqual({ enable_shortcuts: true, enter_to_send: true });
+      expect(config.chat).toEqual({ enable_shortcuts: true, enter_to_send: true, idle_timeout_minutes: 10 });
+    });
+
+    it('should default chat.idle_timeout_minutes to 10', () => {
+      expect(DEFAULT_CONFIG.chat.idle_timeout_minutes).toBe(10);
+    });
+
+    it('should let config override chat.idle_timeout_minutes (0 disables) while keeping other chat defaults', async () => {
+      mockReadFile({
+        global: { chat: { idle_timeout_minutes: 0 } },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.chat).toEqual({ enable_shortcuts: true, enter_to_send: true, idle_timeout_minutes: 0 });
     });
 
     // --- config.local.json tests ---
@@ -1014,6 +1028,7 @@ describe('config.js', () => {
       expect(config.chat).toEqual({
         enable_shortcuts: true,  // from DEFAULT_CONFIG
         enter_to_send: true,     // from DEFAULT_CONFIG
+        idle_timeout_minutes: 10, // from DEFAULT_CONFIG
         a: 'global',
         b: 'global-local',
         c: 'project',

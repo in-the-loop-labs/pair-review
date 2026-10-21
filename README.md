@@ -866,6 +866,12 @@ Two `chat_providers.<id>` keys control this: `model` sets the default model for 
 
 Available chat provider IDs: `pi`, `omp`, `claude`, `codex`, `copilot-acp`, `opencode-acp`, `cursor-acp`. Each supports `command`, `args` (replaces defaults; for `pi`, `omp` and `claude` there are no default args — supplied args are appended after the generated flags, so use a multi-word `command` like `"devx omp"` for wrappers rather than `args`), `extra_args` (appends), and `env` overrides, plus `model` and `models_from` (see **Choosing a model** above). Codex chat also supports `sandbox`: use `workspace-write` by default, or `read-only` for discussion-only sessions. (Antigravity and Muse are analysis-only providers — neither CLI has an ACP mode, so there are no Antigravity or Muse chat providers.)
 
+**Idle chat agents:** A chat's agent process is shut down after `chat.idle_timeout_minutes` minutes without activity (default `10`; `0` disables), so closing the browser doesn't leave agents running. The conversation is kept and transparently resumed, with its history, on your next message. An agent is never shut down while it is starting or still working on a reply, and a conversation whose agent can't be resumed with its history (for example, an ACP agent without session-loading support) is kept running instead. A chat with no messages yet may be shut down either way — your first message then starts a fresh agent with the same context. Set it in the **Chat** section of the [global settings page](#global-settings-page) (applies on next start) or in config:
+
+```json
+{ "chat": { "idle_timeout_minutes": 30 } }
+```
+
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 
 ### Customization

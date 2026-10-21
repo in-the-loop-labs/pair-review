@@ -370,6 +370,7 @@ describe('AcpBridge', () => {
 
     it('should use loadSession when resumeSessionId is provided', async () => {
       const { mockDeps, mockConnection } = createMockDeps();
+      mockConnection.initialize.mockResolvedValue({ agentCapabilities: { loadSession: true } });
       const bridge = new AcpBridge({
         resumeSessionId: 'prev-session-xyz',
         cwd: '/my/repo',
@@ -395,6 +396,51 @@ describe('AcpBridge', () => {
       expect(mockConnection.loadSession).not.toHaveBeenCalled();
     });
 
+    it('should refuse to resume when the agent lacks the loadSession capability, and stop the agent', async () => {
+      const { mockDeps, mockConnection, fakeProc } = createMockDeps();
+      mockConnection.initialize.mockResolvedValue({ agentCapabilities: {} });
+      const bridge = new AcpBridge({
+        acpCommand: 'cursor-agent',
+        resumeSessionId: 'prev-session-xyz',
+        _deps: mockDeps,
+      });
+
+      await expect(bridge.start()).rejects.toThrow(
+        'ACP initialization failed: cursor-agent does not support resuming ACP sessions (no loadSession capability)'
+      );
+      expect(mockConnection.loadSession).not.toHaveBeenCalled();
+      expect(mockConnection.newSession).not.toHaveBeenCalled();
+      // A failed start leaves no orphaned agent process
+      expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(bridge.isReady()).toBe(false);
+    });
+
+    it('should refuse to resume when initialize returns no capabilities at all', async () => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      const bridge = new AcpBridge({ resumeSessionId: 'prev-session-xyz', _deps: mockDeps });
+
+      await expect(bridge.start()).rejects.toThrow('no loadSession capability');
+      expect(mockConnection.loadSession).not.toHaveBeenCalled();
+    });
+
+    it('should kill the spawned agent when initialization fails', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      mockDeps.acp.ClientSideConnection = function () {
+        return { initialize: vi.fn().mockRejectedValue(new Error('handshake failed')) };
+      };
+      const bridge = new AcpBridge({ _deps: mockDeps });
+      bridge.on('error', () => {});
+
+      await expect(bridge.start()).rejects.toThrow('handshake failed');
+      expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
+
+      // The resulting exit is an expected shutdown, not an "unexpected exit" error
+      const errors = [];
+      bridge.on('error', (e) => errors.push(e));
+      fakeProc.emit('close', null, 'SIGTERM');
+      expect(errors).toEqual([]);
+    });
+
     it('should reject on ACP initialization failure', async () => {
       const { mockDeps } = createMockDeps();
       mockDeps.acp.ClientSideConnection = function () {
@@ -405,6 +451,32 @@ describe('AcpBridge', () => {
 
       const bridge = new AcpBridge({ _deps: mockDeps });
       await expect(bridge.start()).rejects.toThrow('ACP initialization failed: handshake failed');
+    });
+  });
+
+  describe('isResumable()', () => {
+    it('is false before start', () => {
+      expect(new AcpBridge().isResumable()).toBe(false);
+    });
+
+    it('is true when the agent advertises agentCapabilities.loadSession', async () => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      mockConnection.initialize.mockResolvedValue({ agentCapabilities: { loadSession: true } });
+      const bridge = new AcpBridge({ _deps: mockDeps });
+      await bridge.start();
+      expect(bridge.isResumable()).toBe(true);
+    });
+
+    it.each([
+      ['loadSession false', { agentCapabilities: { loadSession: false } }],
+      ['no agentCapabilities', {}],
+      ['no initialize result', undefined],
+    ])('is false with %s', async (_label, initResult) => {
+      const { mockDeps, mockConnection } = createMockDeps();
+      mockConnection.initialize.mockResolvedValue(initResult);
+      const bridge = new AcpBridge({ _deps: mockDeps });
+      await bridge.start();
+      expect(bridge.isResumable()).toBe(false);
     });
   });
 

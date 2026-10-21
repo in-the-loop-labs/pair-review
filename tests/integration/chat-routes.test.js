@@ -35,6 +35,7 @@ function StubClaudeCodeBridge(options) {
   bridge.sendMessage = () => Promise.resolve();
   bridge.isReady = () => true;
   bridge.isBusy = () => false;
+  bridge.isResumable = () => true;
   bridge.abort = () => {};
   bridge._constructorOptions = options || {};
   return bridge;
@@ -43,7 +44,7 @@ require.cache[claudeCodeBridgePath].exports = StubClaudeCodeBridge;
 const ChatSessionManager = require('../../src/chat/session-manager');
 
 const chatRouter = require('../../src/routes/chat');
-const { _broadcastUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
+const { _broadcastUnsubscribers, _buildPairReviewApiRe, handleSessionIdleClosed, createChatSessionManager } = require('../../src/routes/chat');
 const ws = require('../../src/ws');
 const { _resetUserCache } = require('../../src/hooks/payloads');
 const {
@@ -1283,6 +1284,98 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('reviewId');
+    });
+  });
+
+  describe('handleSessionIdleClosed', () => {
+    it('unregisters the session broadcast listeners and broadcasts session_closed', async () => {
+      const unsubs = [];
+      for (const method of ['onDelta', 'onToolUse', 'onComplete', 'onStatus', 'onError']) {
+        const unsub = vi.fn();
+        unsubs.push(unsub);
+        mockManager[method].mockReturnValue(unsub);
+      }
+
+      const res = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
+      expect(res.status).toBe(200);
+      expect(_broadcastUnsubscribers.has(1)).toBe(true);
+      broadcastSpy.mockClear();
+
+      handleSessionIdleClosed({ sessionId: 1 });
+
+      expect(_broadcastUnsubscribers.has(1)).toBe(false);
+      for (const unsub of unsubs) expect(unsub).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledWith('chat:1', { type: 'session_closed', reason: 'idle', sessionId: 1 });
+    });
+
+    it('still broadcasts when no listeners were registered', () => {
+      handleSessionIdleClosed({ sessionId: 42 });
+
+      expect(_broadcastUnsubscribers.has(42)).toBe(false);
+      expect(broadcastSpy).toHaveBeenCalledWith('chat:42', { type: 'session_closed', reason: 'idle', sessionId: 42 });
+    });
+
+    it('end to end: createChatSessionManager reaps idle sessions, notifies clients, and the next message resumes', async () => {
+      let clock = 1_000_000;
+      const handle = { unref: vi.fn() };
+      const setIntervalFn = vi.fn(() => handle);
+      const realManager = createChatSessionManager(db, { chat: { idle_timeout_minutes: 7 } }, {
+        _deps: { now: () => clock, setInterval: setIntervalFn, clearInterval: vi.fn() },
+      });
+      app.chatSessionManager = realManager;
+
+      // Minutes converted to ms; the reaper is running (unref'd) on the injected timer
+      expect(realManager.idleTimeoutMs).toBe(7 * 60 * 1000);
+      expect(setIntervalFn).toHaveBeenCalledTimes(1);
+      expect(handle.unref).toHaveBeenCalled();
+      const sweep = setIntervalFn.mock.calls[0][0];
+
+      const created = await request(server)
+        .post('/api/chat/session')
+        .send({ provider: 'claude', reviewId: 1, systemPrompt: 'test' });
+      expect(created.status).toBe(200);
+      const sessionId = created.body.data.id;
+      db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?').run('claude-session-1', sessionId);
+      expect(_broadcastUnsubscribers.has(sessionId)).toBe(true);
+      broadcastSpy.mockClear();
+
+      // Not idle long enough yet
+      clock += 7 * 60 * 1000 - 1;
+      expect(await realManager.reapIdleSessions()).toEqual([]);
+
+      // The scheduled sweep closes it; the registered listener notifies clients
+      clock += 1;
+      sweep();
+      await vi.waitFor(() => expect(broadcastSpy).toHaveBeenCalledWith(
+        `chat:${sessionId}`, { type: 'session_closed', reason: 'idle', sessionId }
+      ));
+      expect(realManager.isSessionActive(sessionId)).toBe(false);
+      expect(db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(sessionId).status).toBe('closed');
+      expect(_broadcastUnsubscribers.has(sessionId)).toBe(false);
+
+      const sent = await request(server)
+        .post(`/api/chat/session/${sessionId}/message`)
+        .send({ content: 'back again' });
+
+      expect(sent.status).toBe(200);
+      expect(realManager.isSessionActive(sessionId)).toBe(true);
+      expect(db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(sessionId).status).toBe('active');
+      expect(_broadcastUnsubscribers.has(sessionId)).toBe(true);
+      realManager.stopIdleReaper();
+      await realManager.closeAll();
+    });
+
+    it.each([0, -1, 'abc', undefined])('createChatSessionManager with idle_timeout_minutes %s starts no reaper', (minutes) => {
+      const setIntervalFn = vi.fn(() => ({ unref() {} }));
+      const mgr = createChatSessionManager(db, { chat: { idle_timeout_minutes: minutes } }, {
+        _deps: { setInterval: setIntervalFn },
+      });
+
+      expect(mgr.idleTimeoutMs).toBe(0);
+      expect(setIntervalFn).not.toHaveBeenCalled();
     });
   });
 

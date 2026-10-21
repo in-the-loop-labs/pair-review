@@ -31,6 +31,8 @@ const originalChatProvidersExport = require(chatProvidersPath);
 
 // Shared state for controlling mock behavior per-test
 let _nextStartFail = false;
+// When set, the next MockClaudeCodeBridge.start() returns this promise (held start).
+let _nextClaudeStart = null;
 const _createdBridges = [];
 const _createdOmpBridges = [];
 const _createdAcpBridges = [];
@@ -50,6 +52,7 @@ function MockPiBridge(options) {
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.isResumable = vi.fn().mockReturnValue(true);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'pi';
   bridge._constructorOptions = options || {};
@@ -70,6 +73,7 @@ function MockOmpBridge(options) {
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.isResumable = vi.fn().mockReturnValue(true);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'omp';
   bridge._constructorOptions = options || {};
@@ -91,6 +95,7 @@ function MockAcpBridge(options) {
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.isResumable = vi.fn().mockReturnValue(true);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'acp';
   bridge._constructorOptions = options || {};
@@ -102,6 +107,11 @@ function MockAcpBridge(options) {
 function MockClaudeCodeBridge(options) {
   const bridge = new EventEmitter();
   bridge.start = vi.fn().mockImplementation(() => {
+    if (_nextClaudeStart) {
+      const held = _nextClaudeStart;
+      _nextClaudeStart = null;
+      return held;
+    }
     if (_nextStartFail) {
       _nextStartFail = false;
       return Promise.reject(new Error('spawn failed'));
@@ -112,6 +122,7 @@ function MockClaudeCodeBridge(options) {
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.isResumable = vi.fn().mockReturnValue(true);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'claude';
   bridge._constructorOptions = options || {};
@@ -133,6 +144,7 @@ function MockCodexBridge(options) {
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.isResumable = vi.fn().mockReturnValue(true);
   bridge.abort = vi.fn();
   bridge._bridgeType = 'codex';
   bridge._constructorOptions = options || {};
@@ -188,9 +200,21 @@ function reviewModel(reviewProviderId, predicate) {
   return model;
 }
 
+/** A promise with its resolve/reject exposed, for holding async work open. */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 describe('ChatSessionManager', () => {
   let db;
   let manager;
+
+  function statusOf(sessionId) {
+    return db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(sessionId).status;
+  }
 
   afterAll(() => {
     // Restore original modules
@@ -210,6 +234,7 @@ describe('ChatSessionManager', () => {
     _createdClaudeCodeBridges.length = 0;
     _createdCodexBridges.length = 0;
     _nextStartFail = false;
+    _nextClaudeStart = null;
     db = createTestDatabase();
     // Insert a review to satisfy foreign key constraints
     db.prepare(
@@ -1789,6 +1814,588 @@ describe('ChatSessionManager', () => {
         model: model.id,
         cliModel: model.cli_model,
       });
+    });
+  });
+
+  describe('idle session reaping', () => {
+    const TEN_MIN = 10 * 60 * 1000;
+    // The CJS logger singleton session-manager requires (vi.mock does not reach
+    // CJS require), spied per test.
+    const logger = require('../../../src/utils/logger');
+
+    beforeEach(() => {
+      vi.spyOn(logger, 'info').mockImplementation(() => {});
+      vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      logger.info.mockRestore();
+      logger.warn.mockRestore();
+    });
+
+    /** Build a manager whose clock and timers are fully controlled by the test. */
+    function createIdleManager({ idleTimeoutMs = TEN_MIN } = {}) {
+      const clock = { now: 1_000_000 };
+      const handle = { unref: vi.fn() };
+      const setIntervalFn = vi.fn(() => handle);
+      const clearIntervalFn = vi.fn();
+      const mgr = new ChatSessionManager(db, {}, {
+        idleTimeoutMs,
+        _deps: { now: () => clock.now, setInterval: setIntervalFn, clearInterval: clearIntervalFn },
+      });
+      return { mgr, clock, handle, setIntervalFn, clearIntervalFn };
+    }
+
+    /** A Claude session whose agent reported a session ref (so it is resumable). */
+    async function createResumableSession(mgr, options = {}) {
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1, ...options });
+      const bridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
+      bridge.emit('session', { sessionId: `claude-session-${session.id}` });
+      return { session, bridge };
+    }
+
+    function addHistory(sessionId) {
+      db.prepare("INSERT INTO chat_messages (session_id, role, type, content) VALUES (?, 'user', 'message', 'earlier')")
+        .run(sessionId);
+    }
+
+    it('closes a session idle past the timeout and emits session-idle-closed', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      const bridge = _createdClaudeCodeBridges[0];
+      const emitted = [];
+      mgr.on('session-idle-closed', (evt) => emitted.push(evt));
+
+      clock.now += TEN_MIN;
+      const closed = await mgr.reapIdleSessions();
+
+      expect(closed).toEqual([session.id]);
+      expect(bridge.close).toHaveBeenCalledTimes(1);
+      expect(statusOf(session.id)).toBe('closed');
+      expect(mgr.isSessionActive(session.id)).toBe(false);
+      expect(emitted).toEqual([{ sessionId: session.id }]);
+      expect(logger.info).toHaveBeenCalledWith(
+        `[ChatSession] Session ${session.id} idle for 10m — closing (resumable on next message)`
+      );
+    });
+
+    it('an idle close leaves updated_at untouched (MRU/history order)', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      db.prepare("UPDATE chat_sessions SET updated_at = '2020-01-01 00:00:00' WHERE id = ?").run(session.id);
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+
+      const row = db.prepare('SELECT status, updated_at FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.status).toBe('closed');
+      expect(row.updated_at).toBe('2020-01-01 00:00:00');
+    });
+
+    it('does not emit session-idle-closed for an explicit close', async () => {
+      const { mgr } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      const listener = vi.fn();
+      mgr.on('session-idle-closed', listener);
+
+      await mgr.closeSession(session.id);
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('leaves a session within the timeout alone', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+
+      clock.now += TEN_MIN - 1;
+      const closed = await mgr.reapIdleSessions();
+
+      expect(closed).toEqual([]);
+      expect(_createdClaudeCodeBridges[0].close).not.toHaveBeenCalled();
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('sendMessage resets the idle clock', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+
+      clock.now += 8 * 60 * 1000;
+      await mgr.sendMessage(session.id, 'hello');
+      bridge.emit('complete', { fullText: '' }); // same instant: the turn ends at once
+      clock.now += 8 * 60 * 1000;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+
+      clock.now += 2 * 60 * 1000;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it.each(['delta', 'status', 'tool_use', 'complete', 'session', 'error'])(
+      'a bridge %s event resets the idle clock',
+      async (eventName) => {
+        const { mgr, clock } = createIdleManager();
+        const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+        const bridge = _createdClaudeCodeBridges[0];
+
+        clock.now += 8 * 60 * 1000;
+        const payloads = {
+          delta: { text: 'x' },
+          status: { status: 'working' },
+          tool_use: { toolName: 'bash', status: 'start' },
+          complete: { fullText: '' },
+          session: { sessionId: 'agent-1' },
+          error: { error: new Error('boom') },
+        };
+        bridge.emit(eventName, payloads[eventName]);
+        clock.now += 8 * 60 * 1000;
+
+        expect(await mgr.reapIdleSessions()).toEqual([]);
+        expect(mgr.isSessionActive(session.id)).toBe(true);
+      }
+    );
+
+    it('never reaps a session whose bridge reports busy', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      const bridge = _createdClaudeCodeBridges[0];
+      bridge.isBusy.mockReturnValue(true);
+
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(bridge.close).not.toHaveBeenCalled();
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+
+      bridge.isBusy.mockReturnValue(false);
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('tracks the turn itself: a Pi-like bridge idle between messages mid-turn is not reaped until complete', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+      // Pi only reports busy between message_start and message_end
+      bridge.isBusy.mockReturnValue(false);
+
+      await mgr.sendMessage(session.id, 'run the tools');
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(bridge.close).not.toHaveBeenCalled();
+
+      bridge.emit('complete', { fullText: 'done' });
+      expect(await mgr.reapIdleSessions()).toEqual([]); // the clock restarted at complete
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('a turn ending in error makes the session reapable again', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+
+      await mgr.sendMessage(session.id, 'hello');
+      bridge.emit('error', { error: new Error('agent failed') });
+      clock.now += TEN_MIN;
+
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('a rejected bridge.sendMessage does not leave the turn in flight', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+      bridge.sendMessage.mockRejectedValue(new Error('stdin closed'));
+
+      await expect(mgr.sendMessage(session.id, 'hello')).rejects.toThrow('stdin closed');
+      clock.now += TEN_MIN;
+
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('never reaps a session that is still starting (create)', async () => {
+      const { mgr, clock } = createIdleManager();
+      const start = deferred();
+      _nextClaudeStart = start.promise;
+
+      const creating = mgr.createSession({ provider: 'claude', reviewId: 1 });
+      await new Promise(setImmediate);
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(_createdClaudeCodeBridges[0].close).not.toHaveBeenCalled();
+
+      start.resolve();
+      const session = await creating;
+      expect(await mgr.reapIdleSessions()).toEqual([]); // the clock starts once started
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('never reaps a session that is still starting (resume)', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session } = await createResumableSession(mgr);
+      await mgr.closeSession(session.id);
+      const start = deferred();
+      _nextClaudeStart = start.promise;
+
+      const resuming = mgr.resumeSession(session.id, { cwd: '/tmp' });
+      await new Promise(setImmediate);
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+
+      start.resolve();
+      await resuming;
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('keeps a session with history but no stored agent ref (it could not resume)', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      addHistory(session.id);
+
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+    });
+
+    it('keeps a session with history whose bridge reports itself unresumable', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+      addHistory(session.id);
+      bridge.isResumable.mockReturnValue(false);
+
+      clock.now += 3 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(bridge.close).not.toHaveBeenCalled();
+    });
+
+    it('reaps a session with history when it is resumable', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session } = await createResumableSession(mgr);
+      addHistory(session.id);
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('reaps a session with no history even when it could not be resumed', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge } = await createResumableSession(mgr);
+      bridge.isResumable.mockReturnValue(false);
+      // Context cards are not conversation history
+      db.prepare("INSERT INTO chat_messages (session_id, role, type, content) VALUES (?, 'user', 'context', '{}')")
+        .run(session.id);
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it('carries a pending initialContext across an idle close to the first real message', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge: oldBridge } = await createResumableSession(mgr, { initialContext: 'INITIAL CONTEXT' });
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+      await mgr.resumeSession(session.id, { cwd: '/tmp' });
+      mgr.setResumeContext(session.id, 'RESUME CONTEXT');
+      await mgr.sendMessage(session.id, 'hello');
+
+      const resumedBridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
+      expect(resumedBridge).not.toBe(oldBridge);
+      expect(oldBridge.sendMessage).not.toHaveBeenCalled();
+      expect(resumedBridge.sendMessage).toHaveBeenCalledWith(
+        'INITIAL CONTEXT\n\n---\n\nRESUME CONTEXT\n\n---\n\nhello'
+      );
+
+      // Consumed once: the next message carries neither context
+      resumedBridge.emit('complete', { fullText: '' });
+      await mgr.sendMessage(session.id, 'again');
+      expect(resumedBridge.sendMessage).toHaveBeenLastCalledWith('again');
+    });
+
+    it('an explicit close drops a carried initialContext', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session } = await createResumableSession(mgr, { initialContext: 'INITIAL CONTEXT' });
+
+      clock.now += TEN_MIN;
+      await mgr.reapIdleSessions();
+      await mgr.closeSession(session.id); // DELETE on the already-reaped session
+      await mgr.resumeSession(session.id, { cwd: '/tmp' });
+      await mgr.sendMessage(session.id, 'hello');
+
+      const resumedBridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
+      expect(resumedBridge.sendMessage).toHaveBeenCalledWith('hello');
+    });
+
+    it('does not carry initialContext for a session that cannot be resumed', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1, initialContext: 'INITIAL CONTEXT' });
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+      expect(mgr._carriedInitialContext.has(session.id)).toBe(false);
+    });
+
+    it('a resumed session gets a fresh idle clock and is reapable again', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session } = await createResumableSession(mgr);
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+      await mgr.resumeSession(session.id, { cwd: '/tmp' });
+
+      clock.now += TEN_MIN - 1;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      clock.now += 1;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+      expect(statusOf(session.id)).toBe('closed');
+    });
+
+    it('a late delta from the old bridge does not reset the resumed session\'s clock', async () => {
+      const { mgr, clock } = createIdleManager();
+      const { session, bridge: oldBridge } = await createResumableSession(mgr);
+      await mgr.closeSession(session.id);
+      await mgr.resumeSession(session.id, { cwd: '/tmp' });
+
+      clock.now += TEN_MIN - 1;
+      oldBridge.emit('delta', { text: 'stale' });
+      clock.now += 1;
+
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+    });
+
+    it.each([0, -5, NaN, Infinity, null, 'ten'])('idleTimeoutMs %s disables reaping', async (idleTimeoutMs) => {
+      const { mgr, clock, setIntervalFn } = createIdleManager({ idleTimeoutMs });
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+
+      mgr.startIdleReaper();
+      expect(setIntervalFn).not.toHaveBeenCalled();
+      expect(mgr.idleTimeoutMs).toBe(0);
+
+      clock.now += 1000 * TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([]);
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+    });
+
+    it('the two-argument constructor leaves reaping disabled', async () => {
+      expect(manager.idleTimeoutMs).toBe(0);
+      await manager.createSession({ provider: 'claude', reviewId: 1 });
+      expect(await manager.reapIdleSessions()).toEqual([]);
+    });
+
+    it('startIdleReaper schedules one unref\'d interval and is idempotent', () => {
+      const { mgr, handle, setIntervalFn } = createIdleManager();
+
+      mgr.startIdleReaper();
+      mgr.startIdleReaper();
+
+      expect(setIntervalFn).toHaveBeenCalledTimes(1);
+      expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 60 * 1000);
+      expect(handle.unref).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [TEN_MIN, 60 * 1000],
+      [4000, 2000],
+      [1000, 1000],
+    ])('sweep period for a %sms timeout is %sms', (idleTimeoutMs, period) => {
+      const { mgr, setIntervalFn } = createIdleManager({ idleTimeoutMs });
+      mgr.startIdleReaper();
+      expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), period);
+    });
+
+    it('stopIdleReaper clears the interval, is idempotent, and allows a restart', () => {
+      const { mgr, handle, setIntervalFn, clearIntervalFn } = createIdleManager();
+
+      mgr.stopIdleReaper(); // not started — no-op
+      expect(clearIntervalFn).not.toHaveBeenCalled();
+
+      mgr.startIdleReaper();
+      mgr.stopIdleReaper();
+      mgr.stopIdleReaper();
+      expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+      expect(clearIntervalFn).toHaveBeenCalledWith(handle);
+
+      mgr.startIdleReaper();
+      expect(setIntervalFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('the scheduled sweep reaps idle sessions', async () => {
+      const { mgr, clock, setIntervalFn } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      mgr.startIdleReaper();
+      const sweep = setIntervalFn.mock.calls[0][0];
+
+      clock.now += TEN_MIN;
+      sweep();
+
+      await vi.waitFor(() => expect(statusOf(session.id)).toBe('closed'));
+      expect(mgr.isSessionActive(session.id)).toBe(false);
+    });
+
+    it('one session failing to close does not stop the others; the failed one is still marked closed', async () => {
+      const { mgr, clock } = createIdleManager();
+      const first = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      const second = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      _createdClaudeCodeBridges[0].close.mockRejectedValue(new Error('kill failed'));
+      const emitted = [];
+      mgr.on('session-idle-closed', ({ sessionId }) => emitted.push(sessionId));
+
+      clock.now += TEN_MIN;
+      const closed = await mgr.reapIdleSessions();
+
+      expect(closed).toEqual([second.id]);
+      expect(statusOf(first.id)).toBe('closed');
+      expect(statusOf(second.id)).toBe('closed');
+      expect(mgr.isSessionActive(first.id)).toBe(false);
+      expect(emitted.sort()).toEqual([first.id, second.id].sort());
+      expect(_createdClaudeCodeBridges[1].close).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        `[ChatSession] Failed to close idle session ${first.id}: kill failed`
+      );
+    });
+
+    it('a failing sweep is caught by the interval callback', async () => {
+      const { mgr, setIntervalFn } = createIdleManager();
+      mgr.startIdleReaper();
+      const sweep = setIntervalFn.mock.calls[0][0];
+      vi.spyOn(mgr, 'reapIdleSessions').mockRejectedValue(new Error('sweep exploded'));
+
+      expect(() => sweep()).not.toThrow();
+
+      await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(
+        '[ChatSession] Idle reaper sweep failed: sweep exploded'
+      ));
+    });
+
+    it('a session-idle-closed listener throwing does not fail the reap', async () => {
+      const { mgr, clock } = createIdleManager();
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      mgr.on('session-idle-closed', () => { throw new Error('listener broke'); });
+
+      clock.now += TEN_MIN;
+      expect(await mgr.reapIdleSessions()).toEqual([session.id]);
+      expect(statusOf(session.id)).toBe('closed');
+    });
+  });
+
+  describe('close/resume race', () => {
+    async function createResumableClaudeSession(mgr) {
+      const session = await mgr.createSession({ provider: 'claude', reviewId: 1 });
+      const bridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
+      bridge.emit('session', { sessionId: 'claude-session-race' });
+      return { session, bridge };
+    }
+
+    it('resumeSession waits for a pending close and the final status is active', async () => {
+      const { session, bridge } = await createResumableClaudeSession(manager);
+      const exit = deferred();
+      bridge.close.mockReturnValue(exit.promise);
+
+      const closing = manager.closeSession(session.id);
+      const resuming = manager.resumeSession(session.id, { cwd: '/tmp' });
+      await new Promise(setImmediate);
+
+      // The old process has not exited yet, so no new one may be spawned
+      expect(_createdClaudeCodeBridges).toHaveLength(1);
+      expect(manager.isSessionActive(session.id)).toBe(false);
+
+      exit.resolve();
+      await closing;
+      const result = await resuming;
+
+      expect(result.status).toBe('active');
+      expect(_createdClaudeCodeBridges).toHaveLength(2);
+      expect(_createdClaudeCodeBridges[1]._constructorOptions.resumeSessionId).toBe('claude-session-race');
+      expect(manager.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('an idle close racing a resume notifies before the resume re-registers, and ends active', async () => {
+      let clock = 1_000_000;
+      const mgr = new ChatSessionManager(db, {}, { idleTimeoutMs: 60_000, _deps: { now: () => clock } });
+      const { session, bridge } = await createResumableClaudeSession(mgr);
+      const exit = deferred();
+      bridge.close.mockReturnValue(exit.promise);
+      const activeAtNotify = [];
+      mgr.on('session-idle-closed', ({ sessionId }) => activeAtNotify.push(mgr.isSessionActive(sessionId)));
+
+      clock += 60_000;
+      const reaping = mgr.reapIdleSessions();
+      const resuming = mgr.resumeSession(session.id, { cwd: '/tmp' });
+      await new Promise(setImmediate);
+      expect(_createdClaudeCodeBridges).toHaveLength(1);
+
+      exit.resolve();
+      expect(await reaping).toEqual([session.id]);
+      await resuming;
+
+      expect(activeAtNotify).toEqual([false]);
+      expect(mgr.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('a resume still proceeds when the pending close fails', async () => {
+      const { session, bridge } = await createResumableClaudeSession(manager);
+      const exit = deferred();
+      bridge.close.mockReturnValue(exit.promise);
+
+      const closing = manager.closeSession(session.id);
+      const resuming = manager.resumeSession(session.id, { cwd: '/tmp' });
+      exit.reject(new Error('kill failed'));
+
+      await expect(closing).rejects.toThrow('kill failed');
+      await expect(resuming).resolves.toMatchObject({ status: 'active' });
+      expect(manager.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('a second close while the first is held waits for it and shares one bridge.close()', async () => {
+      const { session, bridge } = await createResumableClaudeSession(manager);
+      const exit = deferred();
+      bridge.close.mockReturnValue(exit.promise);
+      const settled = [];
+
+      const a = manager.closeSession(session.id).then(() => settled.push('a'));
+      const b = manager.closeSession(session.id).then(() => settled.push('b'));
+      await new Promise(setImmediate);
+
+      // Held: the second close must not report done before the process exits
+      expect(settled).toEqual([]);
+      expect(statusOf(session.id)).toBe('active');
+
+      exit.resolve();
+      await Promise.all([a, b]);
+
+      expect(settled.sort()).toEqual(['a', 'b']);
+      expect(bridge.close).toHaveBeenCalledTimes(1);
+      expect(statusOf(session.id)).toBe('closed');
+    });
+
+    it('a late close event from the old bridge does not tear down the resumed session', async () => {
+      const { session, bridge: oldBridge } = await createResumableClaudeSession(manager);
+      await manager.closeSession(session.id);
+      await manager.resumeSession(session.id, { cwd: '/tmp' });
+
+      oldBridge.emit('close');
+
+      expect(manager.isSessionActive(session.id)).toBe(true);
+      expect(statusOf(session.id)).toBe('active');
+    });
+
+    it('closeAll waits for closes already in flight', async () => {
+      const { session, bridge } = await createResumableClaudeSession(manager);
+      const exit = deferred();
+      bridge.close.mockReturnValue(exit.promise);
+
+      const closing = manager.closeSession(session.id);
+      let closeAllDone = false;
+      const all = manager.closeAll().then(() => { closeAllDone = true; });
+      await new Promise(setImmediate);
+      expect(closeAllDone).toBe(false);
+
+      exit.resolve();
+      await all;
+      await closing;
+      expect(closeAllDone).toBe(true);
+      expect(statusOf(session.id)).toBe('closed');
     });
   });
 });

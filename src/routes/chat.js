@@ -23,7 +23,8 @@ const { buildChatStartedPayload, buildChatResumedPayload, buildChatHookContext, 
 const { resolveFormat } = require('../utils/comment-formatter');
 const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const { getChatModelCatalog, canonicalChatModel } = require('../chat/chat-models');
-const { SESSION_BUSY } = require('../chat/session-manager');
+const ChatSessionManager = require('../chat/session-manager');
+const { SESSION_BUSY } = ChatSessionManager;
 const { resolveLoadSkills } = require('../config');
 
 /**
@@ -216,6 +217,46 @@ function unregisterChatBroadcast(sessionId) {
     broadcastUnsubscribers.delete(sessionId);
     logger.debug(`[ChatRoute] Broadcast listeners unregistered for session ${sessionId}`);
   }
+}
+
+/**
+ * React to the session manager closing an idle session: drop the session's
+ * broadcast listeners (they belong to the closed bridge) and tell connected
+ * clients, so the next send shows the resume indicator. The session resumes
+ * transparently on its next message.
+ * The listener for ChatSessionManager's 'session-idle-closed' event (see
+ * createChatSessionManager).
+ * @param {{sessionId: number}} event
+ */
+function handleSessionIdleClosed({ sessionId }) {
+  unregisterChatBroadcast(sessionId);
+  broadcastChat(sessionId, { type: 'session_closed', reason: 'idle' });
+}
+
+/**
+ * Build the server's ChatSessionManager: provider overrides from
+ * `config.chat_providers`, the idle timeout from `config.chat.idle_timeout_minutes`
+ * (the manager decides what counts as disabled), the idle-close listener that
+ * keeps this module's broadcast registry and clients in sync, and a running
+ * idle reaper. Lives here because it needs both the manager class and this
+ * module's broadcast state; session-manager.js must not require a route module.
+ * @param {Database} db
+ * @param {Object} config - Effective config (post global-settings overlay)
+ * @param {Object} [options]
+ * @param {Object} [options._deps] - Clock/timer overrides passed to the manager
+ * @returns {ChatSessionManager}
+ */
+function createChatSessionManager(db, config = {}, { _deps } = {}) {
+  const idleTimeoutMs = Number(config.chat?.idle_timeout_minutes) * 60 * 1000;
+  const manager = new ChatSessionManager(db, config.chat_providers || {}, { idleTimeoutMs, _deps });
+  manager.on('session-idle-closed', handleSessionIdleClosed);
+  manager.startIdleReaper();
+  if (manager.idleTimeoutMs) {
+    logger.info(`Chat sessions idle for ${manager.idleTimeoutMs / 60000} minute(s) will be closed (resumable on next message)`);
+  } else {
+    logger.info('Idle chat session shutdown is disabled (chat.idle_timeout_minutes is not a positive number)');
+  }
+  return manager;
 }
 
 /**
@@ -791,6 +832,8 @@ router.get('/api.md', (req, res) => {
 });
 
 module.exports = router;
+module.exports.handleSessionIdleClosed = handleSessionIdleClosed;
+module.exports.createChatSessionManager = createChatSessionManager;
 
 // Expose internals for testing
 module.exports._broadcastUnsubscribers = broadcastUnsubscribers;

@@ -280,6 +280,16 @@ const REGISTRY = [
     restartRequired: false
   },
   {
+    key: 'chat.idle_timeout_minutes',
+    label: 'Idle chat timeout (minutes)',
+    description: 'Shut down a chat agent process after this many idle minutes; it resumes on the next message. 0 disables.',
+    group: 'chat',
+    type: 'integer',
+    default: 10,
+    editable: true,
+    restartRequired: true
+  },
+  {
     key: 'chat_spinner',
     label: 'Chat spinner style',
     description: 'Animation shown while the chat agent is working.',

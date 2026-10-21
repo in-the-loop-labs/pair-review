@@ -76,6 +76,9 @@ class AcpBridge extends EventEmitter {
     this._accumulatedText = '';
     this._inMessage = false;
     this._firstMessage = !options.resumeSessionId;
+    // agentCapabilities.loadSession from the initialize response. ACP agents
+    // that omit it do not support loading (resuming) a session.
+    this._canLoadSession = false;
   }
 
   /**
@@ -164,6 +167,10 @@ class AcpBridge extends EventEmitter {
         .catch((err) => {
           if (!this._closing) {
             reject(new Error(`ACP initialization failed: ${err.message}`));
+            // start() has failed, so no one will close() this bridge: stop the
+            // spawned agent instead of leaving it running unowned.
+            this._closing = true;
+            try { proc.kill('SIGTERM'); } catch { /* already gone */ }
           }
         });
     });
@@ -201,13 +208,20 @@ class AcpBridge extends EventEmitter {
       stream
     );
 
-    await this._connection.initialize({
+    const initResult = await this._connection.initialize({
       protocolVersion: deps.acp.PROTOCOL_VERSION,
       clientCapabilities: {},
       clientInfo: { name: 'pair-review', version: pkgVersion },
     });
+    this._canLoadSession = initResult?.agentCapabilities?.loadSession === true;
 
     if (this.resumeSessionId) {
+      if (!this._canLoadSession) {
+        // Fails start(): the session manager marks the row 'error' and the
+        // message route answers 410 with this text, so the client starts a
+        // replacement session instead of resuming into a blank one.
+        throw new Error(`${this.acpCommand} does not support resuming ACP sessions (no loadSession capability)`);
+      }
       // Resume a previous session — agent restores conversation history
       await this._connection.loadSession({
         sessionId: this.resumeSessionId,
@@ -351,6 +365,17 @@ class AcpBridge extends EventEmitter {
    */
   isBusy() {
     return this._inMessage;
+  }
+
+  /**
+   * Whether a closed session can be resumed with its history: the agent
+   * advertised `agentCapabilities.loadSession` at initialize. False before
+   * start(). The session manager keeps an unresumable session with history
+   * alive rather than shut it down when idle.
+   * @returns {boolean}
+   */
+  isResumable() {
+    return this._canLoadSession;
   }
 
   // ---------------------------------------------------------------------------
