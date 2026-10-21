@@ -19,13 +19,12 @@ const IMPLEMENTATION_MATRIX = {
   pending_review_comments: _pendingReviewCommentsOps.IMPLEMENTED_MODES
 };
 
-// Recognised `_endpoint` sub-keys. These ride alongside the area key in
-// `features` (e.g. `pending_review_comments_endpoint`) and are validated
-// separately from area modes. Listed explicitly so a typo like
-// `pending_review_commentes_endpoint` is rejected at startup rather than
-// silently ignored.
-const KNOWN_ENDPOINT_SUBKEYS = new Set([
-  'pending_review_comments_endpoint'
+// Recognised sub-keys that configure an implementation without selecting a
+// feature area. They are validated separately from area modes. Listing them
+// explicitly keeps typos from being silently ignored.
+const KNOWN_FEATURE_SUBKEYS = new Set([
+  'pending_review_comments_endpoint',
+  'pending_review_comments_batch'
 ]);
 
 let _cachedCommandToken = null;
@@ -582,11 +581,10 @@ function _resolveFeatures(apiHost, explicit) {
       out[area] = 'rest';
     }
   }
-  // Preserve endpoint-override sub-keys (e.g. `pending_review_comments_endpoint`)
-  // so the operations layer can read them at dispatch time. Validation of
-  // these keys happens in `validateRepoConfig()` at startup.
+  // Preserve implementation sub-keys so the operations layer can read them
+  // at dispatch time. Validation happens in `validateRepoConfig()` at startup.
   for (const [key, value] of Object.entries(overrides)) {
-    if (key.endsWith('_endpoint') && typeof value === 'string') {
+    if (KNOWN_FEATURE_SUBKEYS.has(key)) {
       out[key] = value;
     }
   }
@@ -965,17 +963,15 @@ function validateRepoConfig(config) {
     }
 
     for (const [area, value] of Object.entries(features)) {
-      // Endpoint-override sub-keys (e.g. `pending_review_comments_endpoint`)
-      // are validated separately below. Reject anything that ends in
-      // `_endpoint` but isn't a recognised override so typos surface here.
+      // Implementation sub-keys are validated separately below.
+      if (KNOWN_FEATURE_SUBKEYS.has(area)) continue;
+      // Reject unknown endpoint overrides with a specific error before the
+      // general unknown-feature check.
       if (area.endsWith('_endpoint')) {
-        if (!KNOWN_ENDPOINT_SUBKEYS.has(area)) {
-          throw new Error(
-            `Invalid pair-review config: repos["${repoKey}"].features.${area} is not a recognised endpoint override. ` +
-            `Valid endpoint overrides: ${Array.from(KNOWN_ENDPOINT_SUBKEYS).join(', ')}.`
-          );
-        }
-        continue;
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.${area} is not a recognised endpoint override. ` +
+          `Valid endpoint overrides: ${Array.from(KNOWN_FEATURE_SUBKEYS).filter((key) => key.endsWith('_endpoint')).join(', ')}.`
+        );
       }
       // Reject unknown feature keys (e.g. `pendin_review_check` typo).
       // Without this, the key is silently ignored by _resolveFeatures.
@@ -1020,7 +1016,7 @@ function validateRepoConfig(config) {
     // would resolve to a mode lacking a runtime implementation).
     const resolvedFeatures = _resolveFeatures(apiHost, features);
     for (const [area, value] of Object.entries(resolvedFeatures)) {
-      if (area.endsWith('_endpoint')) continue;
+      if (KNOWN_FEATURE_SUBKEYS.has(area)) continue;
       if (Object.prototype.hasOwnProperty.call(features, area)) continue; // already checked above
       const implemented = IMPLEMENTATION_MATRIX[area];
       if (implemented && !implemented.has(value)) {
@@ -1033,8 +1029,9 @@ function validateRepoConfig(config) {
     }
 
     // Validate the optional endpoint override for the host-extension
-    // `pending_review_comments` area. Only meaningful when that area is
-    // set to "host" — applying it otherwise is a config error.
+    // `pending_review_comments` area. Only meaningful when that area
+    // resolves to "host" (explicitly, or by default on an alt-host) —
+    // applying it otherwise is a config error.
     const endpointOverride = features.pending_review_comments_endpoint;
     if (endpointOverride !== undefined && endpointOverride !== null) {
       if (typeof endpointOverride !== 'string' || !endpointOverride) {
@@ -1042,7 +1039,7 @@ function validateRepoConfig(config) {
           `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint must be a non-empty string.`
         );
       }
-      if (features.pending_review_comments !== 'host') {
+      if (resolvedFeatures.pending_review_comments !== 'host') {
         throw new Error(
           `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint is only valid when pending_review_comments = "host".`
         );
@@ -1061,6 +1058,23 @@ function validateRepoConfig(config) {
       if (missing.length > 0) {
         throw new Error(
           `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint is missing required placeholder(s): ${missing.join(', ')}.`
+        );
+      }
+    }
+
+    // Some hosts expose the pending-review endpoint but accept one comment
+    // per POST instead of the generic batch envelope. Batch mode remains the
+    // default to preserve the documented host-extension contract.
+    const batchComments = features.pending_review_comments_batch;
+    if (batchComments !== undefined && batchComments !== null) {
+      if (typeof batchComments !== 'boolean') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_batch must be a boolean.`
+        );
+      }
+      if (resolvedFeatures.pending_review_comments !== 'host') {
+        throw new Error(
+          `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_batch is only valid when pending_review_comments = "host".`
         );
       }
     }

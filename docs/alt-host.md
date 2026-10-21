@@ -291,6 +291,25 @@ The placeholders `{owner}`, `{repo}`, `{pull_number}` (PR number), and
 `{review_id}` are substituted at request time. If omitted, the default
 endpoint described in "Host Extensions" is used.
 
+#### `pending_review_comments_batch` (optional)
+
+The host-extension contract sends all comments in a `{ "comments": [...] }`
+envelope by default. Set this option to `false` when the host accepts one
+root-level comment object per request at the same endpoint:
+
+```jsonc
+"features": {
+  "pending_review_comments": "host",
+  "pending_review_comments_batch": false
+}
+```
+
+Pair-review then sends one request per comment and reports partial failures in
+the same format as the batch implementation. `pending_review_comments` may be
+omitted, since it already defaults to `"host"` when `api_host` is set. See
+[Per-comment variant](#per-comment-variant) for the request and response
+contract.
+
 ### `links`
 
 Customise the link buttons pair-review renders for a repository.
@@ -531,6 +550,27 @@ Hosts that implement this default contract work out-of-the-box with
 `features.pending_review_comments: "host"`. Hosts that need a different
 path can override it via `features.pending_review_comments_endpoint`.
 
+#### Per-comment variant
+
+Hosts whose endpoint accepts one comment per request instead of the
+`{ "comments": [...] }` envelope set
+`features.pending_review_comments_batch: false`. Pair-review then sends one
+`POST` per comment to the same endpoint (including any
+`pending_review_comments_endpoint` override), with the comment itself as the
+root JSON object:
+
+> ```json
+> { "path": "src/app.js", "body": "...", "line": 42, "side": "RIGHT", "subject_type": "line", "commit_id": "<head sha>" }
+> ```
+
+The fields are the same as one entry of the batch envelope. Any `2xx`
+response means that comment was added and the response body is ignored, so
+unlike batch mode a `failed[]` list in a `200` response is not honoured. A
+`400` or `422` fails only that comment and pair-review continues with the
+rest. Any other failure (`401`, `403`, `404`, `429`, `5xx` or a network
+error) stops the submission, and the remaining comments are reported as
+skipped.
+
 Authentication uses the same `token` / `token_command` configured for the
 repo. The request is sent via the same HTTP client used for every other
 API call, against the configured `api_host` base URL.
@@ -638,6 +678,12 @@ Verify that your host implements the documented extension contract (or
 override `features.pending_review_comments_endpoint`). Check the
 pair-review server log — failed extension calls are logged with the full
 request path and the host's response.
+
+Changing the endpoint path does not change the request body. If the host
+rejects the `{ "comments": [...] }` envelope because it expects a single
+comment per request (typically a `422` about a missing `path` or `body`), set
+`features.pending_review_comments_batch: false` to use the
+[per-comment variant](#per-comment-variant).
 
 ### URL pasted on CLI is not recognised
 

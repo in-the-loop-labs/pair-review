@@ -7,7 +7,9 @@ const logger = require('../../../utils/logger');
  * GitHub's REST API does not support adding inline comments to a *pending*
  * draft review (the `addPullRequestReviewThread` GraphQL mutation has no
  * REST equivalent). Alt-hosts that advertise a compatible extension expose
- * this via a single HTTP POST that accepts a batch of comments.
+ * this through a review-comments endpoint. The generic contract accepts a
+ * batch of comments in one POST. Hosts that accept one comment per POST can
+ * set `features.pending_review_comments_batch` to `false`.
  *
  * Documented generic contract:
  *
@@ -49,16 +51,23 @@ const logger = require('../../../utils/logger');
  * placeholders. The template must be a relative path (starting with
  * `/repos/` or similar) — absolute URLs are rejected at config validation.
  *
+ * Request shape: `features.pending_review_comments_batch` defaults to `true`.
+ * When set to `false`, each wire comment is sent as the complete request body
+ * in its own POST. This supports hosts whose review-comments extension is
+ * singular while preserving the generic batch contract by default. Any 2xx
+ * counts as success and the response body is ignored. A 400/422 fails only
+ * that comment; any other failure stops the loop and reports the remaining
+ * comments as skipped.
+ *
  * Note on `reviewId`: this argument is the *host's* review identifier
  * (e.g. a numeric REST id), not a GraphQL node id. The REST/host
  * `review_lifecycle` impl (Phase 4) returns this id when it creates the
  * pending review; the caller passes it through unchanged.
  *
  * Note on `batchSize`: the original parameter is kept in the signature
- * for API compatibility with the GraphQL impl, but the host endpoint
- * accepts arbitrary batch sizes in a single call. We send all comments
- * in one POST and let the server enforce its own limits. The argument
- * is otherwise ignored.
+ * for API compatibility with the GraphQL impl. It is ignored. Batch hosts
+ * receive all comments in one request. Singular hosts receive one request
+ * per comment.
  */
 
 const DEFAULT_ENDPOINT_TEMPLATE =
@@ -161,7 +170,8 @@ function toWireComment(comment, commitId) {
  *   the binding token automatically.
  * @param {Object} features - Feature-flag object from the host binding.
  *   May include `pending_review_comments_endpoint` to override the
- *   default endpoint path.
+ *   default endpoint path and `pending_review_comments_batch: false` for
+ *   hosts that accept one comment per request.
  * @param {Object} prContext - `{ owner, repo, prNumber, headSha? }`.
  *   Required — the host endpoint is path-shaped, so the GraphQL node IDs
  *   are not sufficient on their own. `headSha` (the PR head SHA) is
@@ -237,17 +247,71 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
   // field and let the host surface its own validation error.
   const commitId = prContext.headSha;
   const wireComments = comments.map((c) => toWireComment(c, commitId));
+  const useBatchRequest = !features || features.pending_review_comments_batch !== false;
   logger.info(
-    `Posting ${wireComments.length} comment(s) to host endpoint ${endpoint}`
+    `Posting ${wireComments.length} comment(s) to host endpoint ${endpoint} ` +
+    `using ${useBatchRequest ? 'one batch request' : 'individual requests'}`
   );
+
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'application/json'
+  };
+
+  if (!useBatchRequest) {
+    let successCount = 0;
+    const failedDetails = [];
+    const locationOf = (c) => (c.line ? `${c.path}:${c.line}` : `${c.path}:file-level`);
+
+    for (let index = 0; index < wireComments.length; index++) {
+      try {
+        await octokit.request(`POST ${endpoint}`, {
+          headers,
+          data: wireComments[index]
+        });
+        successCount++;
+      } catch (error) {
+        const status = error && (error.status || error.statusCode);
+        const message = (error && error.message) || 'Unknown error';
+        const detail = `${locationOf(comments[index])} - ${status || 'network error'}: ${message}`;
+        failedDetails.push(detail);
+        logger.warn(`Host comment failed: ${detail}`);
+        // 400/422 reject this comment alone (e.g. a line outside the diff),
+        // so keep going and report every bad comment at once. Anything else
+        // (auth, a bad endpoint, rate limiting, server or network errors)
+        // shares the endpoint, review and credentials with the remaining
+        // comments and would fail them all, so stop here.
+        if (status !== 400 && status !== 422) {
+          for (const skipped of comments.slice(index + 1)) {
+            failedDetails.push(
+              `${locationOf(skipped)} - skipped after ${status || 'network error'}`
+            );
+          }
+          break;
+        }
+      }
+    }
+
+    if (failedDetails.length > 0) {
+      logger.error(
+        `Host pending_review_comments partial failure: ${successCount} added, ` +
+        `${failedDetails.length} failed`
+      );
+    } else {
+      logger.info(`Host pending_review_comments complete: ${successCount} comment(s) added`);
+    }
+
+    return {
+      successCount,
+      failed: failedDetails.length > 0,
+      failedDetails
+    };
+  }
 
   let response;
   try {
     response = await octokit.request(`POST ${endpoint}`, {
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json'
-      },
+      headers,
       data: { comments: wireComments }
     });
   } catch (error) {

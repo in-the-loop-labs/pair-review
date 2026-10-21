@@ -58,6 +58,198 @@ describe('impl/host/pending-review-comments', () => {
       });
     });
 
+    it('posts one root-level comment per request when batching is disabled', async () => {
+      const octokit = makeOctokit(async () => ({ data: { id: 1 } }));
+      const comments = [
+        { path: 'a.js', line: 1, body: 'one' },
+        { path: 'b.js', line: 2, body: 'two' }
+      ];
+
+      const result = await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        PR_CTX,
+        42,
+        comments
+      );
+
+      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+      expect(octokit.request).toHaveBeenCalledTimes(2);
+      for (const [endpoint] of octokit.request.mock.calls) {
+        expect(endpoint).toBe('POST /repos/alice/widgets/pulls/7/reviews/42/comments');
+      }
+      expect(octokit.request.mock.calls[0][1].data).toEqual({
+        path: 'a.js',
+        body: 'one',
+        side: 'RIGHT',
+        line: 1,
+        subject_type: 'line'
+      });
+      expect(octokit.request.mock.calls[1][1].data).toEqual({
+        path: 'b.js',
+        body: 'two',
+        side: 'RIGHT',
+        line: 2,
+        subject_type: 'line'
+      });
+    });
+
+    it('reports individual-request failures without skipping later comments', async () => {
+      const failure = Object.assign(new Error('invalid line'), { status: 422 });
+      const octokit = makeOctokit(async (_endpoint, options) => {
+        if (options.data.path === 'b.js') throw failure;
+        return { data: { id: 1 } };
+      });
+
+      const result = await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        PR_CTX,
+        42,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', line: 2, body: 'two' },
+          { path: 'c.js', line: 3, body: 'three' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(3);
+      expect(result).toEqual({
+        successCount: 2,
+        failed: true,
+        failedDetails: ['b.js:2 - 422: invalid line']
+      });
+    });
+
+    it('stops after a failure shared by every comment and reports the rest as skipped', async () => {
+      const failure = Object.assign(new Error('Internal Server Error'), { status: 500 });
+      const octokit = makeOctokit(async () => { throw failure; });
+
+      const result = await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        PR_CTX,
+        42,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', line: 2, body: 'two' },
+          { path: 'c.js', body: 'three' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        successCount: 0,
+        failed: true,
+        failedDetails: [
+          'a.js:1 - 500: Internal Server Error',
+          'b.js:2 - skipped after 500',
+          'c.js:file-level - skipped after 500'
+        ]
+      });
+    });
+
+    it('stops after a network error with no status', async () => {
+      const octokit = makeOctokit(async (_endpoint, options) => {
+        if (options.data.path === 'b.js') throw new Error('socket hang up');
+        return { data: { id: 1 } };
+      });
+
+      const result = await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        PR_CTX,
+        42,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', line: 2, body: 'two' },
+          { path: 'c.js', line: 3, body: 'three' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        successCount: 1,
+        failed: true,
+        failedDetails: [
+          'b.js:2 - network error: socket hang up',
+          'c.js:3 - skipped after network error'
+        ]
+      });
+    });
+
+    it('continues after a 400 for a single comment', async () => {
+      const failure = Object.assign(new Error('bad request'), { status: 400 });
+      const octokit = makeOctokit(async (_endpoint, options) => {
+        if (options.data.path === 'a.js') throw failure;
+        return { data: { id: 1 } };
+      });
+
+      const result = await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        PR_CTX,
+        42,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', line: 2, body: 'two' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        successCount: 1,
+        failed: true,
+        failedDetails: ['a.js:1 - 400: bad request']
+      });
+    });
+
+    it('sends commit_id from prContext.headSha in every per-comment request', async () => {
+      const HEAD_SHA = 'abc123def456';
+      const octokit = makeOctokit(async () => ({ data: { id: 1 } }));
+
+      await hostImpl.addCommentsInBatches(
+        octokit,
+        { pending_review_comments_batch: false },
+        { ...PR_CTX, headSha: HEAD_SHA },
+        42,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', body: 'file-level' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(2);
+      for (const [, options] of octokit.request.mock.calls) {
+        expect(options.data.commit_id).toBe(HEAD_SHA);
+      }
+    });
+
+    it('sends every per-comment request to the configured endpoint override', async () => {
+      const octokit = makeOctokit(async () => ({ data: { id: 1 } }));
+
+      await hostImpl.addCommentsInBatches(
+        octokit,
+        {
+          pending_review_comments: 'host',
+          pending_review_comments_batch: false,
+          pending_review_comments_endpoint:
+            '/custom/{owner}/{repo}/prs/{pull_number}/reviews/{review_id}/comment'
+        },
+        PR_CTX,
+        99,
+        [
+          { path: 'a.js', line: 1, body: 'one' },
+          { path: 'b.js', line: 2, body: 'two' }
+        ]
+      );
+
+      expect(octokit.request).toHaveBeenCalledTimes(2);
+      for (const [endpoint] of octokit.request.mock.calls) {
+        expect(endpoint).toBe('POST /custom/alice/widgets/prs/7/reviews/99/comment');
+      }
+    });
+
     it('uses the configured endpoint override when features.pending_review_comments_endpoint is set', async () => {
       const octokit = makeOctokit(async () => ({ data: { added: 1, failed: [] } }));
       const features = {
