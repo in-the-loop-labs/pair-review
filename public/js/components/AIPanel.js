@@ -636,8 +636,8 @@ class AIPanel {
      *
      * Design note: These counts reflect "inbox size" (total items in this.comments),
      * which may include dismissed comments when the "show dismissed" filter is enabled.
-     * This differs from SplitButton/ReviewModal which use DOM-based counting to show
-     * only active comments (what will actually be submitted). The difference is intentional:
+     * This differs from SplitButton/ReviewModal which count comments by active status
+     * (what will actually be submitted). The difference is intentional:
      * - Segment counts = "how many items are in this panel view"
      * - SplitButton counts = "how many comments will be submitted"
      */
@@ -1758,6 +1758,7 @@ class AIPanel {
             <div class="finding-item-wrapper">
                 <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}${isFileLevel ? ' file-level' : ''}${dismissedClass}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-is-file-level="${isFileLevel ? '1' : '0'}" data-item-type="comment" title="${fullLocation}">
                     <span class="comment-icon">${icon}</span>
+                    ${window.getPostedCommentIcon?.(comment) || ''}
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
                         ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${isFileLevel ? ' <span class="file-level-indicator">(file)</span>' : ''}</span>` : ''}

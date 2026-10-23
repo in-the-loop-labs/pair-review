@@ -5342,6 +5342,24 @@ div.external-comment-row {
   font-size: 14px;
 }
 
+.hide-posted-comments-option {
+  margin-top: 16px;
+  color: var(--color-text-secondary, #57606a);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.posted-comment-hidden {
+  display: none !important;
+}
+
+.posted-comment-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--color-text-secondary, #57606a);
+  opacity: 0.7;
+}
+
 .review-modal-footer {
   padding: 16px 24px;
   border-top: 1px solid #d1d9e0;

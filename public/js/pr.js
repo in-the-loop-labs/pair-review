@@ -6299,6 +6299,7 @@ class PRManager {
       });
 
       if (!response.ok) throw new Error('Failed to update comment');
+      this.updateUserComment(commentId, { body: editedText });
 
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
@@ -6366,6 +6367,8 @@ class PRManager {
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
+      this.updateUserComment(commentId, { status: 'inactive' });
+      this.updateCommentCount();
 
       // Check if dismissed comments filter is enabled for AI Panel updates
       const showDismissed = window.aiPanel?.showDismissedComments || false;
@@ -6572,7 +6575,7 @@ class PRManager {
     try {
       const queryParam = includeDismissed ? '?includeDismissed=true' : '';
       const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
-      if (!response.ok) return;
+      if (!response.ok) throw new Error('Failed to load comments');
 
       const data = await response.json();
       this.userComments = data.comments || [];
@@ -6580,13 +6583,11 @@ class PRManager {
       // Separate file-level and line-level comments for diff view rendering
       // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
       // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
-      // This provides cleaner UX - the diff view shows only active comments, while
-      // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
+      // Posted comments remain visible unless the reviewer opts to hide them.
       const fileLevelComments = [];
       const lineLevelComments = [];
 
       this.userComments.forEach(comment => {
-        // Skip inactive (dismissed) comments - they should not appear in the diff view
         if (comment.status === 'inactive') {
           return;
         }
@@ -6596,16 +6597,6 @@ class PRManager {
           lineLevelComments.push(comment);
         }
       });
-
-      // Clear existing comment rows before re-rendering
-      document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
-
-      // Clear existing PierreBridge comment annotations
-      if (this.pierreBridge) {
-        for (const [file] of this.pierreBridge.files) {
-          this.pierreBridge.removeAnnotationsByType(file, 'comment');
-        }
-      }
 
       // Ensure every comment's target line is reachable in the DOM before
       // rendering. `ensureLinesVisible` handles both engines — for Pierre
@@ -6620,6 +6611,16 @@ class PRManager {
           line_end: c.line_end || c.line_start,
           side: c.side || 'RIGHT',
         })));
+      }
+
+      // Clear existing comment rows before re-rendering
+      document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
+
+      // Clear existing PierreBridge comment annotations
+      if (this.pierreBridge) {
+        for (const [file] of this.pierreBridge.files) {
+          this.pierreBridge.removeAnnotationsByType(file, 'comment');
+        }
       }
 
       // Partition line-level comments by rendering engine
@@ -6669,18 +6670,14 @@ class PRManager {
         });
       }
 
-      // Load file-level comments into their zones (only active comments reach
-      // here). Always pass the list, even when empty, so the cards of a
+      // Always pass the list, even when empty, so the cards of a
       // deleted or dismissed last comment are removed. null suggestions
       // leaves the file-level AI cards alone.
       if (this.fileCommentManager) {
         this.fileCommentManager.loadFileComments(fileLevelComments, null);
       }
 
-      // Populate AI Panel with all comments (including dismissed if requested)
-      if (window.aiPanel?.setComments) {
-        window.aiPanel.setComments(this.userComments);
-      }
+      this.applyPostedCommentVisibility();
 
       this.updateCommentCount();
 
@@ -6688,9 +6685,22 @@ class PRManager {
       if (this.commentMinimizer) {
         this.commentMinimizer.refreshIndicators();
       }
+      return true;
     } catch (error) {
       console.error('Error loading user comments:', error);
+      return false;
     }
+  }
+
+  applyPostedCommentVisibility() {
+    const hidePosted = localStorage.getItem('pair-review-hide-posted-comments') === 'true';
+    document.querySelectorAll('[data-comment-status="submitted"]').forEach(element => {
+      element.classList.toggle('posted-comment-hidden', hidePosted);
+    });
+    window.aiPanel?.setComments?.((this.userComments || []).filter(c =>
+      (c.status !== 'inactive' || window.aiPanel.showDismissedComments) &&
+      (!hidePosted || c.status !== 'submitted')
+    ));
   }
 
   /**
@@ -6921,6 +6931,7 @@ class PRManager {
    * Notify panels and navigator after a successful adoption
    */
   _notifyAdoption(suggestionId, newComment) {
+    this.addUserComment(newComment);
     if (window.aiPanel?.addComment) {
       window.aiPanel.addComment(newComment);
     }
@@ -7411,15 +7422,24 @@ class PRManager {
     window.open(shareUrl.toString(), '_blank');
   }
 
+  addUserComment(comment) {
+    this.userComments = [...(this.userComments || []).filter(c => c.id !== comment.id), { status: 'active', ...comment }];
+  }
+
+  updateUserComment(commentId, updates) {
+    this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
+  }
+
+  getPendingCommentCount() {
+    return (this.userComments || []).filter(c => c.status === 'active').length;
+  }
+
   /**
-   * Update comment count display
-   * Note: Dismissed comments are never in the diff DOM (design decision), so we simply count all visible elements.
+   * Update comment count display independently of diff visibility.
    */
   updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    const userComments = this.getPendingCommentCount();
+    if (this.reviewModal?.isVisible) this.reviewModal.updateCommentCount();
 
     if (this.splitButton) {
       this.splitButton.updateCommentCount(userComments);
@@ -7453,10 +7473,7 @@ class PRManager {
     const reviewBody = document.getElementById('review-body').value.trim();
     const submitBtn = document.getElementById('submit-review-btn');
 
-    // Count BOTH line-level and file-level comments for validation
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const totalComments = lineComments + fileComments;
+    const totalComments = this.getPendingCommentCount();
     if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {
       alert('Please add comments or a review summary when requesting changes.');
       return;
