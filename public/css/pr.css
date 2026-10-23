@@ -5342,6 +5342,28 @@ div.external-comment-row {
   font-size: 14px;
 }
 
+.comment-history {
+  margin-top: 16px;
+  color: var(--color-text-secondary, #57606a);
+  font-size: 13px;
+}
+
+.comment-history summary {
+  cursor: pointer;
+}
+
+.comment-history-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding-left: 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comment-history-list li {
+  margin-top: 8px;
+}
+
 .review-modal-footer {
   padding: 16px 24px;
   border-top: 1px solid #d1d9e0;

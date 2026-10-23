@@ -129,6 +129,14 @@ class ReviewModal {
             <div class="review-comment-summary">
               <div class="review-comment-count"></div>
             </div>
+            <details class="comment-history previously-submitted" data-status="submitted" hidden>
+              <summary>Previously submitted (<span class="comment-history-count previously-submitted-count">0</span>)</summary>
+              <ul class="comment-history-list previously-submitted-list"></ul>
+            </details>
+            <details class="comment-history saved-as-draft" data-status="draft" hidden>
+              <summary>Saved as draft (<span class="comment-history-count">0</span>)</summary>
+              <ul class="comment-history-list"></ul>
+            </details>
             
             <!-- Warning dialog for large reviews -->
             <div class="warning-dialog" id="large-review-warning" style="display: none;">
@@ -159,6 +167,11 @@ class ReviewModal {
     
     document.body.appendChild(modalContainer);
     this.modal = modalContainer;
+    modalContainer.querySelectorAll('.comment-history').forEach(history => {
+      history.addEventListener('toggle', (event) => {
+        if (event.target.open) this.updateCommentHistory();
+      });
+    });
     
     // Store reference globally for onclick handlers
     window.reviewModal = this;
@@ -246,6 +259,8 @@ class ReviewModal {
     
     // Update comment count
     this.updateCommentCount();
+    this.modal.querySelectorAll('.comment-history').forEach(history => { history.open = false; });
+    this.updateCommentHistory();
     
     // Reset form
     const textarea = this.modal.querySelector('#review-body-modal');
@@ -403,6 +418,23 @@ class ReviewModal {
     
     // Update large review warning
     this.updateLargeReviewWarning(userComments);
+  }
+
+  updateCommentHistory() {
+    for (const history of this.modal.querySelectorAll('.comment-history')) {
+      const comments = (window.prManager?.userComments || []).filter(c => c.status === history.dataset.status);
+      history.hidden = comments.length === 0;
+      history.querySelector('.comment-history-count').textContent = comments.length;
+      const list = history.querySelector('.comment-history-list');
+      list.replaceChildren();
+      if (!history.open) continue;
+      for (const comment of comments) {
+        const item = document.createElement('li');
+        const location = comment.file ? `${comment.file}${comment.is_file_level ? '' : `:${comment.line_start}`}: ` : '';
+        item.textContent = `${location}${comment.body || ''}`;
+        list.appendChild(item);
+      }
+    }
   }
 
   /**
@@ -580,6 +612,10 @@ class ReviewModal {
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
       }
+
+      // Refresh the diff, pending counts, and history from the persisted statuses.
+      await window.prManager?.loadUserComments(window.aiPanel?.showDismissedComments || false);
+      if (this.isVisible) this.updateCommentHistory();
 
       // Update the pending draft indicator and modal state
       if (window.prManager?.currentPR) {
