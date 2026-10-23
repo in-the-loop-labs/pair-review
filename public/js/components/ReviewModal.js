@@ -129,6 +129,10 @@ class ReviewModal {
             <div class="review-comment-summary">
               <div class="review-comment-count"></div>
             </div>
+            <label class="hide-posted-comments-option">
+              <input type="checkbox" id="hide-posted-comments">
+              Hide comments after posting
+            </label>
             
             <!-- Warning dialog for large reviews -->
             <div class="warning-dialog" id="large-review-warning" style="display: none;">
@@ -159,6 +163,7 @@ class ReviewModal {
     
     document.body.appendChild(modalContainer);
     this.modal = modalContainer;
+
     
     // Store reference globally for onclick handlers
     window.reviewModal = this;
@@ -204,6 +209,9 @@ class ReviewModal {
       if (e.target.matches('#assisted-by-checkbox')) {
         window.reviewModal?.handleAssistedByToggle();
       }
+      if (e.target.matches('#hide-posted-comments')) {
+        window.reviewModal?.handleHidePostedToggle();
+      }
     });
   }
 
@@ -220,6 +228,8 @@ class ReviewModal {
     if (!textarea || !selectedOption) return;
 
     const isDraft = selectedOption.value === 'DRAFT';
+    const hidePostedOption = this.modal.querySelector('.hide-posted-comments-option');
+    if (hidePostedOption) hidePostedOption.hidden = isDraft;
 
     textarea.disabled = isDraft;
 
@@ -246,6 +256,8 @@ class ReviewModal {
     
     // Update comment count
     this.updateCommentCount();
+    const hidePosted = this.modal.querySelector('#hide-posted-comments');
+    if (hidePosted) hidePosted.checked = localStorage.getItem('pair-review-hide-posted-comments') === 'true';
     
     // Reset form
     const textarea = this.modal.querySelector('#review-body-modal');
@@ -268,7 +280,6 @@ class ReviewModal {
 
     // Clear any errors or warnings
     this.hideError();
-    this.updateLargeReviewWarning(0);
     
     // Show modal
     this.modal.style.display = 'flex';
@@ -381,11 +392,10 @@ class ReviewModal {
    * Update comment count display in modal
    */
   updateCommentCount() {
-    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const userComments = lineComments + fileComments;
+    const userComments = window.prManager?.getPendingCommentCount?.() || 0;
     const countElement = this.modal.querySelector('.review-comment-count');
+    const summary = this.modal.querySelector('.review-comment-summary');
+    if (summary) summary.style.display = userComments > 0 ? 'flex' : 'none';
     
     if (countElement) {
       if (userComments > 0) {
@@ -403,6 +413,17 @@ class ReviewModal {
     
     // Update large review warning
     this.updateLargeReviewWarning(userComments);
+  }
+
+  handleHidePostedToggle() {
+    const checked = this.modal.querySelector('#hide-posted-comments').checked;
+    localStorage.setItem('pair-review-hide-posted-comments', String(checked));
+    try {
+      window.prManager?.applyPostedCommentVisibility();
+    } catch (error) {
+      console.error('Error updating comment visibility:', error);
+      window.toast?.showError('Could not update comment visibility. Please reload the page.');
+    }
   }
 
   /**
@@ -481,11 +502,7 @@ class ReviewModal {
       : reviewBody;
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
-    // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
-    // This must match the counting logic in updateCommentCount() for consistency
-    const lineComments = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
-    const commentCount = lineComments + fileComments;
+    const commentCount = window.prManager?.getPendingCommentCount?.() || 0;
     
     // Hide any previous errors
     this.hideError();
@@ -579,6 +596,14 @@ class ReviewModal {
       // Remove beforeunload handler if it was added
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
+      }
+
+      try {
+        const refreshed = await window.prManager?.loadUserComments(window.aiPanel?.showDismissedComments || false);
+        if (refreshed === false) throw new Error('Could not reload comments');
+      } catch (error) {
+        console.error('Review posted, but comment refresh failed:', error);
+        window.toast?.showWarning('Review posted, but comments could not be refreshed. Please reload the page.');
       }
 
       // Update the pending draft indicator and modal state

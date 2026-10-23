@@ -305,6 +305,7 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
+      this.prManager?.addUserComment?.(commentData);
 
       // Display the new comment
       this.displayUserComment(zone, commentData);
@@ -353,7 +354,7 @@ class FileCommentManager {
   /**
    * Display a user file-level comment
    * Note: Dismissed comments are never rendered in the diff view per design decision.
-   * They only appear in the AI/Review Panel. This method only receives active comments.
+   * They only appear in the AI/Review Panel. Posted comments can remain visible here.
    * @param {HTMLElement} zone - The file comments zone
    * @param {Object} comment - The comment data
    */
@@ -365,6 +366,8 @@ class FileCommentManager {
     const isAIOrigin = !!comment.parent_id;
     card.className = `file-comment-card user-comment ${isAIOrigin ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}`;
     card.dataset.commentId = comment.id;
+    card.dataset.commentStatus = comment.status || 'active';
+    card.classList.toggle('posted-comment-hidden', window.shouldHidePostedComment?.(comment) || false);
 
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(comment.body)
@@ -393,6 +396,7 @@ class FileCommentManager {
             ${commentIcon}
           </span>
           <span class="file-comment-badge" title="Comment applies to the entire file">File comment</span>
+          ${window.getPostedCommentIcon?.(comment) || ''}
           ${praiseBadge}
           ${titleHtml}
         </div>
@@ -625,6 +629,7 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
+      this.prManager?.addUserComment?.(commentData);
 
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
@@ -893,6 +898,7 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
+      this.prManager?.addUserComment?.(commentData);
 
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
@@ -1023,6 +1029,7 @@ class FileCommentManager {
       });
 
       if (!response.ok) throw new Error('Failed to update comment');
+      this.prManager?.updateUserComment?.(commentId, { body: newBody });
 
       // Update the display
       const card = bodyEl?.closest('.file-comment-card');
@@ -1064,6 +1071,7 @@ class FileCommentManager {
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
+      this.prManager?.updateUserComment?.(commentId, { status: 'inactive' });
 
       // Remove the card
       const card = zone.querySelector(`[data-comment-id="${commentId}"]`);

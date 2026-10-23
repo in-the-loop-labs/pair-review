@@ -840,103 +840,36 @@ describe('PRManager Suggestion Status', () => {
 
     beforeEach(() => {
       prManager = createTestPRManager();
-
-      // Mock splitButton
-      mockSplitButton = {
-        updateCommentCount: vi.fn()
-      };
+      mockSplitButton = { updateCommentCount: vi.fn() };
       prManager.splitButton = mockSplitButton;
-
-      // Reset document mock for querySelectorAll
-      document.querySelectorAll = vi.fn();
-
-      // Mock document.getElementById for reviewButton and clearButton
       document.getElementById = vi.fn().mockReturnValue(null);
     });
 
-    it('should count line-level comments', () => {
-      // DESIGN DECISION: Dismissed comments are never in the diff DOM, so we simply count all visible elements.
-      // Mock DOM with 2 comment rows (all active, dismissed comments are never in DOM)
-      document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
-          return { length: 2 }; // 2 comments
-        }
-        if (selector === '.file-comment-card.user-comment') {
-          return { length: 0 }; // No file-level comments
-        }
-        return { length: 0 };
-      });
-
+    it.each([
+      ['line', [{ id: 1, status: 'active' }, { id: 2, status: 'active' }], 2],
+      ['file', [{ id: 1, status: 'active', is_file_level: 1 }], 1],
+      ['mixed', [{ id: 1, status: 'active' }, { id: 2, status: 'active', is_file_level: 1 },
+        { id: 3, status: 'submitted' }, { id: 4, status: 'draft' }, { id: 5, status: 'inactive' }], 2],
+      ['empty', [], 0],
+    ])('counts active %s comments from data', (_name, comments, expected) => {
+      prManager.userComments = comments;
       prManager.updateCommentCount();
-
-      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(2);
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(expected);
     });
 
-    it('should count file-level comments', () => {
-      // Mock DOM with file-level comments (dismissed comments are never in DOM)
-      document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
-          return { length: 0 }; // No line-level comments
-        }
-        if (selector === '.file-comment-card.user-comment') {
-          return { length: 1 }; // 1 file-level comment
-        }
-        return { length: 0 };
-      });
-
-      prManager.updateCommentCount();
-
-      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(1);
+    it('tracks newly created, adopted, updated, and dismissed comments', () => {
+      prManager.addUserComment({ id: 1, body: 'New' });
+      prManager.addUserComment({ id: 2, parent_id: 9 });
+      expect(prManager.getPendingCommentCount()).toBe(2);
+      prManager.updateUserComment(1, { body: 'Edited' });
+      prManager.updateUserComment(2, { status: 'inactive' });
+      expect(prManager.userComments[0].body).toBe('Edited');
+      expect(prManager.getPendingCommentCount()).toBe(1);
     });
 
-    it('should combine line-level and file-level comment counts', () => {
-      // Mock DOM with both types: 3 line-level, 2 file-level
-      document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
-          return { length: 3 }; // 3 line-level comments
-        }
-        if (selector === '.file-comment-card.user-comment') {
-          return { length: 2 }; // 2 file-level comments
-        }
-        return { length: 0 };
-      });
-
-      prManager.updateCommentCount();
-
-      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(5);
-    });
-
-    it('should return 0 when no comments exist', () => {
-      // Mock DOM with no comments (dismissed comments are never in DOM anyway)
-      document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
-          return { length: 0 }; // No line-level
-        }
-        if (selector === '.file-comment-card.user-comment') {
-          return { length: 0 }; // No file-level
-        }
-        return { length: 0 };
-      });
-
-      prManager.updateCommentCount();
-
-      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(0);
-    });
-
-    it('should handle missing splitButton gracefully', () => {
+    it('handles missing splitButton gracefully', () => {
       prManager.splitButton = null;
-
-      document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(.suggestion-edit-pending)') {
-          return { length: 2 };
-        }
-        if (selector === '.file-comment-card.user-comment') {
-          return { length: 1 };
-        }
-        return { length: 0 };
-      });
-
-      // Should not throw
+      prManager.userComments = [{ id: 1, status: 'active' }];
       expect(() => prManager.updateCommentCount()).not.toThrow();
     });
   });
