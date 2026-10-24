@@ -452,6 +452,9 @@ class Analyzer {
    * @param {Object} [options.excludePrevious] - { github: bool, feedback: bool } for dedup
    * @param {number} [options.serverPort] - Server port for dedup API calls
    * @param {Object} [options.githubClient] - GitHubClient used to pre-fetch existing PR review comments for dedup (PR mode only)
+   * @param {boolean} [options.skipAdversarialVerification] - Set when this run is one voice in a
+   *   multi-voice reviewer-centric council. Verification is left to cross-voice consolidation, and
+   *   cross-level consolidation is skipped entirely when only one level produced results
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
@@ -638,36 +641,56 @@ class Analyzer {
       }
 
       // Step 4: Orchestrate all suggestions
-      logger.info(`${logPrefix}All levels complete. Starting cross-level consolidation...`);
-      if (progressCallback) {
-        progressCallback({
-          status: 'running',
-          progress: 'Consolidating suggestions across analysis levels...',
-          level: 'orchestration'
-        });
-      }
+      const singleInputLevel = this._getSingleInputLevelForSkip(levelResults, options);
 
       try {
-        const allSuggestions = {
-          level1: levelResults.level1.suggestions,
-          level2: levelResults.level2.suggestions,
-          level3: levelResults.level3.suggestions
-        };
+        let orchestrationResult;
+        let consolidationOutcome;
 
-        // Build dedup context from prMetadata and options
-        const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
+        if (singleInputLevel) {
+          // Only one level produced results, so there is nothing to merge
+          // across levels. Keep that level's suggestions as they are.
+          logger.info(`${logPrefix}Only ${singleInputLevel} produced results — skipping cross-level consolidation`);
+          const singleLevelResult = levelResults[singleInputLevel];
+          orchestrationResult = {
+            suggestions: singleLevelResult.suggestions,
+            summary: singleLevelResult.summary || `Analysis complete: ${singleLevelResult.suggestions.length} suggestions`
+          };
+          consolidationOutcome = 'skipped';
+          if (progressCallback) {
+            progressCallback({ level: 'orchestration', status: 'skipped', progress: 'Skipped (single level)' });
+          }
+        } else {
+          logger.info(`${logPrefix}All levels complete. Starting cross-level consolidation...`);
+          if (progressCallback) {
+            progressCallback({
+              status: 'running',
+              progress: 'Consolidating suggestions across analysis levels...',
+              level: 'orchestration'
+            });
+          }
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification: options.skipAdversarialVerification });
+          const allSuggestions = {
+            level1: levelResults.level1.suggestions,
+            level2: levelResults.level2.suggestions,
+            level3: levelResults.level3.suggestions
+          };
 
-        // orchestrateWithAI degrades to the raw union of level suggestions when
-        // consolidation fails internally — report that honestly instead of 'success'
-        const consolidationOutcome = orchestrationResult.consolidationFailed ? 'failed' : 'success';
+          // Build dedup context from prMetadata and options
+          const dedupContext = buildDedupContext(prMetadata, { reviewId: prId, serverPort, runId });
 
-        // Report orchestration step outcome
-        if (progressCallback) {
-          progressCallback(orchestrationResult.consolidationFailed
-            ? { level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' }
-            : { level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+          orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum, excludePrevious, dedupContext, githubClient, skipAdversarialVerification: options.skipAdversarialVerification });
+
+          // orchestrateWithAI degrades to the raw union of level suggestions when
+          // consolidation fails internally — report that honestly instead of 'success'
+          consolidationOutcome = orchestrationResult.consolidationFailed ? 'failed' : 'success';
+
+          // Report orchestration step outcome
+          if (progressCallback) {
+            progressCallback(orchestrationResult.consolidationFailed
+              ? { level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' }
+              : { level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+          }
         }
 
         // Validate and finalize suggestions
@@ -2841,6 +2864,31 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and integration issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
+  }
+
+  /**
+   * Decide whether analyzeAllLevels can skip cross-level consolidation because
+   * only one level produced results (one input, so nothing to merge).
+   *
+   * The skip applies only to a per-reviewer run inside a multi-voice
+   * reviewer-centric council, marked by `skipAdversarialVerification`. There,
+   * this consolidation's only job is merging levels. Dedup and adversarial
+   * verification run later, during cross-voice consolidation. In standalone
+   * runs, orchestration is the final stage and also does verification (and
+   * dedup when exclude-previous is on), so it must still run.
+   *
+   * @param {Object} levelResults - { level1, level2, level3 }, each with a `status`
+   * @param {Object} options - analyzeAllLevels options
+   * @returns {string|null} The key of the single successful level (e.g. 'level3'), or null
+   */
+  _getSingleInputLevelForSkip(levelResults, options = {}) {
+    if (!options.skipAdversarialVerification) return null;
+    const { excludePrevious } = options;
+    if (excludePrevious && (excludePrevious.github || excludePrevious.feedback)) return null;
+
+    const successfulLevels = ['level1', 'level2', 'level3']
+      .filter(name => levelResults[name]?.status === 'success');
+    return successfulLevels.length === 1 ? successfulLevels[0] : null;
   }
 
   /**
