@@ -1,5 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const { GitWorktreeManager } = require('../../src/git/worktree');
 
@@ -250,6 +254,102 @@ describe('GitWorktreeManager worktree cleanup', () => {
       const result = await manager.cleanupStaleWorktrees(7);
 
       expect(result.cleaned).toBe(0);
+    });
+  });
+
+  describe('removeEmptyParentDirs', () => {
+    let baseDir;
+
+    beforeEach(() => {
+      baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-wt-'));
+      manager = new GitWorktreeManager(null, { worktreeBaseDir: baseDir });
+    });
+
+    afterEach(() => {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    });
+
+    it('removes empty parents of a nested worktree but keeps the base dir', async () => {
+      fs.mkdirSync(path.join(baseDir, 'pair-review--abc', 'nested'), { recursive: true });
+      const worktreePath = path.join(baseDir, 'pair-review--abc', 'nested', 'src');
+
+      await manager.removeEmptyParentDirs(worktreePath);
+
+      expect(fs.existsSync(path.join(baseDir, 'pair-review--abc'))).toBe(false);
+      expect(fs.existsSync(baseDir)).toBe(true);
+    });
+
+    it('stops at the first non-empty parent', async () => {
+      fs.mkdirSync(path.join(baseDir, 'pair-review--abc', 'nested'), { recursive: true });
+      fs.writeFileSync(path.join(baseDir, 'pair-review--abc', 'keep.txt'), 'x');
+      const worktreePath = path.join(baseDir, 'pair-review--abc', 'nested', 'src');
+
+      await manager.removeEmptyParentDirs(worktreePath);
+
+      expect(fs.existsSync(path.join(baseDir, 'pair-review--abc', 'nested'))).toBe(false);
+      expect(fs.existsSync(path.join(baseDir, 'pair-review--abc', 'keep.txt'))).toBe(true);
+    });
+
+    it('never removes the base dir for a top-level worktree', async () => {
+      await manager.removeEmptyParentDirs(path.join(baseDir, 'pr-42'));
+
+      expect(fs.existsSync(baseDir)).toBe(true);
+    });
+
+    it('does not touch directories outside the base dir', async () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-outside-'));
+      try {
+        fs.mkdirSync(path.join(outside, 'empty'));
+
+        await manager.removeEmptyParentDirs(path.join(outside, 'empty', 'src'));
+
+        expect(fs.existsSync(path.join(outside, 'empty'))).toBe(true);
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('is called by cleanupWorktree after git removes a nested worktree', async () => {
+      const parent = path.join(baseDir, 'pair-review--abc');
+      const worktreePath = path.join(parent, 'src');
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const mockOwningRepo = {
+        raw: vi.fn().mockImplementation(async () => fs.rmSync(worktreePath, { recursive: true })),
+      };
+      manager.resolveOwningRepo = vi.fn().mockResolvedValue(mockOwningRepo);
+      manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+
+      await manager.cleanupWorktree(worktreePath);
+
+      expect(fs.existsSync(parent)).toBe(false);
+      expect(fs.existsSync(baseDir)).toBe(true);
+    });
+
+    it('uses the per-repository base dir in cleanupStaleWorktrees', async () => {
+      const repoBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-repo-wt-'));
+      try {
+        const parent = path.join(repoBaseDir, 'pair-review--abc');
+        const worktreePath = path.join(parent, 'src');
+        fs.mkdirSync(worktreePath, { recursive: true });
+        manager.resolveOwningRepo = vi.fn().mockResolvedValue(null);
+        manager.pruneWorktrees = vi.fn().mockResolvedValue(undefined);
+        manager.worktreeRepo = {
+          findStale: vi.fn().mockResolvedValue([
+            { id: 'wt-1', path: worktreePath, repository: 'owner/repo' },
+          ]),
+          delete: vi.fn().mockResolvedValue(undefined),
+        };
+        const resolveWorktreeBaseDir = vi.fn().mockReturnValue(repoBaseDir);
+
+        const result = await manager.cleanupStaleWorktrees(7, { resolveWorktreeBaseDir });
+
+        expect(result.cleaned).toBe(1);
+        expect(resolveWorktreeBaseDir).toHaveBeenCalledWith('owner/repo');
+        expect(fs.existsSync(parent)).toBe(false);
+        expect(fs.existsSync(repoBaseDir)).toBe(true);
+      } finally {
+        fs.rmSync(repoBaseDir, { recursive: true, force: true });
+      }
     });
   });
 });

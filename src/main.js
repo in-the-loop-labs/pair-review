@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides, resolveBindingRepositoryFromPR } = require('./config');
+const { loadConfig, getConfigDir, showWelcomeMessage, resolveDbName, resolveRepoOptions, getRepoWorktreeDirectory, resolvePoolConfig, getRepoResetScript, getRepoSkipBulkFetch, getRepoFetchTimeout, resolveLoadSkills, buildCouncilProviderOverrides, resolveBindingRepositoryFromPR } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository, WorktreePoolRepository, CouncilRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -387,7 +387,9 @@ function cleanupStaleWorktreesAsync(config) {
     try {
       const retentionDays = config.worktree_retention_days || 7;
       const worktreeManager = new GitWorktreeManager(db);
-      await worktreeManager.cleanupStaleWorktrees(retentionDays);
+      await worktreeManager.cleanupStaleWorktrees(retentionDays, {
+        resolveWorktreeBaseDir: (repository) => getRepoWorktreeDirectory(config, repository)
+      });
     } catch (error) {
       // Silently log error - cleanup failure shouldn't affect user experience
       console.error('[pair-review] Background worktree cleanup error:', error.message);
