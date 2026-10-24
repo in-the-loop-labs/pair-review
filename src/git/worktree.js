@@ -979,19 +979,45 @@ class GitWorktreeManager {
           }
           await owningRepo.raw(['worktree', 'remove', '--force', worktreePath]);
           console.log(`Removed worktree via git: ${worktreePath}`);
-          return;
         } catch (gitError) {
           console.log('Git worktree remove failed, trying manual cleanup...');
+          await this.removeDirectory(worktreePath);
+          console.log(`Removed worktree directory: ${worktreePath}`);
         }
 
-        // git remove failed — remove directory manually
-        await this.removeDirectory(worktreePath);
-        console.log(`Removed worktree directory: ${worktreePath}`);
+        await this.removeEmptyParentDirs(worktreePath);
       }
 
     } catch (error) {
       console.warn(`Warning: Could not cleanup worktree at ${worktreePath}: ${error.message}`);
       // Don't throw - this is cleanup, continue with creation
+    }
+  }
+
+  /**
+   * Remove empty parent directories of a removed worktree, stopping at the base
+   * directory. Needed when a name template nests the checkout (e.g. `{id}/src`).
+   * The base directory itself and paths outside it are never touched.
+   * @param {string} worktreePath - Path of the worktree that was removed
+   * @param {string} [baseDir] - Worktree base directory (defaults to this.worktreeBaseDir)
+   * @returns {Promise<void>}
+   */
+  async removeEmptyParentDirs(worktreePath, baseDir = this.worktreeBaseDir) {
+    const base = path.resolve(baseDir);
+    let dir = path.dirname(path.resolve(worktreePath));
+
+    while (true) {
+      const rel = path.relative(base, dir);
+      if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+        return;
+      }
+      try {
+        // rmdir only succeeds on empty directories
+        await fs.rmdir(dir);
+      } catch {
+        return;
+      }
+      dir = path.dirname(dir);
     }
   }
 
@@ -1278,9 +1304,12 @@ class GitWorktreeManager {
   /**
    * Cleanup stale worktrees that haven't been accessed within the retention period
    * @param {number} retentionDays - Number of days to retain worktrees (default: 7)
+   * @param {Object} [options]
+   * @param {(repository: string) => string|null} [options.resolveWorktreeBaseDir] - Returns the
+   *   configured worktree directory for a repository; falls back to this.worktreeBaseDir
    * @returns {Promise<Object>} Cleanup result with count and details
    */
-  async cleanupStaleWorktrees(retentionDays = 7) {
+  async cleanupStaleWorktrees(retentionDays = 7, { resolveWorktreeBaseDir } = {}) {
     const result = {
       cleaned: 0,
       failed: 0,
@@ -1340,6 +1369,9 @@ class GitWorktreeManager {
               console.log(`[pair-review] Removed worktree directory manually: ${worktree.path}`);
             }
           }
+
+          const baseDir = resolveWorktreeBaseDir?.(worktree.repository) || this.worktreeBaseDir;
+          await this.removeEmptyParentDirs(worktree.path, baseDir);
 
           // Delete the database record
           await this.worktreeRepo.delete(worktree.id);
