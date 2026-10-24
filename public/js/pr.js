@@ -6586,8 +6586,8 @@ class PRManager {
       const lineLevelComments = [];
 
       this.userComments.forEach(comment => {
-        // Skip inactive (dismissed) comments - they should not appear in the diff view
-        if (comment.status === 'inactive') {
+        // Only active comments are pending; posted comments remain in review history.
+        if (comment.status !== 'active') {
           return;
         }
         if (comment.is_file_level === 1) {
@@ -6677,9 +6677,9 @@ class PRManager {
         this.fileCommentManager.loadFileComments(fileLevelComments, null);
       }
 
-      // Populate AI Panel with all comments (including dismissed if requested)
+      // Keep posted comments in the review history, not the active comment inbox.
       if (window.aiPanel?.setComments) {
-        window.aiPanel.setComments(this.userComments);
+        window.aiPanel.setComments(this.userComments.filter(c => c.status !== 'submitted' && c.status !== 'draft'));
       }
 
       this.updateCommentCount();
