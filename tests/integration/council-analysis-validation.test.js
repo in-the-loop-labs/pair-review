@@ -21,9 +21,7 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 
 // Mock modules that analysis routes depend on but we don't need
 vi.mock('../../src/ai/analyzer', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    getLocalChangedFiles: vi.fn().mockResolvedValue([])
-  }))
+  default: vi.fn().mockImplementation(() => ({}))
 }));
 
 vi.mock('../../src/git/gitattributes', () => ({

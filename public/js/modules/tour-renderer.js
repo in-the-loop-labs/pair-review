@@ -682,7 +682,8 @@ class TourRenderer {
    *   - Re-collapses any files in `_autoExpanded` (via toggleFileCollapse).
    *   - Deletes any context files in `_autoAddedContextFileIds` (via
    *     removeContextFile) so transient tour-injected files don't
-   *     persist in the user's context-files list.
+   *     persist in the user's context-files list. A file that now shows
+   *     an active AI finding or comment is kept.
    *
    * Both restorations are best-effort — failures are logged and ignored
    * so a partially-cleaned exit still tears down the tour UI.
@@ -755,6 +756,11 @@ class TourRenderer {
       const ids = Array.from(this._autoAddedContextFileIds);
       this._autoAddedContextFileIds.clear();
       for (const id of ids) {
+        // Keep a file that now shows an active AI finding or comment (e.g.
+        // an analysis finished during the tour and its finding landed in
+        // this panel): removing it would hide that feedback, and the
+        // analysis created no panel of its own because this one existed.
+        if (this._contextFileShowsFeedback(id)) continue;
         try {
           const result = this.prManager.removeContextFile(id);
           if (result && typeof result.then === 'function') {
@@ -772,6 +778,25 @@ class TourRenderer {
     }
     // allSettled never rejects; safe to await without try/catch.
     return Promise.allSettled(pending);
+  }
+
+  /**
+   * Whether the context file `id` currently shows feedback that its removal
+   * would hide (PRManager.contextFileRemovalBlocker).
+   * @param {number|string} id - Context file id
+   * @returns {boolean}
+   * @private
+   */
+  _contextFileShowsFeedback(id) {
+    if (typeof this.prManager?.contextFileRemovalBlocker !== 'function') return false;
+    const entry = (this.prManager.contextFiles || []).find(cf => String(cf.id) === String(id));
+    if (!entry) return false;
+    try {
+      return Boolean(this.prManager.contextFileRemovalBlocker(entry.file));
+    } catch (err) {
+      console.warn('[TourRenderer] removal check failed for', id, err);
+      return false;
+    }
   }
 
   /**

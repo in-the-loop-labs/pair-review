@@ -25,12 +25,13 @@ const { createProvider } = require('../ai/provider');
 const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { fireHooks, hasHooks } = require('../hooks/hook-runner');
 const { buildAnalysisStartedPayload, buildAnalysisCompletedPayload, getCachedUser } = require('../hooks/payloads');
-const { normalizePath, resolveRenamedFile } = require('../utils/paths');
-const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
+const { buildFileLineCountMap } = require('../utils/line-validation');
+const { finalizeSuggestions } = require('../utils/suggestion-validation');
+const { seedContextFilesForSuggestions } = require('../utils/auto-context');
 const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
 const { splitNulPaths } = require('../utils/git-paths');
 const { generateScopedDiff, findMergeBase } = require('../local-review');
-const { scopeIncludes } = require('../local-scope');
+const { listScopedChangedFiles } = require('../git/scoped-changed-files');
 
 /**
  * Generate a diff for the executable provider and write it to a file.
@@ -115,49 +116,9 @@ async function getChangedFiles(cwd, context, { throwOnError = false } = {}) {
       return splitNulPaths(stdout);
     }
 
-    // Local mode: scope-aware file list
-    const { scopeStart, scopeEnd, baseBranch } = context;
-    const commands = [];
-
-    if (scopeStart && scopeEnd) {
-      const hasBranch = scopeIncludes(scopeStart, scopeEnd, 'branch');
-      const hasStaged = scopeIncludes(scopeStart, scopeEnd, 'staged');
-      const hasUnstaged = scopeIncludes(scopeStart, scopeEnd, 'unstaged');
-      const hasUntracked = scopeIncludes(scopeStart, scopeEnd, 'untracked');
-
-      if (hasBranch && baseBranch) {
-        const mergeBase = await findMergeBase(cwd, baseBranch);
-        commands.push(
-          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} ${mergeBase}..HEAD --name-only -z`, { cwd }).then(r => r.stdout)
-        );
-      }
-      if (hasStaged) {
-        commands.push(
-          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`, { cwd }).then(r => r.stdout)
-        );
-      }
-      if (hasUnstaged) {
-        commands.push(
-          execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`, { cwd }).then(r => r.stdout)
-        );
-      }
-      if (hasUntracked) {
-        commands.push(
-          execPromise(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, { cwd }).then(r => r.stdout)
-        );
-      }
-    } else {
-      // Fallback: no scope info — include unstaged + untracked + staged
-      commands.push(
-        execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`, { cwd }).then(r => r.stdout),
-        execPromise(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, { cwd }).then(r => r.stdout),
-        execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --cached --name-only -z`, { cwd }).then(r => r.stdout)
-      );
-    }
-
-    const results = await Promise.all(commands);
-    const all = results.flatMap(output => splitNulPaths(output));
-    return [...new Set(all)];
+    // Local mode: scope-aware file list (shared with getDiffFileList).
+    // findMergeBase is passed through so it resolves off local-review.
+    return await listScopedChangedFiles(cwd, context, { findMergeBase });
   } catch (error) {
     if (throwOnError) {
       throw new Error(`Failed to enumerate changed files in ${cwd}: ${error.message}`);
@@ -165,46 +126,6 @@ async function getChangedFiles(cwd, context, { throwOnError = false } = {}) {
     logger.warn(`Could not get changed files list: ${error.message}`);
     return [];
   }
-}
-
-/**
- * Validate suggestions: filter by file path and clamp invalid line numbers.
- * Mirrors Analyzer.validateAndFinalizeSuggestions as a standalone function.
- * @param {Array} suggestions - Suggestion objects from the executable provider
- * @param {string[]} validFiles - Changed file paths from the diff
- * @param {Map<string, number>} fileLineCountMap - File path → line count
- * @returns {Array} Validated suggestions
- */
-function validateSuggestions(suggestions, validFiles, fileLineCountMap) {
-  if (!suggestions || suggestions.length === 0) return [];
-  const inputCount = suggestions.length;
-
-  // File path validation
-  let filtered = suggestions;
-  if (validFiles && validFiles.length > 0) {
-    const normalizedValid = new Set(validFiles.map(p => normalizePath(resolveRenamedFile(p))));
-    filtered = suggestions.filter(s => {
-      const norm = normalizePath(resolveRenamedFile(s.file));
-      if (normalizedValid.has(norm)) return true;
-      logger.warn(`[Validation] Discarded suggestion with invalid path: "${s.file}" (${s.type} - ${s.title})`);
-      return false;
-    });
-    if (filtered.length < inputCount) {
-      logger.info(`[Validation] File path filter: ${inputCount} → ${filtered.length} suggestions`);
-    }
-  } else {
-    logger.warn('[Validation] No valid paths available, skipping path filtering');
-  }
-
-  // Line number validation
-  const lineResult = validateSuggestionLineNumbers(filtered, fileLineCountMap, { convertToFileLevel: true });
-  if (lineResult.converted.length > 0) {
-    logger.warn(`[Validation] Converted ${lineResult.converted.length} suggestions to file-level (invalid line numbers)`);
-  }
-
-  const final = [...lineResult.valid, ...lineResult.converted];
-  logger.info(`[Validation] Final: ${final.length} suggestions from ${inputCount} input`);
-  return final;
 }
 
 /**
@@ -401,15 +322,20 @@ async function runExecutableAnalysis(req, res, params, shared, callbacks) {
       const rawSuggestions = result.data.suggestions || [];
       const summary = result.data.summary || '';
 
-      // Validate suggestions against the diff (file paths + line numbers)
+      // Validate suggestions against the diff, or the checkout for files
+      // outside it (file paths + line numbers)
       const validFiles = await getChangedFiles(cwd, executableContext);
       const fileLineCountMap = validFiles.length > 0
         ? await buildFileLineCountMap(cwd, validFiles)
         : new Map();
-      const suggestions = validateSuggestions(rawSuggestions, validFiles, fileLineCountMap);
+      const suggestions = await finalizeSuggestions(rawSuggestions, {
+        changedFiles: validFiles, fileLineCountMap, repoRoot: cwd
+      });
+      logger.info(`[Validation] Final: ${suggestions.length} suggestions from ${rawSuggestions.length} input`);
 
-      // Store validated suggestions
+      // Store validated suggestions; findings on unchanged files open context panels
       await commentRepo.bulkInsertAISuggestions(reviewId, runId, suggestions, null);
+      await seedContextFilesForSuggestions(db, reviewId, suggestions, { diffFiles: validFiles });
 
       // Update run to completed
       await analysisRunRepo.update(runId, {

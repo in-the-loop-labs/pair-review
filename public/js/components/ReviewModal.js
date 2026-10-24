@@ -534,7 +534,10 @@ class ReviewModal {
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to ${isDraft ? 'submit draft' : 'submit'} review`);
+        const error = new Error(errorData.error || `Failed to ${isDraft ? 'submit draft' : 'submit'} review`);
+        // Comments on files outside the PR diff that the server would not send
+        error.retainedComments = errorData.skippedComments;
+        throw error;
       }
       
       const result = await response.json();
@@ -566,6 +569,8 @@ class ReviewModal {
       
       // Hide modal
       this.hide();
+      // List comments that stayed in pair-review (files outside the PR diff)
+      window.prManager?.showRetainedCommentsNotice?.(result.skipped_comments || []);
       
       // Reset form
       this.modal.querySelector('#review-body-modal').value = '';
@@ -613,9 +618,17 @@ class ReviewModal {
       
     } catch (error) {
       console.error(`Error ${isDraft ? 'submitting draft' : 'submitting'} review:`, error);
-      this.showError(error.message);
       // Restore normal state on error
       this.setSubmittingState(false);
+      if (error.retainedComments?.length) {
+        // Nothing reached GitHub: every comment is outside the PR diff.
+        // Show them on the page, where the user can act on them.
+        this.hide();
+        window.prManager?.showRetainedCommentsNotice?.(error.retainedComments);
+        window.toast?.showWarning?.(error.message);
+      } else {
+        this.showError(error.message);
+      }
       // Remove beforeunload handler on error
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);

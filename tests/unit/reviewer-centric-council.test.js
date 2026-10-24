@@ -350,7 +350,8 @@ describe('runReviewerCentricCouncil', () => {
         'parent-run-id',
         consolidatedSuggestions,
         null,
-        expect.any(Array)
+        expect.any(Array),
+        reviewContext.worktreePath
       );
 
       expect(result.suggestions).toEqual(consolidatedSuggestions);
@@ -396,7 +397,8 @@ describe('runReviewerCentricCouncil', () => {
         'parent-run-id',
         filteredSuggestions,
         null,
-        expect.any(Array)
+        expect.any(Array),
+        reviewContext.worktreePath
       );
     });
   });

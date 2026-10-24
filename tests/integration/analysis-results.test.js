@@ -771,6 +771,106 @@ describe('POST /api/analyses/results', () => {
     expect(localPayload.type).toBe('review:analysis_completed');
   });
 
+  describe('findings on files outside the diff', () => {
+    let repo;
+    let warnSpy;
+    const logger = require('../../src/utils/logger');
+
+    // file.js has an unstaged edit; src/context.js is unchanged (80 lines).
+    beforeEach(() => {
+      repo = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'pair-review-import-offdiff-'));
+      execSync('git init -b main', { cwd: repo, stdio: 'pipe' });
+      execSync('git config user.email "test@test.com"', { cwd: repo, stdio: 'pipe' });
+      execSync('git config user.name "Test User"', { cwd: repo, stdio: 'pipe' });
+      const eighty = Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+      nodeFs.mkdirSync(path.join(repo, 'src'));
+      nodeFs.writeFileSync(path.join(repo, 'file.js'), eighty);
+      nodeFs.writeFileSync(path.join(repo, 'src/context.js'), eighty);
+      execSync('git add .', { cwd: repo, stdio: 'pipe' });
+      execSync('git commit -m initial', { cwd: repo, stdio: 'pipe' });
+      nodeFs.appendFileSync(path.join(repo, 'file.js'), 'added line\n');
+      warnSpy = vi.spyOn(logger, 'warn');
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+      nodeFs.rmSync(repo, { recursive: true, force: true });
+    });
+
+    const finding = (overrides = {}) => ({
+      file: 'src/context.js', line_start: 30, line_end: 35, old_or_new: 'OLD',
+      type: 'bug', title: 'Cross-file issue', description: 'The unchanged caller breaks.', ...overrides
+    });
+
+    async function insertPrWithCheckout(prNumber, checkout) {
+      await run(db, 'INSERT INTO pr_metadata (pr_number, repository, pr_data) VALUES (?, ?, ?)',
+        [prNumber, 'owner/repo', JSON.stringify({ changed_files: [{ file: 'file.js' }] })]);
+      if (checkout) {
+        await run(db, `INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
+          VALUES (?, ?, 'owner/repo', 'feature', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, [`wt-${prNumber}`, prNumber, checkout]);
+      }
+    }
+
+    describe.each(['Local', 'PR'])('%s mode with a checkout', (mode) => {
+      async function payload(suggestions) {
+        if (mode === 'Local') return { path: repo, headSha: 'offdiff-sha', suggestions };
+        await insertPrWithCheckout(583, repo);
+        return { repo: 'owner/repo', prNumber: 583, suggestions };
+      }
+
+      it('validates them against the checkout and opens one context panel', async () => {
+        const body = await payload([
+          finding(), finding({ line_start: 70, line_end: 72 }),
+          finding({ file: 'file.js', line_start: 2, line_end: 2 }),
+          finding({ file: 'src/missing.js' }), finding({ file: '../context.js' }),
+          finding({ line_start: 500, line_end: 505, title: 'Beyond EOF' })
+        ]);
+        const response = await request(server).post('/api/analyses/results').send(body);
+
+        expect(response.status).toBe(201);
+        expect(response.body.totalSuggestions).toBe(4);
+        const comments = await query(db,
+          'SELECT file, side, line_start, is_file_level, title FROM comments WHERE ai_run_id = ? ORDER BY id', [response.body.runId]);
+        expect(comments).toEqual([
+          { file: 'src/context.js', side: 'RIGHT', line_start: 30, is_file_level: 0, title: 'Cross-file issue' },
+          { file: 'src/context.js', side: 'RIGHT', line_start: 70, is_file_level: 0, title: 'Cross-file issue' },
+          { file: 'file.js', side: 'LEFT', line_start: 2, is_file_level: 0, title: 'Cross-file issue' },
+          { file: 'src/context.js', side: 'RIGHT', line_start: null, is_file_level: 1, title: 'Beyond EOF' }
+        ]);
+        expect(await query(db, 'SELECT file, line_start, line_end, label FROM context_files WHERE review_id = ?', [response.body.reviewId]))
+          .toEqual([{ file: 'src/context.js', line_start: 20, line_end: 45, label: 'Auto-added for suggestion' }]);
+
+        const contextBroadcasts = broadcastSpy.mock.calls.filter(([, event]) => event.type === 'review:context_files_changed');
+        expect(contextBroadcasts).toHaveLength(1);
+
+        // A repeat import adds no further panel
+        broadcastSpy.mockClear();
+        const again = await request(server).post('/api/analyses/results').send({ ...body, suggestions: [finding({ line_start: 75, line_end: 75 })] });
+        expect(again.status).toBe(201);
+        expect(await query(db, 'SELECT file FROM context_files WHERE review_id = ?', [again.body.reviewId])).toEqual([{ file: 'src/context.js' }]);
+        expect(broadcastSpy.mock.calls.filter(([, event]) => event.type === 'review:context_files_changed')).toHaveLength(0);
+      });
+    });
+
+    it('stores PR findings unvalidated and logs a warning when no checkout is found', async () => {
+      await insertPrWithCheckout(584, null);
+      const response = await request(server).post('/api/analyses/results').send({
+        repo: 'owner/repo', prNumber: 584,
+        suggestions: [finding(), finding({ file: 'src/missing.js' }), finding({ file: 'file.js' })]
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.body.totalSuggestions).toBe(3);
+      expect(await query(db, 'SELECT file, side FROM comments WHERE ai_run_id = ? ORDER BY id', [response.body.runId])).toEqual([
+        { file: 'src/context.js', side: 'LEFT' },
+        { file: 'src/missing.js', side: 'LEFT' },
+        { file: 'file.js', side: 'LEFT' }
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no checkout found; storing 2 finding(s) on files outside the diff without validation'));
+      expect(await query(db, 'SELECT * FROM context_files WHERE review_id = ?', [response.body.reviewId])).toEqual([]);
+    });
+  });
+
   it('should broadcast review:analysis_completed event for PR mode', async () => {
     broadcastSpy.mockClear();
 

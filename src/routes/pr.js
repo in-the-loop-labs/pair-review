@@ -55,6 +55,7 @@ const {
 } = require('./shared');
 const { safeParseJson } = require('../utils/safe-parse-json');
 const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches, buildChangedFileEntries } = require('../utils/diff-file-list');
+const { partitionByChangedFile } = require('../utils/changed-file-membership');
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
 const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
@@ -1549,6 +1550,43 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Continue without diff - GitHub client will handle missing positions
     }
 
+    // Comments on files outside the PR diff (e.g. on an AI finding in an
+    // unchanged file) cannot be GitHub review comments. Skip them: they stay
+    // active in pair-review and the response lists them for the UI.
+    const { inDiff: submittableComments, outsideDiff, membershipKnown } = partitionByChangedFile(
+      comments, prData.changed_files, diffContent || prData.diff || ''
+    );
+    if (!membershipKnown && comments.length > 0) {
+      // Without the changed-file list, no comment is known to be outside the
+      // diff, so all of them are submitted (as analysis validation keeps all).
+      logger.warn(`Could not determine the changed files for PR #${prNumber}; submitting all ${comments.length} comment(s) without checking whether their files are in the PR diff`);
+    }
+    const skippedComments = outsideDiff.map(comment => ({
+      id: comment.id,
+      file: comment.file,
+      line_start: comment.line_start,
+      line_end: comment.line_end,
+      body: comment.body,
+      is_file_level: comment.is_file_level,
+      reason: 'outside_diff'
+    }));
+    if (skippedComments.length > 0) {
+      logger.warn(`Not submitting ${skippedComments.length} comment(s) on files outside the PR diff for PR #${prNumber}; they remain in pair-review`);
+    }
+
+    // GitHub rejects only COMMENT and REQUEST_CHANGES reviews that carry
+    // neither a body nor comments. A bodyless APPROVE, and a pending DRAFT,
+    // are valid and must reach GitHub even when every comment was skipped.
+    if (submittableComments.length === 0 && !String(body || '').trim() &&
+        (event === 'COMMENT' || event === 'REQUEST_CHANGES')) {
+      return res.status(400).json({
+        error: skippedComments.length > 0
+          ? 'Nothing to submit to GitHub: every comment is on a file outside the PR diff. Add a review summary to submit.'
+          : 'Add a review summary or comments before submitting.',
+        skippedComments
+      });
+    }
+
     // Format comments for GraphQL API
     // GraphQL supports both line-level comments (within diff hunks) and file-level comments
     // (for expanded context lines outside diff hunks via subjectType: FILE).
@@ -1556,10 +1594,10 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // We check whether the comment's target line actually appears in a diff hunk
     // rather than relying on diff_position (which may not be set by all sources).
     // Headless --ai-draft / --ai-review submits through the same mapping.
-    const graphqlComments = buildReviewComments(comments, diffContent);
+    const graphqlComments = buildReviewComments(submittableComments, diffContent);
 
     // Submit review using GraphQL API (supports file-level comments)
-    console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
+    console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${submittableComments.length} comments`);
 
     let githubReview;
 
@@ -1682,7 +1720,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Update comments table to mark submitted comments
       const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
       const commentUpdateTime = new Date().toISOString();
-      for (const comment of comments) {
+      for (const comment of submittableComments) {
         await run(db, `
           UPDATE comments
           SET status = ?, updated_at = ?
@@ -1711,6 +1749,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} ${hostName}`,
         github_url: githubReview.html_url,
         comments_submitted: githubReview.comments_count,
+        skipped_comments: skippedComments,
         event: event,
         status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts
       });

@@ -480,6 +480,72 @@ describe('PRManager Pierre render budgeting', () => {
     );
   });
 
+  it('finishes a manual deferred render that overlaps a suggestion display', async () => {
+    // The manual "Load diff" render re-anchors by reloading suggestions while
+    // a display is awaiting that same cached render. The reload must not wait
+    // for the running display (that would deadlock); it is queued and shown
+    // once the running display ends.
+    const dom = new JSDOM(`
+      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
+        <div class="large-diff-placeholder"></div>
+      </div>
+    `, { url: 'http://localhost/' });
+    global.window = dom.window;
+    global.document = dom.window.document;
+    try {
+      // The module registers itself on window at load, so load it here.
+      const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
+      const manager = createManager();
+      const file = { file: 'src/huge.js', patch: 'x'.repeat(220) };
+      manager.changedFilesByPath.set(file.file, file);
+      manager.findFileElement = () => document.querySelector('.d2h-file-wrapper');
+      manager.ensureFileBodyRendered = vi.fn(async () => {});
+      manager._registerPierreHunkAnchorsForFile = vi.fn();
+      manager.pierreBridge.renderFile = vi.fn(() => manager.pierreBridge.files.set(file.file, {}));
+      manager.pierreBridge.removeAnnotationsByType = vi.fn();
+      manager.pierreBridge.addAnnotations = vi.fn();
+      manager.pierreBridge.isLineVisible = () => true;
+      manager.loadUserComments = vi.fn(async () => {});
+      window.aiPanel = { addFindings: vi.fn() };
+      const suggestionManager = Object.create(SuggestionManager.prototype);
+      suggestionManager.prManager = manager;
+      suggestionManager._closeReasoningPopover = vi.fn();
+      manager.suggestionManager = suggestionManager;
+      const findings = id => [{ id, file: file.file, line_start: 2, line_end: 2 }];
+      let queuedDuringDisplay = false;
+      manager.loadAISuggestions = vi.fn(() => {
+        queuedDuringDisplay = suggestionManager._isDisplayingSuggestions;
+        return manager.displayAISuggestions(findings('reanchored'));
+      });
+
+      let releaseRender;
+      manager._yieldForDiffWork = () => new Promise(resolve => { releaseRender = resolve; });
+      let enteredAuto;
+      const autoStarted = new Promise(resolve => { enteredAuto = resolve; });
+      const materialize = manager._materializeDeferredDiff.bind(manager);
+      manager._materializeDeferredDiff = (filePath, options) => {
+        const result = materialize(filePath, options);
+        if (!options?.reanchor) enteredAuto();
+        return result;
+      };
+
+      const manual = manager._materializeDeferredDiff(file.file, { reanchor: true });
+      const display = manager.displayAISuggestions(findings('initial'));
+      await autoStarted;
+      releaseRender();
+      await Promise.all([manual, display]);
+
+      expect(queuedDuringDisplay).toBe(true);
+      expect(manager.pierreBridge.renderFile).toHaveBeenCalledTimes(1);
+      expect(manager.loadAISuggestions).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(window.aiPanel.addFindings).toHaveBeenLastCalledWith(findings('reanchored')));
+      expect(suggestionManager._isDisplayingSuggestions).toBe(false);
+      expect(manager._deferredDiffRenderPromises.size).toBe(0);
+    } finally {
+      dom.window.close();
+    }
+  });
+
   it('bails without clobbering file state when the review is rebuilt during the idle yield', async () => {
     // A deferred materialize snapshots wrapper/placeholder, then yields. If
     // renderDiff() re-runs during that idle window it clears the container,

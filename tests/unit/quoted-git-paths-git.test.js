@@ -18,6 +18,8 @@ const { generateScopedDiff, getUntrackedFiles, computeScopedDigest } = require('
 const { getDiffFileList, parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
 const { getChangedFiles: getExecutableChangedFiles } = require('../../src/routes/executable-analysis');
 const Analyzer = require('../../src/ai/analyzer');
+const { listScopedChangedFiles } = require('../../src/git/scoped-changed-files');
+const { diffContainsPath } = require('../../src/utils/diff-file-content');
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' });
 
@@ -167,6 +169,49 @@ describe('Local mode paths from a real working tree', () => {
   });
 });
 
+describe('Local scoped changed-file listing from a real working tree', () => {
+  beforeAll(() => {
+    // A base branch for the branch scope stop: the PR range's base commit
+    git(repo, 'branch', '-f', 'scope-base', baseSha);
+  });
+
+  it('lists the default Local files (unstaged, untracked, staged) verbatim', async () => {
+    const files = await listScopedChangedFiles(repo);
+    expect(files.sort()).toEqual(['café.js', DOLLAR_UNTRACKED, 'quo"ted new.js', 'ünt racked.js']);
+  });
+
+  it('lists a branch scope verbatim, including committed renames and quoted names', async () => {
+    const files = await listScopedChangedFiles(repo, {
+      scopeStart: 'branch', scopeEnd: 'untracked', baseBranch: 'scope-base'
+    });
+    expect(files.sort()).toEqual([
+      'a => b.md', 'café.js', DOLLAR_UNTRACKED, 'quo"te.js', 'quo"ted new.js', 'totally/different.txt',
+      'x b/y.js', 'zed.js', 'ñew dir/moved é.js', 'ünt racked.js'
+    ].sort());
+  });
+});
+
+describe('diff membership for the file-content route', () => {
+  it('finds quoted, non-ASCII and ambiguous-header paths in a real diff', async () => {
+    const manager = new GitWorktreeManager(null);
+    const diff = await manager.generateUnifiedDiff(repo, { base_sha: baseSha, head_sha: headSha });
+
+    for (const file of ['café.js', 'quo"te.js', 'x b/y.js', 'zed.js', 'p b/q.js', 'ñew dir/moved é.js', 'lib/moved.js']) {
+      expect(diffContainsPath(diff, file), file).toBe(true);
+    }
+    // Neither half of an ambiguous rename header is a file of its own
+    expect(diffContainsPath(diff, 'p')).toBe(false);
+    expect(diffContainsPath(diff, 'q.js b/zed.js')).toBe(false);
+  });
+
+  it('finds the real name in a Local diff with a C-quoted untracked header', async () => {
+    const { diff } = await generateScopedDiff(repo, 'unstaged', 'untracked', null);
+    expect(diffContainsPath(diff, 'quo"ted new.js')).toBe(true);
+    expect(diffContainsPath(diff, 'ünt racked.js')).toBe(true);
+    expect(diffContainsPath(diff, '"quo\\"ted new.js"')).toBe(false);
+  });
+});
+
 describe('Analyzer changed-file lists from a real repository', () => {
   it('lists PR files verbatim', async () => {
     const analyzer = new Analyzer({}, 'sonnet', 'claude');
@@ -174,12 +219,6 @@ describe('Analyzer changed-file lists from a real repository', () => {
     expect(files.sort()).toEqual([
       'a => b.md', 'café.js', 'quo"te.js', 'totally/different.txt', 'x b/y.js', 'zed.js', 'ñew dir/moved é.js'
     ].sort());
-  });
-
-  it('lists Local files verbatim', async () => {
-    const analyzer = new Analyzer({}, 'sonnet', 'claude');
-    const files = await analyzer.getLocalChangedFiles(repo, { includeStaged: true });
-    expect(files.sort()).toEqual(['café.js', DOLLAR_UNTRACKED, 'quo"ted new.js', 'ünt racked.js']);
   });
 
   it('pins core.quotePath=false in the diff command it runs for snapshots', () => {

@@ -17,7 +17,7 @@ class AnalysisHistoryManager {
    * @param {Object} options - Configuration options
    * @param {number} options.reviewId - The database review ID
    * @param {string} options.mode - 'pr' or 'local'
-   * @param {Function} options.onSelectionChange - Callback when a run is selected, receives (runId, run)
+   * @param {Function} options.onSelectionChange - Callback when a run is selected, receives (runId, run, { explicit })
    * @param {string} options.containerPrefix - Prefix for DOM element IDs (default: 'analysis-context')
    */
   constructor({ reviewId, mode, onSelectionChange, containerPrefix = 'analysis-context', shaAbbrevLength = 7 }) {
@@ -302,7 +302,7 @@ class AnalysisHistoryManager {
       item.addEventListener('click', (e) => {
         e.stopPropagation();
         const runId = item.dataset.runId;
-        this.selectRun(runId, true);
+        this.selectRun(runId, true, { explicit: true });
         this.hideDropdown();
       });
 
@@ -345,8 +345,11 @@ class AnalysisHistoryManager {
    * Select a specific analysis run
    * @param {string} runId - The run ID to select
    * @param {boolean} triggerCallback - Whether to call onSelectionChange
+   * @param {Object} [options]
+   * @param {boolean} [options.explicit=false] - The user picked this run
+   *   (passed through to onSelectionChange as its third argument)
    */
-  async selectRun(runId, triggerCallback = true) {
+  async selectRun(runId, triggerCallback = true, { explicit = false } = {}) {
     this.selectedRunId = runId;
 
     // Find the run in our cached list (handle both string and number IDs)
@@ -371,7 +374,7 @@ class AnalysisHistoryManager {
 
     // Trigger callback to load suggestions for this run
     if (triggerCallback && this.onSelectionChange) {
-      this.onSelectionChange(runId, this.selectedRun);
+      this.onSelectionChange(runId, this.selectedRun, { explicit });
     }
   }
 

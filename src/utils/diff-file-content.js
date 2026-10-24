@@ -46,6 +46,27 @@ function findFileBlobInfoInDiff(diffText, fileName) {
   return null;
 }
 
+/**
+ * Whether a unified diff has a file section for `fileName`, as either its
+ * old or its new path. Paths are decoded the way every diff reader decodes
+ * them (parsePatchPaths): C-quoted and octal-escaped headers name their real
+ * file, and a rename's `rename from` / `rename to` lines settle a header that
+ * is ambiguous on its own (`diff --git a/x b/y.js b/z.js`).
+ * @param {string} diffText - Unified diff
+ * @param {string} fileName - Repository-relative path
+ * @returns {boolean}
+ */
+function diffContainsPath(diffText, fileName) {
+  if (!diffText || !fileName) return false;
+  const lines = diffText.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('diff --git ')) continue;
+    const paths = parsePatchPaths(lines, i);
+    if (paths && (paths.oldPath === fileName || paths.newPath === fileName)) return true;
+  }
+  return false;
+}
+
 function isZeroObjectId(objectId) {
   return typeof objectId === 'string' && /^0+$/.test(objectId);
 }
@@ -81,6 +102,7 @@ function resolveOriginalFileContentSpec(prData, fileName) {
 }
 
 module.exports = {
+  diffContainsPath,
   findFileBlobInfoInDiff,
   parseDiffGitPaths,
   resolveOriginalFileContentSpecs,

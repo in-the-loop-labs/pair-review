@@ -1,33 +1,52 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const logger = require('./logger');
 
-/**
- * Check if a file is binary using the `file` command
- * @param {string} fullPath - Full path to the file
- * @returns {boolean} True if file is binary
- */
-function isBinaryFile(fullPath) {
-  try {
-    // First check if file is empty - empty files are reported as "binary" by the file command
-    // but we want to treat them as text files (with 0 lines)
-    const stats = fs.statSync(fullPath);
-    if (stats.size === 0) {
-      return false;
-    }
+// A NUL byte in the first 8 KB marks a file as binary (git's heuristic too).
+const BINARY_SCAN_BYTES = 8192;
 
-    // Use 'file --mime-encoding' to detect encoding
-    // Binary files will show "binary" in the output
-    const result = execSync(`file --mime-encoding "${fullPath}"`, {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'] // Suppress stderr
-    });
-    return result.includes('binary');
-  } catch {
-    // If command fails, fall back to assuming not binary
-    return false;
+/**
+ * Count lines the way editors number them: an empty file has 0 lines, "a" and
+ * "a\n" have 1, "a\nb" has 2 (a trailing newline does not start a new line).
+ * @param {string} content - File content
+ * @returns {number} Line count
+ */
+function countLines(content) {
+  if (content.length === 0) return 0;
+  const lines = content.split('\n');
+  return content.endsWith('\n') ? lines.length - 1 : lines.length;
+}
+
+/**
+ * Count a file's lines, or return -1 for a binary file. Only the first
+ * BINARY_SCAN_BYTES are read before the binary check, so a large binary asset
+ * is rejected without loading it into memory.
+ * @param {string} fullPath - Absolute file path
+ * @returns {Promise<number>} Line count, or -1 when the file is binary
+ * @throws When the file cannot be opened or read
+ */
+async function countFileLines(fullPath) {
+  const handle = await fs.promises.open(fullPath, 'r');
+  try {
+    const head = Buffer.alloc(BINARY_SCAN_BYTES);
+    let filled = 0;
+    // position=null reads from (and advances) the handle's file position, so
+    // readFile() below continues exactly where the scan stopped.
+    while (filled < BINARY_SCAN_BYTES) {
+      const { bytesRead } = await handle.read(head, filled, BINARY_SCAN_BYTES - filled, null);
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    if (head.subarray(0, filled).includes(0)) {
+      return -1;
+    }
+    const rest = filled < BINARY_SCAN_BYTES ? Buffer.alloc(0) : await handle.readFile();
+    // Decode the whole buffer at once so a multi-byte character spanning the
+    // scan boundary is not split.
+    return countLines(Buffer.concat([head.subarray(0, filled), rest]).toString('utf8'));
+  } finally {
+    await handle.close();
   }
 }
 
@@ -51,28 +70,7 @@ async function buildFileLineCountMap(worktreePath, validFiles) {
     const fullPath = path.join(worktreePath, filePath);
 
     try {
-      // Skip binary files - can't meaningfully count their "lines"
-      if (isBinaryFile(fullPath)) {
-        return { filePath, lineCount: -1 };
-      }
-
-      const content = await fs.promises.readFile(fullPath, 'utf-8');
-      // Count lines by splitting on newlines
-      // Empty file has 0 lines, file with "a" has 1 line, file with "a\n" has 1 line,
-      // file with "a\nb" has 2 lines
-      let lineCount;
-      if (content.length === 0) {
-        // Empty file has 0 lines
-        lineCount = 0;
-      } else {
-        const lines = content.split('\n');
-        // If file ends with newline, last element is empty string - don't count it as a line
-        lineCount = content.endsWith('\n') && lines.length > 0
-          ? lines.length - 1
-          : lines.length;
-      }
-
-      return { filePath, lineCount };
+      return { filePath, lineCount: await countFileLines(fullPath) };
     } catch (error) {
       // File doesn't exist or can't be read - mark as -1
       return { filePath, lineCount: -1 };

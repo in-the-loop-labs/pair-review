@@ -1,13 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-const { promisify } = require('util');
-const { exec } = require('child_process');
 const { queryOne } = require('../database');
-const { GIT_DIFF_FLAGS, GIT_PATH_CONFIG } = require('../git/diff-flags');
+const { listScopedChangedFiles } = require('../git/scoped-changed-files');
+const { reviewScope } = require('../local-scope');
 const { normalizePath, resolveRenamedFile } = require('./paths');
 const { parseHunkHeader } = require('./diff-annotator');
-const { decodeGitPath, parsePatchPaths, splitNulPaths } = require('./git-paths');
-
-const execPromise = promisify(exec);
+const { decodeGitPath, parsePatchPaths } = require('./git-paths');
 
 /**
  * Split a unified diff into its per-file patches, in order, keyed by the
@@ -275,15 +272,14 @@ async function getDiffFileList(db, review) {
     return [];
   }
 
-  // Local mode – ask git for changed / untracked files
+  // Local mode – ask git for the files within the review's selected scope
+  // (staged and branch changes included when selected).
   if (review.local_path) {
     try {
-      const opts = { cwd: review.local_path };
-      const [{ stdout: unstaged }, { stdout: untracked }] = await Promise.all([
-        execPromise(`git ${GIT_PATH_CONFIG} diff ${GIT_DIFF_FLAGS} --name-only -z`, opts),
-        execPromise(`git ${GIT_PATH_CONFIG} ls-files -z --others --exclude-standard`, opts),
-      ]);
-      return [...new Set([...splitNulPaths(unstaged), ...splitNulPaths(untracked)])];
+      const { start, end } = reviewScope(review);
+      return await listScopedChangedFiles(review.local_path, {
+        scopeStart: start, scopeEnd: end, baseBranch: review.local_base_branch
+      });
     } catch {
       // git error – fall through to empty list
     }
@@ -293,8 +289,31 @@ async function getDiffFileList(db, review) {
   return [];
 }
 
+/**
+ * Return the file paths of the diff the review currently displays.
+ *
+ * Local reviews read the persisted diff snapshot (`local_diffs`), which is
+ * what the browser renders; without a snapshot they fall back to listing the
+ * review's scope from git. PR reviews use the cached PR metadata.
+ *
+ * @param {object} db - SQLite database handle
+ * @param {object} review - Review row from the database
+ * @returns {Promise<string[]>} Relative file paths in the diff
+ */
+async function getReviewDiffFiles(db, review) {
+  if (!review) return [];
+  if (review.local_path) {
+    const snapshot = await queryOne(db, 'SELECT diff_text FROM local_diffs WHERE review_id = ?', [review.id]);
+    if (snapshot) {
+      return [...parseUnifiedDiffPatches(snapshot.diff_text).keys()];
+    }
+  }
+  return getDiffFileList(db, review);
+}
+
 module.exports = {
   getDiffFileList,
+  getReviewDiffFiles,
   splitUnifiedDiffPatches,
   parseUnifiedDiffPatches,
   countPatchStats,
