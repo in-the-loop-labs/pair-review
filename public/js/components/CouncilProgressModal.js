@@ -925,11 +925,20 @@ class CouncilProgressModal {
     }
     this._updateConsolidation({ status: 'completed' });
 
+    const warnings = status.warnings || [];
+    if (warnings.length) {
+      const notice = document.createElement('p');
+      notice.className = 'council-run-warnings';
+      notice.setAttribute('role', 'status');
+      notice.textContent = `Review completed with limited coverage. ${warnings.join(' ')}`;
+      this.modal.querySelector('.council-progress-body')?.appendChild(notice);
+    }
+
     // Update footer
     const bgBtn = this.modal.querySelector('.council-bg-btn');
     const cancelBtn = this.modal.querySelector('.council-cancel-btn');
     if (bgBtn) {
-      bgBtn.textContent = 'Analysis Complete';
+      bgBtn.textContent = warnings.length ? 'Complete with limited coverage' : 'Analysis Complete';
       bgBtn.disabled = true;
     }
     if (cancelBtn) {
@@ -969,7 +978,7 @@ class CouncilProgressModal {
         })
         .then(() => {
           console.log('AI suggestions reloaded after council analysis');
-          if (this.isVisible) {
+          if (this.isVisible && !warnings.length) {
             setTimeout(() => this.hide(), 2000);
           }
         })
