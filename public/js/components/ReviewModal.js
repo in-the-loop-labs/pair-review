@@ -503,12 +503,14 @@ class ReviewModal {
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
     const commentCount = window.prManager?.getPendingCommentCount?.() || 0;
+    // Comments saved to the pending draft are published with this review too
+    const submittableCount = window.prManager?.getSubmittableCommentCount?.() || 0;
     
     // Hide any previous errors
     this.hideError();
     
     // Validate
-    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && commentCount === 0) {
+    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && submittableCount === 0) {
       this.showError('Please add comments or a review summary when requesting changes.');
       return;
     }

@@ -242,13 +242,29 @@ describe('posted comment UI', () => {
     modal.updateCommentCount();
     expect(modal.modal.querySelector('#large-review-warning').style.display).toBe('none');
     expect(modal.modal.querySelector('.review-comment-count').textContent).toContain('2 comments will be submitted');
-    manager.userComments = manager.userComments.filter(c => c.status !== 'active');
+    manager.userComments = manager.userComments.filter(c => c.status === 'submitted');
     modal.updateCommentCount();
     expect(modal.modal.querySelector('#large-review-warning').style.display).toBe('none');
     selectEvent(modal, 'REQUEST_CHANGES');
     await modal.submitReview();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(modal.modal.querySelector('#review-error-message').textContent).toContain('Please add comments');
+  });
+
+  it('lets Request Changes publish a pending draft that holds the only comments', async () => {
+    const manager = makeManager();
+    manager.userComments = comments.filter(c => c.status === 'draft');
+    const modal = makeModal();
+    modal.show();
+    // Nothing new to submit, so the label stays hidden...
+    expect(modal.modal.querySelector('.review-comment-count').style.display).toBe('none');
+    selectEvent(modal, 'REQUEST_CHANGES');
+    await modal.submitReview();
+    // ...but the pending draft's comments are published with the review.
+    expect(modal.modal.querySelector('#review-error-message').textContent).toBe('');
+    expect(fetchMock).toHaveBeenCalledWith('/api/pr/acme/widget/7/submit-review', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ event: 'REQUEST_CHANGES', body: '' }),
+    }));
   });
 
   it('keeps hidden submitted comments out after submission and reload without hiding drafts', async () => {

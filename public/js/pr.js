@@ -7430,8 +7430,18 @@ class PRManager {
     this.commentMinimizer?.refreshIndicators();
   }
 
+  /** Comments the next submit will post: what "will be submitted" counts. */
   getPendingCommentCount() {
     return (this.userComments || []).filter(c => c.status === 'active').length;
+  }
+
+  /**
+   * Comments a non-draft submit will publish: the pending ones plus those
+   * already saved to the pending draft review, which GitHub publishes with it.
+   * Used only to decide whether a review has any comments at all.
+   */
+  getSubmittableCommentCount() {
+    return (this.userComments || []).filter(c => c.status === 'active' || c.status === 'draft').length;
   }
 
   /**
