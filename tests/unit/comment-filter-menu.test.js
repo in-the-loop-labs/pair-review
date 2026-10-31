@@ -256,7 +256,7 @@ describe('PRManager filter wiring', () => {
     { id: 2, status: 'active', publication: { state: 'posted' }, file: 'src/a.js', line_start: 11, body: 'Posted' },
     { id: 3, status: 'active', publication: { state: 'posted' }, file: 'src/a.js', line_start: 12, body: 'Posted too' },
     { id: 4, status: 'active', publication: { state: 'draft' }, file: 'src/a.js', line_start: 13, body: 'In draft review' },
-    { id: 5, status: 'inactive', file: 'src/a.js', line_start: 14, body: 'Dismissed' }
+    { id: 5, status: 'inactive', publication: { state: 'posted' }, file: 'src/a.js', line_start: 14, body: 'Dismissed' }
   ];
 
   function makeManager() {
@@ -306,6 +306,23 @@ describe('PRManager filter wiring', () => {
     expect(window.aiPanel.comments.map(c => c.id)).toEqual([1, 2, 3, 4, 5]);
     expect(manager.getHiddenCommentCounts()).toEqual({ posted: 0, dismissed: 0 });
     expect(document.querySelector('.hidden-comments-notice')).toBeNull();
+  });
+
+  it.each([false, true].flatMap(showPosted => [false, true].map(includeDismissed => ({ showPosted, includeDismissed }))))('dismissed posted visibility follows only Show dismissed: %j', async filter => {
+    window.aiPanel = makePanel();
+    const manager = makeManager();
+    manager.getCommentFilterState = () => filter;
+    await manager.loadUserComments();
+    const row = document.createElement('div');
+    row.dataset.commentStatus = 'inactive';
+    row.dataset.commentPublication = 'posted';
+    document.body.appendChild(row);
+    manager.applyPostedCommentVisibility();
+    expect(window.aiPanel.comments.map(c => c.id).includes(5)).toBe(filter.includeDismissed);
+    expect(manager.getHiddenCommentCounts()).toEqual({
+      posted: filter.showPosted ? 0 : 2, dismissed: filter.includeDismissed ? 0 : 1
+    });
+    expect(row.classList.contains('posted-comment-hidden')).toBe(false);
   });
 
   it('dismissing a comment counts it as hidden without a reload', async () => {

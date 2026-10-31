@@ -72,7 +72,7 @@ function isHidePostedInEffect() {
  *   (default: this review's setting, see isHidePostedInEffect)
  */
 function shouldHidePostedComment(comment, hidePosted = isHidePostedInEffect()) {
-  return hidePosted && publicationState(comment) === 'posted';
+  return hidePosted && commentStatus(comment) !== 'inactive' && publicationState(comment) === 'posted';
 }
 
 /**

@@ -6721,7 +6721,7 @@ class PRManager {
     const hidePosted = !filter.showPosted;
     document.querySelectorAll('[data-comment-status]').forEach(element => {
       element.classList.toggle('posted-comment-hidden',
-        shouldHidePostedComment({ publication: element.dataset.commentPublication === 'none' ? null : { state: element.dataset.commentPublication } }, hidePosted));
+        shouldHidePostedComment({ status: element.dataset.commentStatus, publication: element.dataset.commentPublication === 'none' ? null : { state: element.dataset.commentPublication } }, hidePosted));
     });
     window.aiPanel?.setHiddenCommentCounts?.(this.getHiddenCommentCounts(filter));
     window.aiPanel?.setComments?.((this.userComments || []).filter(c =>

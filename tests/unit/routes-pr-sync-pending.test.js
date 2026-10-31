@@ -98,6 +98,28 @@ describe('syncPendingDraftFromGitHub (Fix #10)', () => {
     expect(repo.create).not.toHaveBeenCalled();
   });
 
+  it('reconciles an older draft even when the current draft matches a local record', async () => {
+    const repo = makeRepo([
+      { id: 1, review_id: 99, github_node_id: 'PRR_old', github_review_id: '111', state: 'pending' },
+      { id: 2, review_id: 99, github_node_id: 'PRR_current', github_review_id: '222', state: 'pending' },
+      { id: 3, review_id: 99, github_node_id: 'PRR_current', github_review_id: '222', state: 'pending' }
+    ]);
+    const client = { getReviewById: vi.fn().mockResolvedValue({ state: 'COMMENTED', submittedAt: '2026-01-01' }) };
+    const broadcast = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+    try {
+      const result = await syncPendingDraftFromGitHub(repo, 99, {
+        id: 'PRR_current', databaseId: 222, url: 'u', body: 'current', comments: { totalCount: 2 }
+      }, client, { owner: 'o', repo: 'r', prNumber: 1 });
+      expect(result.state).toBe('pending');
+      expect(repo._state.records.get(1).state).toBe('submitted');
+      expect(repo._state.records.get(2).state).toBe('pending');
+      expect(repo._state.records.get(3).state).toBe('pending');
+      expect(client.getReviewById).toHaveBeenCalledTimes(1);
+      expect(client.getReviewById.mock.calls[0][0]).toBe('PRR_old');
+      expect(broadcast).toHaveBeenCalledTimes(1);
+    } finally { broadcast.mockRestore(); }
+  });
+
   it('creates a new record when neither node id nor numeric id matches', async () => {
     const repo = makeRepo([
       { id: 1, github_node_id: 'PRR_old', github_review_id: '111', state: 'pending', body: '' }

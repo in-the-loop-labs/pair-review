@@ -28,7 +28,10 @@ const DEFAULT_BATCH_SIZE = 10;
  * @param {Array} batch - Slice of comments to include in this mutation
  * @returns {string} The full mutation text
  */
-function buildBatchMutation(batch) {
+function buildBatchMutation(batch, { includeCommentMetadata = true } = {}) {
+  const threadSelection = includeCommentMetadata
+    ? 'thread { id comments(first: 1) { nodes { id fullDatabaseId url } } }'
+    : 'thread { id }';
   const commentMutations = batch.map((comment, index) => {
     const isFileLevel = comment.isFileLevel || !comment.line;
 
@@ -41,7 +44,7 @@ function buildBatchMutation(batch) {
             subjectType: FILE
             body: ${JSON.stringify(comment.body)}
           }) {
-            thread { id comments(first: 1) { nodes { id fullDatabaseId url } } }
+            ${threadSelection}
           }
         `;
     }
@@ -61,7 +64,7 @@ function buildBatchMutation(batch) {
             side: ${side}
             body: ${JSON.stringify(comment.body)}
           }) {
-            thread { id comments(first: 1) { nodes { id fullDatabaseId url } } }
+            ${threadSelection}
           }
         `;
   }).join('\n');
@@ -104,6 +107,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
     });
   };
   let batchNumber = 0;
+  let includeCommentMetadata = true;
 
   logger.info(`Adding ${comments.length} comments in batches of up to ${currentBatchSize}`);
 
@@ -112,7 +116,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
     const batch = remaining.slice(0, currentBatchSize);
     logger.info(`Adding comments batch ${batchNumber} (${batch.length} comments, ${remaining.length} remaining)...`);
 
-    const batchMutation = buildBatchMutation(batch);
+    let batchMutation = buildBatchMutation(batch, { includeCommentMetadata });
 
     // Try the batch, with one retry on failure
     let batchResult = null;
@@ -136,6 +140,19 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
         // retries. Replaying this mutation would duplicate successful aliases.
         // Stop this batch and report its exact subset to the orchestrator.
         if (error.data) break;
+
+        // Older GraphQL hosts may not expose fullDatabaseId. Only a pure
+        // field-validation rejection is safe to retry: validation precedes
+        // all mutation execution. Never replay partial or transport failures.
+        const metadataValidationError = error.errors?.length && error.errors.every(e =>
+          (e.extensions?.code === 'undefinedField' && e.extensions?.fieldName === 'fullDatabaseId') ||
+          /(?:Cannot query field ["']fullDatabaseId["']|Field ["']fullDatabaseId["'] doesn.t exist)/i.test(e.message || ''));
+        if (includeCommentMetadata && metadataValidationError) {
+          includeCommentMetadata = false;
+          batchMutation = buildBatchMutation(batch, { includeCommentMetadata });
+          logger.warn('GraphQL host lacks fullDatabaseId; posting without optional comment metadata');
+          continue;
+        }
 
         // Complexity/cost limit: halve batch size and re-attempt
         if (isComplexityError(error)) {
