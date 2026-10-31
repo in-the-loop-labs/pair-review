@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { PRManager } = require('../../public/js/pr.js');
+const PostedComment = require('../../public/js/utils/posted-comment.js');
 
 let hidden;
 let listeners;
@@ -30,16 +31,34 @@ afterEach(() => {
   for (const [type, fn, opts] of listeners) document.removeEventListener(type, fn, opts);
   delete document.hidden;
   delete window.aiPanel;
+  delete window.PostedComment;
   vi.restoreAllMocks();
 });
+
+const COMMENTS = [
+  { id: 1, status: 'active', file: 'src/a.js', line_start: 10, body: 'Pending' },
+  { id: 2, status: 'inactive', file: 'src/a.js', line_start: 11, body: 'Dismissed' }
+];
 
 function makeManager() {
   const manager = Object.create(PRManager.prototype);
   manager.currentPR = { id: 42, owner: 'acme', repo: 'widget', number: 7 };
   manager._clientId = 'this-tab';
-  manager._loadUserComments = vi.fn().mockResolvedValue(true);
+  manager.ensureLinesVisible = vi.fn();
+  manager.findFileElement = () => null;
+  manager.updateCommentCount = vi.fn();
   manager._initReviewEventListeners();
+  vi.spyOn(manager, '_loadUserComments');
   return manager;
+}
+
+function panel(showDismissed) {
+  return { showDismissedComments: showDismissed, setComments: vi.fn() };
+}
+
+/** Ids of the comments the panel was last given. */
+function panelIds() {
+  return window.aiPanel.setComments.mock.lastCall[0].map(c => c.id);
 }
 
 function fireCommentsChanged(detail = {}) {
@@ -49,24 +68,39 @@ function fireCommentsChanged(detail = {}) {
 }
 
 describe('event-triggered comment reloads keep "show dismissed"', () => {
-  it.each([true, false])('review:comments_changed reloads with includeDismissed=%s', (showDismissed) => {
+  beforeEach(() => {
+    window.PostedComment = PostedComment;
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      // Every comment is fetched, dismissed ones included; the panel's
+      // filter decides what shows.
+      expect(url).toBe('/api/reviews/42/comments?includeDismissed=true');
+      return { ok: true, json: async () => ({ comments: COMMENTS }) };
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([true, false])('review:comments_changed reload with showDismissed=%s keeps the panel filter', async (showDismissed) => {
     vi.useFakeTimers();
+    let manager;
     try {
-      window.aiPanel = { showDismissedComments: showDismissed };
-      const manager = makeManager();
+      window.aiPanel = panel(showDismissed);
+      manager = makeManager();
 
       fireCommentsChanged();
       vi.runAllTimers(); // the listener debounces its reload
-
-      expect(manager._loadUserComments).toHaveBeenCalledTimes(1);
-      expect(manager._loadUserComments).toHaveBeenCalledWith(showDismissed);
     } finally {
       vi.useRealTimers();
     }
+    expect(manager._loadUserComments).toHaveBeenCalledTimes(1);
+    await manager._latestUserCommentsLoad;
+    expect(panelIds()).toEqual(showDismissed ? [1, 2] : [1]);
   });
 
-  it.each([true, false])('dirty-flag recovery on becoming visible reloads with includeDismissed=%s', (showDismissed) => {
-    window.aiPanel = { showDismissedComments: showDismissed };
+  it.each([true, false])('dirty-flag recovery on becoming visible with showDismissed=%s keeps the panel filter', async (showDismissed) => {
+    window.aiPanel = panel(showDismissed);
     const manager = makeManager();
 
     hidden = true;
@@ -78,11 +112,12 @@ describe('event-triggered comment reloads keep "show dismissed"', () => {
     document.dispatchEvent(new Event('visibilitychange'));
 
     expect(manager._loadUserComments).toHaveBeenCalledTimes(1);
-    expect(manager._loadUserComments).toHaveBeenCalledWith(showDismissed);
+    await manager._latestUserCommentsLoad;
+    expect(panelIds()).toEqual(showDismissed ? [1, 2] : [1]);
   });
 
-  it('reads the filter at reload time, not when the event arrived', () => {
-    window.aiPanel = { showDismissedComments: false };
+  it('reads the filter at render time, not when the event arrived', async () => {
+    window.aiPanel = panel(false);
     const manager = makeManager();
 
     hidden = true;
@@ -91,19 +126,25 @@ describe('event-triggered comment reloads keep "show dismissed"', () => {
     hidden = false;
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(manager._loadUserComments).toHaveBeenCalledWith(true);
+    await manager._latestUserCommentsLoad;
+    expect(panelIds()).toEqual([1, 2]);
   });
 
-  it('defaults to no dismissed comments when the panel is missing', () => {
+  it('prefers the panel filter state object when it has one', async () => {
+    window.aiPanel = {
+      ...panel(false),
+      getCommentFilterState: () => ({ includeDismissed: true, showPosted: true })
+    };
     const manager = makeManager();
-    manager.loadUserComments();
-    expect(manager._loadUserComments).toHaveBeenCalledWith(false);
+    await manager.loadUserComments();
+    expect(panelIds()).toEqual([1, 2]);
   });
 
-  it('still honours an explicit argument over the panel state', () => {
-    window.aiPanel = { showDismissedComments: true };
+  it('keeps dismissed comments in the cache but out of the panel by default', async () => {
+    window.aiPanel = panel(false);
     const manager = makeManager();
-    manager.loadUserComments(false);
-    expect(manager._loadUserComments).toHaveBeenCalledWith(false);
+    await expect(manager.loadUserComments()).resolves.toBe(true);
+    expect(manager.userComments.map(c => c.id)).toEqual([1, 2]);
+    expect(panelIds()).toEqual([1]);
   });
 });

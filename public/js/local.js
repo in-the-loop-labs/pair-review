@@ -539,8 +539,7 @@ class LocalManager {
       await self.loadLocalDiff();
 
       // Re-anchor comments and suggestions on the fresh DOM
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await manager.loadUserComments(includeDismissed);
+      await manager.loadUserComments();
       await manager.loadAISuggestions(null, manager.selectedRunId);
 
       // Restore scroll position after the DOM settles
@@ -941,8 +940,7 @@ class LocalManager {
 
     // Re-render comments and AI suggestions on the fresh DOM
     // (renderDiff clears the diff container, so we must re-populate)
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await manager.loadUserComments(includeDismissed);
+    await manager.loadUserComments();
     // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
     // (because the manager triggers loadAISuggestions via onSelectionChange on init),
     // refresh must call unconditionally since the manager won't re-fire its callback.
@@ -1157,8 +1155,7 @@ class LocalManager {
       window.panelGroup?.setPR(`local/${reviewData.repository}#${this.reviewId}`);
 
       // Load saved comments using the restored filter state from AI Panel
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await manager.loadUserComments(includeDismissed);
+      await manager.loadUserComments();
 
       // Initialize analysis history manager for local mode
       if (window.AnalysisHistoryManager) {
@@ -1691,8 +1688,7 @@ class LocalManager {
     await this.loadLocalDiff();
 
     // Re-anchor comments and suggestions
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await manager.loadUserComments(includeDismissed);
+    await manager.loadUserComments();
     await manager.loadAISuggestions(null, manager.selectedRunId);
 
     // Only update dropdown if user hasn't clicked again since this request started

@@ -663,10 +663,10 @@ class PRManager {
       }
     });
 
-    // Listen for filter dismissed changes from AI panel
-    document.addEventListener('filterDismissedChanged', (e) => {
-      const showDismissed = e.detail?.showDismissed;
-      this.loadUserComments(showDismissed);
+    // Reload user comments when the reviewer changes the comment panel's
+    // filters (show dismissed, show posted). loadUserComments reads them.
+    document.addEventListener('commentFilterChanged', () => {
+      this.loadUserComments();
     });
   }
 
@@ -1028,10 +1028,8 @@ class PRManager {
       }
       window.panelGroup?.setPR(`${owner}/${repo}#${number}`);
 
-      // Load saved comments using the restored filter state from AI Panel
-      // If AI Panel has showDismissedComments=true (restored from localStorage), use that
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await this.loadUserComments(includeDismissed);
+      // Load saved comments: uses the comment panel's filters (restored from localStorage by setPR)
+      await this.loadUserComments();
 
       // Initialize analysis history manager if review ID is available
       // The review ID is needed to fetch analysis runs from the database
@@ -1111,8 +1109,7 @@ class PRManager {
    *   the existing mirror.
    */
   async _rerenderAllOverlays({ analysisRunId, syncExternal = false } = {}) {
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await this.loadUserComments(includeDismissed);
+    await this.loadUserComments();
     await this.loadAISuggestions(null, analysisRunId);
     // Skip external-comment re-rendering entirely when the feature is off.
     // The manager is never populated with rows in that case, so there's
@@ -4170,8 +4167,7 @@ class PRManager {
 
   async _reanchorInlineFeedbackAfterDeferredRender() {
     try {
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await this.loadUserComments(includeDismissed);
+      await this.loadUserComments();
       await this.loadAISuggestions(null, this.selectedRunId);
     } catch (err) {
       console.error('Failed to re-anchor inline feedback after deferred diff render:', err);
@@ -6126,8 +6122,7 @@ class PRManager {
         // Remove form annotation
         this.pierreBridge.removeAnnotation(fileName, annotationId);
         // Reload comments to show the new one
-        const includeDismissed = window.aiPanel?.showDismissedComments || false;
-        await this.loadUserComments(includeDismissed);
+        await this.loadUserComments();
 
         // Legacy-path side-effects: clear the dragged range, auto-expand in
         // minimize mode, and notify the AI chat context. Parity with
@@ -6434,9 +6429,7 @@ class PRManager {
       if (!response.ok) throw new Error('Failed to restore comment');
 
       // Reload comments to update both the diff view and AI panel
-      // Pass the current filter state from the AI panel
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await this.loadUserComments(includeDismissed);
+      await this.loadUserComments();
 
       // Show success toast
       if (window.toast) {
@@ -6523,8 +6516,7 @@ class PRManager {
 
       // Reload comments to update both internal state and AI Panel
       // This shows dismissed comments in AI Panel if filter is enabled, matching individual deletion behavior
-      const includeDismissed = window.aiPanel?.showDismissedComments || false;
-      await this.loadUserComments(includeDismissed);
+      await this.loadUserComments();
 
       // Update dismissed suggestions in the diff view UI
       // (AI Panel is already updated by loadUserComments via setComments)
@@ -6549,24 +6541,26 @@ class PRManager {
   }
 
   /**
-   * Load user comments from API
-   * @param {boolean} [includeDismissed] - Whether to include dismissed (inactive) comments.
-   *   Defaults to the comment panel's "show dismissed" filter, so reloads
-   *   triggered by events (live sync, tab becoming visible) keep what the
-   *   panel shows. When true, dismissed comments are returned by the API so
-   *   they can be shown in the AI Panel.
-   *   Note: Dismissed comments are NEVER shown in the diff panel per design decision.
+   * Load user comments from API and render them.
+   *
+   * Every user comment is fetched, dismissed ones included, so the cache
+   * matches what live edits leave in it and the hidden-comments notice can
+   * count from data. What shows follows the comment panel's filters
+   * (getCommentFilterState), read at render time, so reloads triggered by
+   * events (live sync, tab becoming visible) keep what the panel shows.
+   * Dismissed comments are NEVER shown in the diff panel (design decision);
+   * they show in the AI Panel when its "Show dismissed" filter is on.
    * @returns {Promise<boolean|undefined>} true once rendered, false if the
    *   reload failed, undefined when no PR is loaded. A load overtaken by a
    *   newer one resolves with the newer load's result.
    */
-  loadUserComments(includeDismissed = window.aiPanel?.showDismissedComments || false) {
-    const load = this._loadUserComments(includeDismissed);
+  loadUserComments() {
+    const load = this._loadUserComments();
     this._latestUserCommentsLoad = load;
     return load;
   }
 
-  async _loadUserComments(includeDismissed) {
+  async _loadUserComments() {
     if (!this.currentPR) return;
 
     const generation = (this._userCommentsLoadGeneration || 0) + 1;
@@ -6581,7 +6575,7 @@ class PRManager {
       // so fetch again (a few times at most) until the cache stood still.
       for (let attempt = 1; ; attempt++) {
         const cacheVersion = this._userCommentsVersion || 0;
-        ({ comments, fileLevelComments, lineLevelComments } = await this._fetchUserCommentsForRender(includeDismissed));
+        ({ comments, fileLevelComments, lineLevelComments } = await this._fetchUserCommentsForRender());
         if (generation !== this._userCommentsLoadGeneration) return this._latestUserCommentsLoad;
         if (cacheVersion === (this._userCommentsVersion || 0) || attempt >= 3) break;
       }
@@ -6670,9 +6664,8 @@ class PRManager {
    * every line-level comment's target line reachable in the DOM.
    * @private
    */
-  async _fetchUserCommentsForRender(includeDismissed) {
-    const queryParam = includeDismissed ? '?includeDismissed=true' : '';
-    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
+  async _fetchUserCommentsForRender() {
+    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments?includeDismissed=true`);
     if (!response.ok) throw new Error('Failed to load comments');
 
     const data = await response.json();
@@ -6713,15 +6706,46 @@ class PRManager {
     return { comments, fileLevelComments, lineLevelComments };
   }
 
+  /**
+   * The comment panel's user-comment filters. Falls back to the panel's
+   * show-dismissed flag and this review's posted setting when the panel
+   * predates getCommentFilterState (or is a test stub).
+   * @returns {{includeDismissed: boolean, showPosted: boolean}}
+   */
+  getCommentFilterState() {
+    const state = window.aiPanel?.getCommentFilterState?.();
+    if (state) return state;
+    return {
+      includeDismissed: !!window.aiPanel?.showDismissedComments,
+      showPosted: !(window.PostedComment?.isHidePostedInEffect() ?? false)
+    };
+  }
+
+  /**
+   * How many cached user comments the panel's filters hide, counted from the
+   * comment data (never DOM rows), for the panel's hidden-comments notice.
+   * @param {{includeDismissed: boolean, showPosted: boolean}} [filter]
+   * @returns {{posted: number, dismissed: number}}
+   */
+  getHiddenCommentCounts(filter = this.getCommentFilterState()) {
+    const comments = this.userComments || [];
+    return {
+      posted: window.PostedComment.countHiddenPostedComments(comments, !filter.showPosted),
+      dismissed: filter.includeDismissed ? 0 : comments.filter(c => c.status === 'inactive').length
+    };
+  }
+
   applyPostedCommentVisibility() {
-    const { isHidePostedEnabled, shouldHidePostedComment } = window.PostedComment;
-    const hidePosted = isHidePostedEnabled();
+    const { shouldHidePostedComment } = window.PostedComment;
+    const filter = this.getCommentFilterState();
+    const hidePosted = !filter.showPosted;
     document.querySelectorAll('[data-comment-status]').forEach(element => {
       element.classList.toggle('posted-comment-hidden',
         shouldHidePostedComment({ status: element.dataset.commentStatus }, hidePosted));
     });
+    window.aiPanel?.setHiddenCommentCounts?.(this.getHiddenCommentCounts(filter));
     window.aiPanel?.setComments?.((this.userComments || []).filter(c =>
-      (c.status !== 'inactive' || window.aiPanel.showDismissedComments) &&
+      (c.status !== 'inactive' || filter.includeDismissed) &&
       !shouldHidePostedComment(c, hidePosted)
     ));
 
@@ -7477,7 +7501,10 @@ class PRManager {
   patchUserComment(commentId, updates) {
     this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
     this._userCommentsVersion = (this._userCommentsVersion || 0) + 1;
-    if (updates.status === 'inactive' && !window.aiPanel?.showDismissedComments) {
+    if (window.aiPanel?.setHiddenCommentCounts) {
+      window.aiPanel.setHiddenCommentCounts(this.getHiddenCommentCounts());
+    }
+    if (updates.status === 'inactive' && !this.getCommentFilterState().includeDismissed) {
       window.aiPanel?.removeComment?.(commentId);
     } else {
       window.aiPanel?.updateComment?.(commentId, updates);
@@ -8954,8 +8981,7 @@ class PRManager {
       // comments targeting lines in these files find their DOM targets.
       // loadUserComments() is idempotent (clears existing comment rows first).
       if (newFilesRendered) {
-        const includeDismissed = window.aiPanel?.showDismissedComments || false;
-        await this.loadUserComments(includeDismissed);
+        await this.loadUserComments();
       }
     } catch (error) {
       console.error('Error loading context files:', error);
