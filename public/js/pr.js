@@ -6657,14 +6657,10 @@ class PRManager {
         this.fileCommentManager.loadFileComments(fileLevelComments, null);
       }
 
+      // Also refreshes the file-comment zones and minimize-mode indicators
       this.applyPostedCommentVisibility();
 
       this.updateCommentCount();
-
-      // Refresh minimize-mode indicators (no-op when minimize mode is off)
-      if (this.commentMinimizer) {
-        this.commentMinimizer.refreshIndicators();
-      }
       return true;
     } catch (error) {
       console.error('Error loading user comments:', error);
@@ -6683,6 +6679,18 @@ class PRManager {
       (c.status !== 'inactive' || window.aiPanel.showDismissedComments) &&
       !shouldHidePostedComment(c, hidePosted)
     ));
+
+    // Hidden posted comments must not drive the file-comment header state or
+    // the minimize-mode indicators. The minimizer's observer watches childList
+    // only, so a class toggle needs an explicit refresh.
+    if (this.fileCommentManager) {
+      document.querySelectorAll('.file-comments-zone').forEach(zone => {
+        if (zone.querySelector('.file-comments-container')) {
+          this.fileCommentManager.updateCommentCount(zone);
+        }
+      });
+    }
+    this.commentMinimizer?.refreshIndicators();
   }
 
   /**

@@ -246,6 +246,31 @@ describe('CommentMinimizer — line-level grouping', () => {
     expect(btn.title).toBe('1 suggestion');
   });
 
+  it('ignores posted comments the reviewer has hidden', () => {
+    const { host } = makeFile('a.js');
+    const hidden = userCommentCard();
+    hidden.classList.add('posted-comment-hidden');
+    slotCard(host, 'additions', 10, hidden);
+    const hiddenToo = userCommentCard();
+    hiddenToo.classList.add('posted-comment-hidden');
+    slotCard(host, 'additions', 20, hiddenToo);
+    slotCard(host, 'additions', 20, userCommentCard());
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+
+    // No pill on line 10 (it would expand nothing); line 20 counts one comment
+    const indicators = lineIndicators();
+    expect(indicators).toHaveLength(1);
+    expect(indicators[0].title).toBe('1 comment');
+
+    // Unhiding them brings them back on the next refresh
+    hidden.classList.remove('posted-comment-hidden');
+    hiddenToo.classList.remove('posted-comment-hidden');
+    cm.refreshIndicators();
+    expect(lineIndicators().map(btn => btn.title)).toEqual(['1 comment', '2 comments']);
+  });
+
   it('injects no indicator when a line\'s only card is hidden for adoption', () => {
     // The suggestion is represented by its adopted comment elsewhere; with no
     // other card on the line the group has zero counts and must not produce an
@@ -610,6 +635,20 @@ describe('CommentMinimizer — file-level indicators', () => {
     btn.click();
     expect(cm._expandedFiles.has(zone)).toBe(false);
     expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+  });
+
+  it('ignores posted file comments the reviewer has hidden', () => {
+    const { zone } = makeFile('a.js', { withZone: true });
+    const hidden = fileCommentCard(zone, 'user-comment');
+    hidden.classList.add('posted-comment-hidden');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    expect(fileIndicator()).toBeNull();
+
+    fileCommentCard(zone, 'user-comment');
+    cm.refreshIndicators();
+    expect(fileIndicator().title).toBe('1 file comment');
   });
 
   it('does not inject an indicator for an empty zone', () => {

@@ -1087,7 +1087,8 @@ class FileCommentManager {
   updateCommentCount(zone) {
     const container = zone.querySelector('.file-comments-container');
 
-    const userComments = container.querySelectorAll('.file-comment-card:not(.ai-suggestion)').length;
+    // Hidden posted comments don't count: the reviewer can't see them
+    const userComments = container.querySelectorAll('.file-comment-card:not(.ai-suggestion):not(.posted-comment-hidden)').length;
     const aiSuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion').length;
     const total = userComments + aiSuggestions;
 

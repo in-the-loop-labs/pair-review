@@ -138,6 +138,8 @@ class CommentMinimizer {
       const isExternal = card.classList.contains('external-comment-row');
       // Skip comment forms, tour stops, hunk summaries — those stay visible.
       if (!isComment && !isSuggestion && !isExternal) continue;
+      // Posted comments the reviewer chose to hide have nothing to expand.
+      if (card.classList.contains('posted-comment-hidden')) continue;
 
       const key = this._lineKeyFor(wrapper);
       if (!key) continue;
@@ -398,7 +400,8 @@ class CommentMinimizer {
       const info = { hasUser: false, hasAI: false, hasAdopted: false, userCount: 0, aiCount: 0, adoptedCount: 0 };
       for (const card of cards) {
         // Skip collapsed cards (adopted/dismissed originals remain in DOM)
-        if (card.classList.contains('collapsed')) continue;
+        // and posted comments the reviewer chose to hide
+        if (card.classList.contains('collapsed') || card.classList.contains('posted-comment-hidden')) continue;
 
         if (card.classList.contains('ai-suggestion')) {
           info.hasAI = true;

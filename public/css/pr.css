@@ -9939,7 +9939,7 @@ body.tour-active {
    Zone is invisible when empty - styling only applied when has content via :has() */
 
 /* Conditional styling - only show background/border when zone has actual content */
-.file-comments-zone:has(.file-comment-card),
+.file-comments-zone:has(.file-comment-card:not(.posted-comment-hidden)),
 .file-comments-zone:has(.file-comment-form),
 .file-comments-zone:has(.external-comment-row) {
   background: var(--file-comment-bg);
@@ -9954,7 +9954,7 @@ body.tour-active {
 }
 
 /* Only add padding when container has visible content */
-.file-comments-container:has(.file-comment-card),
+.file-comments-container:has(.file-comment-card:not(.posted-comment-hidden)),
 .file-comments-container:has(.file-comment-form),
 .file-comments-container:has(.external-comment-row) {
   padding: 12px 16px;
