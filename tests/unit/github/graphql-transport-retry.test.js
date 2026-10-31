@@ -60,7 +60,10 @@ describe('GraphQL comment batches through the real transport', () => {
       const result = await runBatches(client);
 
       expect(globalThis.fetch).toHaveBeenCalledTimes(2);
-      expect(result).toEqual({ successCount: 1, failed: false, failedDetails: [] });
+      expect(result).toEqual({
+        successCount: 1, failed: false, failedDetails: [],
+        posted: [{ index: 0, github_comment_id: null, github_comment_node_id: null, github_comment_url: null }]
+      });
     }
   );
 

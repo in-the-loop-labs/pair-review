@@ -46,6 +46,10 @@ const bothAdded = {
   comment0: { thread: { id: 't0' } },
   comment1: { thread: { id: 't1' } }
 };
+// Posted entries for threads returned without comment metadata.
+const postedAt = (...indexes) => indexes.map(index => ({
+  index, github_comment_id: null, github_comment_node_id: null, github_comment_url: null
+}));
 
 /**
  * Pull out the GraphQL string literal that follows a given field
@@ -114,7 +118,7 @@ describe('impl/graphql/pending-review-comments', () => {
       const result = await runBatches(graphql, twoComments);
 
       expect(graphql).toHaveBeenCalledTimes(2);
-      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [], posted: postedAt(0, 1) });
     });
 
     it('stops after one retry of a safe failure', async () => {
@@ -142,7 +146,8 @@ describe('impl/graphql/pending-review-comments', () => {
       expect(result).toEqual({
         successCount: 1,
         failed: true,
-        failedDetails: ['b.js:2 - line is not part of the diff']
+        failedDetails: ['b.js:2 - line is not part of the diff'],
+        posted: postedAt(0)
       });
     });
 
@@ -156,7 +161,7 @@ describe('impl/graphql/pending-review-comments', () => {
       const result = await runBatches(graphql, twoComments);
 
       expect(graphql).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [], posted: postedAt(0, 1) });
     });
 
     it('does not halve and re-send a partial-data batch whose error looks like a complexity limit', async () => {
@@ -174,7 +179,8 @@ describe('impl/graphql/pending-review-comments', () => {
       expect(result).toEqual({
         successCount: 1,
         failed: true,
-        failedDetails: ['b.js:2 - query cost exceeds limit']
+        failedDetails: ['b.js:2 - query cost exceeds limit'],
+        posted: postedAt(0)
       });
     });
 
@@ -229,7 +235,8 @@ describe('impl/graphql/pending-review-comments', () => {
       expect(result).toEqual({
         successCount: 0,
         failed: true,
-        failedDetails: ['a.js:1 - Mutation payload too large']
+        failedDetails: ['a.js:1 - Mutation payload too large'],
+        posted: []
       });
     });
   });
