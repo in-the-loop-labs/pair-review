@@ -12,16 +12,16 @@ import { describe, it, expect, vi } from 'vitest';
  */
 
 const graphqlImpl = require('../../../../../src/github/impl/graphql/pending-review-comments');
-const { buildBatchMutation, addCommentsInBatches, isSafeToRetry } = graphqlImpl;
+const { buildBatchMutation, addCommentsInBatches, isSafeToRetry, MIN_BATCH_SIZE } = graphqlImpl;
 
 /**
  * Run addCommentsInBatches through its real retry loop with fake timers,
  * so the fixed 1s retry delay elapses instantly.
  */
-async function runBatches(graphql, comments) {
+async function runBatches(graphql, comments, batchSize = 10) {
   vi.useFakeTimers();
   try {
-    const promise = addCommentsInBatches({ graphql }, 'PR_node', 'REVIEW_node', comments, 10);
+    const promise = addCommentsInBatches({ graphql }, 'PR_node', 'REVIEW_node', comments, batchSize);
     promise.catch(() => {});
     await vi.runAllTimersAsync();
     return await promise;
@@ -74,6 +74,7 @@ describe('impl/graphql/pending-review-comments', () => {
       ['a request timeout', Object.assign(new Error('Request timed out'), { code: 'ETIMEDOUT' })],
       ['a 502 from GitHub', httpError('Bad Gateway', 502)],
       ['a 500 from GitHub', httpError('Internal Server Error', 500)],
+      ['a 502 from GitHub whose message names ECONNREFUSED', httpError('upstream connect ECONNREFUSED 10.0.0.1:443', 502)],
       ['an unknown error', new Error('socket hang up')],
       ['a GraphQL timeout with no data', Object.assign(new Error('timeout'), {
         errors: [{ message: 'Something went wrong while executing your query. This may be the result of a timeout.' }]
@@ -156,6 +157,52 @@ describe('impl/graphql/pending-review-comments', () => {
 
       expect(graphql).toHaveBeenCalledTimes(1);
       expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+    });
+
+    it('does not halve and re-send a partial-data batch whose error looks like a complexity limit', async () => {
+      const partial = Object.assign(new Error('query cost exceeds limit'), {
+        data: { comment0: { thread: { id: 't0' } }, comment1: null },
+        errors: [{ path: ['comment1'], message: 'query cost exceeds limit' }]
+      });
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(partial)
+        .mockResolvedValue({ comment0: { thread: { id: 't' } } });
+
+      const result = await runBatches(graphql, twoComments, 2);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        successCount: 1,
+        failed: true,
+        failedDetails: ['b.js:2 - query cost exceeds limit']
+      });
+    });
+
+    it('retries a complexity rejection at the minimum batch size once', async () => {
+      const graphql = vi.fn().mockRejectedValue(new Error('Mutation payload too large'));
+
+      const result = await runBatches(graphql, twoComments.slice(0, 1), MIN_BATCH_SIZE);
+
+      expect(graphql).toHaveBeenCalledTimes(2);
+      expect(result.failed).toBe(true);
+      expect(result.successCount).toBe(0);
+    });
+
+    it('does not re-send a complexity error with data at the minimum batch size', async () => {
+      const withData = Object.assign(new Error('Mutation payload too large'), {
+        data: { comment0: null },
+        errors: [{ path: ['comment0'], message: 'Mutation payload too large' }]
+      });
+      const graphql = vi.fn().mockRejectedValue(withData);
+
+      const result = await runBatches(graphql, twoComments.slice(0, 1), MIN_BATCH_SIZE);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        successCount: 0,
+        failed: true,
+        failedDetails: ['a.js:1 - Mutation payload too large']
+      });
     });
   });
 
