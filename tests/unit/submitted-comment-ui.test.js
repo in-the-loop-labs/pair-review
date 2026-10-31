@@ -143,6 +143,30 @@ describe('posted comment UI', () => {
     expect(localStorage.getItem('pair-review-hide-posted-comments')).toBe('false');
   });
 
+  it('refreshes file-comment header state and minimize indicators when hiding posted comments', async () => {
+    comments = comments.filter(c => c.id === 4); // one submitted file-level comment
+    const manager = makeManager();
+    manager.commentMinimizer = { refreshIndicators: vi.fn() };
+    const zone = document.querySelector('.file-comments-zone');
+    zone.headerButton = document.createElement('button');
+    await manager.loadUserComments();
+    expect(zone.headerButton.classList.contains('has-comments')).toBe(true);
+    const refreshesAfterLoad = manager.commentMinimizer.refreshIndicators.mock.calls.length;
+
+    const modal = makeModal();
+    modal.show();
+    const checkbox = modal.modal.querySelector('#hide-posted-comments');
+    checkbox.checked = true;
+    modal.handleHidePostedToggle();
+    expect(zone.headerButton.classList.contains('has-comments')).toBe(false);
+    expect(manager.commentMinimizer.refreshIndicators.mock.calls.length).toBe(refreshesAfterLoad + 1);
+
+    checkbox.checked = false;
+    modal.handleHidePostedToggle();
+    expect(zone.headerButton.classList.contains('has-comments')).toBe(true);
+    expect(manager.commentMinimizer.refreshIndicators.mock.calls.length).toBe(refreshesAfterLoad + 2);
+  });
+
   it('keeps the latest preference when toggled while comments are loading', async () => {
     const manager = makeManager();
     await manager.loadUserComments();
