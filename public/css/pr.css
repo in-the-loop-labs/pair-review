@@ -5372,6 +5372,196 @@ a.posted-comment-icon:focus-visible {
   color: var(--color-accent-fg, #0969da);
 }
 
+/* "Edited since posted" note and "Update on GitHub" action */
+.posted-comment-edited {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #57606a);
+}
+
+.editing-mode .posted-comment-edited {
+  display: none;
+}
+
+.posted-comment-edited-label {
+  font-style: italic;
+}
+
+.btn-update-on-host {
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  border-radius: 6px;
+  background: var(--color-bg-secondary, #f6f8fa);
+  color: var(--color-text-primary, #24292f);
+  cursor: pointer;
+}
+
+.btn-update-on-host:hover:not(:disabled) {
+  background: var(--color-bg-tertiary, #eaeef2);
+}
+
+.btn-update-on-host:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.posted-comment-update-error {
+  flex-basis: 100%;
+  color: var(--color-danger, #cf222e);
+}
+
+.update-edited-comments-option {
+  display: block;
+  margin-top: 12px;
+  color: var(--color-text-secondary, #57606a);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.update-edited-comments-option[hidden] {
+  display: none;
+}
+
+/* Review history modal */
+.review-history-modal-container {
+  background: var(--color-bg-primary, white);
+  border-radius: 16px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  max-width: 760px;
+  width: 90%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-history-body {
+  overflow-y: auto;
+  padding: 16px 24px 24px;
+}
+
+.review-history-list,
+.review-history-comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.review-history-submission {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border-secondary, #d8dee4);
+}
+
+.review-history-submission:last-child {
+  border-bottom: none;
+}
+
+.review-history-submission-header,
+.review-history-comment-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.review-history-time {
+  color: var(--color-text-secondary, #57606a);
+  font-size: 12px;
+}
+
+.review-history-link {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-link, #0969da);
+}
+
+.review-history-chip {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid var(--color-border-primary, #d0d7de);
+  background: var(--color-bg-secondary, #f6f8fa);
+  color: var(--color-text-primary, #24292f);
+}
+
+.review-history-chip-approve {
+  border-color: var(--color-success, #1a7f37);
+  color: var(--color-success, #1a7f37);
+}
+
+.review-history-chip-request-changes {
+  border-color: var(--color-danger, #cf222e);
+  color: var(--color-danger, #cf222e);
+}
+
+.review-history-chip-edited,
+.review-history-chip-dismissed,
+.review-history-chip-draft {
+  color: var(--color-text-secondary, #57606a);
+}
+
+.review-history-summary {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.review-history-comments {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-history-comment {
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-secondary, #d8dee4);
+  border-radius: 8px;
+}
+
+.review-history-comment[data-jump-comment-id] {
+  cursor: pointer;
+}
+
+.review-history-comment[data-jump-comment-id]:hover,
+.review-history-comment[data-jump-comment-id]:focus-visible {
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.review-history-comment-file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.review-history-comment-line,
+.review-history-no-comments,
+.review-history-empty,
+.review-history-loading {
+  color: var(--color-text-secondary, #57606a);
+  font-size: 12px;
+}
+
+.review-history-comment-body {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.review-history-error {
+  color: var(--color-danger, #cf222e);
+}
+
+[data-theme="dark"] .review-history-modal-container {
+  background: #0d1117;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.5);
+}
+
 .review-modal-footer {
   padding: 16px 24px;
   border-top: 1px solid #d1d9e0;
