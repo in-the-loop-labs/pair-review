@@ -21,6 +21,29 @@ const DEFAULT_FEATURES = Object.freeze({
 });
 
 /**
+ * Fetch for Octokit that keeps a network failure's error code. Native fetch
+ * rejects with `TypeError('fetch failed')` and the code (ECONNREFUSED,
+ * ENOTFOUND, ...) on `cause`; @octokit/request then rewraps it keeping only
+ * the message. Appending the code to the message lets callers tell a
+ * connection that was never made (safe to retry a mutation) from one lost
+ * mid-request. Looks up `globalThis.fetch` per call so test stubs apply.
+ *
+ * @param {...any} args - Arguments for fetch
+ * @returns {Promise<Response>}
+ */
+async function fetchKeepingErrorCode(...args) {
+  try {
+    return await globalThis.fetch(...args);
+  } catch (error) {
+    const code = error && error.cause && error.cause.code;
+    if (typeof code === 'string' && error.message && !error.message.includes(code)) {
+      error.message = `${error.message} (${code})`;
+    }
+    throw error;
+  }
+}
+
+/**
  * Build the `Authorization` header value for a token, mirroring
  * `@octokit/auth-token`'s scheme selection: JWTs (three dot-delimited
  * segments) use the `bearer` scheme; everything else (classic/fine-grained
@@ -155,7 +178,8 @@ class GitHubClient {
   _buildOctokit() {
     const octokit = new Octokit({
       baseUrl: this.apiHost || undefined,
-      userAgent: 'pair-review v1.0.0'
+      userAgent: 'pair-review v1.0.0',
+      request: { fetch: fetchKeepingErrorCode }
     });
 
     // (1) Stamp the live token onto every request. Reads `this.token` at
