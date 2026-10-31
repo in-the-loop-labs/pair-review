@@ -35,7 +35,8 @@ const AMBIGUOUS_GRAPHQL_MESSAGE = /timeout|timed out|something went wrong/i;
  *  - GitHub refused the request with a 4xx response;
  *  - a GraphQL error response with no `data` at all (errors raised before
  *    execution, per the GraphQL spec), unless it reports a timeout;
- *  - a complexity/size rejection.
+ *  - a complexity/size rejection (never one carried by a 5xx response or a
+ *    failed fetch: those are judged by status and connection alone).
  * Anything carrying `data` (even null) ran at least partly and is never
  * re-sent; everything else is ambiguous and fails the batch.
  *
@@ -45,22 +46,28 @@ const AMBIGUOUS_GRAPHQL_MESSAGE = /timeout|timed out|something went wrong/i;
 function isSafeToRetry(error) {
   if (!error) return false;
   if (error.data !== undefined) return false;
+
+  const status = typeof error.status === 'number' ? error.status : null;
+  const neverConnected = () => PRE_SEND_NETWORK_CODES.test(
+    [error.code, error.cause && error.cause.code, error.message].filter(Boolean).join(' ')
+  );
+  // A real 5xx response: GitHub may have run the mutation, whatever the
+  // message says (even one that looks like a complexity limit).
+  if (error.response && status !== null && status >= 500) return false;
+  // A status with no response is octokit's wrapper for a fetch failure;
+  // only a connection that was never made is safe.
+  if (!error.response && status !== null) return neverConnected();
+
   if (isComplexityError(error)) return true;
 
   if (Array.isArray(error.errors) && error.errors.length > 0) {
     return !error.errors.some(e => AMBIGUOUS_GRAPHQL_MESSAGE.test((e && e.message) || ''));
   }
 
-  const status = error.status;
-  if (error.response && typeof status === 'number' && status >= 400 && status < 500) {
-    return true;
-  }
-
-  // A real HTTP response means the request reached GitHub, whatever its
-  // message says; only response-less failures can be pre-send.
-  if (error.response) return false;
-  const codes = [error.code, error.cause && error.cause.code, error.message].filter(Boolean).join(' ');
-  return PRE_SEND_NETWORK_CODES.test(codes);
+  // A real HTTP response means the request reached GitHub: only a 4xx
+  // rejection is safe, whatever the message says.
+  if (error.response) return status !== null && status >= 400 && status < 500;
+  return neverConnected();
 }
 
 /**
@@ -167,9 +174,10 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
       } catch (error) {
         batchError = error;
 
-        // Complexity/cost limit: halve batch size and re-attempt. Never when
-        // the response carries data: some comments may have landed.
-        if (error.data === undefined && isComplexityError(error)) {
+        // Complexity/cost limit: halve batch size and re-attempt. Only when
+        // re-sending is safe: never after data (some comments may have
+        // landed) or a 5xx response (the batch may have run).
+        if (isComplexityError(error) && isSafeToRetry(error)) {
           const newSize = Math.max(MIN_BATCH_SIZE, Math.floor(currentBatchSize / 2));
           if (newSize < currentBatchSize) {
             logger.warn(
