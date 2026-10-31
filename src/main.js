@@ -1853,6 +1853,12 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
         `, [options.commentStatus, now, ...suggestionIds]);
       }
 
+      // Submitting a pending review publishes the comments saved to it
+      // earlier, which are still 'draft' locally.
+      if (options.reviewEvent !== 'DRAFT' && existingDraft) {
+        await new CommentRepository(db).markDraftCommentsSubmitted(review.id, now);
+      }
+
       await run(db, 'COMMIT');
 
       const successLabel = options.reviewEvent === 'DRAFT' ? 'Draft review created' : 'Review submitted';

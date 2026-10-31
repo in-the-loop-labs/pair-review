@@ -1690,6 +1690,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         `, [commentStatus, commentUpdateTime, comment.id]);
       }
 
+      // Submitting a pending review publishes the comments saved to it
+      // earlier, which are still 'draft' locally.
+      if (event !== 'DRAFT' && existingDraft) {
+        await new CommentRepository(db).markDraftCommentsSubmitted(review.id, commentUpdateTime);
+      }
+
       // Commit transaction
       await run(db, 'COMMIT');
 

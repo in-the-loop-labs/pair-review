@@ -3976,6 +3976,27 @@ class CommentRepository {
   }
 
   /**
+   * Mark every comment held in the review's pending GitHub draft as submitted.
+   *
+   * A comment gets status 'draft' only when it is added to a pending review on
+   * GitHub (Save as Draft, or headless --ai-draft). Submitting that pending
+   * review publishes all of its comments, so callers run this after a non-draft
+   * submit that reused an existing pending review, inside the same transaction
+   * as the rest of the submission bookkeeping.
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {string} [updatedAt] - Timestamp to record (default: now)
+   * @returns {Promise<number>} Number of comments marked submitted
+   */
+  async markDraftCommentsSubmitted(reviewId, updatedAt = new Date().toISOString()) {
+    const result = await run(this.db, `
+      UPDATE comments
+      SET status = 'submitted', updated_at = ?
+      WHERE review_id = ? AND status = 'draft'
+    `, [updatedAt, reviewId]);
+    return result.changes;
+  }
+
+  /**
    * Get all user comments for a review
    * @param {number} reviewId - Review ID (from reviews table)
    * @param {Object} [options] - Query options
