@@ -65,7 +65,7 @@ async function updatePostedComment(db, { commentId, githubClient, owner, repo, p
     await new CommentPostingRepository(db).insertMany([{ ...posting, id: undefined,
       github_comment_id: ref.github_comment_id, github_comment_node_id: ref.github_comment_node_id,
       github_comment_url: recovered?.url || posting.github_comment_url,
-      comment_body: comment.body, body: sent.body, kind: 'update', backfilled: false,
+      comment_body: comment.body, body: sent.body, kind: 'update',
       posted_at: new Date().toISOString() }]);
   });
   afterCommit(comment.review_id);
@@ -84,6 +84,7 @@ async function listSubmissions(db, reviewId) {
     if (!group) { group = { ...review, postings: [] }; groups.push(group); }
     group.postings.push(...postings.filter(p => p.github_review_row_id === review.id));
   }
+  for (const group of groups) group.postings.sort((a, b) => a.id - b.id);
   const unknown = postings.filter(p => p.github_review_row_id == null);
   if (unknown.length) groups.push({ id: null, state: 'submitted', event: null, body: '', postings: unknown });
   return groups;

@@ -68,6 +68,34 @@ describe('posted comment updates never recreate', () => {
     assertNoCreate();
   });
 
+  it('leaves a repaired identity intact after a failed update without recreating', async () => {
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL').run();
+    client.listCommentsForReview.mockResolvedValue([candidate()]);
+    client.updateReviewComment.mockRejectedValue(Object.assign(new Error('denied'), { status: 403 }));
+    await expect(update()).rejects.toMatchObject({ status: 403 });
+    expect((await postings.listByComment(commentId))[0].github_comment_node_id).toBe('C');
+    expect((await new CommentRepository(db).getComment(commentId)).publication.changed).toBe(true);
+    assertNoCreate();
+  });
+
+  it('abstains rather than searching a PR-wide list for an untrusted pending review', async () => {
+    db.prepare("UPDATE github_reviews SET state = 'pending'").run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, backfilled = 1').run();
+    await expect(update()).rejects.toMatchObject({ code: 'unresolved_identity' });
+    expect(client.listReviewComments).not.toHaveBeenCalled();
+    expect(client.updateReviewComment).not.toHaveBeenCalled();
+    assertNoCreate();
+  });
+
+  it.each(['rest', 'host'])('recovers a missing numeric id for %s updates', async (mode) => {
+    client.features.review_comment_edit = mode;
+    db.prepare('UPDATE comment_postings SET github_comment_id = NULL').run();
+    client.listCommentsForReview.mockResolvedValue([candidate()]);
+    await update();
+    expect(client.updateReviewComment).toHaveBeenCalledWith(expect.objectContaining({ github_comment_id: '123' }), 'edited');
+    assertNoCreate();
+  });
+
   it('falls back to PR-wide comments only for an untrusted legacy review link', async () => {
     db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, backfilled = 1').run();
     client.listReviewComments.mockResolvedValue([candidate()]);
