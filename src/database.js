@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 55;
+const CURRENT_SCHEMA_VERSION = 56;
 
 /**
  * Database schema SQL statements
@@ -49,6 +49,26 @@ const SCHEMA_SQL = {
       local_head_branch TEXT,
       local_scope_start TEXT DEFAULT 'unstaged',
       local_scope_end TEXT DEFAULT 'untracked'
+    )
+  `,
+
+  comment_postings: `
+    CREATE TABLE IF NOT EXISTS comment_postings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      github_review_row_id INTEGER REFERENCES github_reviews(id) ON DELETE SET NULL,
+      comment_body TEXT,
+      body TEXT NOT NULL,
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      side TEXT,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
+      github_comment_id TEXT,
+      github_comment_node_id TEXT,
+      github_comment_url TEXT,
+      backfilled INTEGER NOT NULL DEFAULT 0,
+      posted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `,
 
@@ -395,6 +415,8 @@ const SCHEMA_SQL = {
  * Index SQL statements for performance
  */
 const INDEX_SQL = [
+  'CREATE INDEX IF NOT EXISTS idx_comment_postings_comment ON comment_postings(comment_id, id)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_postings_github_review ON comment_postings(github_review_row_id)',
   'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
@@ -488,6 +510,27 @@ function tableExists(db, tableName) {
     `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
   ).get(tableName);
   return !!row;
+}
+
+// Bind each legacy comment's values rather than referencing outer columns in
+// ORDER BY (unsupported by SQLite). Guarding by posting makes crash retry safe.
+function backfillLegacyPostings(db) {
+  const comments = db.prepare(`SELECT * FROM comments c
+    WHERE status IN ('submitted', 'draft')
+      AND NOT EXISTS (SELECT 1 FROM comment_postings p WHERE p.comment_id = c.id)`).all();
+  const findReview = db.prepare(`SELECT id FROM github_reviews WHERE review_id = ?
+    ORDER BY (state = 'pending') = ? DESC,
+      julianday(created_at) <= julianday(?) + 5.0/86400 DESC,
+      created_at DESC, id DESC LIMIT 1`);
+  const insert = db.prepare(`INSERT INTO comment_postings
+    (comment_id, github_review_row_id, comment_body, body, file, line_start, line_end,
+      side, is_file_level, backfilled, posted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, COALESCE(?, CURRENT_TIMESTAMP))`);
+  for (const c of comments) {
+    const review = findReview.get(c.review_id, c.status === 'draft' ? 1 : 0, c.updated_at);
+    insert.run(c.id, review?.id ?? null, c.body, c.body ?? '', c.file,
+      c.line_start, c.line_end, c.side, c.is_file_level || 0, c.updated_at);
+  }
 }
 
 const MIGRATIONS = {
@@ -2363,6 +2406,15 @@ const MIGRATIONS = {
       console.log('  pool_fetch_owner column already present; nothing to do');
     }
     console.log('Migration to schema version 55 complete');
+  },
+
+  56: (db) => {
+    db.transaction(() => {
+      db.exec(SCHEMA_SQL.comment_postings);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_comment_postings_comment ON comment_postings(comment_id, id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_comment_postings_github_review ON comment_postings(github_review_row_id)');
+      backfillLegacyPostings(db);
+    })();
   }
 };
 
@@ -5675,6 +5727,33 @@ class AnalysisRunRepository {
 /**
  * GitHubReviewRepository class for managing GitHub review submission records
  */
+class CommentPostingRepository {
+  constructor(db) { this.db = db; }
+
+  async insertMany(postings) {
+    for (const p of postings) {
+      await run(this.db, `INSERT INTO comment_postings
+        (comment_id, github_review_row_id, comment_body, body, file, line_start,
+         line_end, side, is_file_level, github_comment_id, github_comment_node_id,
+         github_comment_url, backfilled, posted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+      [p.comment_id, p.github_review_row_id ?? null, p.comment_body ?? null, p.body,
+        p.file ?? null, p.line_start ?? null, p.line_end ?? null, p.side ?? null,
+        p.is_file_level ? 1 : 0, p.github_comment_id == null ? null : String(p.github_comment_id),
+        p.github_comment_node_id ?? null, p.github_comment_url ?? null,
+        p.backfilled ? 1 : 0, p.posted_at ?? null]);
+    }
+  }
+
+  async listByComment(commentId) {
+    return query(this.db, 'SELECT * FROM comment_postings WHERE comment_id = ? ORDER BY id', [commentId]);
+  }
+
+  async listByGitHubReviewRow(rowId) {
+    return query(this.db, 'SELECT * FROM comment_postings WHERE github_review_row_id = ? ORDER BY id', [rowId]);
+  }
+}
+
 class GitHubReviewRepository {
   /**
    * Create a new GitHubReviewRepository instance
@@ -5697,6 +5776,30 @@ class GitHubReviewRepository {
    * @param {string} [data.github_url] - GitHub URL for the review
    * @returns {Promise<Object>} Created github_review record
    */
+  async findByGitHubIdentity(reviewId, { nodeId = null, databaseId = null } = {}) {
+    return queryOne(this.db, `SELECT * FROM github_reviews WHERE review_id = ?
+      AND ((? IS NOT NULL AND github_node_id = ?) OR (? IS NOT NULL AND github_review_id = ?))
+      ORDER BY id DESC LIMIT 1`, [reviewId, nodeId, nodeId, databaseId, databaseId]);
+  }
+
+  async upsertForSubmission(reviewId, data) {
+    const identity = { nodeId: data.github_node_id, databaseId: data.github_review_id };
+    const existing = await this.findByGitHubIdentity(reviewId, identity);
+    if (!existing) return this.create(reviewId, data);
+    const update = { ...data };
+    if (!update.github_url) delete update.github_url;
+    if (data.state === 'pending') delete update.body; // GitHub ignores a replacement draft body.
+    await this.update(existing.id, update);
+    // Preserve legacy duplicate rows, but never leave their linked postings in
+    // an obsolete pending state after the identity has been submitted.
+    await run(this.db, `UPDATE github_reviews SET state = ?, submitted_at = ?, event = ?
+      WHERE review_id = ? AND id != ? AND
+      ((? IS NOT NULL AND github_node_id = ?) OR (? IS NOT NULL AND github_review_id = ?))`,
+    [data.state, data.submitted_at ?? null, data.event ?? null, reviewId, existing.id,
+      identity.nodeId ?? null, identity.nodeId ?? null, identity.databaseId ?? null, identity.databaseId ?? null]);
+    return this.getById(existing.id);
+  }
+
   async create(reviewId, data = {}) {
     const {
       github_review_id = null,
@@ -6449,6 +6552,7 @@ module.exports = {
   generateWorktreeId,
   migrateExistingWorktrees,
   // Exported for testing only
+  CommentPostingRepository,
   _MIGRATIONS: MIGRATIONS,
   MIGRATIONS
 };
