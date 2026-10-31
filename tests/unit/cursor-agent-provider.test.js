@@ -662,6 +662,34 @@ describe('CursorAgentProvider', () => {
 
       expect(config.args).toContain('--custom');
     });
+
+    it('should return merged provider + model env for the extraction model', () => {
+      const provider = new CursorAgentProvider('sonnet-4.5', {
+        env: { PROVIDER_VAR: 'p', SHARED: 'provider' },
+        models: [
+          { id: 'sonnet-4.5', env: { ANALYSIS_VAR: 'a' } },
+          { id: 'auto', env: { MODEL_VAR: 'm', SHARED: 'model' } }
+        ]
+      });
+      const config = provider.getExtractionConfig('auto');
+
+      // Extraction model's own env, not the analysis model's; model wins over provider
+      expect(config.env).toEqual({ PROVIDER_VAR: 'p', SHARED: 'model', MODEL_VAR: 'm' });
+    });
+
+    it('should include env in shell mode', () => {
+      process.env.PAIR_REVIEW_CURSOR_AGENT_CMD = 'docker run agent';
+      const provider = new CursorAgentProvider('sonnet-4.5', { env: { PROVIDER_VAR: 'p' } });
+      const config = provider.getExtractionConfig('auto');
+
+      expect(config.useShell).toBe(true);
+      expect(config.env).toEqual({ PROVIDER_VAR: 'p' });
+    });
+
+    it('should return empty env when none is configured', () => {
+      const provider = new CursorAgentProvider();
+      expect(provider.getExtractionConfig('auto').env).toEqual({});
+    });
   });
 
   describe('logStreamLine', () => {
