@@ -45,6 +45,21 @@ describe('publication action routes', () => {
     expect(response.body).toMatchObject({ code, error: 'Host refused edit' });
     expect(db.prepare('SELECT COUNT(*) n FROM comment_postings').get().n).toBe(1);
   });
+  it.each([null, 404, 403, 422])('submitting a review never sends an edited posted comment, even after failed edit %s', async (failure) => {
+    if (failure) {
+      edit.mockRejectedValue(Object.assign(new Error('Host refused edit'), { status: failure }));
+      await request(server).post(endpoint()).send({});
+    }
+    db.prepare('INSERT INTO pr_metadata (pr_number, repository, pr_data) VALUES (1, ?, ?)').run('test/repo', JSON.stringify({ node_id: 'PR' }));
+    vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+    const submit = vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({ id: 'R2', databaseId: 43, comments_count: 0, postedComments: [] });
+    const response = await request(server).post('/api/pr/test/repo/1/submit-review').send({ event: 'COMMENT', body: 'review summary' });
+    expect(response.status).toBe(200);
+    expect(submit.mock.calls[0][3]).toEqual([]);
+    expect(db.prepare('SELECT COUNT(*) n FROM comment_postings').get().n).toBe(1);
+    expect((await new CommentRepository(db).getComment(commentId)).publication.changed).toBe(true);
+  });
+
   it('validates review ownership before any host operation', async () => {
     expect((await request(server).post(endpoint(reviewId + 1)).send({})).status).toBe(404);
     expect(edit).not.toHaveBeenCalled();
