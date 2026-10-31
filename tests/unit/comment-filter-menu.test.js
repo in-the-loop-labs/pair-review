@@ -121,7 +121,7 @@ describe('comment filter menu', () => {
 
     check('showPosted', true);
     expect(panel.getCommentFilterState().showPosted).toBe(true);
-    expect(PostedComment.shouldHidePostedComment({ status: 'submitted' })).toBe(false);
+    expect(PostedComment.shouldHidePostedComment({ status: 'active', publication: { state: 'posted' } })).toBe(false);
     expect(localStorage.getItem(POSTED_KEY)).toBe('true');
     // The browser-wide preference is untouched
     expect(PostedComment.isHidePostedEnabled()).toBe(true);
@@ -253,9 +253,9 @@ describe('hidden-comments notice', () => {
 describe('PRManager filter wiring', () => {
   const comments = [
     { id: 1, status: 'active', file: 'src/a.js', line_start: 10, body: 'Pending' },
-    { id: 2, status: 'submitted', file: 'src/a.js', line_start: 11, body: 'Posted' },
-    { id: 3, status: 'submitted', file: 'src/a.js', line_start: 12, body: 'Posted too' },
-    { id: 4, status: 'draft', file: 'src/a.js', line_start: 13, body: 'In draft review' },
+    { id: 2, status: 'active', publication: { state: 'posted' }, file: 'src/a.js', line_start: 11, body: 'Posted' },
+    { id: 3, status: 'active', publication: { state: 'posted' }, file: 'src/a.js', line_start: 12, body: 'Posted too' },
+    { id: 4, status: 'active', publication: { state: 'draft' }, file: 'src/a.js', line_start: 13, body: 'In draft review' },
     { id: 5, status: 'inactive', file: 'src/a.js', line_start: 14, body: 'Dismissed' }
   ];
 

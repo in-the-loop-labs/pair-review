@@ -28,7 +28,9 @@ async function mockUserComments(page, comments) {
 }
 
 function fileComment(id, status, body) {
-  return { id, status, body, file: 'src/utils.js', is_file_level: 1, line_start: null, side: 'RIGHT', type: 'comment' };
+  return { id, status: status === 'submitted' ? 'active' : status,
+    publication: status === 'submitted' ? { state: 'posted' } : null,
+    body, file: 'src/utils.js', is_file_level: 1, line_start: null, side: 'RIGHT', type: 'comment' };
 }
 
 async function openUserSegment(page) {

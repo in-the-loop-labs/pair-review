@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 56;
+const CURRENT_SCHEMA_VERSION = 57;
 
 /**
  * Database schema SQL statements
@@ -2415,6 +2415,27 @@ const MIGRATIONS = {
       db.exec('CREATE INDEX IF NOT EXISTS idx_comment_postings_github_review ON comment_postings(github_review_row_id)');
       backfillLegacyPostings(db);
     })();
+  },
+
+  57: (db) => {
+    db.transaction(() => {
+      backfillLegacyPostings(db);
+      // Fix obsolete pending duplicates without deleting history. Subsequent
+      // upserts propagate state to all rows of the same GitHub identity.
+      const pending = db.prepare("SELECT * FROM github_reviews WHERE state = 'pending'").all();
+      const newer = db.prepare(`SELECT * FROM github_reviews WHERE review_id = ? AND id > ?
+        AND state != 'pending' AND
+        ((? IS NOT NULL AND github_node_id = ?) OR (? IS NOT NULL AND github_review_id = ?))
+        ORDER BY id DESC LIMIT 1`);
+      for (const row of pending) {
+        const match = newer.get(row.review_id, row.id, row.github_node_id, row.github_node_id,
+          row.github_review_id, row.github_review_id);
+        if (match) db.prepare('UPDATE github_reviews SET state = ?, submitted_at = ?, event = ? WHERE id = ?')
+          .run(match.state, match.submitted_at, match.event, row.id);
+      }
+      db.exec("UPDATE comments SET status = 'active' WHERE source = 'user' AND status IN ('submitted', 'draft')");
+      db.exec("UPDATE comments SET status = 'submitted' WHERE source = 'ai' AND status = 'draft'");
+    })();
   }
 };
 
@@ -3675,7 +3696,32 @@ class RepoSettingsRepository {
 /**
  * CommentRepository class for managing comment database records
  */
+// Shared joins for list/single/restore responses. Publication is independent
+// of lifecycle: dismissed comments retain their posting history.
+const PUBLICATION_JOIN = `LEFT JOIN comment_postings lp ON lp.id =
+  (SELECT MAX(id) FROM comment_postings WHERE comment_id = c.id)
+  LEFT JOIN github_reviews lgr ON lgr.id = lp.github_review_row_id`;
+const PUBLICATION_COLUMNS = `lp.id AS posting_id, lp.posted_at AS publication_posted_at,
+  lp.github_review_row_id, lp.github_comment_url, lgr.github_url AS review_url,
+  lgr.state AS publication_review_state,
+  (SELECT COUNT(*) FROM comment_postings WHERE comment_id = c.id) AS posting_count`;
+
+function shapePublication(row) {
+  if (!row) return row;
+  const { posting_id, publication_posted_at, github_review_row_id,
+    github_comment_url, review_url, publication_review_state, posting_count, ...comment } = row;
+  return { ...comment, publication: posting_id == null ? null : {
+    state: publication_review_state === 'pending' ? 'draft' : 'posted',
+    posted_at: publication_posted_at, review_url, comment_url: github_comment_url,
+    github_review_row_id, posting_count
+  } };
+}
+
 class CommentRepository {
+  // Mirrored by isPendingComment in posted-comment.js; pinned by parity tests.
+  static pendingCommentSql(alias = 'c') {
+    return `${alias}.status = 'active' AND NOT EXISTS (SELECT 1 FROM comment_postings p WHERE p.comment_id = ${alias}.id)`;
+  }
   /**
    * Create a new CommentRepository instance
    * @param {Database} db - Database instance
@@ -3907,7 +3953,7 @@ class CommentRepository {
    * @returns {Promise<Object|null>} Comment record or null if not found
    */
   async getComment(id, source = null) {
-    let sql = 'SELECT * FROM comments WHERE id = ?';
+    let sql = `SELECT c.*, ${PUBLICATION_COLUMNS} FROM comments c ${PUBLICATION_JOIN} WHERE c.id = ?`;
     const params = [id];
 
     if (source) {
@@ -3915,7 +3961,7 @@ class CommentRepository {
       params.push(source);
     }
 
-    return await queryOne(this.db, sql, params);
+    return shapePublication(await queryOne(this.db, sql, params));
   }
 
   /**
@@ -3977,7 +4023,7 @@ class CommentRepository {
   }
 
   /**
-   * Bulk delete all user comments for a review
+   * Bulk dismiss only user comments not yet posted for a review
    * Also dismisses any AI suggestions that were parents of the deleted comments.
    * @param {number} reviewId - Review ID (from reviews table)
    * @returns {Promise<{deletedCount: number, dismissedSuggestionIds: number[]}>} Number of comments deleted and list of dismissed suggestion IDs
@@ -3995,16 +4041,16 @@ class CommentRepository {
 
     // First, find all user comments with parent_id (adopted from AI suggestions)
     const adoptedComments = await query(this.db, `
-      SELECT parent_id FROM comments
+      SELECT parent_id FROM comments c
       WHERE review_id = ? AND source = 'user' AND parent_id IS NOT NULL
-        AND status IN ('active', 'submitted', 'draft')
+        AND ${CommentRepository.pendingCommentSql()}
     `, [reviewId]);
 
     // Soft delete all user comments
     const result = await run(this.db, `
-      UPDATE comments
+      UPDATE comments AS c
       SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND ${CommentRepository.pendingCommentSql()}
     `, [reviewId]);
 
     // Dismiss all parent AI suggestions with a single UPDATE statement
@@ -4028,27 +4074,6 @@ class CommentRepository {
   }
 
   /**
-   * Mark every comment held in the review's pending GitHub draft as submitted.
-   *
-   * A comment gets status 'draft' only when it is added to a pending review on
-   * GitHub (Save as Draft, or headless --ai-draft). Submitting that pending
-   * review publishes all of its comments, so callers run this after a non-draft
-   * submit that reused an existing pending review, inside the same transaction
-   * as the rest of the submission bookkeeping.
-   * @param {number} reviewId - Review ID (from reviews table)
-   * @param {string} [updatedAt] - Timestamp to record (default: now)
-   * @returns {Promise<number>} Number of comments marked submitted
-   */
-  async markDraftCommentsSubmitted(reviewId, updatedAt = new Date().toISOString()) {
-    const result = await run(this.db, `
-      UPDATE comments
-      SET status = 'submitted', updated_at = ?
-      WHERE review_id = ? AND status = 'draft'
-    `, [updatedAt, reviewId]);
-    return result.changes;
-  }
-
-  /**
    * Get all user comments for a review
    * @param {number} reviewId - Review ID (from reviews table)
    * @param {Object} [options] - Query options
@@ -4057,33 +4082,14 @@ class CommentRepository {
    */
   async getUserComments(reviewId, options = {}) {
     const { includeDismissed = false } = options;
-    const statusFilter = includeDismissed
-      ? "status IN ('active', 'submitted', 'draft', 'inactive')"
-      : "status IN ('active', 'submitted', 'draft')";
-
-    return await query(this.db, `
-      SELECT
-        id,
-        source,
-        author,
-        file,
-        line_start,
-        line_end,
-        side,
-        diff_position,
-        type,
-        title,
-        body,
-        status,
-        parent_id,
-        is_file_level,
-        severity,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND ${statusFilter}
-      ORDER BY file, line_start, created_at
+    const statusFilter = includeDismissed ? "c.status IN ('active', 'inactive')" : "c.status = 'active'";
+    const rows = await query(this.db, `
+      SELECT c.*, ${PUBLICATION_COLUMNS}
+      FROM comments c ${PUBLICATION_JOIN}
+      WHERE c.review_id = ? AND c.source = 'user' AND ${statusFilter}
+      ORDER BY c.file, c.line_start, c.created_at
     `, [reviewId]);
+    return rows.map(shapePublication);
   }
 
   /**
@@ -4139,7 +4145,8 @@ class CommentRepository {
   }
 
   /**
-   * Restore a soft-deleted user comment (set status from 'inactive' back to 'active')
+   * Restore a soft-deleted user comment. Postings survive dismissal, so
+   * restoring a posted comment does not queue it for another submission.
    * @param {number} id - Comment ID
    * @returns {Promise<boolean>} True if restored successfully
    */
@@ -6533,6 +6540,7 @@ module.exports = {
   getDatabaseStatus,
   getSchemaVersion,
   CURRENT_SCHEMA_VERSION,
+  runVersionedMigrations,
   getDbPath,
   WorktreeRepository,
   WorktreePoolRepository,
@@ -6551,8 +6559,9 @@ module.exports = {
   TourRepository,
   generateWorktreeId,
   migrateExistingWorktrees,
-  // Exported for testing only
+  shapePublication,
   CommentPostingRepository,
+  // Exported for testing only
   _MIGRATIONS: MIGRATIONS,
   MIGRATIONS
 };

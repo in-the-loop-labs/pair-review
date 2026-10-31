@@ -6460,10 +6460,8 @@ class PRManager {
    * Clear all user comments (soft-delete with confirmation for bulk operations)
    */
   async clearAllUserComments() {
-    // Count both line-level and file-level user comments
-    const lineCommentRows = document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)');
-    const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
-    const totalComments = lineCommentRows.length + fileCommentCards.length;
+    const totalComments = this.getPendingCommentCount();
+    const hasPosted = (this.userComments || []).some(window.PostedComment.isPostedComment);
 
     if (totalComments === 0) {
       if (window.toast?.showInfo) {
@@ -6479,7 +6477,7 @@ class PRManager {
 
     const dialogResult = await window.confirmDialog.show({
       title: 'Clear All Comments?',
-      message: `This will dismiss all ${totalComments} comment${totalComments !== 1 ? 's' : ''}. You can restore them later.`,
+      message: `This will dismiss all ${totalComments} pending comment${totalComments !== 1 ? 's' : ''}. You can restore them later.${hasPosted ? ' Posted comments are kept.' : ''}`,
       confirmText: 'Clear All',
       confirmClass: 'btn-danger'
     });
@@ -6494,25 +6492,7 @@ class PRManager {
       if (!response.ok) throw new Error('Failed to delete comments');
 
       const result = await response.json();
-      const deletedCount = result.deletedCount || totalComments;
-
-      // Remove line-level comment rows from DOM
-      lineCommentRows.forEach(row => row.remove());
-
-      // Remove file-level comment cards from DOM
-      fileCommentCards.forEach(card => {
-        const zone = card.closest('.file-comments-zone');
-        card.remove();
-
-        // Update the file comment zone header button state
-        if (zone && this.fileCommentManager) {
-          this.fileCommentManager.updateCommentCount(zone);
-        }
-      });
-
-      // Remove line-level and file-level comment elements from diff view
-      // (They have been soft-deleted, so should not appear in the diff panel per design decision)
-      // The comments array will be reloaded below with proper dismissed state.
+      const deletedCount = result.deletedCount ?? totalComments;
 
       // Reload comments to update both internal state and AI Panel
       // This shows dismissed comments in AI Panel if filter is enabled, matching individual deletion behavior
@@ -6741,7 +6721,7 @@ class PRManager {
     const hidePosted = !filter.showPosted;
     document.querySelectorAll('[data-comment-status]').forEach(element => {
       element.classList.toggle('posted-comment-hidden',
-        shouldHidePostedComment({ status: element.dataset.commentStatus }, hidePosted));
+        shouldHidePostedComment({ publication: element.dataset.commentPublication === 'none' ? null : { state: element.dataset.commentPublication } }, hidePosted));
     });
     window.aiPanel?.setHiddenCommentCounts?.(this.getHiddenCommentCounts(filter));
     window.aiPanel?.setComments?.((this.userComments || []).filter(c =>
@@ -7515,7 +7495,7 @@ class PRManager {
 
   /** Comments the next submit will post: what "will be submitted" counts. */
   getPendingCommentCount() {
-    return (this.userComments || []).filter(c => c.status === 'active').length;
+    return (this.userComments || []).filter(window.PostedComment.isPendingComment).length;
   }
 
   /**
@@ -7524,7 +7504,8 @@ class PRManager {
    * Used only to decide whether a review has any comments at all.
    */
   getSubmittableCommentCount() {
-    return (this.userComments || []).filter(c => c.status === 'active' || c.status === 'draft').length;
+    return (this.userComments || []).filter(c => window.PostedComment.isPendingComment(c) ||
+      (c.status === 'active' && window.PostedComment.publicationState(c) === 'draft')).length;
   }
 
   /**
