@@ -36,6 +36,15 @@ describe('posted comment updates never recreate', () => {
     assertNoCreate();
   });
 
+  it('passes a known numeric-only id to the adapter and records its resolved node id', async () => {
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL').run();
+    client.updateReviewComment.mockResolvedValue({ github_comment_id: '123', github_comment_node_id: 'RESOLVED' });
+    await update();
+    expect(client.listCommentsForReview).not.toHaveBeenCalled();
+    expect((await postings.listByComment(commentId)).every(p => p.github_comment_node_id === 'RESOLVED')).toBe(true);
+    assertNoCreate();
+  });
+
   it('edits pending-draft comments in place as well', async () => {
     db.prepare("UPDATE github_reviews SET state = 'pending'").run();
     expect((await update()).publication).toMatchObject({ state: 'draft', changed: false });
@@ -61,7 +70,7 @@ describe('posted comment updates never recreate', () => {
 
   it('recovers unpublished comments from their pending review, not the PR-wide list', async () => {
     db.prepare("UPDATE github_reviews SET state = 'pending'").run();
-    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL').run();
     client.listCommentsForReview.mockResolvedValue([candidate()]);
     await update();
     expect(client.listReviewComments).not.toHaveBeenCalled();
@@ -69,7 +78,7 @@ describe('posted comment updates never recreate', () => {
   });
 
   it('leaves a repaired identity intact after a failed update without recreating', async () => {
-    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL').run();
     client.listCommentsForReview.mockResolvedValue([candidate()]);
     client.updateReviewComment.mockRejectedValue(Object.assign(new Error('denied'), { status: 403 }));
     await expect(update()).rejects.toMatchObject({ status: 403 });
@@ -80,7 +89,7 @@ describe('posted comment updates never recreate', () => {
 
   it('abstains rather than searching a PR-wide list for an untrusted pending review', async () => {
     db.prepare("UPDATE github_reviews SET state = 'pending'").run();
-    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, backfilled = 1').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL, backfilled = 1').run();
     await expect(update()).rejects.toMatchObject({ code: 'unresolved_identity' });
     expect(client.listReviewComments).not.toHaveBeenCalled();
     expect(client.updateReviewComment).not.toHaveBeenCalled();
@@ -89,7 +98,7 @@ describe('posted comment updates never recreate', () => {
 
   it.each(['rest', 'host'])('recovers a missing numeric id for %s updates', async (mode) => {
     client.features.review_comment_edit = mode;
-    db.prepare('UPDATE comment_postings SET github_comment_id = NULL').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL').run();
     client.listCommentsForReview.mockResolvedValue([candidate()]);
     await update();
     expect(client.updateReviewComment).toHaveBeenCalledWith(expect.objectContaining({ github_comment_id: '123' }), 'edited');
@@ -97,7 +106,7 @@ describe('posted comment updates never recreate', () => {
   });
 
   it('falls back to PR-wide comments only for an untrusted legacy review link', async () => {
-    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, backfilled = 1').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL, backfilled = 1').run();
     client.listReviewComments.mockResolvedValue([candidate()]);
     await update();
     expect(client.listReviewComments).toHaveBeenCalled();
@@ -105,7 +114,7 @@ describe('posted comment updates never recreate', () => {
   });
 
   it.each([[], [candidate(), candidate()], [candidate({ body: 'before\r\n' })], [candidate({ body: 'before ' })], [candidate({ body: '```suggestion\nbefore\n```' })], [candidate({ user: { login: 'other' } })]].map(candidates => ({ candidates })))('abstains on zero, ambiguous or inexact matches: %j', async ({ candidates }) => {
-    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL').run();
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL').run();
     client.listCommentsForReview.mockResolvedValue(candidates);
     await expect(update()).rejects.toMatchObject({ status: 409, review_url: 'https://example.test/r' });
     expect(client.updateReviewComment).not.toHaveBeenCalled();
