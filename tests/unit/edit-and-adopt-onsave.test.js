@@ -162,7 +162,7 @@ describe('editAndAdoptSuggestion onSave callback', () => {
     expect(comment.parent_id).toBe('sug-77');
 
     // _notifyAdoption side effects: aiPanel updated, navigator updated
-    expect(window.aiPanel.addComment).toHaveBeenCalledWith(comment);
+    expect(window.aiPanel.addComment).toHaveBeenCalledWith({ ...comment, status: 'active' });
     expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith('sug-77', 'adopted');
     expect(prManager.updateCommentCount).toHaveBeenCalled();
   });

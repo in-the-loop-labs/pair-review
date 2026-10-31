@@ -257,7 +257,7 @@ class ReviewModal {
     // Update comment count
     this.updateCommentCount();
     const hidePosted = this.modal.querySelector('#hide-posted-comments');
-    if (hidePosted) hidePosted.checked = localStorage.getItem('pair-review-hide-posted-comments') === 'true';
+    if (hidePosted) hidePosted.checked = window.PostedComment?.isHidePostedEnabled() || false;
     
     // Reset form
     const textarea = this.modal.querySelector('#review-body-modal');
@@ -417,7 +417,7 @@ class ReviewModal {
 
   handleHidePostedToggle() {
     const checked = this.modal.querySelector('#hide-posted-comments').checked;
-    localStorage.setItem('pair-review-hide-posted-comments', String(checked));
+    window.PostedComment.setHidePostedEnabled(checked);
     try {
       window.prManager?.applyPostedCommentVisibility();
     } catch (error) {

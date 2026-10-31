@@ -6299,7 +6299,6 @@ class PRManager {
       });
 
       if (!response.ok) throw new Error('Failed to update comment');
-      this.updateUserComment(commentId, { body: editedText });
 
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
@@ -6319,10 +6318,7 @@ class PRManager {
       if (editFormEl) editFormEl.remove();
       commentDiv.classList.remove('editing-mode');
 
-      // Notify AI Panel about the updated comment body
-      if (window.aiPanel?.updateComment) {
-        window.aiPanel.updateComment(commentId, { body: editedText });
-      }
+      this.patchUserComment(commentId, { body: editedText });
 
     } catch (error) {
       console.error('Error saving comment:', error);
@@ -6367,17 +6363,11 @@ class PRManager {
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
-      this.updateUserComment(commentId, { status: 'inactive' });
-      this.updateCommentCount();
-
-      // Check if dismissed comments filter is enabled for AI Panel updates
-      const showDismissed = window.aiPanel?.showDismissedComments || false;
 
       // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
-        this.updateCommentCount();
       }
 
       // Also handle file-level comment cards
@@ -6388,16 +6378,11 @@ class PRManager {
         if (zone && this.fileCommentManager) {
           this.fileCommentManager.updateCommentCount(zone);
         }
-        this.updateCommentCount();
       }
 
-      // Update AI Panel - transition to dismissed state or remove based on filter
-      if (showDismissed && window.aiPanel?.updateComment) {
-        // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
-        window.aiPanel.updateComment(commentId, { status: 'inactive' });
-      } else if (window.aiPanel?.removeComment) {
-        window.aiPanel.removeComment(commentId);
-      }
+      // Updates the counts, the minimizer, and the AI panel (dismissed styling
+      // when it shows dismissed comments, otherwise removed)
+      this.patchUserComment(commentId, { status: 'inactive' });
 
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
       // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
@@ -6413,11 +6398,6 @@ class PRManager {
         if (suggestionDiv) {
           delete suggestionDiv.dataset.hiddenForAdoption;
         }
-      }
-
-      // Refresh minimize-mode indicators so deleted comments no longer show
-      if (this.commentMinimizer) {
-        this.commentMinimizer.refreshIndicators();
       }
 
       // Show success toast
@@ -6693,13 +6673,15 @@ class PRManager {
   }
 
   applyPostedCommentVisibility() {
-    const hidePosted = localStorage.getItem('pair-review-hide-posted-comments') === 'true';
-    document.querySelectorAll('[data-comment-status="submitted"]').forEach(element => {
-      element.classList.toggle('posted-comment-hidden', hidePosted);
+    const { isHidePostedEnabled, shouldHidePostedComment } = window.PostedComment;
+    const hidePosted = isHidePostedEnabled();
+    document.querySelectorAll('[data-comment-status]').forEach(element => {
+      element.classList.toggle('posted-comment-hidden',
+        shouldHidePostedComment({ status: element.dataset.commentStatus }, hidePosted));
     });
     window.aiPanel?.setComments?.((this.userComments || []).filter(c =>
       (c.status !== 'inactive' || window.aiPanel.showDismissedComments) &&
-      (!hidePosted || c.status !== 'submitted')
+      !shouldHidePostedComment(c, hidePosted)
     ));
   }
 
@@ -6931,10 +6913,7 @@ class PRManager {
    * Notify panels and navigator after a successful adoption
    */
   _notifyAdoption(suggestionId, newComment) {
-    this.addUserComment(newComment);
-    if (window.aiPanel?.addComment) {
-      window.aiPanel.addComment(newComment);
-    }
+    this.registerUserComment(newComment);
 
     if (this.suggestionNavigator?.suggestions) {
       const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
@@ -6945,13 +6924,6 @@ class PRManager {
 
     if (window.aiPanel) {
       window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
-    }
-
-    this.updateCommentCount();
-
-    // Refresh minimize-mode indicators so the adopted comment is reflected
-    if (this.commentMinimizer) {
-      this.commentMinimizer.refreshIndicators();
     }
   }
 
@@ -7422,12 +7394,40 @@ class PRManager {
     window.open(shareUrl.toString(), '_blank');
   }
 
-  addUserComment(comment) {
-    this.userComments = [...(this.userComments || []).filter(c => c.id !== comment.id), { status: 'active', ...comment }];
+  /**
+   * Record a user comment just created (saved, adopted, or adopted with edit).
+   * Call it once the comment's row or card is in the DOM: it updates the
+   * comment cache, the AI panel, the comment counts and the minimize-mode
+   * indicators.
+   * @param {Object} comment - The new comment; status defaults to 'active'
+   * @returns {Object} The comment as cached
+   */
+  registerUserComment(comment) {
+    const stored = { status: 'active', ...comment };
+    this.userComments = [...(this.userComments || []).filter(c => c.id !== stored.id), stored];
+    window.aiPanel?.addComment?.(stored);
+    this.updateCommentCount();
+    this.commentMinimizer?.refreshIndicators();
+    return stored;
   }
 
-  updateUserComment(commentId, updates) {
+  /**
+   * Apply a change to a cached user comment (an edit, or a dismissal) after
+   * the DOM reflects it. Updates the AI panel, the comment counts and the
+   * minimize-mode indicators. A dismissed comment stays in the AI panel only
+   * when it is showing dismissed comments.
+   * @param {number} commentId
+   * @param {Object} updates - e.g. { body } or { status: 'inactive' }
+   */
+  patchUserComment(commentId, updates) {
     this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
+    if (updates.status === 'inactive' && !window.aiPanel?.showDismissedComments) {
+      window.aiPanel?.removeComment?.(commentId);
+    } else {
+      window.aiPanel?.updateComment?.(commentId, updates);
+    }
+    this.updateCommentCount();
+    this.commentMinimizer?.refreshIndicators();
   }
 
   getPendingCommentCount() {
@@ -7462,51 +7462,6 @@ class PRManager {
     const clearButton = document.getElementById('clear-comments-btn');
     if (clearButton) {
       clearButton.disabled = userComments === 0;
-    }
-  }
-
-  /**
-   * Submit review to GitHub
-   */
-  async submitReview() {
-    const reviewEvent = document.getElementById('review-event').value;
-    const reviewBody = document.getElementById('review-body').value.trim();
-    const submitBtn = document.getElementById('submit-review-btn');
-
-    const totalComments = this.getPendingCommentCount();
-    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {
-      alert('Please add comments or a review summary when requesting changes.');
-      return;
-    }
-
-    const originalText = submitBtn.textContent;
-    submitBtn.textContent = 'Submitting...';
-    submitBtn.disabled = true;
-
-    try {
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/submit-review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: reviewEvent, body: reviewBody })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to submit review');
-      }
-
-      const result = await response.json();
-      alert(`Review submitted successfully! ${result.message}`);
-
-      document.getElementById('review-body').value = '';
-      document.getElementById('review-event').value = 'COMMENT';
-
-    } catch (error) {
-      console.error('Error submitting review:', error);
-      alert(`Failed to submit review: ${error.message}`);
-    } finally {
-      submitBtn.textContent = originalText;
-      submitBtn.disabled = false;
     }
   }
 

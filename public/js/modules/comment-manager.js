@@ -488,15 +488,8 @@ class CommentManager {
         created_at: new Date().toISOString()
       };
 
-      this.prManager?.addUserComment?.(commentData);
-
       // Create comment display row
       this.displayUserComment(commentData, formRow.previousElementSibling);
-
-      // Notify AI Panel about the new comment
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(commentData);
-      }
 
       // Hide form and clear selection
       this.hideCommentForm();
@@ -504,14 +497,10 @@ class CommentManager {
         this.prManager.lineTracker.clearRangeSelection();
       }
 
-      // Update comment count
-      if (this.prManager?.updateCommentCount) {
-        this.prManager.updateCommentCount();
-      }
+      // Cache it and refresh the AI panel, counts and minimize-mode indicators
+      this.prManager?.registerUserComment?.(commentData);
 
-      // Refresh minimize-mode indicators so the new comment is reflected
       if (window.prManager?.commentMinimizer) {
-        window.prManager.commentMinimizer.refreshIndicators();
         // Auto-expand so the new comment stays visible in minimize mode
         const newRow = document.querySelector(`.user-comment-row[data-comment-id="${commentData.id}"]`);
         if (newRow) {
@@ -543,8 +532,7 @@ class CommentManager {
     const commentRow = document.createElement('tr');
     commentRow.className = 'user-comment-row';
     commentRow.dataset.commentId = comment.id;
-    commentRow.dataset.commentStatus = comment.status || 'active';
-    commentRow.classList.toggle('posted-comment-hidden', window.shouldHidePostedComment?.(comment) || false);
+    window.PostedComment?.stampCommentStatus(commentRow, comment);
     // Store file/line/side data for editing
     commentRow.dataset.file = comment.file;
     commentRow.dataset.lineStart = comment.line_start;

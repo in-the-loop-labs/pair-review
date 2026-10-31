@@ -305,7 +305,6 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
-      this.prManager?.addUserComment?.(commentData);
 
       // Display the new comment
       this.displayUserComment(zone, commentData);
@@ -316,25 +315,9 @@ class FileCommentManager {
       // Update count badge
       this.updateCommentCount(zone);
 
-      // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer) {
-        this.prManager.commentMinimizer.refreshIndicators();
-        // Auto-expand so the new comment stays visible in minimize mode
-        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
-        if (newCard) {
-          this.prManager.commentMinimizer.expandForElement(newCard);
-        }
-      }
-
-      // Notify AI Panel if available
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(commentData);
-      }
-
-      // Update parent comment count
-      if (this.prManager?.updateCommentCount) {
-        this.prManager.updateCommentCount();
-      }
+      // Cache it and refresh the AI panel, counts and minimize-mode indicators
+      this.prManager?.registerUserComment?.(commentData);
+      this.expandNewCardForMinimizer(zone, commentData.id);
 
       window.chatPanel?.queueUserActionHint(`[User Action: created comment ${result.commentId}]`);
 
@@ -366,8 +349,7 @@ class FileCommentManager {
     const isAIOrigin = !!comment.parent_id;
     card.className = `file-comment-card user-comment ${isAIOrigin ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}`;
     card.dataset.commentId = comment.id;
-    card.dataset.commentStatus = comment.status || 'active';
-    card.classList.toggle('posted-comment-hidden', window.shouldHidePostedComment?.(comment) || false);
+    window.PostedComment?.stampCommentStatus(card, comment);
 
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(comment.body)
@@ -629,30 +611,13 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
-      this.prManager?.addUserComment?.(commentData);
 
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
 
-      // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer) {
-        this.prManager.commentMinimizer.refreshIndicators();
-        // Auto-expand so the new comment stays visible in minimize mode
-        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
-        if (newCard) {
-          this.prManager.commentMinimizer.expandForElement(newCard);
-        }
-      }
-
-      // Update parent comment count for Preview button
-      if (this.prManager?.updateCommentCount) {
-        this.prManager.updateCommentCount();
-      }
-
-      // Add comment to AI Panel's comment list for navigation and display
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(commentData);
-      }
+      // Cache it and refresh the AI panel, counts and minimize-mode indicators
+      this.prManager?.registerUserComment?.(commentData);
+      this.expandNewCardForMinimizer(zone, commentData.id);
 
       // Update finding status in AI Panel (mark suggestion as adopted)
       if (window.aiPanel?.updateFindingStatus) {
@@ -898,30 +863,13 @@ class FileCommentManager {
         is_file_level: 1,
         created_at: new Date().toISOString()
       };
-      this.prManager?.addUserComment?.(commentData);
 
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
 
-      // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer) {
-        this.prManager.commentMinimizer.refreshIndicators();
-        // Auto-expand so the new comment stays visible in minimize mode
-        const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentData.id}"]`);
-        if (newCard) {
-          this.prManager.commentMinimizer.expandForElement(newCard);
-        }
-      }
-
-      // Update parent comment count for Preview button
-      if (this.prManager?.updateCommentCount) {
-        this.prManager.updateCommentCount();
-      }
-
-      // Add comment to AI Panel's comment list for navigation and display
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(commentData);
-      }
+      // Cache it and refresh the AI panel, counts and minimize-mode indicators
+      this.prManager?.registerUserComment?.(commentData);
+      this.expandNewCardForMinimizer(zone, commentData.id);
 
       // Update finding status in AI Panel (mark suggestion as adopted)
       if (window.aiPanel?.updateFindingStatus) {
@@ -1029,7 +977,6 @@ class FileCommentManager {
       });
 
       if (!response.ok) throw new Error('Failed to update comment');
-      this.prManager?.updateUserComment?.(commentId, { body: newBody });
 
       // Update the display
       const card = bodyEl?.closest('.file-comment-card');
@@ -1039,6 +986,8 @@ class FileCommentManager {
         : this.escapeHtml(newBody);
       bodyEl.innerHTML = renderedBody;
       bodyEl.dataset.originalMarkdown = newBody;
+
+      this.prManager?.patchUserComment?.(commentId, { body: newBody });
 
     } catch (error) {
       console.error('Error updating comment:', error);
@@ -1071,7 +1020,6 @@ class FileCommentManager {
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
-      this.prManager?.updateUserComment?.(commentId, { status: 'inactive' });
 
       // Remove the card
       const card = zone.querySelector(`[data-comment-id="${commentId}"]`);
@@ -1081,20 +1029,9 @@ class FileCommentManager {
 
       this.updateCommentCount(zone);
 
-      // Refresh minimize-mode indicators so file-header counts stay current
-      if (this.prManager?.commentMinimizer) {
-        this.prManager.commentMinimizer.refreshIndicators();
-      }
-
-      // Update parent comment count
-      if (this.prManager?.updateCommentCount) {
-        this.prManager.updateCommentCount();
-      }
-
-      // Notify AI Panel about the deleted comment
-      if (window.aiPanel?.removeComment) {
-        window.aiPanel.removeComment(commentId);
-      }
+      // Updates the counts, the minimizer, and the AI panel (dismissed styling
+      // when it shows dismissed comments, otherwise removed)
+      this.prManager?.patchUserComment?.(commentId, { status: 'inactive' });
 
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
       // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
@@ -1127,6 +1064,20 @@ class FileCommentManager {
     const reviewId = this.prManager?.currentPR?.id;
 
     return `/api/reviews/${reviewId}/suggestions/${suggestionId}/status`;
+  }
+
+  /**
+   * Expand a newly rendered card in minimize mode so it stays visible
+   * @param {HTMLElement} zone - The file comments zone
+   * @param {number} commentId - The new comment's ID
+   */
+  expandNewCardForMinimizer(zone, commentId) {
+    const minimizer = this.prManager?.commentMinimizer;
+    if (!minimizer) return;
+    const newCard = zone.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+    if (newCard) {
+      minimizer.expandForElement(newCard);
+    }
   }
 
   /**
