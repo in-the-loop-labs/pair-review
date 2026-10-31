@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Import the actual PRManager class from production code
 const { PRManager } = require('../../public/js/pr.js');
+const PostedComment = require('../../public/js/utils/posted-comment');
 
 // suggestion-ui.js is a browser IIFE that attaches window.SuggestionUI. Give it
 // a window at require time so collapseSuggestionForAdoption can drive the real
@@ -32,6 +33,7 @@ beforeEach(() => {
 
   // Setup window object with aiPanel mock
   global.window = {
+    PostedComment,
     aiPanel: {
       updateFindingStatus: vi.fn()
     }
@@ -849,7 +851,8 @@ describe('PRManager Suggestion Status', () => {
       ['line', [{ id: 1, status: 'active' }, { id: 2, status: 'active' }], 2],
       ['file', [{ id: 1, status: 'active', is_file_level: 1 }], 1],
       ['mixed', [{ id: 1, status: 'active' }, { id: 2, status: 'active', is_file_level: 1 },
-        { id: 3, status: 'submitted' }, { id: 4, status: 'draft' }, { id: 5, status: 'inactive' }], 2],
+        { id: 3, status: 'active', publication: { state: 'posted' } },
+        { id: 4, status: 'active', publication: { state: 'draft' } }, { id: 5, status: 'inactive' }], 2],
       ['empty', [], 0],
     ])('counts active %s comments from data', (_name, comments, expected) => {
       prManager.userComments = comments;

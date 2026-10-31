@@ -606,7 +606,7 @@ class CommentManager {
               ${commentIcon}
             </span>
             <span class="user-comment-line-info">${lineInfo}</span>
-            ${window.getPostedCommentIcon?.(comment) || ''}
+            ${window.getPostedCommentIcon?.(comment, { link: true }) || ''}
             ${expandedContextIndicator}
             ${metadataHTML}
           </div>

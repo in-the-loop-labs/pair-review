@@ -29,15 +29,15 @@ beforeEach(() => {
   window.escapeHtmlAttribute = text => ReviewModal.escapeHtml(text);
   comments = [
     { id: 1, status: 'active', file: 'src/a.js', line_start: 10, body: 'New line' },
-    { id: 2, status: 'submitted', file: 'src/a.js', line_start: 11, body: 'Old line' },
+    { id: 2, status: 'active', publication: { state: 'posted' }, file: 'src/a.js', line_start: 11, body: 'Old line' },
     { id: 3, status: 'active', is_file_level: 1, file: 'src/b.js', body: 'New file' },
-    { id: 4, status: 'submitted', is_file_level: 1, file: 'src/b.js', body: 'Old file' },
-    { id: 5, status: 'draft', is_file_level: 1, file: 'src/b.js', body: 'Saved draft' },
+    { id: 4, status: 'active', publication: { state: 'posted' }, is_file_level: 1, file: 'src/b.js', body: 'Old file' },
+    { id: 5, status: 'active', publication: { state: 'draft' }, is_file_level: 1, file: 'src/b.js', body: 'Saved draft' },
   ];
   fetchMock = vi.fn(async (url, options) => {
     if (url === '/api/pr/acme/widget/7/submit-review' && options?.method === 'POST') {
-      const status = JSON.parse(options.body).event === 'DRAFT' ? 'draft' : 'submitted';
-      comments = comments.map(c => c.status === 'active' ? { ...c, status } : c);
+      const state = JSON.parse(options.body).event === 'DRAFT' ? 'draft' : 'posted';
+      comments = comments.map(c => c.status === 'active' && (!c.publication || c.publication.state === 'draft') ? { ...c, publication: { state } } : c);
       return { ok: true, json: async () => ({ message: 'Posted' }) };
     }
     if (url === '/api/reviews/42/comments' || url === '/api/reviews/42/comments?includeDismissed=true') {
@@ -308,11 +308,11 @@ describe('posted comment UI', () => {
     const modal = makeModal();
     modal.show();
     expect(modal.modal.querySelector('#large-review-warning').style.display).toBe('block');
-    manager.userComments = [...comments, ...Array.from({ length: 60 }, (_, id) => ({ id: id + 10, status: 'submitted' }))];
+    manager.userComments = [...comments, ...Array.from({ length: 60 }, (_, id) => ({ id: id + 10, status: 'active', publication: { state: 'posted' } }))];
     modal.updateCommentCount();
     expect(modal.modal.querySelector('#large-review-warning').style.display).toBe('none');
     expect(modal.modal.querySelector('.review-comment-count').textContent).toContain('2 comments will be submitted');
-    manager.userComments = manager.userComments.filter(c => c.status === 'submitted');
+    manager.userComments = manager.userComments.filter(c => c.publication?.state === 'posted');
     modal.updateCommentCount();
     expect(modal.modal.querySelector('#large-review-warning').style.display).toBe('none');
     selectEvent(modal, 'REQUEST_CHANGES');
@@ -323,7 +323,7 @@ describe('posted comment UI', () => {
 
   it('lets Request Changes publish a pending draft that holds the only comments', async () => {
     const manager = makeManager();
-    manager.userComments = comments.filter(c => c.status === 'draft');
+    manager.userComments = comments.filter(c => c.publication?.state === 'draft');
     const modal = makeModal();
     modal.show();
     // Nothing new to submit, so the label stays hidden...
@@ -337,17 +337,17 @@ describe('posted comment UI', () => {
     }));
   });
 
-  it('keeps hidden submitted comments out after submission and reload without hiding drafts', async () => {
+  it('hides every published comment after a submit publishes the pending draft', async () => {
     localStorage.setItem('pair-review-hide-posted-comments', 'true');
     const manager = makeManager();
     await manager.loadUserComments();
     await makeModal().submitReview();
     expect(manager.getPendingCommentCount()).toBe(0);
-    expect(window.aiPanel.setComments.mock.lastCall[0].map(c => c.id)).toEqual([5]);
+    expect(window.aiPanel.setComments.mock.lastCall[0]).toEqual([]);
     expect(document.querySelectorAll('.user-comment-row:not(.posted-comment-hidden)')).toHaveLength(0);
-    expect(document.querySelectorAll('.file-comment-card:not(.posted-comment-hidden)')).toHaveLength(1);
+    expect(document.querySelectorAll('.file-comment-card:not(.posted-comment-hidden)')).toHaveLength(0);
     await makeManager().loadUserComments();
-    expect(document.querySelectorAll('.file-comment-card:not(.posted-comment-hidden)')).toHaveLength(1);
+    expect(document.querySelectorAll('.file-comment-card:not(.posted-comment-hidden)')).toHaveLength(0);
   });
 
   it('updates the pending data on line/file creation, adoption, edit and dismissal', async () => {

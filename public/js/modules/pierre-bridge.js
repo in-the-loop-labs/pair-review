@@ -1957,7 +1957,7 @@ class PierreBridge {
           <div class="user-comment-header-left">
             <span class="comment-origin-icon">${commentIcon}</span>
             <span class="user-comment-line-info">${lineInfo}</span>
-            ${window.getPostedCommentIcon?.(comment) || ''}
+            ${window.getPostedCommentIcon?.(comment, { link: true }) || ''}
             ${metadataHTML}
           </div>
           <div class="user-comment-actions">

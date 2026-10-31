@@ -69,6 +69,8 @@ curl -s http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments
 
 Optional query param: \`includeDismissed=true\` to include soft-deleted (inactive) comments.
 
+User comment \`status\` is lifecycle only: \`active\` or \`inactive\`. Each comment has \`publication: null\` (never posted) or \`{ state: "draft"|"posted", posted_at, review_url, comment_url, github_review_row_id, posting_count }\`. Restoring a posted comment does not post it again. Local-mode comments have no publication.
+
 **Response:** \`{ "success": true, "comments": [...] }\`
 
 ### Create a comment
@@ -143,9 +145,9 @@ curl -s -X PUT http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments/COMM
 
 **Response:** \`{ "success": true, "message": "Comment restored successfully", "comment": {...} }\`
 
-### Bulk delete all comments
+### Bulk delete pending comments
 
-Deletes all user comments for a review. Also dismisses any parent AI suggestions.
+Dismisses all user comments not yet posted for a review. Posted comments are kept. Also dismisses any parent AI suggestions of the affected comments.
 
 \`\`\`bash
 curl -s -X DELETE http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments

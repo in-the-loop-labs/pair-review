@@ -271,6 +271,7 @@ function createMCPServer(db, options = {}) {
           type: c.type,
           title: c.title,
           status: c.status,
+          posted: c.publication?.state || null,
           created_at: c.created_at,
         });
       }
