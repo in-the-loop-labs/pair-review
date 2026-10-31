@@ -3421,6 +3421,83 @@ describe('Review Submission Endpoint', () => {
       expect(analysisRunsAfter[0].id).toBe('draft-test-run');
     });
 
+    it('marks comments from an earlier draft as submitted when a non-draft submit publishes the pending review', async () => {
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 3, 5, 'Draft A', 'active')
+      `, [prId]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 4, 6, 'Draft B', 'active')
+      `, [prId]);
+
+      const draftResponse = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: '' });
+      expect(draftResponse.status).toBe(200);
+
+      const afterDraft = await query(db, "SELECT status FROM comments WHERE review_id = ? AND source = 'user'", [prId]);
+      expect(afterDraft.map(c => c.status)).toEqual(['draft', 'draft']);
+
+      // GitHub now holds the pending review that contains A and B.
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_pending', databaseId: 12345, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        comments: { totalCount: 2 }
+      });
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 5, 7, 'New C', 'active')
+      `, [prId]);
+
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'APPROVE', body: 'LGTM' });
+      expect(response.status).toBe(200);
+
+      const after = await query(db, "SELECT body, status FROM comments WHERE review_id = ? AND source = 'user' ORDER BY line_start", [prId]);
+      expect(after).toEqual([
+        { body: 'Draft A', status: 'submitted' },
+        { body: 'Draft B', status: 'submitted' },
+        { body: 'New C', status: 'submitted' }
+      ]);
+    });
+
+    it('leaves draft comments alone when the submit did not reuse a pending review', async () => {
+      // No pending review on GitHub (deleted there, for example), so the local
+      // draft rows were not published by this submit.
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 3, 5, 'Stale draft', 'draft')
+      `, [prId]);
+
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Comment' });
+      expect(response.status).toBe(200);
+
+      const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Stale draft'", [prId]);
+      expect(row.status).toBe('draft');
+    });
+
+    it('keeps earlier draft comments as draft when adding to the pending review', async () => {
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_pending', databaseId: 12345, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        comments: { totalCount: 1 }
+      });
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 3, 5, 'Earlier draft', 'draft')
+      `, [prId]);
+
+      const response = await request(server)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: '' });
+      expect(response.status).toBe(200);
+
+      const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Earlier draft'", [prId]);
+      expect(row.status).toBe('draft');
+    });
+
     describe('GraphQL PR node id feature-gating', () => {
       /**
        * Helper: replace the PR record so prData has no node_id.
