@@ -3,6 +3,27 @@
 function installGitHubReviewMock(GitHubClient) {
   const pending = new Map();
   const reviews = new Map();
+  const reviewComments = new Map();
+  // Keep the real edit dispatcher/GraphQL adapter in the browser tests. Only
+  // the wire transport is fake; unexpected operations cannot reach GitHub.
+  const buildOctokit = GitHubClient.prototype._buildOctokit;
+  if (buildOctokit) GitHubClient.prototype._buildOctokit = function () {
+    const octokit = buildOctokit.call(this);
+    octokit.graphql = async (query, variables) => {
+      if (!query.includes('updatePullRequestReviewComment')) throw new Error('Unexpected E2E GraphQL operation');
+      const values = Object.values(variables);
+      const target = values.map(value => reviewComments.get(String(value))).find(Boolean);
+      const body = variables.body;
+      if (!target || body?.includes('E2E_FAIL_UPDATE_404')) {
+        throw Object.assign(new Error('Comment not found on GitHub'), { status: 404 });
+      }
+      target.body = body;
+      return { updatePullRequestReviewComment: { pullRequestReviewComment: {
+        id: target.node_id, fullDatabaseId: target.id, url: target.html_url, body
+      } } };
+    };
+    return octokit;
+  };
   let nextId = 12345;
   const keyFor = ({ owner, repo, prNumber }) => `${owner}/${repo}/${prNumber}`;
 
@@ -30,6 +51,13 @@ function installGitHubReviewMock(GitHubClient) {
       github_comment_node_id: `PRRC_test${databaseId}_${(old?.comments.totalCount || 0) + index}`,
       github_comment_url: `${url}-comment-${(old?.comments.totalCount || 0) + index}`
     }));
+    for (const result of review.postedComments) {
+      const sent = comments[result.index];
+      const stored = { id: result.github_comment_id, node_id: result.github_comment_node_id,
+        html_url: result.github_comment_url, body: sent.body, path: sent.path };
+      reviewComments.set(stored.id, stored);
+      reviewComments.set(stored.node_id, stored);
+    }
     reviews.set(id, review);
     reviews.set(String(databaseId), review);
     if (state === 'PENDING') pending.set(key, review);
