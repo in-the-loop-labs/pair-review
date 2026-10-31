@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect } from 'vitest';
-import { extractJSON, sanitizeControlCharactersInStrings } from '../../src/utils/json-extractor.js';
+import { extractJSON, sanitizeControlCharactersInStrings, repairUnescapedQuotes } from '../../src/utils/json-extractor.js';
 
 describe('extractJSON', () => {
   describe('empty/null input', () => {
@@ -472,6 +472,136 @@ describe('extractJSON', () => {
       const output = sanitizeControlCharactersInStrings(input);
       // Parsed value is backslash + newline
       expect(JSON.parse(output)).toEqual({ a: 'x\\\ny' });
+    });
+  });
+
+  // Issue #561: an unescaped " inside a string literal ends the string early,
+  // so JSON.parse fails on the prose that follows ("Expected ',' or ']' after
+  // array element") and every extraction strategy fails.
+  describe('unescaped quotes in string literals (issue #561)', () => {
+    const makeSuggestions = (count) => Array.from({ length: count }, (_, i) => ({
+      file: `src/file${i}.js`,
+      line: i + 1,
+      type: 'bug',
+      title: `Issue ${i}`,
+      description: `Description of issue ${i} with "escaped quotes" and enough text to be realistic.`,
+    }));
+
+    it('should recover the full array when one description in a large suggestions array has an unescaped quote', () => {
+      const suggestions = makeSuggestions(150);
+      const valid = JSON.stringify({ level: 'orchestrated', suggestions, summary: 'done' });
+      // Corrupt one description mid-array: replace its escaped quotes with raw ones
+      const target = 'Description of issue 75 with \\"escaped quotes\\"';
+      const corrupted = valid.replace(target, 'Description of issue 75 with "escaped quotes"');
+      expect(corrupted).not.toBe(valid);
+      expect(() => JSON.parse(corrupted)).toThrow(/after (array element|property value)/);
+
+      const result = extractJSON(corrupted, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions).toHaveLength(150);
+      expect(result.data.suggestions[75].description).toBe(suggestions[75].description);
+      expect(result.data).toEqual({ level: 'orchestrated', suggestions, summary: 'done' });
+    });
+
+    it('should recover a quote followed by a comma in prose', () => {
+      const json = '{"suggestions": [{"description": "the helper "parseFoo", which is unused", "line": 3}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0]).toEqual({ description: 'the helper "parseFoo", which is unused', line: 3 });
+    });
+
+    it('should recover an unescaped quote inside an array of strings', () => {
+      const json = '{"summary": "ok", "notes": ["rename "foo" to bar", "second"]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.notes).toEqual(['rename "foo" to bar', 'second']);
+    });
+
+    it('should recover an unescaped quote with prose preamble', () => {
+      const response = 'Here is my {careful} analysis:\n{"level": 2, "suggestions": [{"description": "a 5" monitor"}]}\nThanks!';
+      const result = extractJSON(response, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('a 5" monitor');
+    });
+
+    it('should recover a response with both an unescaped quote and a raw control character', () => {
+      const json = '{"suggestions": [{"description": "call "foo" here:\nfoo()", "line": 1}, {"description": "tab\there"}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions).toEqual([
+        { description: 'call "foo" here:\nfoo()', line: 1 },
+        { description: 'tab\there' },
+      ]);
+    });
+
+    it('should recover pretty-printed JSON with an unescaped quote', () => {
+      // An odd number of bad quotes flips the control-character sanitizer's
+      // in-string state, so it must not be what the quote repair works on
+      const expected = { suggestions: [{ description: 'a 5" monitor', line: 1 }, { description: 'ok', line: 2 }] };
+      const pretty = JSON.stringify(expected, null, 2).replace('5\\"', '5"');
+      const result = extractJSON(pretty, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(expected);
+    });
+
+    it('should recover pretty-printed JSON with an unescaped quote and a later raw newline', () => {
+      const expected = { suggestions: [{ description: 'a 5" monitor', line: 1 }, { description: 'o\nk', line: 2 }] };
+      const pretty = JSON.stringify(expected, null, 2).replace('5\\"', '5"').replace('o\\nk', 'o\nk');
+      const result = extractJSON(pretty, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(expected);
+    });
+
+    it('should not double-escape already escaped quotes', () => {
+      const json = '{"suggestions": [{"description": "keep \\"this\\" but fix "that" one"}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('keep "this" but fix "that" one');
+    });
+
+    it('should still fail on prose that is not JSON', () => {
+      const response = 'I reviewed the code and "everything" looks fine, see {"the" "notes" below} for "details".';
+      const result = extractJSON(response, 'test');
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Failed to extract JSON from response');
+    });
+  });
+
+  describe('repairUnescapedQuotes', () => {
+    it('should return already-valid JSON byte-identical with no repairs', () => {
+      const input = '{ "a": "x \\"q\\" y",\n  "b": [1, 2, {"c": "d"}] }';
+      const result = repairUnescapedQuotes(input);
+      expect(result.text).toBe(input);
+      expect(result.repairs).toBe(0);
+      expect(result.data).toEqual(JSON.parse(input));
+    });
+
+    it('should escape each unescaped inner quote', () => {
+      const result = repairUnescapedQuotes('{"d": "say "hi" there", "x": 1}');
+      expect(result.text).toBe('{"d": "say \\"hi\\" there", "x": 1}');
+      expect(result.repairs).toBe(2);
+      expect(result.data).toEqual({ d: 'say "hi" there', x: 1 });
+    });
+
+    it('should not merge values separated by a missing comma', () => {
+      const result = repairUnescapedQuotes('{"a": "x" "b": 1}');
+      expect(result.data).toBeNull();
+      expect(result.repairs).toBe(0);
+    });
+
+    it('should stop within the iteration bound', () => {
+      // Every word is quoted, so each repair exposes another bad quote
+      const words = Array.from({ length: 30 }, (_, i) => `"w${i}" and`).join(' ');
+      const input = `{"d": "start ${words} end"}`;
+      const result = repairUnescapedQuotes(input, 5);
+      expect(result.data).toBeNull();
+      expect(result.repairs).toBe(5);
+    });
+
+    it('should give up on errors it does not recognise', () => {
+      const result = repairUnescapedQuotes('{"d": "unterminated');
+      expect(result.data).toBeNull();
+      expect(result.repairs).toBe(0);
     });
   });
 
