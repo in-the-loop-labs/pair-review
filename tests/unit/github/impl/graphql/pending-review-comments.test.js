@@ -178,6 +178,34 @@ describe('impl/graphql/pending-review-comments', () => {
       });
     });
 
+    it.each([
+      ['a batch it could halve', 2, twoComments],
+      ['a batch at the minimum size', MIN_BATCH_SIZE, twoComments.slice(0, 1)]
+    ])('does not halve or re-send a 502 whose message looks like a complexity limit, for %s', async (_label, size, comments) => {
+      const error = httpError('upstream response too large', 502);
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue({ comment0: { thread: { id: 't' } } });
+
+      const result = await runBatches(graphql, comments, size);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result.successCount).toBe(0);
+      expect(result.failed).toBe(true);
+      expect(result.failedDetails).toHaveLength(comments.length);
+    });
+
+    it('does not halve a fetch failure whose message looks like a complexity limit', async () => {
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(httpError('response body too large, socket closed', 500, false))
+        .mockResolvedValue({ comment0: { thread: { id: 't' } } });
+
+      const result = await runBatches(graphql, twoComments, 2);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result.failed).toBe(true);
+    });
+
     it('retries a complexity rejection at the minimum batch size once', async () => {
       const graphql = vi.fn().mockRejectedValue(new Error('Mutation payload too large'));
 
