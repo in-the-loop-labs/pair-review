@@ -2104,9 +2104,9 @@ class AIPanel {
             Object.assign(comment, updates);
             // Note: updateSegmentCounts() counts this.comments.length which won't change
             // when status changes. This is intentional - segment counts show "inbox size"
-            // (total items in panel) while SplitButton uses DOM-based counting for
-            // submission validation (active comments only). We still call it here to
-            // trigger any button state updates (e.g., enabling/disabling).
+            // (total items in panel) while the review button and SplitButton count the
+            // pending (active) comments from PRManager.userComments. We still call it
+            // here to trigger any button state updates (e.g., enabling/disabling).
             this.updateSegmentCounts();
             this.renderFindings();
         }

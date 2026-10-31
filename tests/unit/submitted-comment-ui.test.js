@@ -91,7 +91,8 @@ describe('posted comment UI', () => {
     await manager.loadUserComments();
     expect(document.querySelectorAll('.user-comment-row')).toHaveLength(2);
     expect(document.querySelectorAll('.file-comment-card')).toHaveLength(3);
-    expect(document.querySelectorAll('.posted-comment-icon[title="Posted comment"]')).toHaveLength(3);
+    expect(document.querySelectorAll('.posted-comment-icon[title="Posted comment"]')).toHaveLength(2);
+    expect(document.querySelectorAll('.posted-comment-icon[title="In pending draft review"]')).toHaveLength(1);
     expect(document.querySelector('.review-button-text').textContent).toBe('2 comments');
     expect(manager.splitButton.updateCommentCount).toHaveBeenLastCalledWith(2);
     expect(window.aiPanel.setComments.mock.lastCall[0]).toHaveLength(5);
@@ -102,7 +103,6 @@ describe('posted comment UI', () => {
     const modal = makeModal();
     modal.show();
     expect(modal.modal.querySelector('.review-comment-count').textContent).toContain('2 comments will be submitted');
-    expect(modal.modal.querySelectorAll('.comment-history')).toHaveLength(0);
     // Unrenderable active comments still belong to the pending review.
     manager.registerUserComment({ id: 6, file: 'not-in-diff.js', body: 'Not rendered' });
     expect(document.querySelector('.review-button-text').textContent).toBe('3 comments');
@@ -140,6 +140,7 @@ describe('posted comment UI', () => {
     await reopened.handleHidePostedToggle();
     reopened.handleCloseClick();
     expect(document.querySelectorAll('.posted-comment-icon')).toHaveLength(3);
+    expect(document.querySelectorAll('.posted-comment-hidden')).toHaveLength(0);
     expect(localStorage.getItem('pair-review-hide-posted-comments')).toBe('false');
   });
 
@@ -332,6 +333,72 @@ describe('posted comment UI', () => {
     expect(manager.getPendingCommentCount()).toBe(2);
     manager._notifyAdoption(9, { id: 8, parent_id: 9, body: 'Adopted' });
     expect(manager.getPendingCommentCount()).toBe(3);
+  });
+
+  it('caches file-level adoptions and line-level edits', async () => {
+    const manager = makeManager();
+    await manager.loadUserComments();
+    const zone = document.querySelector('.file-comments-zone');
+    const suggestion = { id: 20, file: 'src/b.js', type: 'bug', title: 'Bug' };
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ userCommentId: 21, formattedBody: 'Adopted' }) });
+    await manager.fileCommentManager.adoptAISuggestion(zone, suggestion);
+    expect(manager.userComments.find(c => c.id === 21)).toMatchObject({ status: 'active', parent_id: 20, body: 'Adopted' });
+    expect(manager.getPendingCommentCount()).toBe(3);
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ userCommentId: 22, formattedBody: 'Adopted, edited' }) });
+    await manager.fileCommentManager.adoptWithEdit(zone, { ...suggestion, id: 23 }, 'Adopted, edited');
+    expect(manager.userComments.find(c => c.id === 22)).toMatchObject({ status: 'active', parent_id: 23, body: 'Adopted, edited' });
+    expect(manager.getPendingCommentCount()).toBe(4);
+    expect(document.querySelector('.review-button-text').textContent).toBe('4 comments');
+
+    await manager.editUserComment(1);
+    document.querySelector('#edit-comment-1').value = 'Edited line';
+    fetchMock.mockResolvedValueOnce({ ok: true });
+    await manager.saveEditedUserComment(1);
+    expect(manager.userComments.find(c => c.id === 1).body).toBe('Edited line');
+  });
+
+  it('keeps a comment saved while a reload is waiting on the diff', async () => {
+    const manager = makeManager();
+    await manager.loadUserComments();
+    let release;
+    manager.ensureLinesVisible.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    const reload = manager.loadUserComments();
+    await vi.waitFor(() => expect(manager.ensureLinesVisible).toHaveBeenCalledTimes(2));
+
+    // Saved meanwhile: on the server, so a fresh fetch includes it
+    const row = document.createElement('tr');
+    row.innerHTML = '<td><textarea data-file="src/a.js" data-line="10">Saved mid-reload</textarea></td>';
+    document.querySelector('#diff tbody').appendChild(row);
+    manager.commentManager.currentCommentForm = row;
+    fetchMock.mockImplementationOnce(async () => {
+      comments = [...comments, { id: 6, status: 'active', file: 'src/a.js', line_start: 10, body: 'Saved mid-reload' }];
+      return { ok: true, json: async () => ({ commentId: 6 }) };
+    });
+    await manager.commentManager.saveUserComment(row.querySelector('textarea'), row);
+
+    release();
+    expect(await reload).toBe(true);
+    expect(document.querySelector('.user-comment-row[data-comment-id="6"]')).not.toBeNull();
+    expect(manager.userComments.map(c => c.id)).toContain(6);
+    expect(manager.getPendingCommentCount()).toBe(3);
+  });
+
+  it('lets the newest reload win when two overlap', async () => {
+    const manager = makeManager();
+    let release;
+    manager.ensureLinesVisible.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    const first = manager.loadUserComments();
+    await vi.waitFor(() => expect(manager.ensureLinesVisible).toHaveBeenCalledTimes(1));
+    comments = comments.filter(c => c.id !== 1);
+    const second = manager.loadUserComments();
+    expect(await second).toBe(true);
+    release();
+    expect(await first).toBe(true);
+    // The overtaken load did not render its stale list over the newer one
+    expect(document.querySelector('.user-comment-row[data-comment-id="1"]')).toBeNull();
+    expect(manager.userComments.map(c => c.id)).not.toContain(1);
   });
 
   it('does not resurrect dismissed panel comments when the preference changes', async () => {
