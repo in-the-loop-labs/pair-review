@@ -104,8 +104,7 @@ describe('posted comment UI', () => {
     expect(modal.modal.querySelector('.review-comment-count').textContent).toContain('2 comments will be submitted');
     expect(modal.modal.querySelectorAll('.comment-history')).toHaveLength(0);
     // Unrenderable active comments still belong to the pending review.
-    manager.addUserComment({ id: 6, file: 'not-in-diff.js', body: 'Not rendered' });
-    manager.updateCommentCount();
+    manager.registerUserComment({ id: 6, file: 'not-in-diff.js', body: 'Not rendered' });
     expect(document.querySelector('.review-button-text').textContent).toBe('3 comments');
     expect(modal.modal.querySelector('.review-comment-count').textContent).toContain('3 comments will be submitted');
   });

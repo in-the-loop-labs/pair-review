@@ -858,13 +858,40 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('tracks newly created, adopted, updated, and dismissed comments', () => {
-      prManager.addUserComment({ id: 1, body: 'New' });
-      prManager.addUserComment({ id: 2, parent_id: 9 });
+      prManager.registerUserComment({ id: 1, body: 'New' });
+      prManager.registerUserComment({ id: 2, parent_id: 9 });
       expect(prManager.getPendingCommentCount()).toBe(2);
-      prManager.updateUserComment(1, { body: 'Edited' });
-      prManager.updateUserComment(2, { status: 'inactive' });
+      expect(mockSplitButton.updateCommentCount).toHaveBeenLastCalledWith(2);
+      prManager.patchUserComment(1, { body: 'Edited' });
+      prManager.patchUserComment(2, { status: 'inactive' });
       expect(prManager.userComments[0].body).toBe('Edited');
       expect(prManager.getPendingCommentCount()).toBe(1);
+      expect(mockSplitButton.updateCommentCount).toHaveBeenLastCalledWith(1);
+    });
+
+    it('refreshes the AI panel and minimizer when comments are registered and patched', () => {
+      const aiPanel = { addComment: vi.fn(), updateComment: vi.fn(), removeComment: vi.fn(), showDismissedComments: false };
+      window.aiPanel = aiPanel;
+      prManager.commentMinimizer = { refreshIndicators: vi.fn() };
+
+      const stored = prManager.registerUserComment({ id: 1, body: 'New' });
+      expect(stored.status).toBe('active');
+      expect(aiPanel.addComment).toHaveBeenCalledWith(stored);
+
+      prManager.patchUserComment(1, { body: 'Edited' });
+      expect(aiPanel.updateComment).toHaveBeenCalledWith(1, { body: 'Edited' });
+
+      prManager.patchUserComment(1, { status: 'inactive' });
+      expect(aiPanel.removeComment).toHaveBeenCalledWith(1);
+
+      prManager.registerUserComment({ id: 2, body: 'Second' });
+      aiPanel.showDismissedComments = true;
+      prManager.patchUserComment(2, { status: 'inactive' });
+      expect(aiPanel.updateComment).toHaveBeenCalledWith(2, { status: 'inactive' });
+      expect(aiPanel.removeComment).not.toHaveBeenCalledWith(2);
+
+      expect(prManager.commentMinimizer.refreshIndicators).toHaveBeenCalledTimes(5);
+      delete window.aiPanel;
     });
 
     it('handles missing splitButton gracefully', () => {

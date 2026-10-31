@@ -570,10 +570,12 @@ describe('FileCommentManager.deleteFileComment', () => {
     const mockZone = { querySelector: vi.fn().mockReturnValue(mockCard) };
     fileCommentManager.updateCommentCount = vi.fn();
 
+    fileCommentManager.prManager.patchUserComment = vi.fn();
+
     await fileCommentManager.deleteFileComment(mockZone, commentId);
 
-    // Verify AIPanel removeComment was called
-    expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+    // PRManager updates the cache, counts and AI panel for the dismissal
+    expect(fileCommentManager.prManager.patchUserComment).toHaveBeenCalledWith(commentId, { status: 'inactive' });
 
     // Verify AIPanel updateFindingStatus was called with 'dismissed' status
     // (suggestion card is still collapsed in diff view; user can click "Show" to restore to active)
@@ -594,10 +596,12 @@ describe('FileCommentManager.deleteFileComment', () => {
     const mockZone = { querySelector: vi.fn().mockReturnValue(mockCard) };
     fileCommentManager.updateCommentCount = vi.fn();
 
+    fileCommentManager.prManager.patchUserComment = vi.fn();
+
     await fileCommentManager.deleteFileComment(mockZone, commentId);
 
-    // AIPanel removeComment should still be called
-    expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+    // PRManager still records the dismissal
+    expect(fileCommentManager.prManager.patchUserComment).toHaveBeenCalledWith(commentId, { status: 'inactive' });
 
     // But updateFindingStatus should NOT be called
     expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();

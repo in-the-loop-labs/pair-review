@@ -1945,8 +1945,7 @@ class PierreBridge {
     const container = document.createElement('div');
     container.className = 'user-comment-row';
     container.dataset.commentId = comment.id;
-    container.dataset.commentStatus = comment.status || 'active';
-    container.classList.toggle('posted-comment-hidden', window.shouldHidePostedComment?.(comment) || false);
+    window.PostedComment?.stampCommentStatus(container, comment);
     container.dataset.file = comment.file;
     container.dataset.lineStart = comment.line_start;
     container.dataset.lineEnd = comment.line_end || comment.line_start;
