@@ -11,6 +11,9 @@
 // Timeout (ms) for stale check — git commands can hang on locked repos
 const STALE_TIMEOUT = 2000;
 
+// Review submission route; the fetch interceptor tags it with X-Client-Id
+const SUBMIT_REVIEW_URL = /\/api\/pr\/[^/]+\/[^/]+\/\d+\/submit-review(?:[?#]|$)/;
+
 class PRManager {
   // Forward static constants from modules for backward compatibility
   static get FOLD_UP_ICON() {
@@ -449,7 +452,8 @@ class PRManager {
 
   /**
    * Install a global fetch interceptor that adds X-Client-Id to all
-   * mutation requests (POST/PUT/DELETE) targeting the review API.
+   * mutation requests (POST/PUT/DELETE) targeting the review API, and to
+   * review submission (POST /api/pr/:owner/:repo/:number/submit-review).
    * This is the SINGLE SOURCE of X-Client-Id injection — no individual
    * fetch call site should manually set this header.
    * This ensures that even direct fetch() calls (e.g. from page.evaluate
@@ -468,9 +472,10 @@ class PRManager {
       const url = typeof input === 'string' ? input : input?.url || '';
       const method = (init?.method || 'GET').toUpperCase();
 
-      // Only intercept mutations to the reviews API
+      // Only intercept mutations to the reviews API, plus review submission
+      // (it broadcasts review:comments_changed too)
       if ((method === 'POST' || method === 'PUT' || method === 'DELETE') &&
-          url.includes('/api/reviews/') && prManager._clientId) {
+          (url.includes('/api/reviews/') || SUBMIT_REVIEW_URL.test(url)) && prManager._clientId) {
         init = init || {};
         // Merge X-Client-Id into existing headers
         if (init.headers instanceof Headers) {
