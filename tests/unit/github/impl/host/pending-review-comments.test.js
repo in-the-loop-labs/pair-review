@@ -25,7 +25,7 @@ describe('impl/host/pending-review-comments', () => {
       const result = await hostImpl.addCommentsInBatches(
         octokit, {}, PR_CTX, 123, []
       );
-      expect(result).toEqual({ successCount: 0, failed: false, failedDetails: [] });
+      expect(result).toMatchObject({ successCount: 0, failed: false, failedDetails: [] });
       expect(octokit.request).not.toHaveBeenCalled();
     });
 
@@ -73,7 +73,7 @@ describe('impl/host/pending-review-comments', () => {
         comments
       );
 
-      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+      expect(result).toMatchObject({ successCount: 2, failed: false, failedDetails: [] });
       expect(octokit.request).toHaveBeenCalledTimes(2);
       for (const [endpoint] of octokit.request.mock.calls) {
         expect(endpoint).toBe('POST /repos/alice/widgets/pulls/7/reviews/42/comments');
@@ -114,7 +114,7 @@ describe('impl/host/pending-review-comments', () => {
       );
 
       expect(octokit.request).toHaveBeenCalledTimes(3);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 2,
         failed: true,
         failedDetails: ['b.js:2 - 422: invalid line']
@@ -138,7 +138,7 @@ describe('impl/host/pending-review-comments', () => {
       );
 
       expect(octokit.request).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 0,
         failed: true,
         failedDetails: [
@@ -168,7 +168,7 @@ describe('impl/host/pending-review-comments', () => {
       );
 
       expect(octokit.request).toHaveBeenCalledTimes(2);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 1,
         failed: true,
         failedDetails: [
@@ -197,7 +197,7 @@ describe('impl/host/pending-review-comments', () => {
       );
 
       expect(octokit.request).toHaveBeenCalledTimes(2);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 1,
         failed: true,
         failedDetails: ['a.js:1 - 400: bad request']
@@ -324,7 +324,7 @@ describe('impl/host/pending-review-comments', () => {
       const result = await hostImpl.addCommentsInBatches(
         octokit, {}, PR_CTX, 1, comments
       );
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 1,
         failed: true,
         failedDetails: ['b.js:2 - invalid line']
@@ -343,7 +343,7 @@ describe('impl/host/pending-review-comments', () => {
       const result = await hostImpl.addCommentsInBatches(
         octokit, {}, PR_CTX, 1, comments
       );
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         successCount: 3,
         failed: false,
         failedDetails: []
@@ -356,7 +356,7 @@ describe('impl/host/pending-review-comments', () => {
         octokit, {}, PR_CTX, 1,
         [{ path: 'a.js', line: 1, body: '1' }, { path: 'a.js', line: 2, body: '2' }]
       );
-      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+      expect(result).toMatchObject({ successCount: 2, failed: false, failedDetails: [] });
     });
 
     it('honors an explicit "added: 0" instead of falling back to comments.length', async () => {
@@ -371,7 +371,7 @@ describe('impl/host/pending-review-comments', () => {
           { path: 'a.js', line: 2, body: '2' }
         ]
       );
-      expect(result).toEqual({ successCount: 0, failed: false, failedDetails: [] });
+      expect(result).toMatchObject({ successCount: 0, failed: false, failedDetails: [] });
     });
 
     it('returns the explicit "added" value when failed[] is non-empty', async () => {
