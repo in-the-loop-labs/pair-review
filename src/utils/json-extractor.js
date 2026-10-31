@@ -138,7 +138,8 @@ function isClosingQuote(text, q) {
  *     character before the offset.
  *   - "Expected double-quoted property name": the early-closed string was
  *     followed by prose starting with a comma (`"called "foo", which"`), so
- *     the bad quote precedes that comma.
+ *     the bad quote precedes that comma. Not when the offset starts an
+ *     unquoted key (`, line: 3`).
  *
  * The candidate is rejected when the character at the offset is `"`, `}` or
  * `]`: that looks like a missing or trailing comma, not a quote in prose,
@@ -162,6 +163,9 @@ function findPrematureStringEnd(text, message) {
   if (/Expected ',' or '[}\]]' after (property value|array element)/.test(message)) {
     skipWhitespace();
   } else if (/Expected double-quoted property name/.test(message)) {
+    // `, line: 3` is an unquoted key, not prose: escaping would fold the
+    // following fields into the string, so leave it to fail
+    if (/^[A-Za-z_$][\w$]*\s*:/.test(text.slice(pos, pos + 100))) return -1;
     skipWhitespace();
     if (text[q] !== ',') return -1;
     q--;
@@ -181,25 +185,31 @@ function findPrematureStringEnd(text, message) {
  * Unlike sanitizeControlCharactersInStrings this does not walk string state
  * from the start of the text, so an unescaped quote earlier in the text
  * cannot flip it and make it escape structural newlines between values.
+ * Like that sanitizer, a backslash directly before a raw control character
+ * (e.g. a shell line continuation) is doubled into a literal '\\'.
  *
  * @param {string} text - Candidate JSON text
  * @param {number} pos - Offset JSON.parse reported for a bad control character
  * @returns {string} Text with that string's control characters escaped
  */
 function escapeControlCharactersFrom(text, pos) {
-  let end = pos;
-  let escaped = false;
-  while (end < text.length) {
-    const ch = text[end];
-    if (escaped) escaped = false;
-    else if (ch === '\\') escaped = true;
-    else if (ch === '"') break;
-    end++;
-  }
   let span = '';
-  for (let i = pos; i < end; i++) {
-    const ch = text[i];
-    span += ch.charCodeAt(0) < 0x20 ? escapeControlCharacter(ch) : ch;
+  let escaped = false;
+  let end = pos;
+  for (; end < text.length; end++) {
+    const ch = text[end];
+    const isControl = ch.charCodeAt(0) < 0x20;
+    if (escaped) {
+      escaped = false;
+      span += isControl ? '\\' + escapeControlCharacter(ch) : ch;
+    } else if (ch === '\\') {
+      escaped = true;
+      span += ch;
+    } else if (ch === '"') {
+      break;
+    } else {
+      span += isControl ? escapeControlCharacter(ch) : ch;
+    }
   }
   return text.slice(0, pos) + span + text.slice(end);
 }
