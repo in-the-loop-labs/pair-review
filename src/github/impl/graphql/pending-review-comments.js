@@ -18,6 +18,48 @@ const { isComplexityError } = require('../../errors');
 const MIN_BATCH_SIZE = 1;
 const DEFAULT_BATCH_SIZE = 10;
 
+// Connection failures that happen before any request bytes reach GitHub.
+// Octokit wraps fetch failures in a status-500 RequestError carrying only
+// the original message, so match the code in the message as well.
+const PRE_SEND_NETWORK_CODES = /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN)\b/;
+// GraphQL error messages that mean execution may have started.
+const AMBIGUOUS_GRAPHQL_MESSAGE = /timeout|timed out|something went wrong/i;
+
+/**
+ * Whether a failed batch mutation can be re-sent without risk of adding
+ * the same comments twice. Mutations are not idempotent: if GitHub ran
+ * the first request and only the response was lost (timeout, reset, 5xx),
+ * a retry duplicates every comment in the batch. So retry only failures
+ * that show GitHub did not run the mutation:
+ *  - the connection was never made (refused, DNS failure);
+ *  - GitHub refused the request with a 4xx response;
+ *  - a GraphQL error response with no `data` at all (errors raised before
+ *    execution, per the GraphQL spec), unless it reports a timeout;
+ *  - a complexity/size rejection.
+ * Anything carrying `data` (even null) ran at least partly and is never
+ * re-sent; everything else is ambiguous and fails the batch.
+ *
+ * @param {Error} error - The error thrown by octokit.graphql
+ * @returns {boolean} True if the batch can safely be sent again
+ */
+function isSafeToRetry(error) {
+  if (!error) return false;
+  if (error.data !== undefined) return false;
+  if (isComplexityError(error)) return true;
+
+  if (Array.isArray(error.errors) && error.errors.length > 0) {
+    return !error.errors.some(e => AMBIGUOUS_GRAPHQL_MESSAGE.test((e && e.message) || ''));
+  }
+
+  const status = error.status;
+  if (error.response && typeof status === 'number' && status >= 400 && status < 500) {
+    return true;
+  }
+
+  const codes = [error.code, error.cause && error.cause.code, error.message].filter(Boolean).join(' ');
+  return PRE_SEND_NETWORK_CODES.test(codes);
+}
+
 /**
  * Build the GraphQL mutation text for a batch of comments. Aliases each
  * inner mutation as `comment0`, `comment1`, ... so partial-failure paths
@@ -73,7 +115,9 @@ function buildBatchMutation(batch) {
 
 /**
  * Add comments to a pending review in batches, with adaptive batch sizing
- * on GitHub complexity errors. Sequential, with one retry per batch.
+ * on GitHub complexity errors. Sequential, with at most one retry per
+ * batch, and only when the failure shows GitHub did not run the mutation
+ * (see isSafeToRetry).
  *
  * @param {Object} octokit - Octokit instance (must expose .graphql)
  * @param {string} prNodeId - GraphQL node ID for the PR
@@ -133,6 +177,14 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
             break;
           }
           // Already at the minimum - fall through to normal retry logic
+        }
+
+        if (!isSafeToRetry(error)) {
+          logger.error(
+            `Batch ${batchNumber} failed after GitHub may have applied it; not retrying ` +
+            `so comments are not added twice: ${error.message}`
+          );
+          break;
         }
 
         if (retryAttempt < maxRetries) {
@@ -229,6 +281,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
 module.exports = {
   addCommentsInBatches,
   buildBatchMutation,
+  isSafeToRetry,
   MIN_BATCH_SIZE,
   DEFAULT_BATCH_SIZE
 };

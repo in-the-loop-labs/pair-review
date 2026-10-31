@@ -917,14 +917,14 @@ describe('GitHubClient', () => {
       expect(mockGraphql).toHaveBeenCalledTimes(3);
     });
 
-    it('should retry on transient failure and succeed', async () => {
+    it('should retry a connection failure that never reached GitHub and succeed', async () => {
       const client = new GitHubClient('test-token');
       let callCount = 0;
       const mockGraphql = vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
-          // First call fails
-          return Promise.reject(new Error('Transient network error'));
+          // First call fails before any bytes reach GitHub
+          return Promise.reject(new Error('request to https://api.github.com/graphql failed, reason: connect ECONNREFUSED 127.0.0.1:443'));
         }
         // Retry succeeds
         return Promise.resolve({
@@ -971,7 +971,7 @@ describe('GitHubClient', () => {
 
     it('should return failed: true when batch completely fails after retry', async () => {
       const client = new GitHubClient('test-token');
-      const mockGraphql = vi.fn().mockRejectedValue(new Error('Persistent error'));
+      const mockGraphql = vi.fn().mockRejectedValue(new Error('getaddrinfo ENOTFOUND api.github.com'));
       client.octokit.graphql = mockGraphql;
 
       const comments = [{
@@ -1014,8 +1014,7 @@ describe('GitHubClient', () => {
       errorWithData.errors = [{ message: 'Some warning' }];
 
       const mockGraphql = vi.fn()
-        .mockRejectedValueOnce(errorWithData) // First attempt fails with partial data
-        .mockRejectedValueOnce(errorWithData); // Retry also returns same result
+        .mockRejectedValueOnce(errorWithData); // Partial data: never re-sent
 
       client.octokit.graphql = mockGraphql;
 
@@ -1046,8 +1045,7 @@ describe('GitHubClient', () => {
       ];
 
       const mockGraphql = vi.fn()
-        .mockRejectedValueOnce(errorWithData)  // First attempt
-        .mockRejectedValueOnce(errorWithData); // Retry
+        .mockRejectedValueOnce(errorWithData); // Partial data: never re-sent
       client.octokit.graphql = mockGraphql;
 
       const comments = [
@@ -1297,8 +1295,8 @@ describe('GitHubClient', () => {
       );
 
       expect(result.failed).toBe(true);
-      // Only 2 calls: initial + 1 retry (no re-batching)
-      expect(mockGraphql).toHaveBeenCalledTimes(2);
+      // One call: no re-batching, and no retry of an ambiguous failure
+      expect(mockGraphql).toHaveBeenCalledTimes(1);
     });
   });
 

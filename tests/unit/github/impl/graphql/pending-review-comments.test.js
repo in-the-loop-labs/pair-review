@@ -1,5 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 /**
  * Unit tests for the GraphQL implementation of the
@@ -12,7 +12,40 @@ import { describe, it, expect } from 'vitest';
  */
 
 const graphqlImpl = require('../../../../../src/github/impl/graphql/pending-review-comments');
-const { buildBatchMutation } = graphqlImpl;
+const { buildBatchMutation, addCommentsInBatches, isSafeToRetry } = graphqlImpl;
+
+/**
+ * Run addCommentsInBatches through its real retry loop with fake timers,
+ * so the fixed 1s retry delay elapses instantly.
+ */
+async function runBatches(graphql, comments) {
+  vi.useFakeTimers();
+  try {
+    const promise = addCommentsInBatches({ graphql }, 'PR_node', 'REVIEW_node', comments, 10);
+    promise.catch(() => {});
+    await vi.runAllTimersAsync();
+    return await promise;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+function httpError(message, status, withResponse = true) {
+  const error = new Error(message);
+  error.name = 'HttpError';
+  error.status = status;
+  if (withResponse) error.response = { status, headers: {}, data: { message } };
+  return error;
+}
+
+const twoComments = [
+  { path: 'a.js', line: 1, side: 'RIGHT', body: 'one' },
+  { path: 'b.js', line: 2, side: 'RIGHT', body: 'two' }
+];
+const bothAdded = {
+  comment0: { thread: { id: 't0' } },
+  comment1: { thread: { id: 't1' } }
+};
 
 /**
  * Pull out the GraphQL string literal that follows a given field
@@ -33,6 +66,109 @@ function extractStringLiteral(mutation, fieldName) {
 }
 
 describe('impl/graphql/pending-review-comments', () => {
+  describe('addCommentsInBatches retry safety', () => {
+    // Each of these may have been applied by GitHub before the response was
+    // lost, so re-sending the batch would add every comment twice.
+    it.each([
+      ['a lost connection with no response', httpError('read ECONNRESET', 500, false)],
+      ['a request timeout', Object.assign(new Error('Request timed out'), { code: 'ETIMEDOUT' })],
+      ['a 502 from GitHub', httpError('Bad Gateway', 502)],
+      ['a 500 from GitHub', httpError('Internal Server Error', 500)],
+      ['an unknown error', new Error('socket hang up')],
+      ['a GraphQL timeout with no data', Object.assign(new Error('timeout'), {
+        errors: [{ message: 'Something went wrong while executing your query. This may be the result of a timeout.' }]
+      })],
+      ['a GraphQL error with data: null', Object.assign(new Error('failed'), {
+        data: null, errors: [{ message: 'failed' }]
+      })]
+    ])('does not re-send the batch after %s', async (_label, error) => {
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(bothAdded);
+
+      const result = await runBatches(graphql, twoComments);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result.successCount).toBe(0);
+      expect(result.failed).toBe(true);
+      expect(result.failedDetails).toEqual([
+        `a.js:1 - ${error.message}`,
+        `b.js:2 - ${error.message}`
+      ]);
+    });
+
+    // GitHub did not run the mutation for any of these, so one retry is safe.
+    it.each([
+      ['a refused connection', httpError('request to https://api.github.com/graphql failed, reason: connect ECONNREFUSED 127.0.0.1:443', 500, false)],
+      ['a DNS failure', Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND' } })],
+      ['a 4xx rejection', httpError('You have exceeded a secondary rate limit', 403)],
+      ['a GraphQL error response with no data', Object.assign(new Error('rate limited'), {
+        errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }]
+      })]
+    ])('retries once after %s', async (_label, error) => {
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(bothAdded);
+
+      const result = await runBatches(graphql, twoComments);
+
+      expect(graphql).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+    });
+
+    it('stops after one retry of a safe failure', async () => {
+      const graphql = vi.fn().mockRejectedValue(new Error('getaddrinfo EAI_AGAIN api.github.com'));
+
+      const result = await runBatches(graphql, twoComments);
+
+      expect(graphql).toHaveBeenCalledTimes(2);
+      expect(result.failed).toBe(true);
+      expect(result.successCount).toBe(0);
+    });
+
+    it('never re-sends a batch that returned partial data', async () => {
+      const partial = Object.assign(new Error('partial'), {
+        data: { comment0: { thread: { id: 't0' } }, comment1: null },
+        errors: [{ path: ['comment1'], message: 'line is not part of the diff' }]
+      });
+      const graphql = vi.fn()
+        .mockRejectedValueOnce(partial)
+        .mockResolvedValueOnce(bothAdded);
+
+      const result = await runBatches(graphql, twoComments);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        successCount: 1,
+        failed: true,
+        failedDetails: ['b.js:2 - line is not part of the diff']
+      });
+    });
+
+    it('counts a partial-data batch whose comments all landed without re-sending it', async () => {
+      const allAdded = Object.assign(new Error('warning'), {
+        data: bothAdded,
+        errors: [{ message: 'Some warning' }]
+      });
+      const graphql = vi.fn().mockRejectedValueOnce(allAdded);
+
+      const result = await runBatches(graphql, twoComments);
+
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ successCount: 2, failed: false, failedDetails: [] });
+    });
+  });
+
+  describe('isSafeToRetry', () => {
+    it('treats a complexity rejection as safe', () => {
+      expect(isSafeToRetry(new Error('Mutation payload too large'))).toBe(true);
+    });
+
+    it('treats a missing error as unsafe', () => {
+      expect(isSafeToRetry(undefined)).toBe(false);
+    });
+  });
+
   describe('buildBatchMutation', () => {
     it('produces a working mutation for a normal path (regression guard)', () => {
       const mutation = buildBatchMutation([
