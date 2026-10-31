@@ -476,54 +476,6 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       expect(runCalls[0].params[6]).toBe('src/valid.js');
     });
   });
-
-  describe('isValidSuggestionPath', () => {
-    it('should return true for valid paths in Set', () => {
-      const validPathsSet = new Set(['src/foo.js', 'src/bar.js']);
-      expect(analyzer.isValidSuggestionPath('src/foo.js', validPathsSet)).toBe(true);
-    });
-
-    it('should return false for invalid paths in Set', () => {
-      const validPathsSet = new Set(['src/foo.js', 'src/bar.js']);
-      expect(analyzer.isValidSuggestionPath('src/invalid.js', validPathsSet)).toBe(false);
-    });
-
-    it('should normalize paths when checking against Set', () => {
-      const validPathsSet = new Set(['src/foo.js']);
-      expect(analyzer.isValidSuggestionPath('./src/foo.js', validPathsSet)).toBe(true);
-      expect(analyzer.isValidSuggestionPath('/src/foo.js', validPathsSet)).toBe(true);
-    });
-
-    it('should return true and log warning when validPaths is empty Set (fail-open)', () => {
-      warnSpy.mockClear(); // Clear spy before this specific test
-      const emptySet = new Set();
-      expect(analyzer.isValidSuggestionPath('any/path.js', emptySet)).toBe(true);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[FAILSAFE] Path validation bypassed')
-      );
-    });
-
-    it('should return true and log warning when validPaths is empty array (fail-open)', () => {
-      warnSpy.mockClear(); // Clear spy before this specific test
-      expect(analyzer.isValidSuggestionPath('any/path.js', [])).toBe(true);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[FAILSAFE] Path validation bypassed')
-      );
-    });
-
-    it('should return false for null or empty suggestion path', () => {
-      const validPathsSet = new Set(['src/foo.js']);
-      expect(analyzer.isValidSuggestionPath(null, validPathsSet)).toBe(false);
-      expect(analyzer.isValidSuggestionPath('', validPathsSet)).toBe(false);
-      expect(analyzer.isValidSuggestionPath(undefined, validPathsSet)).toBe(false);
-    });
-
-    it('should work with array input (legacy support)', () => {
-      const validPaths = ['src/foo.js', 'src/bar.js'];
-      expect(analyzer.isValidSuggestionPath('src/foo.js', validPaths)).toBe(true);
-      expect(analyzer.isValidSuggestionPath('src/invalid.js', validPaths)).toBe(false);
-    });
-  });
 });
 
 describe('Analyzer.validateFileLevelSuggestions', () => {
@@ -1675,20 +1627,20 @@ describe('Analyzer.validateAndFinalizeSuggestions', () => {
     infoSpy = vi.spyOn(logger, 'info');
   });
 
-  it('should validate suggestions through both file path and line number validation', () => {
+  it('should validate suggestions through both file path and line number validation', async () => {
     const suggestions = [
       { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid suggestion', type: 'bug' }
     ];
     const fileLineCountMap = new Map([['src/valid.js', 100]]);
     const validFiles = ['src/valid.js'];
 
-    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    const result = await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(result).toHaveLength(1);
     expect(result[0].file).toBe('src/valid.js');
   });
 
-  it('should filter out suggestions with invalid file paths', () => {
+  it('should filter out suggestions with invalid file paths', async () => {
     const suggestions = [
       { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid', type: 'bug' },
       { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid path', type: 'bug' }
@@ -1696,20 +1648,20 @@ describe('Analyzer.validateAndFinalizeSuggestions', () => {
     const fileLineCountMap = new Map([['src/valid.js', 100]]);
     const validFiles = ['src/valid.js'];
 
-    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    const result = await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(result).toHaveLength(1);
     expect(result[0].file).toBe('src/valid.js');
   });
 
-  it('should convert suggestions with invalid line numbers to file-level', () => {
+  it('should convert suggestions with invalid line numbers to file-level', async () => {
     const suggestions = [
       { file: 'src/foo.js', line_start: 500, line_end: 510, title: 'Invalid lines', type: 'bug' }
     ];
     const fileLineCountMap = new Map([['src/foo.js', 100]]);
     const validFiles = ['src/foo.js'];
 
-    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    const result = await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(result).toHaveLength(1);
     expect(result[0].line_start).toBeNull();
@@ -1717,33 +1669,33 @@ describe('Analyzer.validateAndFinalizeSuggestions', () => {
     expect(result[0].is_file_level).toBe(true);
   });
 
-  it('should log info about validation steps', () => {
+  it('should log info about validation steps', async () => {
     const suggestions = [
       { file: 'src/foo.js', line_start: 5, line_end: 10, title: 'Test', type: 'bug' }
     ];
     const fileLineCountMap = new Map([['src/foo.js', 100]]);
     const validFiles = ['src/foo.js'];
 
-    analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(infoSpy).toHaveBeenCalledWith('[Validation] Starting validation with 1 input suggestions');
     expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[Validation] Final:'));
   });
 
-  it('should log warning when all suggestions are filtered out', () => {
+  it('should log warning when all suggestions are filtered out', async () => {
     const suggestions = [
       { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid', type: 'bug' }
     ];
     const fileLineCountMap = new Map([['src/valid.js', 100]]);
     const validFiles = ['src/valid.js'];
 
-    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    const result = await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(result).toHaveLength(0);
     expect(warnSpy).toHaveBeenCalledWith('[Validation] WARNING: All 1 suggestions were filtered out!');
   });
 
-  it('should log filtering breakdown when suggestions are filtered', () => {
+  it('should log filtering breakdown when suggestions are filtered', async () => {
     const suggestions = [
       { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid path', type: 'bug' },
       { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid', type: 'bug' }
@@ -1751,18 +1703,18 @@ describe('Analyzer.validateAndFinalizeSuggestions', () => {
     const fileLineCountMap = new Map([['src/valid.js', 100]]);
     const validFiles = ['src/valid.js'];
 
-    analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+    await analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
 
     expect(infoSpy).toHaveBeenCalledWith('[Validation] After file path validation: 1 suggestions (1 filtered)');
   });
 
-  it('should handle empty suggestions array', () => {
-    const result = analyzer.validateAndFinalizeSuggestions([], new Map(), []);
+  it('should handle empty suggestions array', async () => {
+    const result = await analyzer.validateAndFinalizeSuggestions([], new Map(), []);
     expect(result).toEqual([]);
   });
 
-  it('should handle null suggestions', () => {
-    const result = analyzer.validateAndFinalizeSuggestions(null, new Map(), []);
+  it('should handle null suggestions', async () => {
+    const result = await analyzer.validateAndFinalizeSuggestions(null, new Map(), []);
     expect(result).toEqual([]);
   });
 });

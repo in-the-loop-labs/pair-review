@@ -6126,6 +6126,25 @@ class ContextFileRepository {
   }
 
   /**
+   * Add a context file range only when the review has no entry for the file.
+   * A single statement, so concurrent callers cannot both insert.
+   * @param {number} reviewId - Review ID
+   * @param {string} file - File path
+   * @param {number} lineStart - Start line number
+   * @param {number} lineEnd - End line number
+   * @param {string|null} [label=null] - Optional label for the range
+   * @returns {Promise<{id: number}|null>} The new row's id, or null when the file already had an entry
+   */
+  async addIfFileMissing(reviewId, file, lineStart, lineEnd, label = null) {
+    const result = await run(this.db, `
+      INSERT INTO context_files (review_id, file, line_start, line_end, label)
+      SELECT ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM context_files WHERE review_id = ? AND file = ?)
+    `, [reviewId, file, lineStart, lineEnd, label, reviewId, file]);
+    return result.changes > 0 ? { id: result.lastID } : null;
+  }
+
+  /**
    * Get all context file ranges for a review, ordered by id
    * @param {number} reviewId - Review ID
    * @returns {Promise<Array<Object>>} Array of context file records

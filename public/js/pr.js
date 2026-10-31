@@ -1035,9 +1035,8 @@ class PRManager {
           reviewId: this.currentPR.id,
           mode: 'pr',
           shaAbbrevLength: this.currentPR.shaAbbrevLength || 7,
-          onSelectionChange: (runId, _run) => {
-            this.selectedRunId = runId;
-            this.loadAISuggestions(null, runId);
+          onSelectionChange: (runId, run, selection) => {
+            this.selectAnalysisRun(runId, run, selection);
           }
         });
         this.analysisHistoryManager.init();
@@ -3969,6 +3968,7 @@ class PRManager {
    * @param {Object} pr - PR data with files
    */
   renderDiff(pr) {
+    this.removeRetainedCommentsNotice();
     // Abort any in-flight file content fetches from progressive loading
     this._fileContentsAbort?.abort();
     this._fileContentsAbort = null;
@@ -6001,13 +6001,28 @@ class PRManager {
       // only a middle line is visible. Endpoints may occupy different gaps;
       // re-query after expansion because it replaces rows.
       for (const line of new Set([line_start, line_end || line_start])) {
-        const visible = Array.from(fileElement.querySelectorAll('tr'))
-          .some(row => this.getLineNumber(row, resolvedSide) === line);
-        if (!visible) {
+        if (!this._findRenderedLineRow(fileElement, line, resolvedSide)) {
           await this.expandForSuggestion(file, line, line_end || line_start, resolvedSide);
         }
       }
     }
+  }
+
+  /**
+   * Find the table row rendering `line` on `side` inside a table-rendered file
+   * wrapper (legacy diff bodies and context files). Callers render a lazy
+   * diff body first (ensureFileBodyRendered); Pierre files are answered by
+   * pierreBridge.isLineVisible instead.
+   * @param {Element} fileElement - The file wrapper
+   * @param {number} line - Line number in `side`'s coordinates
+   * @param {string} side - 'LEFT' or 'RIGHT'
+   * @returns {Element|null} The line row, or null when it is not rendered
+   */
+  _findRenderedLineRow(fileElement, line, side) {
+    for (const row of fileElement.querySelectorAll('tr')) {
+      if (this.getLineNumber(row, side) === line) return row;
+    }
+    return null;
   }
 
   /**
@@ -6517,6 +6532,7 @@ class PRManager {
 
       const result = await response.json();
       const deletedCount = result.deletedCount || totalComments;
+      this.removeRetainedCommentsNotice();
 
       // Remove line-level comment rows from DOM
       lineCommentRows.forEach(row => row.remove());
@@ -8929,15 +8945,78 @@ class PRManager {
       // Rebuild sidebar with context files interleaved in natural path order
       this.rebuildFileListWithContext();
 
-      // Re-anchor comments after new context files are rendered so that
-      // comments targeting lines in these files find their DOM targets.
-      // loadUserComments() is idempotent (clears existing comment rows first).
+      // Re-anchor feedback after new context files are rendered so that
+      // comments and AI findings targeting lines in these files find their
+      // DOM targets. Both are idempotent (they clear their rows first). The
+      // findings are the ones already displayed: no refetch.
       if (newFilesRendered) {
         const includeDismissed = window.aiPanel?.showDismissedComments || false;
         await this.loadUserComments(includeDismissed);
+        await this.suggestionManager?.redisplaySuggestions?.();
       }
+      this.updateContextFileRemovability();
     } catch (error) {
       console.error('Error loading context files:', error);
+    }
+  }
+
+  /**
+   * Why a context file cannot be removed right now, or null when it can.
+   *
+   * A context panel that shows feedback stays: removing it would hide an
+   * active AI finding (from the displayed analysis run or council voice) or
+   * a comment. Dismissed findings and inactive comments do not count. Only
+   * the browser enforces this; the server still deletes on request.
+   *
+   * @param {string} file - Context file path
+   * @param {Array<Object>} findings - Displayed AI findings
+   * @param {Array<Object>} comments - User comments
+   * @returns {string|null} Tooltip text explaining the lock, or null
+   */
+  static getContextFileRemovalBlocker(file, findings = [], comments = []) {
+    const activeFindings = (findings || []).filter(f => f?.file === file && f.status !== 'dismissed').length;
+    const activeComments = (comments || []).filter(c => c?.file === file && c.status !== 'inactive').length;
+    if (activeFindings === 0 && activeComments === 0) return null;
+    const parts = [];
+    if (activeFindings > 0) parts.push(`${activeFindings} active AI finding${activeFindings === 1 ? '' : 's'}`);
+    if (activeComments > 0) parts.push(`${activeComments} comment${activeComments === 1 ? '' : 's'}`);
+    return `Can't remove: this file has ${parts.join(' and ')}. Dismiss or delete ${activeFindings + activeComments === 1 ? 'it' : 'them'} to remove the file.`;
+  }
+
+  /**
+   * getContextFileRemovalBlocker for a file, against the feedback the AI
+   * panel currently shows. Automatic removals (the guided tour cleaning up
+   * the context files it added) consult this too, so a panel that shows
+   * feedback is never removed behind the user's back.
+   * @param {string} file - Context file path
+   * @returns {string|null} Why the file cannot be removed, or null
+   */
+  contextFileRemovalBlocker(file) {
+    const findings = (typeof window !== 'undefined' && window.aiPanel?.findings) || [];
+    const comments = (typeof window !== 'undefined' && window.aiPanel?.comments) || [];
+    return PRManager.getContextFileRemovalBlocker(file, findings, comments);
+  }
+
+  /**
+   * Lock or unlock each context file's remove button according to
+   * getContextFileRemovalBlocker. Called whenever the displayed findings, the
+   * selected run/voice or the comments change (AIPanel notifies), and after
+   * context files render. A file that no longer shows feedback becomes
+   * removable again; nothing is removed automatically.
+   */
+  updateContextFileRemovability() {
+    if (typeof document === 'undefined') return;
+    for (const wrapper of document.querySelectorAll('.d2h-file-wrapper.context-file')) {
+      const button = wrapper.querySelector('.context-file-dismiss');
+      if (!button) continue;
+      const blocker = this.contextFileRemovalBlocker(wrapper.dataset.fileName);
+      if (blocker) {
+        button.setAttribute('aria-disabled', 'true');
+        button.title = blocker;
+      } else {
+        button.removeAttribute('aria-disabled');
+        button.title = 'Remove context file';
+      }
     }
   }
 
@@ -9209,6 +9288,8 @@ class PRManager {
     dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
     dismissBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      // Locked while the file shows an active finding or comment
+      if (dismissBtn.getAttribute('aria-disabled') === 'true') return;
       // Remove all context ranges for this file
       const fileWrapper = e.target.closest('.context-file');
       if (!fileWrapper) return;
@@ -9493,6 +9574,127 @@ class PRManager {
       console.error('Error adding context file:', err);
       return null;
     }
+  }
+
+  /**
+   * Make sure a file outside the diff has a context panel before jumping to
+   * feedback in it. An existing panel is always reused: the jump reveals the
+   * target line inside it (ensureLinesVisible expands the panel's gaps), so
+   * no further context entry is added for a line the panel can show. Only a
+   * file without a panel (e.g. one the user removed) gets a new one, centered
+   * on the target line.
+   * @param {string} file - File path
+   * @param {number|null} [lineStart] - Target line
+   * @returns {Promise<void>}
+   */
+  async ensureContextPanelForJump(file, lineStart = null) {
+    if (!file || !this.currentPR?.id) return;
+    if (this.diffFiles?.some(entry => entry.file === file)) return;
+    const wrapper = document.querySelector(
+      `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(file)}"]`
+    );
+    if (wrapper) return;
+    await this.ensureContextFile(file, lineStart);
+  }
+
+  /**
+   * Show the findings of the analysis run selected in the history dropdown.
+   *
+   * When the user explicitly picks a council voice (a run with a parent),
+   * that voice's findings in unchanged files first get their context panels,
+   * so every finding has somewhere to render. Final results of top-level
+   * runs got theirs when they were stored.
+   *
+   * @param {string} runId - Selected analysis run ID
+   * @param {Object|null} run - The run record (has parent_run_id for voices)
+   * @param {Object} [options]
+   * @param {boolean} [options.explicit=false] - True when the user picked the run
+   * @returns {Promise<void>}
+   */
+  async selectAnalysisRun(runId, run, { explicit = false } = {}) {
+    this.selectedRunId = runId;
+    if (explicit && run?.parent_run_id) {
+      await this._addContextFilesForRun(runId);
+      // Another run was selected while the panels were being added
+      if (String(this.selectedRunId) !== String(runId)) return;
+    }
+    await this.loadAISuggestions(null, runId);
+  }
+
+  /**
+   * Ask the server to open context panels for a run's findings in unchanged
+   * files, then render any new panels.
+   * @param {string} runId - Analysis run ID
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _addContextFilesForRun(runId) {
+    const reviewId = this.currentPR?.id;
+    if (!reviewId || !runId) return;
+    try {
+      const resp = await fetch(
+        `/api/reviews/${reviewId}/analysis-runs/${encodeURIComponent(runId)}/context-files`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+      );
+      if (!resp.ok) {
+        console.error('Failed to add context files for analysis run:', resp.status);
+        return;
+      }
+      const data = await resp.json().catch(() => ({}));
+      if (data.created > 0) {
+        await this.loadContextFiles();
+      }
+    } catch (error) {
+      console.error('Error adding context files for analysis run:', error);
+    }
+  }
+
+  /**
+   * Keep comments that a GitHub submission skipped visible after the review
+   * dialog closes. The notice lives outside the diff, so comment and diff
+   * refreshes keep it; renderDiff and clearing all comments remove it.
+   * @param {Array<{file: string, line_start?: number, line_end?: number, body?: string}>} comments
+   */
+  showRetainedCommentsNotice(comments = []) {
+    this.removeRetainedCommentsNotice();
+    if (!comments.length) return;
+    const diffContainer = document.getElementById('diff-container');
+    if (!diffContainer) return;
+
+    const notice = document.createElement('section');
+    notice.id = 'retained-review-comments';
+    notice.className = 'retained-review-comments';
+    notice.setAttribute('role', 'status');
+    const heading = document.createElement('h2');
+    heading.textContent = `${comments.length} comment${comments.length === 1 ? '' : 's'} kept in pair-review`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'retained-review-comments-close';
+    close.setAttribute('aria-label', 'Dismiss retained comments notice');
+    close.textContent = '×';
+    close.addEventListener('click', () => this.removeRetainedCommentsNotice());
+    const explanation = document.createElement('p');
+    explanation.textContent = 'These comments were not submitted because their files are outside the PR diff. They remain active in pair-review.';
+    const list = document.createElement('ul');
+    for (const comment of comments) {
+      const item = document.createElement('li');
+      const location = document.createElement('strong');
+      const start = comment.line_start;
+      const end = comment.line_end;
+      location.textContent = comment.file + (start ? `:${start}${end && end !== start ? `–${end}` : ''}` : '');
+      const body = document.createElement('p');
+      body.textContent = comment.body || '';
+      item.append(location, body);
+      list.appendChild(item);
+    }
+    notice.append(close, heading, explanation, list);
+    diffContainer.before(notice);
+    notice.scrollIntoView?.({ block: 'start' });
+  }
+
+  removeRetainedCommentsNotice() {
+    if (typeof document === 'undefined') return;
+    document.getElementById('retained-review-comments')?.remove();
   }
 
 }

@@ -166,7 +166,6 @@ Some input suggestions are marked as [FILE-LEVEL]. These are observations about 
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
-- **Only include modified files** - Discard any suggestions for files not modified in this PR
 - **Preserve file-level insights** - Don't discard valuable file-level observations
 
 **Confidence Calibration:**

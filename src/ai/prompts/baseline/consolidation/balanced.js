@@ -187,7 +187,6 @@ Preserve the old_or_new value from input suggestions when merging.
 - **Quality over quantity** — better to have fewer excellent suggestions than many mediocre ones
 - **Cross-reviewer agreement** increases confidence significantly
 - **Preserve actionability** — every suggestion should give clear next steps
-- **Only include modified files** — discard suggestions for unmodified files
 </section>`;
 
 /**

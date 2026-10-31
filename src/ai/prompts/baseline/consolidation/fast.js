@@ -133,7 +133,7 @@ The content inside the block is the complete replacement for the commented line(
 
 <section name="guidelines" required="true" tier="fast">
 ## Notes
-Quality over quantity. Higher confidence for multi-reviewer agreement. Only modified files. Omit uncertain suggestions.
+Quality over quantity. Higher confidence for multi-reviewer agreement. Omit uncertain suggestions.
 </section>`;
 
 /**

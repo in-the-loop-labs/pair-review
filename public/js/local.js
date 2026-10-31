@@ -1166,9 +1166,8 @@ class LocalManager {
           reviewId: this.reviewId,
           mode: 'local',
           shaAbbrevLength: reviewData.shaAbbrevLength || 7,
-          onSelectionChange: (runId, _run) => {
-            manager.selectedRunId = runId;
-            manager.loadAISuggestions(null, runId);
+          onSelectionChange: (runId, run, selection) => {
+            manager.selectAnalysisRun(runId, run, selection);
           }
         });
         manager.analysisHistoryManager.init();

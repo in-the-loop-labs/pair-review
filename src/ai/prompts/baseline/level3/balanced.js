@@ -52,7 +52,17 @@ const taggedPrompt = `<section name="role" required="true">
 </section>
 
 <section name="changed-files" locked="true">
+## Changed Files
+These files are changed in this review:
 {{changedFiles}}
+
+Start your analysis from these files. You may also create suggestions for files that are not in this list, when the codebase context shows a real issue in that file. For example: a caller in another file that still passes the old arguments to a function these changes modified.
+
+A suggestion for a file that is not in this list must:
+- Use the real path of a file that exists in the repository, relative to the repository root. Do not guess or invent a path.
+- Use the line numbers of that file as it is now, with "old_or_new": "NEW".
+
+Do not create suggestions for files that are not in this list about problems that have nothing to do with these changes.
 </section>
 
 <section name="purpose" required="true">

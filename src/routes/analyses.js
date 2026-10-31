@@ -36,6 +36,11 @@ const {
 } = require('./shared');
 const { generateScopedDiff, computeScopedDigest, getCurrentBranch } = require('../local-review');
 const { reviewScope } = require('../local-scope');
+const { getReviewDiffFiles } = require('../utils/diff-file-list');
+const { resolveRepoRoot } = require('../utils/review-paths');
+const { finalizeSuggestions } = require('../utils/suggestion-validation');
+const { createChangedFilePredicate } = require('../utils/changed-file-membership');
+const { seedContextFilesForSuggestions } = require('../utils/auto-context');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
@@ -279,10 +284,30 @@ router.post('/api/analyses/results', async (req, res) => {
 
     // --- Create completed analysis run, insert suggestions, update stats ---
     const runId = uuidv4();
-    const allSuggestions = [
+    const submittedSuggestions = [
       ...suggestions.map(s => ({ ...s, is_file_level: false })),
       ...fileLevelSuggestions.map(s => ({ ...s, is_file_level: true }))
     ];
+
+    // Findings on files outside the diff are checked against the checkout:
+    // the file must exist there and its line numbers must fit. Without a
+    // checkout they cannot be checked and are stored as submitted. Resolve
+    // both before the transaction: they may run git and touch the filesystem.
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    const diffFiles = await getReviewDiffFiles(db, review);
+    const repoRoot = await resolveRepoRoot(db, review);
+    let allSuggestions = submittedSuggestions;
+    if (repoRoot) {
+      allSuggestions = await finalizeSuggestions(submittedSuggestions, { changedFiles: diffFiles, repoRoot });
+    } else {
+      const isChanged = createChangedFilePredicate(diffFiles);
+      const unverified = isChanged.hasChangedFiles
+        ? submittedSuggestions.filter(s => !isChanged(s.file)).length
+        : 0;
+      if (unverified > 0) {
+        logger.warn(`Imported analysis for review ${reviewId}: no checkout found; storing ${unverified} finding(s) on files outside the diff without validation`);
+      }
+    }
     const totalSuggestions = allSuggestions.length;
     const filesAnalyzed = new Set(allSuggestions.map(s => s.file)).size;
 
@@ -307,6 +332,12 @@ router.post('/api/analyses/results', async (req, res) => {
         filesAnalyzed
       });
     });
+
+    // Open a context panel for each file outside the diff the findings target
+    // (only for findings checked against the checkout)
+    if (repoRoot) {
+      await seedContextFilesForSuggestions(db, reviewId, allSuggestions, { diffFiles });
+    }
 
     // --- Broadcast completion event via WebSocket (after transaction completes) ---
     broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });

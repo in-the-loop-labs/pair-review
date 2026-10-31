@@ -1212,7 +1212,7 @@ describe('Baseline Level 3 Fast', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Missing test coverage'
     };
 
@@ -1399,7 +1399,7 @@ describe('Baseline Level 3 Balanced', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Testing: Check for missing test coverage'
     };
 
@@ -1604,7 +1604,7 @@ describe('Baseline Level 3 Thorough', () => {
       customInstructions: '',
       lineNumberGuidance: '## Line Numbers\nUse annotated diff',
       generatedFiles: '',
-      changedFiles: '## Changed Files\n- src/api.js\n- src/utils.js',
+      changedFiles: '- src/api.js\n- src/utils.js',
       testingGuidance: 'Testing: Check for missing test coverage'
     };
 
@@ -1883,11 +1883,11 @@ describe('Baseline Orchestration Balanced', () => {
     expect(baseline.taggedPrompt).toContain('missing tests');
   });
 
-  it('should have guidelines for modified files only', async () => {
+  it('should preserve findings beyond modified files', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/balanced.js');
 
-    expect(baseline.taggedPrompt).toContain('Only include modified files');
-    expect(baseline.taggedPrompt).toContain('Discard any suggestions for files not modified');
+    expect(baseline.taggedPrompt).not.toContain('Only include modified files');
+    expect(baseline.taggedPrompt).not.toContain('Discard any suggestions for files not modified');
   });
 });
 
@@ -2073,7 +2073,7 @@ describe('Baseline Orchestration Fast', () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
     expect(baseline.taggedPrompt).toContain('Quality over quantity');
-    expect(baseline.taggedPrompt).toContain('Only modified files');
+    expect(baseline.taggedPrompt).not.toContain('Only modified files');
   });
 
   it('should have diff instructions for line number reference', async () => {
@@ -2423,5 +2423,17 @@ describe('Thorough tier reply-shape guard', () => {
       expect(template.taggedPrompt).not.toContain("I'll start by examining");
       expect(template.taggedPrompt).not.toContain("I'll verify the key findings");
     });
+  }
+});
+
+describe('Final finding scope', () => {
+  for (const stage of ['orchestration', 'consolidation']) {
+    for (const tier of ['fast', 'balanced', 'thorough']) {
+      it(`${stage}/${tier} does not discard findings solely because their file is unchanged`, async () => {
+        const template = await import(`../../src/ai/prompts/baseline/${stage}/${tier}.js`);
+        expect(template.taggedPrompt).not.toMatch(/only (?:include )?modified files/i);
+        expect(template.taggedPrompt).not.toMatch(/discard[^\n]*(?:unmodified|not modified|not in this changeset)/i);
+      });
+    }
   }
 });

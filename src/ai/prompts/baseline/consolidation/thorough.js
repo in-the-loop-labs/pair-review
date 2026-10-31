@@ -250,7 +250,6 @@ Preserve the old_or_new value from input suggestions when merging.
 - **Maintain context** — don't lose important details when merging
 
 ### Coverage and Scope
-- **Only include modified files** — discard suggestions for files not in this changeset
 - **Cover all modified files** — ensure real issues in every modified file are represented
 - **Preserve unique perspectives** — different reviewer models may catch different things
 

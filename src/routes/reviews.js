@@ -10,11 +10,13 @@
 const express = require('express');
 const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository, HunkSummaryRepository, TourRepository } = require('../database');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
-const { activeAnalyses, reviewToAnalysisId } = require('./shared');
+const { activeAnalyses, reviewToAnalysisId, localReviewDiffs } = require('./shared');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../events/review-events');
 const { backgroundQueue } = require('../ai/background-queue');
-const { ensureContextFileForComment } = require('../utils/auto-context');
+const { ensureContextFileForComment, seedContextFilesForSuggestions } = require('../utils/auto-context');
+const { getReviewDiffFiles } = require('../utils/diff-file-list');
+const { resolveRepoRoot } = require('../utils/review-paths');
 const path = require('path');
 const fs = require('fs').promises;
 const simpleGit = require('simple-git');
@@ -22,12 +24,21 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
 const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 const { safeParseJson } = require('../utils/safe-parse-json');
-const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
+const { resolveOriginalFileContentSpecs, diffContainsPath } = require('../utils/diff-file-content');
 const validateReviewId = require('./middleware/validate-review-id');
 const { reviewScope, scopeIncludes, includesBranch } = require('../local-scope');
 const { findMergeBase } = require('../local-review');
 
 const router = express.Router();
+
+/**
+ * The cached diff text of a Local review, or undefined when not cached.
+ * @param {number} reviewId
+ * @returns {string|undefined}
+ */
+function getLocalReviewDiffText(reviewId) {
+  return localReviewDiffs.get(Number(reviewId))?.diff;
+}
 
 /**
  * Resolve the worktree path and base_sha for a PR-mode review.
@@ -628,6 +639,55 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
 });
 
 /**
+ * POST /api/reviews/:reviewId/analysis-runs/:runId/context-files
+ * Open context-file panels for an analysis run's final findings on files
+ * outside the review's diff: one panel per file, centered on its first
+ * finding, and only for files that have no context entry yet.
+ *
+ * Final results of a top-level run get their panels when they are stored.
+ * A council voice's findings do not; the browser calls this when the user
+ * explicitly selects a voice. Works for PR and Local reviews alike.
+ *
+ * Response: { success: true, created: <number of context files added> }
+ */
+router.post('/api/reviews/:reviewId/analysis-runs/:runId/context-files', validateReviewId, async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const reviewId = req.reviewId;
+    const { runId } = req.params;
+
+    const analysisRun = await queryOne(db,
+      'SELECT id FROM analysis_runs WHERE id = ? AND review_id = ?', [runId, reviewId]);
+    if (!analysisRun) {
+      return res.status(404).json({ error: 'Analysis run not found for this review' });
+    }
+
+    const findings = await query(db, `
+      SELECT file, line_start, line_end, status
+      FROM comments
+      WHERE review_id = ?
+        AND ai_run_id = ?
+        AND source = 'ai'
+        AND ai_level IS NULL
+        AND (is_raw = 0 OR is_raw IS NULL)
+        AND status IN ('active', 'adopted', 'draft', 'submitted')
+      ORDER BY id
+    `, [reviewId, runId]);
+
+    const diffFiles = await getReviewDiffFiles(db, req.review);
+    const created = await seedContextFilesForSuggestions(db, reviewId, findings, {
+      diffFiles,
+      sourceClientId: req.get('X-Client-Id')
+    });
+
+    res.json({ success: true, created });
+  } catch (error) {
+    logger.error('Error adding context files for analysis run:', error);
+    res.status(500).json({ error: 'Failed to add context files for analysis run' });
+  }
+});
+
+/**
  * POST /api/reviews/:reviewId/suggestions/:id/status
  * Update AI suggestion status (dismiss/restore).
  * Note: "adopted" is not allowed here — use the /edit endpoint instead.
@@ -1007,8 +1067,17 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
 
       const localHeadSha = review.local_head_sha;
 
+      // The server picks the version. A file in the review's diff reads HEAD,
+      // which gives gap expansion the diff's old-side line numbers. A file
+      // outside the diff (a context file) reads the working tree: that is
+      // what the AI read and validated its findings against, and HEAD can
+      // differ (e.g. a staged-only file under the default unstaged scope).
+      // Without a diff snapshot membership is unknown; keep HEAD first.
+      const localDiff = getLocalReviewDiffText(review.id) ?? (await new ReviewRepository(db).getLocalDiff(review.id))?.diff;
+      const outsideDiff = localDiff != null && !diffContainsPath(localDiff, fileName);
+
       // Try git show for HEAD version (correct line numbers for diff)
-      if (localHeadSha) {
+      if (localHeadSha && !outsideDiff) {
         try {
           const git = simpleGit(localPath);
           const content = await git.show([`${localHeadSha}:${fileName}`]);
@@ -1049,15 +1118,17 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
     }
 
     const [owner, repo] = repository.split('/');
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-
-    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+    // The checkout the AI read, including a --use-checkout directory that has
+    // no worktrees row.
+    const worktreePath = await resolveRepoRoot(db, review);
+    if (!worktreePath) {
       return res.status(404).json({ error: 'Worktree not found for this PR. The PR may need to be reloaded.' });
     }
 
-    // Prefer the exact blob from the cached diff snapshot. If that is unavailable,
-    // fall back to repo-wide base_sha and finally the worktree filesystem.
+    // A file in the diff prefers the exact blob from the cached diff snapshot,
+    // then the repo-wide base_sha, then the worktree filesystem. A file outside
+    // the diff reads the checkout (the PR head): findings on it use checkout
+    // line numbers, and a base_sha newer than the merge base can differ.
     const normalizedRepo = normalizeRepository(owner, repo);
     const prRecord = await queryOne(db, `
       SELECT pr_data FROM pr_metadata
@@ -1069,7 +1140,8 @@ router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId,
       logger.warn('Could not parse pr_data for file-content route');
     }
 
-    const contentSpecs = resolveOriginalFileContentSpecs(prData, fileName);
+    const outsideDiff = Boolean(prData?.diff) && !diffContainsPath(prData.diff, fileName);
+    const contentSpecs = outsideDiff ? [] : resolveOriginalFileContentSpecs(prData, fileName);
 
     if (contentSpecs.length > 0) {
       try {

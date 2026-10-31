@@ -53,6 +53,15 @@ describe('buildFileLineCountMap', () => {
     expect(result.get('empty.js')).toBe(0);
   });
 
+  it('treats shell metacharacters in filenames literally during binary detection', async () => {
+    const file = 'helper$(printf surprise).bin';
+    await fs.promises.writeFile(path.join(testDir, file), Buffer.from([65, 0, 66]));
+
+    const result = await buildFileLineCountMap(testDir, [file]);
+
+    expect(result.get(file)).toBe(-1);
+  });
+
   it('should handle missing files gracefully with -1', async () => {
     const result = await buildFileLineCountMap(testDir, ['nonexistent.js']);
 
@@ -76,6 +85,14 @@ describe('buildFileLineCountMap', () => {
     const result = await buildFileLineCountMap(testDir, ['binary.bin']);
 
     expect(result.get('binary.bin')).toBe(-1);
+  });
+
+  it('counts text containing a non-NUL control byte and rejects UTF-16 NULs', async () => {
+    await fs.promises.writeFile(path.join(testDir, 'control.txt'), Buffer.from([65, 1, 10, 66]));
+    await fs.promises.writeFile(path.join(testDir, 'utf16.txt'), Buffer.from('first\nsecond', 'utf16le'));
+    const counts = await buildFileLineCountMap(testDir, ['control.txt', 'utf16.txt']);
+    expect(counts.get('control.txt')).toBe(2);
+    expect(counts.get('utf16.txt')).toBe(-1);
   });
 
   it('should return empty map for null validFiles', async () => {
@@ -106,6 +123,137 @@ describe('buildFileLineCountMap', () => {
     const result = await buildFileLineCountMap(testDir, ['src/nested.js']);
 
     expect(result.get('src/nested.js')).toBe(2);
+  });
+
+  describe('bounded binary scan', () => {
+    // Wrap fs.promises.open so each test can observe the FileHandle that
+    // buildFileLineCountMap opens (readFile/close calls) without changing I/O.
+    function spyOnOpenedHandles(mutate = () => {}) {
+      const handles = [];
+      const realOpen = fs.promises.open.bind(fs.promises);
+      const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+        const handle = await realOpen(...args);
+        const tracked = {
+          readFile: vi.spyOn(handle, 'readFile'),
+          close: vi.spyOn(handle, 'close'),
+        };
+        mutate(handle);
+        handles.push(tracked);
+        return handle;
+      });
+      return { handles, openSpy };
+    }
+
+    it('returns -1 for a large binary file without reading past the first 8 KB', async () => {
+      const content = Buffer.alloc(64 * 1024, 0x41);
+      content[100] = 0;
+      await fs.promises.writeFile(path.join(testDir, 'asset.bin'), content);
+      const { handles, openSpy } = spyOnOpenedHandles();
+
+      try {
+        const result = await buildFileLineCountMap(testDir, ['asset.bin']);
+
+        expect(result.get('asset.bin')).toBe(-1);
+        expect(handles).toHaveLength(1);
+        expect(handles[0].readFile).not.toHaveBeenCalled();
+        expect(handles[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+
+    it('detects a NUL on the last byte of the 8 KB scan window', async () => {
+      const content = Buffer.alloc(8192 + 10, 0x41);
+      content[8191] = 0;
+      await fs.promises.writeFile(path.join(testDir, 'edge.bin'), content);
+
+      const result = await buildFileLineCountMap(testDir, ['edge.bin']);
+
+      expect(result.get('edge.bin')).toBe(-1);
+    });
+
+    it('counts a file whose only NUL lies past the 8 KB scan window as text', async () => {
+      const content = Buffer.alloc(8192 + 10, 0x41);
+      content[8192] = 0;
+      await fs.promises.writeFile(path.join(testDir, 'late-nul.txt'), content);
+
+      const result = await buildFileLineCountMap(testDir, ['late-nul.txt']);
+
+      expect(result.get('late-nul.txt')).toBe(1);
+    });
+
+    it('counts lines in a text file larger than 8 KB, including lines spanning the boundary', async () => {
+      // 1000 lines of 20 bytes ("line NNNN padded...\n") = 20000 bytes; line
+      // 410 straddles byte 8192. A multi-byte character also straddles it.
+      const lines = [];
+      for (let i = 1; i <= 1000; i++) lines.push(`line ${String(i).padStart(4, '0')} padding.`);
+      const text = `${lines.join('\n')}\n`;
+      expect(Buffer.byteLength(text)).toBeGreaterThan(8192);
+      await fs.promises.writeFile(path.join(testDir, 'big.txt'), text);
+      await fs.promises.writeFile(path.join(testDir, 'big-no-eol.txt'), text.slice(0, -1));
+      const prefix = 'a'.repeat(8191);
+      await fs.promises.writeFile(path.join(testDir, 'split-char.txt'), `${prefix}é\nsecond`);
+
+      const result = await buildFileLineCountMap(testDir, ['big.txt', 'big-no-eol.txt', 'split-char.txt']);
+
+      expect(result.get('big.txt')).toBe(1000);
+      expect(result.get('big-no-eol.txt')).toBe(1000);
+      expect(result.get('split-char.txt')).toBe(2);
+    });
+
+    it('counts a text file of exactly 8 KB (EOF at the scan boundary)', async () => {
+      const text = `${'x'.repeat(8190)}\n\n`;
+      expect(Buffer.byteLength(text)).toBe(8192);
+      await fs.promises.writeFile(path.join(testDir, 'exact.txt'), text);
+
+      const result = await buildFileLineCountMap(testDir, ['exact.txt']);
+
+      expect(result.get('exact.txt')).toBe(2);
+    });
+
+    it('returns 0 for an empty file and closes the handle', async () => {
+      await fs.promises.writeFile(path.join(testDir, 'empty.txt'), '');
+      const { handles, openSpy } = spyOnOpenedHandles();
+
+      try {
+        const result = await buildFileLineCountMap(testDir, ['empty.txt']);
+
+        expect(result.get('empty.txt')).toBe(0);
+        expect(handles[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+
+    it('returns -1 when the file cannot be opened', async () => {
+      await fs.promises.writeFile(path.join(testDir, 'locked.txt'), 'text\n');
+      const error = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      const openSpy = vi.spyOn(fs.promises, 'open').mockRejectedValue(error);
+
+      try {
+        const result = await buildFileLineCountMap(testDir, ['locked.txt']);
+
+        expect(result.get('locked.txt')).toBe(-1);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+
+    it('returns -1 and still closes the handle when a read fails after opening', async () => {
+      await fs.promises.writeFile(path.join(testDir, 'flaky.txt'), 'text\n');
+      const { handles, openSpy } = spyOnOpenedHandles(handle => {
+        vi.spyOn(handle, 'read').mockRejectedValue(new Error('EIO: i/o error'));
+      });
+
+      try {
+        const result = await buildFileLineCountMap(testDir, ['flaky.txt']);
+
+        expect(result.get('flaky.txt')).toBe(-1);
+        expect(handles[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
   });
 });
 
