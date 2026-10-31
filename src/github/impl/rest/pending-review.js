@@ -187,9 +187,10 @@ async function getPendingReviewForUser(octokit, owner, repo, prNumber) {
  * @param {Object} octokit
  * @param {string|number} nodeId - GraphQL node id OR numeric review id
  * @param {Object} prContext - { owner, repo, prNumber, reviewId? }
+ * @param {Object} [options] - { strict?: boolean }, propagate non-404 failures
  * @returns {Promise<Object|null>}
  */
-async function getReviewById(octokit, nodeId, prContext) {
+async function getReviewById(octokit, nodeId, prContext, { strict = false } = {}) {
   if (!prContext || !prContext.owner || !prContext.repo || !prContext.prNumber) {
     throw new Error(
       'REST getReviewById requires prContext={owner, repo, prNumber}. ' +
@@ -210,7 +211,9 @@ async function getReviewById(octokit, nodeId, prContext) {
     } else {
       // No usable numeric id — surface a clear error rather than calling
       // the REST API with a GraphQL node id (which would 404).
-      logger.warn(`REST getReviewById called with non-numeric id "${nodeId}" and no prContext.reviewId`);
+      const message = `REST getReviewById called with non-numeric id "${nodeId}" and no prContext.reviewId`;
+      logger.warn(message);
+      if (strict) throw new Error(message);
       return null;
     }
   }
@@ -237,6 +240,7 @@ async function getReviewById(octokit, nodeId, prContext) {
       return null;
     }
     logger.warn(`Error fetching review ${reviewId} via REST: ${error.message}`);
+    if (strict) throw error;
     return null;
   }
 }

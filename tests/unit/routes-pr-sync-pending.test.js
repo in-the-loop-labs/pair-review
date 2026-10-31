@@ -1,5 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/schema';
+import request from 'supertest';
+const express = require('express');
+const { listenOnLoopback, closeServer } = require('../utils/loopback-server');
+const { GitHubClient } = require('../../src/github/client');
 
 /**
  * Regression tests for `syncPendingDraftFromGitHub` in
@@ -14,7 +19,9 @@ import { describe, it, expect, vi } from 'vitest';
  */
 
 const prRoute = require('../../src/routes/pr');
-const { syncPendingDraftFromGitHub } = prRoute._internals;
+const { syncPendingDraftFromGitHub, reconcileStalePendingRecords } = prRoute._internals;
+const { GitHubReviewRepository } = require('../../src/database');
+const ws = require('../../src/ws');
 
 /**
  * Build a minimal mock of the GitHubReviewRepository surface that
@@ -29,6 +36,7 @@ function makeRepo(initialRecords = []) {
     records.set(id, { ...r, id });
   });
   return {
+    db: { exec: vi.fn() },
     findPendingByReviewId: vi.fn(async () => Array.from(records.values())),
     update: vi.fn(async (id, data) => {
       updates.push({ id, data });
@@ -129,5 +137,144 @@ describe('syncPendingDraftFromGitHub (Fix #10)', () => {
     const [lookupId, prCtx] = githubClient.getReviewById.mock.calls[0];
     expect(lookupId).toBe('777');
     expect(prCtx).toMatchObject({ owner: 'o', repo: 'r', prNumber: 1, reviewId: '777' });
+  });
+
+  it('preserves the new-draft branch fallback on lookup errors', async () => {
+    const repo = makeRepo([{ id: 1, github_node_id: 'PRR_old', state: 'pending' }]);
+    await syncPendingDraftFromGitHub(repo, 99, { id: 'PRR_new', databaseId: 999 }, {
+      getReviewById: vi.fn().mockRejectedValue(new Error('offline'))
+    });
+    expect(repo._state.records.get(1).state).toBe('dismissed');
+    expect(repo.create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('reconcileStalePendingRecords (no pending draft on GitHub)', () => {
+  let db, repo, broadcast;
+  const context = { owner: 'test', repo: 'repo', prNumber: 1 };
+  beforeEach(() => {
+    db = createTestDatabase();
+    seedTestReview(db, { id: 1 });
+    repo = new GitHubReviewRepository(db);
+    broadcast = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    closeTestDatabase(db);
+  });
+
+  async function addDraft(commentId = 1) {
+    const row = await repo.create(1, { github_review_id: '123', github_node_id: 'PRR_123', state: 'pending' });
+    db.prepare('INSERT INTO comments (id, review_id, source, status, body) VALUES (?, 1, ?, ?, ?)')
+      .run(commentId, 'user', 'active', 'snapshot');
+    db.prepare('INSERT INTO comment_postings (comment_id, github_review_row_id, body) VALUES (?, ?, ?)')
+      .run(commentId, row.id, 'snapshot');
+    return row;
+  }
+  function linkedReviewStates() {
+    return db.prepare(`SELECT gr.state
+      FROM comment_postings cp JOIN github_reviews gr ON gr.id = cp.github_review_row_id ORDER BY cp.id`).all()
+      .map(row => row.state);
+  }
+  async function reconcile(client) {
+    return reconcileStalePendingRecords(repo, await repo.findPendingByReviewId(1), client, context);
+  }
+
+  it.each(['COMMENTED', 'not-found', 'error'])('wires a null draft through GET github-drafts (%s)', async outcome => {
+    await addDraft();
+    vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+    const lookup = vi.spyOn(GitHubClient.prototype, 'getReviewById');
+    if (outcome === 'error') lookup.mockRejectedValue(new Error('transient'));
+    else lookup.mockResolvedValue(outcome === 'not-found' ? null : { state: outcome });
+    const app = express();
+    app.set('db', db);
+    app.set('config', { github_token: 'test-token' });
+    app.use(prRoute);
+    const server = await listenOnLoopback(app);
+    try {
+      const response = await request(server).get('/api/pr/test/repo/1/github-drafts').expect(200);
+      expect(response.body.pendingDraft).toBeNull();
+      expect(response.body.allGithubReviews[0].state).toBe(
+        outcome === 'error' ? 'pending' : outcome === 'not-found' ? 'dismissed' : 'submitted');
+      expect(lookup).toHaveBeenCalledWith('PRR_123', { ...context, reviewId: '123' }, { strict: true });
+      expect(broadcast).toHaveBeenCalledTimes(outcome === 'error' ? 0 : 1);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('updates submitted drafts, keeps postings, and broadcasts to all tabs after COMMIT', async () => {
+    await addDraft();
+    expect(linkedReviewStates()).toEqual(['pending']);
+    const submittedAt = '2026-10-30T00:00:00Z';
+    const client = { getReviewById: vi.fn(async () => {
+      expect(db.inTransaction).toBe(false);
+      return { state: 'COMMENTED', submittedAt };
+    }) };
+    broadcast.mockImplementation(() => {
+      expect(db.inTransaction).toBe(false);
+      expect(linkedReviewStates()).toEqual(['submitted']);
+    });
+    expect(await reconcile(client)).toBe(true);
+    expect(client.getReviewById).toHaveBeenCalledWith('PRR_123', { ...context, reviewId: '123' }, { strict: true });
+    expect((await repo.findByReviewId(1))[0]).toMatchObject({ state: 'submitted', submitted_at: submittedAt });
+    expect(broadcast).toHaveBeenCalledExactlyOnceWith('review:1', { type: 'review:comments_changed', reviewId: 1 });
+    expect(await reconcile(client)).toBe(false);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves drafts pending and does not broadcast on transient lookup errors', async () => {
+    await addDraft();
+    expect(await reconcile({ getReviewById: vi.fn().mockRejectedValue(new Error('offline')) })).toBe(false);
+    expect(linkedReviewStates()).toEqual(['pending']);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('treats a confirmed missing draft as dismissed without requeuing its comments', async () => {
+    await addDraft();
+    await reconcile({ getReviewById: vi.fn().mockResolvedValue(null) });
+    expect((await repo.findByReviewId(1))[0].state).toBe('dismissed');
+    expect(linkedReviewStates()).toEqual(['dismissed']);
+    expect(broadcast).toHaveBeenCalledOnce();
+  });
+
+  it('updates every legacy duplicate so every linked posting becomes posted', async () => {
+    await addDraft(1);
+    await addDraft(2);
+    const client = { getReviewById: vi.fn().mockResolvedValue({ state: 'COMMENTED' }) };
+    await reconcile(client);
+    expect((await repo.findByReviewId(1)).map(row => row.state)).toEqual(['submitted', 'submitted']);
+    expect(linkedReviewStates()).toEqual(['submitted', 'submitted']);
+    expect(client.getReviewById).toHaveBeenCalledOnce();
+    expect(broadcast).toHaveBeenCalledOnce();
+  });
+
+  it('does not broadcast or change a review still pending remotely', async () => {
+    await addDraft();
+    expect(await reconcile({ getReviewById: vi.fn().mockResolvedValue({ state: 'PENDING' }) })).toBe(false);
+    expect(linkedReviewStates()).toEqual(['pending']);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a submit that completed during the network lookup', async () => {
+    const row = await addDraft();
+    await reconcile({ getReviewById: vi.fn(async () => {
+      await repo.update(row.id, { state: 'submitted' });
+      return null;
+    }) });
+    expect((await repo.getById(row.id)).state).toBe('submitted');
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('rolls back and sends no broadcast if an update fails', async () => {
+    await addDraft(1);
+    await addDraft(2);
+    const original = repo.update.bind(repo);
+    vi.spyOn(repo, 'update').mockImplementationOnce(original).mockRejectedValueOnce(new Error('write failed'));
+    await expect(reconcile({ getReviewById: vi.fn().mockResolvedValue({ state: 'COMMENTED' }) }))
+      .rejects.toThrow('write failed');
+    expect(linkedReviewStates()).toEqual(['pending', 'pending']);
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(db.inTransaction).toBe(false);
   });
 });

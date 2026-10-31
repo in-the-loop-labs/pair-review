@@ -153,7 +153,7 @@ describe('operations/pending-review', () => {
           'PRR_def',
           prContext
         );
-        expect(restSpy).toHaveBeenCalledWith(octokit, 'PRR_def', prContext);
+        expect(restSpy).toHaveBeenCalledWith(octokit, 'PRR_def', prContext, undefined);
         expect(result.state).toBe('APPROVED');
       } finally {
         restSpy.mockRestore();
