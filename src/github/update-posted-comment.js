@@ -8,9 +8,10 @@ function matchesPosting(candidate, posting, login) {
       candidate.in_reply_to_id != null || candidate.path !== posting.file || candidate.body !== posting.body) return false;
   if (posting.is_file_level) return candidate.subject_type === 'file';
   if (candidate.subject_type === 'file') return false;
-  const outdated = candidate.line == null;
-  const line = outdated ? candidate.original_line : candidate.line;
-  const start = outdated ? candidate.original_start_line : candidate.start_line;
+  // GitHub shifts current coordinates as commits land, even before a comment
+  // becomes outdated. Original coordinates identify the anchor we sent.
+  const line = candidate.original_line;
+  const start = candidate.original_start_line;
   const expectedStart = posting.line_start === posting.line_end ? null : posting.line_start;
   return line === posting.line_end && (start ?? null) === (expectedStart ?? null) &&
     candidate.side === (posting.side || 'RIGHT') &&
@@ -24,7 +25,7 @@ function identityError(posting) {
 }
 
 /** Network work precedes the short bookkeeping transaction; there is NO create fallback. */
-async function updatePostedComment(db, { commentId, githubClient, owner, repo, pull_number, diffContent = '' }, afterCommit = () => {}) {
+async function updatePostedComment(db, { commentId, githubClient, owner, repo, pull_number }, afterCommit = () => {}) {
   const comments = new CommentRepository(db);
   const comment = await comments.getComment(commentId, 'user');
   if (!comment?.publication) throw Object.assign(new Error('Comment has not been posted'), { status: 400 });
@@ -59,7 +60,11 @@ async function updatePostedComment(db, { commentId, githubClient, owner, repo, p
       github_comment_url = COALESCE(?, github_comment_url) WHERE comment_id = ?`,
     [recovered.id, recovered.node, recovered.url, commentId]);
   }
-  const sent = buildReviewComments([comment], diffContent)[0];
+  // An edit cannot move the host anchor. Preserve the posted shape rather
+  // than recalculating inline vs file fallback against today's diff. User
+  // bodies already include any configured adoption formatting.
+  const sent = posting.is_file_level
+    ? buildReviewComments([comment], '')[0] : { body: comment.body };
   const result = await githubClient.updateReviewComment(ref, sent.body);
   const ids = { id: result?.github_comment_id || ref.github_comment_id,
     node: result?.github_comment_node_id || ref.github_comment_node_id,

@@ -1506,14 +1506,8 @@ router.post('/api/reviews/:id/comments/:commentId/update-on-github', async (req,
     // Reuse the PR-aware resolver, including recorded alt-host evidence.
     const resolved = await resolveBindingForRequest({ app: req.app, params: { number: String(review.pr_number) } }, review.repository);
     if (!resolved) return res.status(401).json({ error: 'GitHub token not configured' });
-    const worktrees = new GitWorktreeManager(db);
-    const worktree = await worktrees.getWorktreePath({ owner, repo, number: review.pr_number });
-    const metadata = await queryOne(db, `SELECT pr_data FROM pr_metadata WHERE repository = ? COLLATE NOCASE AND pr_number = ?`,
-      [review.repository, review.pr_number]);
-    // Do not silently change sent formatting when the diff cannot be loaded.
-    const diffContent = await worktrees.generateUnifiedDiff(worktree, JSON.parse(metadata?.pr_data || '{}'));
     const updated = await updatePostedComment(db, { commentId: comment.id, owner, repo,
-      pull_number: review.pr_number, githubClient: new GitHubClient(resolved.binding), diffContent },
+      pull_number: review.pr_number, githubClient: new GitHubClient(resolved.binding) },
     reviewId => broadcastReviewEvent(reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') }));
     res.json({ success: true, comment: updated });
   } catch (error) {

@@ -4,7 +4,6 @@ const Database = require('better-sqlite3');
 const { createTestDatabase, seedTestReview } = require('../utils/schema');
 const { CommentRepository, CommentPostingRepository, GitHubReviewRepository, MIGRATIONS } = require('../../src/database');
 const { updatePostedComment, matchesPosting, listSubmissions } = require('../../src/github/update-posted-comment');
-const diffContent = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -8 +8 @@\n-old\n+new\n';
 
 describe('posted comment updates never recreate', () => {
   let db, reviewId, commentId, review, client, postings;
@@ -20,8 +19,8 @@ describe('posted comment updates never recreate', () => {
       addCommentsInBatches: vi.fn(() => { throw new Error('must never create'); }), createReviewGraphQL: vi.fn(() => { throw new Error('must never create'); }) };
   });
   afterEach(() => { db.close(); });
-  const candidate = (extra = {}) => ({ id: 123, node_id: 'C', body: 'before', path: 'a.js', user: { login: 'me' }, line: 8, start_line: null, side: 'RIGHT', start_side: null, ...extra });
-  function update(afterCommit) { return updatePostedComment(db, { commentId, githubClient: client, owner: 'o', repo: 'r', pull_number: 1, diffContent }, afterCommit); }
+  const candidate = (extra = {}) => ({ id: 123, node_id: 'C', body: 'before', path: 'a.js', user: { login: 'me' }, line: 8, start_line: null, original_line: 8, original_start_line: null, side: 'RIGHT', start_side: null, ...extra });
+  function update(afterCommit) { return updatePostedComment(db, { commentId, githubClient: client, owner: 'o', repo: 'r', pull_number: 1 }, afterCommit); }
   function assertNoCreate() { expect(client.addCommentsInBatches).not.toHaveBeenCalled(); expect(client.createReviewGraphQL).not.toHaveBeenCalled(); }
 
   it('updates the same identity, stores an edit snapshot and broadcasts only after commit', async () => {
@@ -51,16 +50,30 @@ describe('posted comment updates never recreate', () => {
     assertNoCreate();
   });
 
-  it('uses the same file-reference formatting as a fresh post', async () => {
-    db.prepare('UPDATE comments SET line_start = 99, line_end = 99 WHERE id = ?').run(commentId);
+  it('keeps an inline edit plain even when its line is no longer in the current diff', async () => {
     await update();
-    expect(client.updateReviewComment.mock.calls[0][1]).toBe('(Ref Line 99) edited');
-    expect((await postings.listByComment(commentId))[1].body).toBe('(Ref Line 99) edited');
+    expect(client.updateReviewComment.mock.calls[0][1]).toBe('edited');
+    expect((await postings.listByComment(commentId))[1]).toMatchObject({ body: 'edited', is_file_level: 0, line_start: 8, line_end: 8 });
+  });
+
+  it.each([[8, 8, '(Ref Line 8) edited'], [8, 10, '(Ref Lines 8-10) edited']])('keeps file-fallback line references %s-%s even if a new diff could anchor them inline', async (start, end, expected) => {
+    db.prepare('UPDATE comments SET line_start = ?, line_end = ? WHERE id = ?').run(start, end, commentId);
+    db.prepare('UPDATE comment_postings SET is_file_level = 1, line_start = NULL, line_end = NULL').run();
+    await update();
+    expect(client.updateReviewComment.mock.calls[0][1]).toBe(expected);
+    expect((await postings.listByComment(commentId))[1]).toMatchObject({ body: expected, is_file_level: 1, line_start: null, line_end: null });
+  });
+
+  it('keeps explicit file comments unprefixed', async () => {
+    db.prepare('UPDATE comments SET is_file_level = 1 WHERE id = ?').run(commentId);
+    db.prepare('UPDATE comment_postings SET is_file_level = 1, line_start = NULL, line_end = NULL').run();
+    await update();
+    expect(client.updateReviewComment.mock.calls[0][1]).toBe('edited');
   });
 
   it('recovers exactly one strict match from the correct review, repairs all postings, then updates', async () => {
     db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL').run();
-    client.listCommentsForReview.mockResolvedValue([candidate(), candidate({ in_reply_to_id: 99 })]);
+    client.listCommentsForReview.mockResolvedValue([candidate({ line: 18 }), candidate({ in_reply_to_id: 99 })]);
     await update();
     expect(client.listCommentsForReview).toHaveBeenCalledWith(expect.objectContaining({ github_review_id: '42', github_node_id: 'R' }));
     expect(client.listReviewComments).not.toHaveBeenCalled();
@@ -148,14 +161,15 @@ describe('posted comment updates never recreate', () => {
 
 describe('strict sent anchor identity', () => {
   const posting = { file: 'a.js', body: 'exact\r\n ', line_start: 8, line_end: 10, side: 'LEFT' };
-  const comment = { path: 'a.js', body: 'exact\r\n ', user: { login: 'ME' }, line: 10, start_line: 8, side: 'LEFT', start_side: 'LEFT' };
+  const comment = { path: 'a.js', body: 'exact\r\n ', user: { login: 'ME' }, line: 10, start_line: 8, original_line: 10, original_start_line: 8, side: 'LEFT', start_side: 'LEFT' };
   it('matches exact range, original outdated anchors, and explicit file subjects', () => {
     expect(matchesPosting(comment, posting, 'me')).toBe(true);
+    expect(matchesPosting({ ...comment, line: 40, start_line: 38 }, posting, 'me')).toBe(true);
     expect(matchesPosting({ ...comment, line: null, start_line: null, original_line: 10, original_start_line: 8 }, posting, 'me')).toBe(true);
     expect(matchesPosting({ ...comment, subject_type: 'file' }, { ...posting, is_file_level: 1 }, 'me')).toBe(true);
     expect(matchesPosting({ ...comment, line: null, subject_type: undefined }, { ...posting, is_file_level: 1 }, 'me')).toBe(false);
   });
-  it.each([{ side: 'RIGHT' }, { start_side: 'RIGHT' }, { start_line: null }, { line: 9 }, { in_reply_to_id: 123 }, { path: 'b.js' }, { body: 'exact\n ' }])('rejects a changed identity %j', (change) => {
+  it.each([{ side: 'RIGHT' }, { start_side: 'RIGHT' }, { original_start_line: null }, { original_line: 9 }, { in_reply_to_id: 123 }, { path: 'b.js' }, { body: 'exact\n ' }])('rejects a changed identity %j', (change) => {
     expect(matchesPosting({ ...comment, ...change }, posting, 'me')).toBe(false);
   });
 });
