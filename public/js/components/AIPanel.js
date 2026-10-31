@@ -138,7 +138,6 @@ class AIPanel {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'comment-filter-btn';
-        button.setAttribute('aria-haspopup', 'true');
         button.setAttribute('aria-expanded', 'false');
         button.setAttribute('aria-controls', 'comment-filter-menu');
         button.innerHTML = `${AIPanel.ICONS.funnel}<span class="comment-filter-dot" aria-hidden="true"></span>`;
@@ -211,6 +210,8 @@ class AIPanel {
         this.updateFilterMenuVisual();
         this.filterMenu.hidden = false;
         this.filterMenuBtn.setAttribute('aria-expanded', 'true');
+        // Lift the segment row above the panel sections below it (pr.css)
+        this.segmentControl?.classList.add('comment-filter-open');
         document.addEventListener('pointerdown', this._onFilterMenuOutsidePointer, true);
         this.filterMenu.querySelector('input')?.focus();
     }
@@ -223,6 +224,7 @@ class AIPanel {
         if (!this.filterMenu || this.filterMenu.hidden) return;
         this.filterMenu.hidden = true;
         this.filterMenuBtn.setAttribute('aria-expanded', 'false');
+        this.segmentControl?.classList.remove('comment-filter-open');
         document.removeEventListener('pointerdown', this._onFilterMenuOutsidePointer, true);
         if (focusButton) this.filterMenuBtn.focus();
     }
@@ -352,7 +354,9 @@ class AIPanel {
         const next = { posted: counts.posted || 0, dismissed: counts.dismissed || 0 };
         const prev = this.hiddenCommentCounts || { posted: 0, dismissed: 0 };
         this.hiddenCommentCounts = next;
-        if (next.posted !== prev.posted || next.dismissed !== prev.dismissed) {
+        const changed = next.posted !== prev.posted || next.dismissed !== prev.dismissed;
+        // Only the User and All lists show the notice
+        if (changed && (this.selectedSegment === 'comments' || this.selectedSegment === 'all')) {
             this.renderFindings();
         }
     }

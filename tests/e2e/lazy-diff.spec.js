@@ -99,7 +99,7 @@ async function pierreShadowLineCount(page, fileName) {
  * @param {Array<object>} comments
  */
 async function mockUserComments(page, comments) {
-  await page.route('**/api/reviews/*/comments', async (route) => {
+  await page.route(/\/api\/reviews\/\d+\/comments(\?|$)/, async (route) => {
     if (route.request().method() !== 'GET') {
       // Let POSTs (create comment) hit the real handler.
       return route.fallback();
