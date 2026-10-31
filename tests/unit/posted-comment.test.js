@@ -5,9 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 const PostedComment = require('../../public/js/utils/posted-comment.js');
 const {
   HIDE_POSTED_STORAGE_KEY,
-  isPendingComment,
   isPostedComment,
-  canMutateComment,
   isHidePostedEnabled,
   setHidePostedEnabled,
   shouldHidePostedComment,
@@ -19,16 +17,13 @@ beforeEach(() => localStorage.clear());
 
 describe('posted-comment helpers', () => {
   it.each([
-    ['active', true, false],
-    [undefined, true, false],
-    ['submitted', false, true],
-    ['draft', false, true],
-    ['inactive', false, false]
-  ])('status %s: pending=%s posted=%s', (status, pending, posted) => {
-    const comment = { status };
-    expect(isPendingComment(comment)).toBe(pending);
-    expect(isPostedComment(comment)).toBe(posted);
-    expect(canMutateComment(comment)).toBe(!posted);
+    ['active', false],
+    [undefined, false],
+    ['submitted', true],
+    ['draft', true],
+    ['inactive', false]
+  ])('status %s: posted=%s', (status, posted) => {
+    expect(isPostedComment({ status })).toBe(posted);
   });
 
   it('reads and writes the hide-posted preference under one key', () => {

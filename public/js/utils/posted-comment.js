@@ -18,20 +18,10 @@ function commentStatus(comment) {
   return comment?.status || 'active';
 }
 
-/** True for a comment the next review submit will post. */
-function isPendingComment(comment) {
-  return commentStatus(comment) === 'active';
-}
-
 /** True for a comment already sent to GitHub (submitted, or in the pending draft review). */
 function isPostedComment(comment) {
   const status = commentStatus(comment);
   return status === 'submitted' || status === 'draft';
-}
-
-/** Posted comments are history: they can't be edited or dismissed locally. */
-function canMutateComment(comment) {
-  return !isPostedComment(comment);
 }
 
 function isHidePostedEnabled() {
@@ -75,9 +65,7 @@ function stampCommentStatus(element, comment) {
 
 const PostedComment = {
   HIDE_POSTED_STORAGE_KEY,
-  isPendingComment,
   isPostedComment,
-  canMutateComment,
   isHidePostedEnabled,
   setHidePostedEnabled,
   shouldHidePostedComment,
