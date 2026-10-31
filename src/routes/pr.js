@@ -1699,6 +1699,11 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Commit transaction
       await run(db, 'COMMIT');
 
+      // Comment statuses changed (active -> submitted/draft): tell other open
+      // tabs to reload. Only after COMMIT, so they never reload rolled-back
+      // state. The submitting tab refetches itself and skips its own echo.
+      broadcastReviewEvent(review.id, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
+
       // Send success response after all database operations complete.
       // Use the configured remote-host display name (e.g. "Meteorite")
       // instead of the literal "GitHub". Resolve via the binding repository
