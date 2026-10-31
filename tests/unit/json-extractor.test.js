@@ -552,6 +552,22 @@ describe('extractJSON', () => {
       expect(result.data).toEqual(expected);
     });
 
+    it('should not fold fields into a string when a key is unquoted', () => {
+      const json = '{"suggestions":[{"file":"a.js","type":"bug","description":"text", line:3,"title":"next"}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(false);
+    });
+
+    it('should keep a shell line continuation alongside an unescaped quote and raw newlines', () => {
+      const expected = { suggestions: [{ description: 'a 5" panel\nrun:\ncmd \\\n  --flag', line: 1 }] };
+      // Raw quote, raw newlines, and a backslash directly before a raw newline
+      const corrupted = JSON.stringify(expected).replace('5\\"', '5"').replace(/\\\\\\n/, '\\\n').replace(/\\n/g, '\n');
+      expect(corrupted).toContain('5" panel\nrun:\ncmd \\\n  --flag');
+      const result = extractJSON(corrupted, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(expected);
+    });
+
     it('should not double-escape already escaped quotes', () => {
       const json = '{"suggestions": [{"description": "keep \\"this\\" but fix "that" one"}]}';
       const result = extractJSON(json, 'test');
