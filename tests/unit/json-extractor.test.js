@@ -552,10 +552,24 @@ describe('extractJSON', () => {
       expect(result.data).toEqual(expected);
     });
 
-    it('should not fold fields into a string when a key is unquoted', () => {
-      const json = '{"suggestions":[{"file":"a.js","type":"bug","description":"text", line:3,"title":"next"}]}';
+    it.each([
+      ['unquoted', ', ', 'line:3'],
+      ['single-quoted', ', ', "'line':3"],
+      ['backticked', ', ', '`line`: 3'],
+      ['unquoted after a missing comma', ' ', 'line:3'],
+      ['single-quoted after a missing comma', ' ', "'line':3"],
+      ['backticked after a missing comma', ' ', '`line`: 3'],
+    ])('should not fold fields into a string when a key is %s', (_, sep, key) => {
+      const json = `{"suggestions":[{"file":"a.js","type":"bug","description":"text"${sep}${key},"title":"next"}]}`;
       const result = extractJSON(json, 'test');
       expect(result.success).toBe(false);
+    });
+
+    it('should still repair a quote followed by a comma and prose containing a colon later', () => {
+      const json = '{"suggestions": [{"description": "see "foo", then note: bar", "line": 1}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('see "foo", then note: bar');
     });
 
     it('should keep a shell line continuation alongside an unescaped quote and raw newlines', () => {
