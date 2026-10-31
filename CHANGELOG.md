@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.3.7
+
+### Patch Changes
+
+- d6173cd: Submitting a review or saving a draft now tells other open tabs on the same review to reload their comments, so they stop counting the posted comments as pending. Comment reloads triggered from outside the tab (another tab, the chat agent, a hidden tab becoming visible) keep dismissed comments in the panel when "show dismissed" is on.
+- 374c9e7: Stop duplicate review comments on GitHub when a submit request fails after GitHub may already have added the comments (a timeout, dropped connection or server error). Pair-review now re-sends a batch of comments only when GitHub cannot have applied it, such as a refused connection or an error GitHub returned before running the request.
+- dfab0fa: Mark comments saved to a draft review as posted once that review is submitted, so "Hide comments after posting" hides them too. Let Request Changes go through when the pending draft holds the only comments. Hidden posted comments no longer leave minimize-mode pills, file-header indicators or empty file-comment strips behind. A comment saved while comments are reloading no longer disappears from the diff.
+- a4dcf01: Count only pending comments in the review button and submit dialog, and mark posted comments with a small indicator. Add an optional preference to hide comments after posting.
+
 ## 5.3.6
 
 ### Patch Changes
