@@ -66,7 +66,7 @@ describe('comment posting storage and legacy upgrade', () => {
       (3, ?, 'user', 'inactive', 'dismissed')`).run(review, review, review);
     // Exercise the real startup CREATE IF NOT EXISTS loop before migrations.
     setupSchema(db);
-    expect(db.pragma('user_version', { simple: true })).toBe(57);
+    expect(db.pragma('user_version', { simple: true })).toBe(58);
     expect(db.prepare('SELECT status FROM comments ORDER BY id').all().map(c => c.status)).toEqual(['active', 'submitted', 'inactive']);
     // Link one legacy posting to each duplicate before Approve.
     db.prepare('UPDATE comment_postings SET github_review_row_id = 1 WHERE comment_id = 1').run();

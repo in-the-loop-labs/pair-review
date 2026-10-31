@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 57;
+const CURRENT_SCHEMA_VERSION = 58;
 
 /**
  * Database schema SQL statements
@@ -68,6 +68,7 @@ const SCHEMA_SQL = {
       github_comment_node_id TEXT,
       github_comment_url TEXT,
       backfilled INTEGER NOT NULL DEFAULT 0,
+      kind TEXT NOT NULL DEFAULT 'post' CHECK (kind IN ('post', 'update')),
       posted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `,
@@ -2436,6 +2437,12 @@ const MIGRATIONS = {
       db.exec("UPDATE comments SET status = 'active' WHERE source = 'user' AND status IN ('submitted', 'draft')");
       db.exec("UPDATE comments SET status = 'submitted' WHERE source = 'ai' AND status = 'draft'");
     })();
+  },
+
+  58: (db) => {
+    if (!columnExists(db, 'comment_postings', 'kind')) {
+      db.exec("ALTER TABLE comment_postings ADD COLUMN kind TEXT NOT NULL DEFAULT 'post' CHECK (kind IN ('post', 'update'))");
+    }
   }
 };
 
@@ -3703,17 +3710,17 @@ const PUBLICATION_JOIN = `LEFT JOIN comment_postings lp ON lp.id =
   LEFT JOIN github_reviews lgr ON lgr.id = lp.github_review_row_id`;
 const PUBLICATION_COLUMNS = `lp.id AS posting_id, lp.posted_at AS publication_posted_at,
   lp.github_review_row_id, lp.github_comment_url, lgr.github_url AS review_url,
-  lgr.state AS publication_review_state,
+  lgr.state AS publication_review_state, lp.comment_body IS NOT c.body AS publication_changed,
   (SELECT COUNT(*) FROM comment_postings WHERE comment_id = c.id) AS posting_count`;
 
 function shapePublication(row) {
   if (!row) return row;
   const { posting_id, publication_posted_at, github_review_row_id,
-    github_comment_url, review_url, publication_review_state, posting_count, ...comment } = row;
+    github_comment_url, review_url, publication_review_state, publication_changed, posting_count, ...comment } = row;
   return { ...comment, publication: posting_id == null ? null : {
     state: publication_review_state === 'pending' ? 'draft' : 'posted',
     posted_at: publication_posted_at, review_url, comment_url: github_comment_url,
-    github_review_row_id, posting_count
+    github_review_row_id, posting_count, changed: Boolean(publication_changed)
   } };
 }
 
@@ -5742,13 +5749,13 @@ class CommentPostingRepository {
       await run(this.db, `INSERT INTO comment_postings
         (comment_id, github_review_row_id, comment_body, body, file, line_start,
          line_end, side, is_file_level, github_comment_id, github_comment_node_id,
-         github_comment_url, backfilled, posted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+         github_comment_url, backfilled, kind, posted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
       [p.comment_id, p.github_review_row_id ?? null, p.comment_body ?? null, p.body,
         p.file ?? null, p.line_start ?? null, p.line_end ?? null, p.side ?? null,
         p.is_file_level ? 1 : 0, p.github_comment_id == null ? null : String(p.github_comment_id),
         p.github_comment_node_id ?? null, p.github_comment_url ?? null,
-        p.backfilled ? 1 : 0, p.posted_at ?? null]);
+        p.backfilled ? 1 : 0, p.kind ?? 'post', p.posted_at ?? null]);
     }
   }
 
