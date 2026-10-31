@@ -206,6 +206,66 @@ async function resolveBindingForRequest(req, repository) {
 }
 
 /**
+ * Resolve stale drafts before opening a short local transaction. Errors are
+ * retried on the next load; a confirmed missing review is treated as dismissed,
+ * never requeued. Postings stay intact and derive their state from these rows.
+ * @returns {Promise<boolean>} Whether any pending record changed state
+ */
+async function reconcileStalePendingRecords(githubReviewRepo, records, githubClient, prContext,
+  { keepPendingOnError = true } = {}) {
+  const updates = [];
+  const lookups = new Map();
+  for (const record of records) {
+    let actualState = 'dismissed';
+    let data = null;
+    const lookupId = record.github_node_id || record.github_review_id;
+    if (githubClient && lookupId) {
+      const key = record.github_review_id || lookupId;
+      try {
+        if (!lookups.has(key)) {
+          const context = prContext ? { ...prContext, reviewId: record.github_review_id } : null;
+          lookups.set(key, githubClient.getReviewById(lookupId, context, { strict: true }));
+        }
+        data = await lookups.get(key);
+        if (data) {
+          actualState = data.state === 'PENDING' ? 'pending'
+            : data.state === 'DISMISSED' ? 'dismissed' : 'submitted';
+        }
+      } catch (error) {
+        logger.warn(`Error querying GitHub for old review ${lookupId}: ${error.message}`);
+        if (keepPendingOnError) continue;
+      }
+    } else if (keepPendingOnError) {
+      // Without a usable client/identity absence cannot be confirmed.
+      continue;
+    }
+    if (actualState === 'pending') continue;
+    const update = { state: actualState };
+    if (actualState === 'submitted' && data?.submittedAt) update.submitted_at = data.submittedAt;
+    updates.push({ record, update });
+  }
+  if (!updates.length) return false;
+
+  const changedReviews = new Set();
+  let changed = false;
+  await withTransaction(githubReviewRepo.db, async () => {
+    for (const { record, update } of updates) {
+      // A submit may have completed while the network lookups were in flight.
+      const current = await githubReviewRepo.getById(record.id);
+      if (current?.state !== 'pending') continue;
+      await githubReviewRepo.update(record.id, update);
+      changed = true;
+      if (record.review_id != null) changedReviews.add(record.review_id);
+    }
+  });
+  // Include the requesting tab: its initial comments fetch may have raced us.
+  for (const reviewId of changedReviews) {
+    broadcastReviewEvent(reviewId, { type: 'review:comments_changed' });
+  }
+  return changed;
+}
+
+/**
  * Sync pending draft review from GitHub with local database
  *
  * Handles three scenarios:
@@ -253,58 +313,8 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
   } else {
     // New draft from GitHub - create new record
     // Query GitHub for the actual state of old pending records
-    for (const oldRecord of existingPendingRecords) {
-      let actualState = 'dismissed'; // Default if we can't determine
-      let githubReviewData = null;
-
-      // On the GraphQL path the node id is the canonical identifier; on
-      // the REST path the numeric id (`github_review_id`) is the only
-      // value we may have. Run the lookup whenever we have either —
-      // otherwise mark the record as dismissed without querying.
-      const oldLookupId = oldRecord.github_node_id || oldRecord.github_review_id;
-      if (githubClient && (oldRecord.github_node_id || oldRecord.github_review_id)) {
-        try {
-          // prContext carries the REST review id when available. The
-          // GraphQL path ignores it. The github_review_id column holds
-          // the numeric REST id we received when the draft was created.
-          const reviewPrContext = prContext
-            ? { ...prContext, reviewId: oldRecord.github_review_id }
-            : null;
-          githubReviewData = await githubClient.getReviewById(oldLookupId, reviewPrContext);
-
-          if (githubReviewData) {
-            // Map GitHub state to our local state
-            // GitHub states: PENDING, APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
-            // Our states: local, pending, submitted, dismissed
-            if (githubReviewData.state === 'PENDING') {
-              // This shouldn't happen (we have a different pending review now), but handle it
-              actualState = 'pending';
-            } else if (githubReviewData.state === 'DISMISSED') {
-              actualState = 'dismissed';
-            } else {
-              // APPROVED, CHANGES_REQUESTED, COMMENTED all mean it was submitted
-              actualState = 'submitted';
-            }
-            logger.debug(`Old review ${oldLookupId} actual state from GitHub: ${githubReviewData.state} -> ${actualState}`);
-          } else {
-            // Review not found on GitHub - treat as dismissed
-            logger.debug(`Old review ${oldLookupId} not found on GitHub, marking as dismissed`);
-            actualState = 'dismissed';
-          }
-        } catch (error) {
-          // On error, default to dismissed (most likely scenario)
-          logger.warn(`Error querying GitHub for old review ${oldLookupId}: ${error.message}, marking as dismissed`);
-          actualState = 'dismissed';
-        }
-      }
-
-      // Update the old record with the actual state and submitted_at if available
-      const updateData = { state: actualState };
-      if (actualState === 'submitted' && githubReviewData?.submittedAt) {
-        updateData.submitted_at = githubReviewData.submittedAt;
-      }
-      await githubReviewRepo.update(oldRecord.id, updateData);
-    }
+    await reconcileStalePendingRecords(githubReviewRepo, existingPendingRecords, githubClient, prContext,
+      { keepPendingOnError: false });
 
     pendingDraft = await githubReviewRepo.create(reviewId, {
       github_review_id: String(githubPendingReview.databaseId),
@@ -404,6 +414,10 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
               githubClient,
               { owner: repoOwner, repo: repoName, prNumber }
             );
+          } else {
+            await reconcileStalePendingRecords(githubReviewRepo,
+              await githubReviewRepo.findPendingByReviewId(review.id), githubClient,
+              { owner: repoOwner, repo: repoName, prNumber });
           }
         } catch (githubError) {
           // Log the error but don't fail the request - draft info is supplementary
@@ -1052,6 +1066,10 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
           githubClient,
           { owner, repo, prNumber }
         );
+      } else {
+        await reconcileStalePendingRecords(githubReviewRepo,
+          await githubReviewRepo.findPendingByReviewId(review.id), githubClient,
+          { owner, repo, prNumber });
       }
     } catch (githubError) {
       // Log the error but don't fail the request - return local data only
@@ -2875,5 +2893,6 @@ module.exports = router;
 // absent) can be exercised directly without spinning up the route.
 module.exports._internals = {
   syncPendingDraftFromGitHub,
+  reconcileStalePendingRecords,
   resolveBindingForRequest
 };

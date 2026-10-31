@@ -65,15 +65,16 @@ async function getPendingReviewForUser(octokit, features, owner, repo, prNumber)
  *   REQUIRED when `features.pending_review_check === "rest"` because the
  *   REST endpoint identifies a review by (owner, repo, pull_number,
  *   review_id) rather than by node id. Optional for the GraphQL path.
+ * @param {Object} [options] - { strict?: boolean }, propagate non-not-found failures
  * @returns {Promise<Object|null>}
  */
-async function getReviewById(octokit, features, nodeId, prContext) {
+async function getReviewById(octokit, features, nodeId, prContext, options) {
   const mode = selectFeature(features);
   if (mode === 'graphql') {
-    return graphqlImpl.getReviewById(octokit, nodeId);
+    return graphqlImpl.getReviewById(octokit, nodeId, options);
   }
   if (mode === 'rest') {
-    return restImpl.getReviewById(octokit, nodeId, prContext);
+    return restImpl.getReviewById(octokit, nodeId, prContext, options);
   }
   if (mode === 'host') {
     throw new Error('Host implementation for pending_review_check not yet available (Phase 5)');

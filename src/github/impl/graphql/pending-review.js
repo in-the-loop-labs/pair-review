@@ -114,9 +114,11 @@ async function getPendingReviewForUser(octokit, owner, repo, prNumber) {
  *
  * @param {Object} octokit - Octokit instance (must expose .graphql)
  * @param {string} nodeId - GraphQL node ID for the review
+ * @param {Object} [options]
+ * @param {boolean} [options.strict=false] - Throw errors other than confirmed absence
  * @returns {Promise<Object|null>} Review data or null if not found
  */
-async function getReviewById(octokit, nodeId) {
+async function getReviewById(octokit, nodeId, { strict = false } = {}) {
   try {
     logger.debug(`Fetching review by node ID: ${nodeId}`);
 
@@ -137,12 +139,16 @@ async function getReviewById(octokit, nodeId) {
       url: review.url
     };
   } catch (error) {
-    if (error.errors?.some(e => e.type === 'NOT_FOUND' || e.message?.includes('not found'))) {
+    const isNotFound = e => e.type === 'NOT_FOUND' || e.message?.includes('not found');
+    // Mixed GraphQL errors are not evidence that the review was deleted.
+    if (error.status === 404 || (error.errors?.length &&
+        (strict ? error.errors.every(e => e.type === 'NOT_FOUND') : error.errors.some(isNotFound)))) {
       logger.debug(`Review not found for node ID: ${nodeId}`);
       return null;
     }
 
     logger.warn(`Error fetching review by node ID ${nodeId}: ${error.message}`);
+    if (strict) throw error;
     return null;
   }
 }

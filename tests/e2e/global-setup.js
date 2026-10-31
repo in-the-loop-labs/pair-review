@@ -8,6 +8,7 @@
 const express = require('express');
 const path = require('path');
 const { createTestDatabase } = require('../utils/schema');
+const { installGitHubReviewMock } = require('../utils/github-review-mock');
 
 // Mock analysis timing - how long the simulated AI analysis takes
 const MOCK_ANALYSIS_DURATION_MS = 500;
@@ -274,23 +275,7 @@ async function globalSetup() {
   // Mock GitHub client
   GitHubClient.prototype.fetchPullRequest = async () => mockGitHubResponses.fetchPullRequest;
   GitHubClient.prototype.repositoryExists = async () => true;
-  GitHubClient.prototype.getPendingReviewForUser = async () => null; // No pending draft in tests
-  GitHubClient.prototype.getReviewById = async () => null; // No review lookup needed in tests
-  GitHubClient.prototype.createReviewGraphQL = async () => ({
-    id: 'PRR_test12345',
-    databaseId: 12345,
-    html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12345',
-    state: 'APPROVED',
-    comments_count: 0,
-    submitted_at: new Date().toISOString()
-  });
-  GitHubClient.prototype.createDraftReviewGraphQL = async () => ({
-    id: 'PRR_test12346',
-    databaseId: 12346,
-    html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12346',
-    state: 'PENDING',
-    comments_count: 0
-  });
+  installGitHubReviewMock(GitHubClient);
 
   // Mock worktree manager
   GitWorktreeManager.prototype.getWorktreePath = async () => mockWorktreeResponses.getWorktreePath;

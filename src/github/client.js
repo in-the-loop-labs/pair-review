@@ -662,9 +662,11 @@ class GitHubClient {
    *
    * @param {string} nodeId - GraphQL node id
    * @param {Object} [prContext] - `{ owner, repo, prNumber, reviewId? }`
+   * @param {Object} [options]
+   * @param {boolean} [options.strict=false] - Throw lookup failures other than not found
    */
-  async getReviewById(nodeId, prContext) {
-    return pendingReviewOps.getReviewById(this.octokit, this.features, nodeId, prContext);
+  async getReviewById(nodeId, prContext, options) {
+    return pendingReviewOps.getReviewById(this.octokit, this.features, nodeId, prContext, options);
   }
 
   /**
