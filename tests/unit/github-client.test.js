@@ -2546,7 +2546,7 @@ describe('GitHubClient', () => {
 
       const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
       await client.getAuthenticatedUser(); // triggers refresh
-      await client.getAuthenticatedUser(); // should NOT refresh again
+      await client.validateToken(); // a fresh request should NOT refresh again
 
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(call).toBe(3); // 401, retry-success, second-call-success
@@ -2719,11 +2719,12 @@ describe('GitHubClient', () => {
 
       const client = new GitHubClient({ token: 'stale-token', apiHost: null, refresh });
 
+      // Bypass the user cache to exercise three genuinely concurrent HTTP requests.
       const [a, b, c] = await Promise.all([
-        client.getAuthenticatedUser(),
-        client.getAuthenticatedUser(),
-        client.getAuthenticatedUser()
-      ]);
+        client.octokit.rest.users.getAuthenticated(),
+        client.octokit.rest.users.getAuthenticated(),
+        client.octokit.rest.users.getAuthenticated()
+      ]).then(results => results.map(result => result.data));
 
       expect(a.login).toBe('octocat');
       expect(b.login).toBe('octocat');

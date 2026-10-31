@@ -6,6 +6,7 @@ const { GitHubApiError, isComplexityError } = require('./errors');
 const pendingReviewOps = require('./operations/pending-review');
 const reviewLifecycleOps = require('./operations/review-lifecycle');
 const pendingReviewCommentsOps = require('./operations/pending-review-comments');
+const reviewCommentEditOps = require('./operations/review-comment-edit');
 
 // Defaults used when `GitHubClient` is constructed from a bare token
 // string (i.e. without a resolved binding). These mirror the
@@ -17,7 +18,8 @@ const DEFAULT_FEATURES = Object.freeze({
   pending_review_check: 'graphql',
   stack_walker: 'graphql',
   review_lifecycle: 'graphql',
-  pending_review_comments: 'graphql'
+  pending_review_comments: 'graphql',
+  review_comment_edit: 'graphql'
 });
 
 /**
@@ -364,6 +366,37 @@ class GitHubClient {
     } catch (error) {
       await this.handleApiError(error, owner, repo, pull_number);
     }
+  }
+
+  /**
+   * Update an existing review comment in place, including a pending draft.
+   * Never creates a comment or retries an update as a create operation.
+   * @param {Object} ref - {owner, repo, pull_number, github_comment_id,
+   *   github_comment_node_id, github_review_id, github_node_id}. The last
+   *   node id identifies the review, not the comment. Only needed fields
+   *   for the chosen transport must be supplied; missing IDs use safe reads.
+   * @param {string} body - Already-formatted wire body; sent unchanged.
+   * @returns {Promise<{github_comment_id: string|null,
+   *   github_comment_node_id: string|null, github_comment_url: string|null, body: string}>}
+   * @throws {Error} code: not_found, forbidden, invalid_ref; other errors
+   *   retain their cause and include operation/transport context.
+   */
+  async updateReviewComment(ref, body) {
+    return reviewCommentEditOps.updateReviewComment(this.octokit, this.features, ref, body);
+  }
+
+  /**
+   * Paginate one review's comments, including the author's pending draft.
+   * @param {Object} ref - Same shape as updateReviewComment; provide a
+   *   github_review_id and/or github_node_id (review node ID).
+   * @returns {Promise<Array<Object>>} REST-shaped candidates (string id,
+   *   node_id, html_url, user.login, in_reply_to_id, path, line, start_line,
+   *   side, start_side, original_line, original_start_line, subject_type,
+   *   body, created_at), plus github_comment_id/github_comment_node_id/
+   *   github_comment_url/author_login aliases. Bodies are never normalized.
+   */
+  async listCommentsForReview(ref) {
+    return reviewCommentEditOps.listCommentsForReview(this.octokit, this.features, ref);
   }
 
   /**
@@ -1131,12 +1164,14 @@ class GitHubClient {
    * @returns {Promise<{login: string, name: string, avatar_url: string}>}
    */
   async getAuthenticatedUser() {
-    const { data } = await this.octokit.rest.users.getAuthenticated();
-    return {
-      login: data.login,
-      name: data.name,
-      avatar_url: data.avatar_url
-    };
+    // Share in-flight requests as well as successful reads. A failed lookup
+    // must not poison the cache for a later recovery attempt.
+    if (!this._authenticatedUser) {
+      this._authenticatedUser = this.octokit.rest.users.getAuthenticated()
+        .then(({ data }) => ({ login: data.login, name: data.name, avatar_url: data.avatar_url }))
+        .catch(error => { this._authenticatedUser = null; throw error; });
+    }
+    return this._authenticatedUser;
   }
 
   /**
