@@ -100,6 +100,8 @@ describe('impl/graphql/pending-review-comments', () => {
         `a.js:1 - ${error.message}`,
         `b.js:2 - ${error.message}`
       ]);
+      // GitHub may have added these comments, so the added subset is unknown.
+      expect(result.posted).toBeNull();
     });
 
     // GitHub did not run the mutation for any of these, so one retry is safe.
@@ -129,6 +131,8 @@ describe('impl/graphql/pending-review-comments', () => {
       expect(graphql).toHaveBeenCalledTimes(2);
       expect(result.failed).toBe(true);
       expect(result.successCount).toBe(0);
+      // GitHub never ran the batch, so it is known that nothing was added.
+      expect(result.posted).toEqual([]);
     });
 
     it('never re-sends a batch that returned partial data', async () => {

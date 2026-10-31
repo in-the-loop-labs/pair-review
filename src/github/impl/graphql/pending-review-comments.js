@@ -294,8 +294,10 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
           const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
           failedDetails.push(`${location} - ${ghError}`);
         }
+        // The earlier batches are known only if GitHub did not run this one;
+        // a failure it may have applied leaves the subset unknown.
         return { successCount: totalSuccessful, failed: true, failedDetails,
-          posted: Array.isArray(batchError.errors) ? posted : null };
+          posted: isSafeToRetry(batchError) ? posted : null };
       }
     } else if (batchResult) {
       let batchSuccessful = 0;
