@@ -6545,16 +6545,17 @@ class PRManager {
 
   /**
    * Load user comments from API
-   * @param {boolean} [includeDismissed=false] - Whether to include dismissed (inactive) comments
-   *   When true, dismissed comments are returned by the API so they can be shown in the AI Panel.
+   * @param {boolean} [includeDismissed] - Whether to include dismissed (inactive) comments.
+   *   Defaults to the comment panel's "show dismissed" filter, so reloads
+   *   triggered by events (live sync, tab becoming visible) keep what the
+   *   panel shows. When true, dismissed comments are returned by the API so
+   *   they can be shown in the AI Panel.
    *   Note: Dismissed comments are NEVER shown in the diff panel per design decision.
-   */
-  /**
    * @returns {Promise<boolean|undefined>} true once rendered, false if the
    *   reload failed, undefined when no PR is loaded. A load overtaken by a
    *   newer one resolves with the newer load's result.
    */
-  loadUserComments(includeDismissed = false) {
+  loadUserComments(includeDismissed = window.aiPanel?.showDismissedComments || false) {
     const load = this._loadUserComments(includeDismissed);
     this._latestUserCommentsLoad = load;
     return load;
