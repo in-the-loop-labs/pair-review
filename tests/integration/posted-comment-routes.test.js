@@ -42,7 +42,8 @@ describe('publication action routes', () => {
     edit.mockRejectedValue(Object.assign(new Error('Host refused edit'), { status }));
     const response = await request(server).post(endpoint()).send({});
     expect(response.status).toBe(status);
-    expect(response.body).toMatchObject({ code, error: 'Host refused edit' });
+    expect(response.body).toMatchObject({ code });
+    expect(response.body.error).toContain('Nothing was posted.');
     expect(db.prepare('SELECT COUNT(*) n FROM comment_postings').get().n).toBe(1);
   });
   it.each([null, 404, 403, 422])('submitting a review never sends an edited posted comment, even after failed edit %s', async (failure) => {

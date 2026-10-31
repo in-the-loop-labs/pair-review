@@ -1522,7 +1522,10 @@ router.post('/api/reviews/:id/comments/:commentId/update-on-github', async (req,
       : error.status === 404 || error.code === 'not_found' ? 'not_found_on_github'
         : [403, 422].includes(error.status) || error.code === 'forbidden' ? 'forbidden' : 'update_failed';
     const status = error.status || (code === 'unresolved_identity' ? 409 : code === 'not_found_on_github' ? 404 : code === 'forbidden' ? 403 : 500);
-    res.status(status).json({ error: error.message, code, review_url: error.review_url });
+    const message = code === 'not_found_on_github' ? 'The host could not find this comment. Nothing was posted.'
+      : code === 'forbidden' ? 'The host refused this update. Check your permissions or whether the conversation is locked. Nothing was posted.'
+        : error.message;
+    res.status(status).json({ error: message, code, review_url: error.review_url });
   }
 });
 

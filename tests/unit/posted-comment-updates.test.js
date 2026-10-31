@@ -279,7 +279,7 @@ describe('review history modal', () => {
           github_comment_url: 'https://github.com/o/r/pull/1#discussion_r1', posted_at: '2026-10-30 12:00:00', comment_status: 'active' },
         { comment_id: 7, kind: 'update', body: 'New text', file: 'src/a.js', line_start: 3, line_end: 3, side: 'RIGHT',
           github_comment_url: 'https://github.com/o/r/pull/1#discussion_r1', posted_at: '2026-10-31 09:00:00', comment_status: 'active' },
-        { comment_id: 9, kind: 'post', body: 'Gone', file: 'src/b.js', is_file_level: 1, line_start: null, comment_status: 'inactive' }
+        { comment_id: 9, kind: 'post', backfilled: 1, body: 'Gone', file: 'src/b.js', is_file_level: 1, line_start: null, comment_status: 'inactive' }
       ] },
     { id: 1, state: 'pending', event: null, created_at: '2026-10-29 08:00:00', body: '', github_url: 'javascript:alert(1)', postings: [] }
   ];
@@ -300,6 +300,7 @@ describe('review history modal', () => {
     expect(comments[1].querySelector('.review-history-chip-edited').textContent).toBe('edited');
     expect(comments[1].textContent).toContain('New text');
     expect(comments[2].textContent).toContain('File comment');
+    expect(comments[2].textContent).toContain('approximate');
     expect(comments[2].querySelector('.review-history-chip-dismissed')).not.toBeNull();
     expect(comments[2].hasAttribute('data-jump-comment-id')).toBe(false);
     expect(items[1].querySelector('.review-history-chip').textContent).toBe('Pending draft');

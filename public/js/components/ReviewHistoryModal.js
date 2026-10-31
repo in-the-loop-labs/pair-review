@@ -152,6 +152,7 @@ class ReviewHistoryModal {
         <span class="review-history-comment-file">${esc(posting.file || '')}</span>
         <span class="review-history-comment-line">${esc(PC.postingLocation(posting))}</span>
         ${edited ? '<span class="review-history-chip review-history-chip-edited">edited</span>' : ''}
+        ${posting.backfilled ? '<span class="review-history-chip" title="Legacy snapshot and review association may be approximate">approximate</span>' : ''}
         ${dismissed ? '<span class="review-history-chip review-history-chip-dismissed">dismissed</span>' : ''}
         ${when ? `<time class="review-history-time" datetime="${esc(when.iso)}">${esc(when.text)}</time>` : ''}
         ${url ? `<a class="review-history-link" href="${esc(url)}" target="_blank" rel="noopener">View</a>` : ''}
