@@ -12,11 +12,13 @@ const _stackWalkerOps = require('./github/operations/stack-walker');
 const _pendingReviewOps = require('./github/operations/pending-review');
 const _reviewLifecycleOps = require('./github/operations/review-lifecycle');
 const _pendingReviewCommentsOps = require('./github/operations/pending-review-comments');
+const _reviewCommentEditOps = require('./github/operations/review-comment-edit');
 const IMPLEMENTATION_MATRIX = {
   stack_walker: _stackWalkerOps.IMPLEMENTED_MODES,
   pending_review_check: _pendingReviewOps.IMPLEMENTED_MODES,
   review_lifecycle: _reviewLifecycleOps.IMPLEMENTED_MODES,
-  pending_review_comments: _pendingReviewCommentsOps.IMPLEMENTED_MODES
+  pending_review_comments: _pendingReviewCommentsOps.IMPLEMENTED_MODES,
+  review_comment_edit: _reviewCommentEditOps.IMPLEMENTED_MODES
 };
 
 // Recognised sub-keys that configure an implementation without selecting a
@@ -24,7 +26,9 @@ const IMPLEMENTATION_MATRIX = {
 // explicitly keeps typos from being silently ignored.
 const KNOWN_FEATURE_SUBKEYS = new Set([
   'pending_review_comments_endpoint',
-  'pending_review_comments_batch'
+  'pending_review_comments_batch',
+  'review_comment_edit_endpoint',
+  'review_comment_edit_list_endpoint'
 ]);
 
 let _cachedCommandToken = null;
@@ -41,13 +45,15 @@ const FEATURE_AREAS = [
   'pending_review_check',
   'stack_walker',
   'review_lifecycle',
-  'pending_review_comments'
+  'pending_review_comments',
+  'review_comment_edit'
 ];
 const GRAPHQL_DEFAULT_AREAS = new Set([
   'pending_review_check',
   'stack_walker',
   'review_lifecycle',
-  'pending_review_comments'
+  'pending_review_comments',
+  'review_comment_edit'
 ]);
 const ALLOWED_FEATURE_VALUES = new Set(['graphql', 'rest', 'host']);
 
@@ -1060,6 +1066,24 @@ function validateRepoConfig(config) {
           `Invalid pair-review config: repos["${repoKey}"].features.pending_review_comments_endpoint is missing required placeholder(s): ${missing.join(', ')}.`
         );
       }
+    }
+
+    for (const [key, required] of [
+      ['review_comment_edit_endpoint', ['{owner}', '{repo}', '{comment_id}']],
+      ['review_comment_edit_list_endpoint', ['{owner}', '{repo}', '{pull_number}', '{review_id}']]
+    ]) {
+      const value = features[key];
+      if (value === undefined || value === null) continue;
+      const prefix = `Invalid pair-review config: repos["${repoKey}"].features.${key}`;
+      if (typeof value !== 'string' || !value) throw new Error(`${prefix} must be a non-empty string.`);
+      if (resolvedFeatures.review_comment_edit !== 'host') throw new Error(`${prefix} is only valid when review_comment_edit = "host".`);
+      if (!value.startsWith('/') || value.startsWith('//') || /[\\\\\r\n]/.test(value)) {
+        throw new Error(`${prefix} must be a relative path starting with a single slash.`);
+      }
+      const missing = required.filter(placeholder => !value.includes(placeholder));
+      if (missing.length) throw new Error(`${prefix} is missing required placeholder(s): ${missing.join(', ')}.`);
+      const unknown = value.match(/\{[^}]+\}/g)?.filter(placeholder => !required.includes(placeholder)) || [];
+      if (unknown.length) throw new Error(`${prefix} has unknown placeholder(s): ${unknown.join(', ')}.`);
     }
 
     // Some hosts expose the pending-review endpoint but accept one comment

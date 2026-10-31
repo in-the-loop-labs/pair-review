@@ -259,9 +259,37 @@ operation for this repo. Allowed values:
 | `stack_walker` | `graphql` | `rest` | Walking parent/child PRs for stack-aware review. |
 | `review_lifecycle` | `graphql` | `rest` | Creating, submitting, and deleting pending reviews. |
 | `pending_review_comments` | `graphql` | `host` (see below) | Attaching inline comments to a pending review. |
+| `review_comment_edit` | `graphql` | `rest` | Updating an existing review comment and listing one review's comments (including the author's pending comments). |
 
 You only need to specify areas where you want to override the default for
 the host kind. Omitted areas use the defaults above.
+
+#### `review_comment_edit` endpoints (optional)
+
+Editing a posted comment updates it in place; a missing or forbidden comment
+is never recreated. The REST mode uses `PATCH
+/repos/{owner}/{repo}/pulls/comments/{comment_id}`. Recovery lists all pages of
+`GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments`,
+not the PR-wide list (which omits unpublished comments).
+
+For a host with different paths, select `"review_comment_edit": "host"` and
+set `review_comment_edit_endpoint` (PATCH) and/or
+`review_comment_edit_list_endpoint` (GET). Each template must start with a
+single `/` and include all placeholders shown for its default path above.
+The PATCH request body is `{ "body": "..." }`; its response is the updated
+REST-shaped comment, including `id`, `node_id`, `html_url`, and the raw `body`.
+The GET response is a REST-shaped comment array with standard `Link` pagination.
+Both endpoints run through the bound host's authenticated Octokit client.
+List rows must include author, reply identity, path, subject type, current and
+original line/range positions, sides, and raw body for strict identity recovery.
+Do not normalize whitespace in bodies. If a host omits identity fields, recovery
+abstains rather than posting a duplicate.
+
+On GitHub, GraphQL listing also reads the same review's REST comments to obtain
+`side`/`start_side`, which the GraphQL comment type does not expose. Numeric-only
+or node-only references are resolved with safe reads when necessary, never by
+creating a replacement comment. An alt-host without GraphQL should retain its
+REST comment/review IDs when using REST or host mode.
 
 #### `pending_review_comments` requires `"host"` on alt-hosts
 
