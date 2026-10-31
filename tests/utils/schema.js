@@ -57,6 +57,7 @@ const SCHEMA_SQL = {
       github_comment_node_id TEXT,
       github_comment_url TEXT,
       backfilled INTEGER NOT NULL DEFAULT 0,
+      kind TEXT NOT NULL DEFAULT 'post' CHECK (kind IN ('post', 'update')),
       posted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `,
