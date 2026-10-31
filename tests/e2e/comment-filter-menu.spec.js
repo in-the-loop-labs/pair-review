@@ -84,6 +84,21 @@ test.describe('Comment filter menu (PR mode)', () => {
     await expect(funnel).toBeFocused();
   });
 
+  test('Show dismissed reveals a dismissed posted comment without also enabling Show posted', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pair-review-hide-posted-comments', 'true'));
+    await mockUserComments(page, [{ ...fileComment(9051, 'inactive', 'Dismissed after posting'), publication: { state: 'posted' } }]);
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await openUserSegment(page);
+    await expect(notice(page)).toHaveText(/1 dismissed hidden/);
+    await expect(notice(page)).not.toContainText('posted hidden');
+    await page.locator('.comment-filter-btn').click();
+    await page.getByRole('checkbox', { name: 'Show dismissed' }).check();
+    await expect(page.getByRole('checkbox', { name: 'Show posted' })).not.toBeChecked();
+    await expect(panelItem(page, 9051)).toBeVisible();
+    await expect(notice(page)).toHaveCount(0);
+  });
+
   test('"Show posted" overrides the hide-after-posting preference for this review only', async ({ page }) => {
     await page.addInitScript(() => {
       // Only on the first load: the test checks what the page writes

@@ -27,6 +27,33 @@ describe('per-comment transport results', () => {
     expect(graphql.buildBatchMutation([{ path: 'a', body: 'file' }])).toContain('nodes { id fullDatabaseId url }');
   });
 
+  it('falls back only after pure fullDatabaseId schema validation, before any mutation executed', async () => {
+    const octokit = { graphql: vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('schema validation'), { errors: [{
+        message: "Field 'fullDatabaseId' doesn't exist on type 'PullRequestReviewComment'",
+        extensions: { code: 'undefinedField', fieldName: 'fullDatabaseId' }
+      }] }))
+      .mockResolvedValueOnce({ comment0: { thread: { id: 't0' } }, comment1: { thread: { id: 't1' } } })
+      .mockResolvedValueOnce({ comment0: { thread: { id: 't2' } } }) };
+    const result = await graphql.addCommentsInBatches(octokit, 'pr', 'review', comments, 2);
+    expect(result.posted).toEqual([posting(0), posting(1), posting(2)]);
+    expect(result.failed).toBe(false);
+    expect(octokit.graphql).toHaveBeenCalledTimes(3);
+    expect(octokit.graphql.mock.calls[0][0]).toContain('fullDatabaseId');
+    expect(octokit.graphql.mock.calls[1][0]).not.toContain('comments(first:');
+    expect(octokit.graphql.mock.calls[2][0]).not.toContain('comments(first:');
+  });
+
+  it('never metadata-fallback retries a response that already includes partial successes', async () => {
+    const octokit = { graphql: vi.fn().mockRejectedValue(Object.assign(new Error('partial'), {
+      data: { comment0: thread(1) }, errors: [{ message: "Cannot query field 'fullDatabaseId' on type 'PullRequestReviewComment'" }]
+    })) };
+    const result = await graphql.addCommentsInBatches(octokit, 'pr', 'review', comments);
+    expect(result.failed).toBe(true);
+    expect(result.posted.map(p => p.index)).toEqual([0]);
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['invalid line', 'Query has complexity exceeding the maximum'])('does not replay successful aliases on partial error: %s', async (message) => {
     const error = Object.assign(new Error(message), {
       data: { comment0: thread(1), comment1: null },

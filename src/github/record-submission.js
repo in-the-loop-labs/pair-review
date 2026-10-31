@@ -1,5 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 const { GitHubReviewRepository, CommentPostingRepository, run } = require('../database');
+const logger = require('../utils/logger');
 
 /** Record the exact attached subset, inside the caller's short transaction. */
 async function recordReviewSubmission(db, {
@@ -16,10 +17,11 @@ async function recordReviewSubmission(db, {
     body: body || '', submitted_at: event === 'DRAFT' ? null : postedAt,
     github_url: githubReview.html_url || existingDraft?.url || null
   });
-  // Only successful legacy clients/mocks may omit the subset. An explicit null
-  // means unknown, never 'all'; failure callers must pass a concrete array.
-  const posted = postedComments === undefined
-    ? sentComments.map((_, index) => ({ index })) : (postedComments || []);
+  // A successful submission with unknown per-comment accounting keeps the
+  // historical all-sent contract, preventing silent reposts on the next submit.
+  // Failure callers only invoke this helper with an explicit known subset.
+  const posted = postedComments == null
+    ? sentComments.map((_, index) => ({ index })) : postedComments;
   const postings = posted.map(p => {
     const sent = sentComments[p.index];
     const source = sourceRows[p.index];
@@ -47,16 +49,24 @@ async function recordReviewSubmission(db, {
 async function recordRetainedSubmission(db, error, args, afterCommit = () => {}) {
   if (!error.reviewRetained) return;
   if (Array.isArray(error.postedComments) && error.postedComments.length) {
-    await run(db, 'BEGIN TRANSACTION');
+    let began = false;
     try {
+      await run(db, 'BEGIN TRANSACTION');
+      began = true;
       await recordReviewSubmission(db, {
         ...args, event: 'DRAFT', githubReview: error.pendingReview,
         postedComments: error.postedComments
       });
       await run(db, 'COMMIT');
+      began = false;
     } catch (dbError) {
-      await run(db, 'ROLLBACK');
-      throw dbError;
+      if (began) {
+        try { await run(db, 'ROLLBACK'); }
+        catch (rollbackError) { logger.error('Failed to roll back retained-posting bookkeeping:', rollbackError); }
+      }
+      logger.error('Failed to record retained GitHub comment postings:', dbError);
+      error.message += ' Recording the retained comments locally failed; check the pending review on GitHub before resubmitting.';
+      throw error;
     }
     afterCommit();
     error.message += ` ${error.postedComments.length} of ${args.sentComments.length} comments were added to your pending review on GitHub and are marked as such.`;

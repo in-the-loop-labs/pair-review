@@ -2,9 +2,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 const Database = require('better-sqlite3');
 const { createTestDatabase, seedTestReview } = require('../utils/schema');
-const { MIGRATIONS, runVersionedMigrations, GitHubReviewRepository, CommentPostingRepository, CommentRepository } = require('../../src/database');
+const { MIGRATIONS, GitHubReviewRepository, CommentPostingRepository, CommentRepository, _setupSchema: setupSchema } = require('../../src/database');
 const { recordReviewSubmission, recordRetainedSubmission } = require('../../src/github/record-submission');
 const { isPendingComment } = require('../../public/js/utils/posted-comment');
+const v55 = require('../fixtures/schema-v55.cjs');
 
 describe('comment posting storage and legacy upgrade', () => {
   let db;
@@ -51,14 +52,20 @@ describe('comment posting storage and legacy upgrade', () => {
   });
 
   it('upgrades a real v55 database through v57 and publishes every legacy duplicate immediately', async () => {
+    db.close();
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    for (const sql of Object.values(v55.SCHEMA_SQL)) db.exec(sql);
+    for (const sql of v55.INDEX_SQL) db.exec(sql);
+    db.pragma('user_version = 55');
     const review = seedTestReview(db);
-    db.exec('DROP TABLE comment_postings; PRAGMA user_version = 55');
     db.prepare(`INSERT INTO github_reviews (id, review_id, github_node_id, state) VALUES
       (1, ?, 'NODE', 'pending'), (2, ?, 'NODE', 'pending')`).run(review, review);
     db.prepare(`INSERT INTO comments (id, review_id, source, status, body) VALUES
       (1, ?, 'user', 'draft', 'draft user'), (2, ?, 'ai', 'draft', 'draft AI'),
       (3, ?, 'user', 'inactive', 'dismissed')`).run(review, review, review);
-    runVersionedMigrations(db);
+    // Exercise the real startup CREATE IF NOT EXISTS loop before migrations.
+    setupSchema(db);
     expect(db.pragma('user_version', { simple: true })).toBe(57);
     expect(db.prepare('SELECT status FROM comments ORDER BY id').all().map(c => c.status)).toEqual(['active', 'submitted', 'inactive']);
     // Link one legacy posting to each duplicate before Approve.
@@ -111,6 +118,34 @@ describe('comment posting storage and legacy upgrade', () => {
       await recordRetainedSubmission(db, Object.assign(new Error('failed'), extra), args);
     }
     expect(db.prepare('SELECT COUNT(*) n FROM comment_postings').get().n).toBe(1);
+  });
+
+  it('treats unknown accounting on a successful submit as all sent, including headless AI rows', async () => {
+    const reviewId = seedTestReview(db);
+    db.prepare(`INSERT INTO comments (id, review_id, source, status, body) VALUES
+      (1, ?, 'ai', 'active', 'a'), (2, ?, 'user', 'active', 'b')`).run(reviewId, reviewId);
+    await recordReviewSubmission(db, {
+      reviewId, event: 'COMMENT', githubReview: { id: 'NODE', databaseId: 42 },
+      sourceRows: [{ id: 1, body: 'a' }, { id: 2, body: 'b' }],
+      sentComments: [{ body: 'a' }, { body: 'b' }], postedComments: null
+    });
+    expect(db.prepare('SELECT COUNT(*) n FROM comment_postings').get().n).toBe(2);
+    expect(db.prepare('SELECT status FROM comments WHERE id = 1').get().status).toBe('submitted');
+    expect(db.prepare(`SELECT id FROM comments c WHERE ${CommentRepository.pendingCommentSql()}`).all()).toEqual([]);
+  });
+
+  it('preserves the original GitHub failure if retained-posting bookkeeping fails', async () => {
+    const reviewId = seedTestReview(db);
+    const error = Object.assign(new Error('GitHub validation failed'), {
+      reviewRetained: true, pendingReview: { id: 'NODE', databaseId: 42 }, postedComments: [{ index: 9 }]
+    });
+    await expect(recordRetainedSubmission(db, error, {
+      reviewId, sourceRows: [], sentComments: []
+    })).rejects.toBe(error);
+    expect(error.message).toContain('GitHub validation failed');
+    expect(error.message).toContain('Recording the retained comments locally failed');
+    expect(db.prepare('SELECT COUNT(*) n FROM github_reviews').get().n).toBe(0);
+    expect(db.inTransaction).toBe(false);
   });
 
   it('pins SQL pending predicate to the frontend mirror across lifecycle/publication combinations', async () => {

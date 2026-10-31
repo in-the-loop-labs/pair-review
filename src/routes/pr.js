@@ -295,10 +295,15 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
   const githubDbIdStr = (githubPendingReview.databaseId !== undefined && githubPendingReview.databaseId !== null)
     ? String(githubPendingReview.databaseId)
     : null;
-  const matchingRecord = existingPendingRecords.find(r =>
+  const matchesCurrentDraft = r =>
     (r.github_node_id && r.github_node_id === githubPendingReview.id) ||
-    (githubDbIdStr !== null && r.github_review_id === githubDbIdStr)
-  );
+    (githubDbIdStr !== null && r.github_review_id === githubDbIdStr);
+  const matchingRecord = existingPendingRecords.find(matchesCurrentDraft);
+  // Older drafts can remain stale even when we already know the current one.
+  // Exclude every duplicate of the current identity, not just the chosen row.
+  await reconcileStalePendingRecords(githubReviewRepo,
+    existingPendingRecords.filter(r => !matchesCurrentDraft(r)), githubClient, prContext,
+    { keepPendingOnError: false });
 
   let pendingDraft;
   if (matchingRecord) {
@@ -312,10 +317,6 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
     pendingDraft = await githubReviewRepo.getById(matchingRecord.id);
   } else {
     // New draft from GitHub - create new record
-    // Query GitHub for the actual state of old pending records
-    await reconcileStalePendingRecords(githubReviewRepo, existingPendingRecords, githubClient, prContext,
-      { keepPendingOnError: false });
-
     pendingDraft = await githubReviewRepo.create(reviewId, {
       github_review_id: String(githubPendingReview.databaseId),
       github_node_id: githubPendingReview.id,

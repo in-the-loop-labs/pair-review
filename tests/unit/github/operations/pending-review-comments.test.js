@@ -30,7 +30,7 @@ describe('operations/pending-review-comments', () => {
         [{ path: 'src/file.js', line: 1, side: 'RIGHT', body: 'comment' }]
       );
       expect(octokit.graphql).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ successCount: 1, failed: false, failedDetails: [] });
+      expect(result).toEqual({ successCount: 1, failed: false, failedDetails: [], posted: [{ index: 0, github_comment_id: null, github_comment_node_id: null, github_comment_url: null }] });
     });
 
     it('returns an empty success result with no graphql calls when given zero comments', async () => {
@@ -42,7 +42,7 @@ describe('operations/pending-review-comments', () => {
         'PRR_pending',
         []
       );
-      expect(result).toEqual({ successCount: 0, failed: false, failedDetails: [] });
+      expect(result).toEqual({ successCount: 0, failed: false, failedDetails: [], posted: [] });
       expect(octokit.graphql).not.toHaveBeenCalled();
     });
 
@@ -84,7 +84,7 @@ describe('operations/pending-review-comments', () => {
       expect(endpoint).toBe(
         'POST /repos/alice/widgets/pulls/9/reviews/42/comments'
       );
-      expect(result).toEqual({ successCount: 1, failed: false, failedDetails: [] });
+      expect(result).toEqual({ successCount: 1, failed: false, failedDetails: [], posted: [{ index: 0, github_comment_id: null, github_comment_node_id: null, github_comment_url: null }] });
       expect(octokit.graphql).not.toHaveBeenCalled();
     });
 

@@ -22,6 +22,8 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 // Import actual modules for spying (vi.mock doesn't work with CommonJS require())
 // We'll spy on prototype methods instead
 const { GitHubClient } = require('../../src/github/client');
+const realCreateReviewGraphQL = GitHubClient.prototype.createReviewGraphQL;
+const realAddCommentsInBatches = GitHubClient.prototype.addCommentsInBatches;
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
 const ws = require('../../src/ws');
@@ -3490,6 +3492,35 @@ describe('Review Submission Endpoint', () => {
       const [comment] = await new CommentRepository(db).getUserComments(prId);
       expect(comment.publication.state).toBe('draft');
       expect(GitHubClient.prototype.createDraftReviewGraphQL.mock.lastCall[2]).toHaveLength(0);
+    });
+
+    it.each([{ failed: [] }, { added: 0, failed: [] }])('host success with ambiguous accounting %j records every comment and never reposts', async (data) => {
+      app.set('config', { github_token: 'test', repos: { 'owner/repo': {
+        api_host: 'ghe.example.com', token: 'test',
+        features: { review_lifecycle: 'rest', pending_review_comments: 'host' }
+      } } });
+      const requestMock = vi.fn().mockResolvedValue({ data });
+      const octokit = { request: requestMock, rest: { pulls: {
+        createReview: vi.fn().mockResolvedValue({ data: { id: 123, node_id: 'PRR_host' } }),
+        submitReview: vi.fn().mockResolvedValue({ data: { id: 123, node_id: 'PRR_host', state: 'COMMENTED', html_url: 'https://example.test/r' } })
+      } } };
+      const build = vi.spyOn(GitHubClient.prototype, '_buildOctokit').mockReturnValue(octokit);
+      GitHubClient.prototype.createReviewGraphQL.mockImplementation(realCreateReviewGraphQL);
+      GitHubClient.prototype.addCommentsInBatches.mockImplementation(realAddCommentsInBatches);
+      try {
+        await run(db, `INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'user', 'file.js', 3, 'body', 'active')`, [prId]);
+        const response = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' });
+        expect(response.status).toBe(200);
+        const [comment] = await new CommentRepository(db).getUserComments(prId);
+        expect(comment.publication.state).toBe('posted');
+        expect(comment.publication.comment_url).toBeNull();
+        const retry = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'APPROVE' });
+        expect(retry.status).toBe(200);
+        expect(requestMock).toHaveBeenCalledTimes(1); // real host adapter sent only the first time
+      } finally {
+        build.mockRestore();
+      }
     });
 
     it('retained partial failure records only the attached subset and retry skips it', async () => {

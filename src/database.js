@@ -6562,6 +6562,7 @@ module.exports = {
   shapePublication,
   CommentPostingRepository,
   // Exported for testing only
+  _setupSchema: setupSchema,
   _MIGRATIONS: MIGRATIONS,
   MIGRATIONS
 };
