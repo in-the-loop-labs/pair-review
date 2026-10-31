@@ -559,10 +559,22 @@ describe('extractJSON', () => {
       ['unquoted after a missing comma', ' ', 'line:3'],
       ['single-quoted after a missing comma', ' ', "'line':3"],
       ['backticked after a missing comma', ' ', '`line`: 3'],
+      ['missing its opening quote', ', ', 'line":3'],
+      ['missing its opening quote after a missing comma', ' ', 'line":3'],
+      ['missing its opening quote, with a string value', ', ', 'kind":"x"'],
+      ['double-quoted after a missing comma', ' ', '"line":3'],
+      ['mixed-quoted', ', ', '\'line":3'],
     ])('should not fold fields into a string when a key is %s', (_, sep, key) => {
       const json = `{"suggestions":[{"file":"a.js","type":"bug","description":"text"${sep}${key},"title":"next"}]}`;
       const result = extractJSON(json, 'test');
       expect(result.success).toBe(false);
+    });
+
+    it('should still repair a string whose prose ends in a colon', () => {
+      const json = '{"suggestions": [{"description": "rename "foo" as follows:", "line": 1}]}';
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0].description).toBe('rename "foo" as follows:');
     });
 
     it('should still repair a quote followed by a comma and prose containing a colon later', () => {
