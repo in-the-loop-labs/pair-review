@@ -20,6 +20,7 @@ const { findMainGitRoot } = require('../local-review');
 const { getConfigDir, getRepoPath, resolveRepoOptions, resolvePoolConfig, getRepoResetScript, resolveHostBinding, resolveBindingRepositoryFromPR, getRepoConfig, getRepoCloneUrlForHost, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const { storedHostToOption, isDualHostRepoConfig, resolveRecordedHost, bindingRepositoryForHost } = require('../utils/host-resolution');
 const logger = require('../utils/logger');
+const { invalidatePRFileBlobCache } = require('../utils/pr-file-blob-cache');
 const { fireReviewStartedHook } = require('../hooks/payloads');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -231,6 +232,10 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath,
     await run(db, 'ROLLBACK');
     logger.error('Error storing PR data:', error);
     throw new Error(`Failed to store PR data: ${error.message}`);
+  } finally {
+    // pr_data may have changed (or a lookup may have cached uncommitted rows
+    // mid-transaction), so drop the file-content blob cache once it settles.
+    invalidatePRFileBlobCache(db, repository, prInfo.number);
   }
 }
 

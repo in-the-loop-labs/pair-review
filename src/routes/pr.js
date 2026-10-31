@@ -59,7 +59,7 @@ const { safeParseJson } = require('../utils/safe-parse-json');
 const { mergeChangedFilesWithDiff, parseUnifiedDiffPatches, buildChangedFileEntries } = require('../utils/diff-file-list');
 const { parseHunks } = require('../utils/diff-hunks');
 const { hashHunk } = require('../ai/hunk-hashing');
-const { resolveOriginalFileContentSpecs } = require('../utils/diff-file-content');
+const { getPRFileContentSpecs, invalidatePRFileBlobCache } = require('../utils/pr-file-blob-cache');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const { resolveReviewConfig } = require('../review-config');
 const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
@@ -678,6 +678,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       prNumber,
       repository
     ]);
+    invalidatePRFileBlobCache(db, repository, prNumber);
 
     logger.info(`Successfully refreshed PR #${prNumber} for ${repository}`);
 
@@ -1406,17 +1407,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     // Prefer the exact blob from the cached diff snapshot. If that is unavailable,
     // fall back to repo-wide base_sha and finally the worktree filesystem.
     const repository = normalizeRepository(owner, repo);
-    const prRecord = await queryOne(db, `
-      SELECT pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prNumber, repository]);
-
-    const prData = safeParseJson(prRecord?.pr_data, null);
-    if (prRecord?.pr_data && !prData) {
-      logger.warn('Could not parse pr_data for file-content route');
-    }
-
-    const contentSpecs = resolveOriginalFileContentSpecs(prData, fileName);
+    const contentSpecs = getPRFileContentSpecs(db, repository, prNumber, fileName);
 
     if (contentSpecs.length > 0) {
       try {
@@ -1912,6 +1903,7 @@ router.post('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
       SET pr_data = ?, updated_at = CURRENT_TIMESTAMP
       WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [JSON.stringify(prData), prNumber, repository]);
+    invalidatePRFileBlobCache(db, repository, prNumber);
 
     res.json({
       success: true,
