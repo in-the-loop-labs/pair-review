@@ -94,14 +94,12 @@ const JSON_ANCHORS = [
   /\{"overview"\s*:/,
 ];
 
-// An object key that isn't double-quoted: bare identifier, single-quoted or
-// backticked, followed by a colon.
-const LOOKS_LIKE_KEY = /^(?:[A-Za-z_$][\w$]*|'[^'\n]*'|`[^`\n]*`)\s*:/;
-// Such a key followed by the start of a JSON value: a string, array or
-// object, or a number or literal ending at a delimiter.
-const LOOKS_LIKE_FIELD = new RegExp(
-  LOOKS_LIKE_KEY.source + /\s*(?:["[{]|(?:-?\d[\d.eE+-]*|true|false|null)\s*[,}\]])/.source
-);
+// A key, in any spelling or half-quoted (`line:`, `'line':`, `line":`,
+// `"line":`), followed by the start of a JSON value: a string, array or
+// object, or a number or literal ending at a delimiter. Prose with a colon
+// (`here: foo()`, `note: 5 items`) does not match.
+const LOOKS_LIKE_FIELD =
+  /(?:[A-Za-z_$][\w$]*|["'`])["'`]?\s*:\s*(?:["'[{]|(?:-?\d[\d.eE+-]*|true|false|null)\s*[,}\]])/;
 
 // Upper bound on error-directed repair attempts per response. Each attempt
 // escapes one quote (or re-runs the control-character pass), so this caps
@@ -151,10 +149,11 @@ function isClosingQuote(text, q) {
  *
  * The candidate is rejected when the character at the offset is `"`, `}` or
  * `]`: that looks like a missing or trailing comma, not a quote in prose,
- * and escaping would merge separate values. Likewise when the offset starts
- * a key that isn't double-quoted (`, line: 3`, `'line': 3`); without a comma
- * before it, only when a value follows, since prose like `here:` is common. The quote must also be a closing
- * quote according to the in-string state machine.
+ * and escaping would merge separate values. The quote must also be a closing
+ * quote according to the in-string state machine. Finally, it is rejected
+ * when the span escaping it would pull into the string (up to the next
+ * unescaped quote) holds a key followed by a value (`, line":3,`), in any
+ * quoting style: that is a malformed key, not prose.
  *
  * @param {string} text - Candidate JSON text
  * @param {string} message - JSON.parse error message
@@ -167,20 +166,12 @@ function findPrematureStringEnd(text, message) {
   const pos = Number(posMatch[1]);
   if (pos >= text.length || '"}]'.includes(text[pos])) return -1;
 
-  // A key that isn't double-quoted (`line:`, `'line':`, `` `line`: ``) means
-  // malformed structure, not prose: escaping would fold the following fields
-  // into the string, so leave it to fail. (A `"key":` is refused above.)
-  const ahead = text.slice(pos, pos + 200);
   let q = pos - 1;
   const skipWhitespace = () => { while (q >= 0 && /\s/.test(text[q])) q--; };
 
   if (/Expected ',' or '[}\]]' after (property value|array element)/.test(message)) {
-    // No comma before it, so prose like `"see "foo" here: …"` is common:
-    // decline only when a value follows the key
-    if (LOOKS_LIKE_FIELD.test(ahead)) return -1;
     skipWhitespace();
   } else if (/Expected double-quoted property name/.test(message)) {
-    if (LOOKS_LIKE_KEY.test(ahead)) return -1;
     skipWhitespace();
     if (text[q] !== ',') return -1;
     q--;
@@ -190,7 +181,28 @@ function findPrematureStringEnd(text, message) {
   }
 
   if (q < 0 || text[q] !== '"' || !isClosingQuote(text, q)) return -1;
+  // Escaping q pulls everything up to the next unescaped quote into the
+  // string. If that span holds a field (`, line":3,`), the "prose" is really
+  // a malformed key: escaping would fold later fields into the string, so
+  // leave it to fail. A span ending in `":` is a key whose string value
+  // opens with the quote that ends the span (`, kind":"x"`).
+  const span = text.slice(q, nextUnescapedQuote(text, q + 1));
+  if (LOOKS_LIKE_FIELD.test(span) || /["'`]\s*:\s*$/.test(span)) return -1;
   return q;
+}
+
+/**
+ * @param {string} text - Candidate JSON text
+ * @param {number} from - Index to start scanning at
+ * @returns {number} Index of the next `"` not preceded by a backslash
+ *   escape, or text.length if there is none
+ */
+function nextUnescapedQuote(text, from) {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === '"') return i;
+  }
+  return text.length;
 }
 
 /**
