@@ -94,6 +94,15 @@ const JSON_ANCHORS = [
   /\{"overview"\s*:/,
 ];
 
+// An object key that isn't double-quoted: bare identifier, single-quoted or
+// backticked, followed by a colon.
+const LOOKS_LIKE_KEY = /^(?:[A-Za-z_$][\w$]*|'[^'\n]*'|`[^`\n]*`)\s*:/;
+// Such a key followed by the start of a JSON value: a string, array or
+// object, or a number or literal ending at a delimiter.
+const LOOKS_LIKE_FIELD = new RegExp(
+  LOOKS_LIKE_KEY.source + /\s*(?:["[{]|(?:-?\d[\d.eE+-]*|true|false|null)\s*[,}\]])/.source
+);
+
 // Upper bound on error-directed repair attempts per response. Each attempt
 // escapes one quote (or re-runs the control-character pass), so this caps
 // the number of JSON.parse calls on input that is not JSON at all.
@@ -138,12 +147,13 @@ function isClosingQuote(text, q) {
  *     character before the offset.
  *   - "Expected double-quoted property name": the early-closed string was
  *     followed by prose starting with a comma (`"called "foo", which"`), so
- *     the bad quote precedes that comma. Not when the offset starts an
- *     unquoted key (`, line: 3`).
+ *     the bad quote precedes that comma.
  *
  * The candidate is rejected when the character at the offset is `"`, `}` or
  * `]`: that looks like a missing or trailing comma, not a quote in prose,
- * and escaping would merge separate values. The quote must also be a closing
+ * and escaping would merge separate values. Likewise when the offset starts
+ * a key that isn't double-quoted (`, line: 3`, `'line': 3`); without a comma
+ * before it, only when a value follows, since prose like `here:` is common. The quote must also be a closing
  * quote according to the in-string state machine.
  *
  * @param {string} text - Candidate JSON text
@@ -157,15 +167,20 @@ function findPrematureStringEnd(text, message) {
   const pos = Number(posMatch[1]);
   if (pos >= text.length || '"}]'.includes(text[pos])) return -1;
 
+  // A key that isn't double-quoted (`line:`, `'line':`, `` `line`: ``) means
+  // malformed structure, not prose: escaping would fold the following fields
+  // into the string, so leave it to fail. (A `"key":` is refused above.)
+  const ahead = text.slice(pos, pos + 200);
   let q = pos - 1;
   const skipWhitespace = () => { while (q >= 0 && /\s/.test(text[q])) q--; };
 
   if (/Expected ',' or '[}\]]' after (property value|array element)/.test(message)) {
+    // No comma before it, so prose like `"see "foo" here: …"` is common:
+    // decline only when a value follows the key
+    if (LOOKS_LIKE_FIELD.test(ahead)) return -1;
     skipWhitespace();
   } else if (/Expected double-quoted property name/.test(message)) {
-    // `, line: 3` is an unquoted key, not prose: escaping would fold the
-    // following fields into the string, so leave it to fail
-    if (/^[A-Za-z_$][\w$]*\s*:/.test(text.slice(pos, pos + 100))) return -1;
+    if (LOOKS_LIKE_KEY.test(ahead)) return -1;
     skipWhitespace();
     if (text[q] !== ',') return -1;
     q--;
