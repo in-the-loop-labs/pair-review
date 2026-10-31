@@ -1982,6 +1982,7 @@ class PierreBridge {
           </div>
         </div>
         <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute ? window.escapeHtmlAttribute(comment.body) : ''}">${window.renderMarkdown ? window.renderMarkdown(comment.body || '') : escapeHtml(comment.body || '')}</div>
+        ${window.PostedComment?.getEditedSincePostedHtml(comment) || ''}
       </div>
     `;
 

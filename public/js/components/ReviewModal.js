@@ -129,6 +129,10 @@ class ReviewModal {
             <div class="review-comment-summary">
               <div class="review-comment-count"></div>
             </div>
+            <label class="update-edited-comments-option" hidden>
+              <input type="checkbox" id="update-edited-comments" checked>
+              <span class="update-edited-comments-text"></span>
+            </label>
             <label class="hide-posted-comments-option">
               <input type="checkbox" id="hide-posted-comments">
               Hide comments after posting
@@ -264,6 +268,8 @@ class ReviewModal {
     // matches what happens.
     if (hidePosted) hidePosted.checked = window.PostedComment?.isHidePostedInEffect() || false;
     this.updateHidePostedOverrideHint();
+    const updateEdited = this.modal.querySelector('#update-edited-comments');
+    if (updateEdited) updateEdited.checked = true;
     
     // Reset form
     const textarea = this.modal.querySelector('#review-body-modal');
@@ -419,6 +425,52 @@ class ReviewModal {
     
     // Update large review warning
     this.updateLargeReviewWarning(userComments);
+    this.updateEditedCommentsOption();
+  }
+
+  /**
+   * Posted comments edited since they were posted. They are updated in place
+   * on the host after the submit, never posted again, so they are not part
+   * of the "will be submitted" count.
+   * @returns {Array<Object>}
+   */
+  getEditedPostedComments() {
+    return window.PostedComment?.getUpdatableComments(window.prManager?.userComments) || [];
+  }
+
+  /** Show "Also update N edited comments on GitHub" when there are any. */
+  updateEditedCommentsOption() {
+    const option = this.modal?.querySelector('.update-edited-comments-option');
+    if (!option) return;
+    const count = this.getEditedPostedComments().length;
+    option.hidden = count === 0;
+    const text = option.querySelector('.update-edited-comments-text');
+    if (text) {
+      text.textContent = `Also update ${count} edited ${count === 1 ? 'comment' : 'comments'} on ${ReviewModal.hostName()}`;
+    }
+  }
+
+  /**
+   * Update edited posted comments on the host, one at a time, after the
+   * review was submitted. Each goes through the same in-place update as the
+   * comment's own "Update on GitHub" action; none is ever re-posted.
+   * @param {Array<number>} commentIds
+   * @returns {Promise<{updated: number, failed: Array<{id: number, error: Object}>}>}
+   */
+  async updateEditedComments(commentIds) {
+    const failed = [];
+    let updated = 0;
+    const submitBtn = this.modal?.querySelector('#submit-review-btn-modal');
+    for (const [index, id] of commentIds.entries()) {
+      if (submitBtn) {
+        submitBtn.innerHTML = `<div class="loading-spinner-small"></div> Updating edited comments (${index + 1}/${commentIds.length})...`;
+      }
+      const result = await window.prManager?.updatePostedCommentOnHost?.(id)
+        || { ok: false, error: { message: 'Comment updates are unavailable' } };
+      if (result.ok) updated++;
+      else failed.push({ id, error: result.error });
+    }
+    return { updated, failed };
   }
 
   /** Show the override hint while this review has its own "Show posted" setting. */
@@ -521,6 +573,10 @@ class ReviewModal {
     const commentCount = window.prManager?.getPendingCommentCount?.() || 0;
     // Comments saved to the pending draft are published with this review too
     const submittableCount = window.prManager?.getSubmittableCommentCount?.() || 0;
+    // Decided now: comments edited after this point are not part of this submit
+    const updateEditedBox = this.modal.querySelector('#update-edited-comments');
+    const editedIds = updateEditedBox?.checked && !updateEditedBox.closest('label')?.hidden
+      ? this.getEditedPostedComments().map(c => c.id) : [];
     
     // Hide any previous errors
     this.hideError();
@@ -573,6 +629,11 @@ class ReviewModal {
       }
       
       const result = await response.json();
+
+      // The review is on the host now; edits to posted comments follow it
+      const editedUpdates = editedIds.length > 0
+        ? await this.updateEditedComments(editedIds)
+        : { updated: 0, failed: [] };
       
       // Show appropriate success message
       if (window.toast) {
@@ -596,6 +657,15 @@ class ReviewModal {
         }
       }
       
+      if (editedUpdates.failed.length > 0) {
+        const count = editedUpdates.failed.length;
+        const first = editedUpdates.failed[0].error?.message || 'Update failed';
+        window.toast?.showWarning(
+          `Review submitted, but ${count} edited ${count === 1 ? 'comment' : 'comments'} could not be updated on ${ReviewModal.escapeHtml(ReviewModal.hostName())}: ${ReviewModal.escapeHtml(first)}`,
+          8000
+        );
+      }
+
       // Clear submitting state before hiding modal
       this.setSubmittingState(false);
       

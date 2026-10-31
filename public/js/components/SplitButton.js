@@ -28,6 +28,8 @@ class SplitButton {
     this.onPreview = options.onPreview || (() => {});
     this.onClear = options.onClear || (() => {});
     this.onShare = options.onShare || (() => {});
+    // Review history lists what was posted to the host: PR mode only
+    this.onHistory = options.onHistory || null;
     this.onSetDefault = options.onSetDefault || (() => {});
     this.shareUrl = options.shareUrl || null;
     // Custom icon SVG, label, and description for share menu item
@@ -130,6 +132,15 @@ class SplitButton {
         <span class="menu-item-text">Preview</span>
       </button>`;
 
+    if (!this.hideSubmit && this.onHistory) {
+      menuItems += `
+      <div class="split-button-menu-separator"></div>
+      <button class="split-button-menu-item" data-action="history" role="menuitem">
+        <span class="menu-item-check"></span>
+        <span class="menu-item-text">Review history</span>
+      </button>`;
+    }
+
     if (this.shareUrl) {
       // Icon renders on the right side of the label (unlike checkmarks which are on the left)
       const iconHtml = this.shareIcon
@@ -206,6 +217,9 @@ class SplitButton {
         break;
       case 'share':
         this.onShare();
+        break;
+      case 'history':
+        this.onHistory?.();
         break;
       case 'clear':
         this.onClear();
