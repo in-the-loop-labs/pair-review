@@ -970,21 +970,9 @@ describe('PRManager Suggestion Status', () => {
 
       await prManager.restoreUserComment(commentId);
 
-      // Verify loadUserComments was called with current filter state
-      expect(prManager.loadUserComments).toHaveBeenCalledWith(true); // showDismissedComments is true
-    });
-
-    it('should pass correct includeDismissed flag when reloading comments', async () => {
-      // Test with showDismissedComments = false
-      window.aiPanel.showDismissedComments = false;
-      const commentId = 'test-comment-restore-5';
-
-      mockFetch.mockResolvedValueOnce({ ok: true });
-
-      await prManager.restoreUserComment(commentId);
-
-      // Verify loadUserComments was called with false
-      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+      // loadUserComments reads the panel's filters itself, so it takes no arguments
+      expect(prManager.loadUserComments).toHaveBeenCalledTimes(1);
+      expect(prManager.loadUserComments).toHaveBeenCalledWith();
     });
 
     it('should not reload comments when API call fails', async () => {
@@ -1011,7 +999,7 @@ describe('PRManager Suggestion Status', () => {
       expect(prManager.loadUserComments).toHaveBeenCalled();
     });
 
-    it('should handle missing aiPanel gracefully for filter state', async () => {
+    it('should handle missing aiPanel gracefully', async () => {
       window.aiPanel = null;
       const commentId = 'test-comment-restore-8';
 
@@ -1019,8 +1007,7 @@ describe('PRManager Suggestion Status', () => {
 
       await prManager.restoreUserComment(commentId);
 
-      // Should default to false when aiPanel is missing
-      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+      expect(prManager.loadUserComments).toHaveBeenCalledWith();
     });
   });
 

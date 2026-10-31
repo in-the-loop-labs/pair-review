@@ -418,6 +418,9 @@ class ReviewModal {
   handleHidePostedToggle() {
     const checked = this.modal.querySelector('#hide-posted-comments').checked;
     window.PostedComment.setHidePostedEnabled(checked);
+    // The reviewer just chose the browser-wide setting, so this review
+    // follows it again instead of its own "Show posted" override.
+    window.aiPanel?.clearShowPostedOverride?.();
     try {
       window.prManager?.applyPostedCommentVisibility();
     } catch (error) {
@@ -603,7 +606,7 @@ class ReviewModal {
       // loadUserComments catches its own errors and resolves false when the
       // reload failed. It resolves undefined when no PR is loaded, which is
       // not a failure, so compare with false rather than testing !refreshed.
-      const refreshed = await window.prManager?.loadUserComments(window.aiPanel?.showDismissedComments || false);
+      const refreshed = await window.prManager?.loadUserComments();
       if (refreshed === false) {
         console.error('Review posted, but comment refresh failed');
         window.toast?.showWarning('Review posted, but comments could not be refreshed. Please reload the page.');

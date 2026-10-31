@@ -416,7 +416,7 @@ describe('posted comment UI', () => {
   it('does not render inactive comments or count them as pending', async () => {
     comments = [{ id: 8, status: 'inactive', file: 'src/a.js', line_start: 10, body: 'Dismissed' }];
     const manager = makeManager();
-    await manager.loadUserComments(true);
+    await manager.loadUserComments();
     expect(document.querySelectorAll('.user-comment-row, .file-comment-card')).toHaveLength(0);
     expect(manager.getPendingCommentCount()).toBe(0);
   });

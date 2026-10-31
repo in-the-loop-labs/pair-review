@@ -13,7 +13,10 @@ const {
   stampCommentStatus
 } = PostedComment;
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  PostedComment.setShowPostedOverride(null);
+});
 
 describe('posted-comment helpers', () => {
   it.each([
@@ -43,6 +46,36 @@ describe('posted-comment helpers', () => {
     expect(shouldHidePostedComment({ status: 'active' })).toBe(false);
     // An explicit setting wins over the stored one
     expect(shouldHidePostedComment({ status: 'submitted' }, false)).toBe(false);
+  });
+
+  it('a per-review "Show posted" override wins over the browser-wide setting without changing it', () => {
+    const { setShowPostedOverride, getShowPostedOverride, isHidePostedInEffect } = PostedComment;
+    setHidePostedEnabled(true);
+    expect(isHidePostedInEffect()).toBe(true);
+
+    setShowPostedOverride(true);
+    expect(getShowPostedOverride()).toBe(true);
+    expect(isHidePostedInEffect()).toBe(false);
+    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(false);
+    expect(localStorage.getItem(HIDE_POSTED_STORAGE_KEY)).toBe('true');
+
+    setHidePostedEnabled(false);
+    setShowPostedOverride(false);
+    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(true);
+
+    setShowPostedOverride(null);
+    expect(getShowPostedOverride()).toBeNull();
+    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(false);
+  });
+
+  it('counts the comments hidden as posted', () => {
+    const { countHiddenPostedComments } = PostedComment;
+    const comments = [{ status: 'submitted' }, { status: 'submitted' }, { status: 'draft' }, { status: 'active' }, { status: 'inactive' }];
+    expect(countHiddenPostedComments(comments)).toBe(0);
+    expect(countHiddenPostedComments(comments, true)).toBe(2);
+    setHidePostedEnabled(true);
+    expect(countHiddenPostedComments(comments)).toBe(2);
+    expect(countHiddenPostedComments(undefined, true)).toBe(0);
   });
 
   it('shows the posted icon for posted comments only', () => {

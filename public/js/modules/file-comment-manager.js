@@ -448,7 +448,10 @@ class FileCommentManager {
     const userComments = this.prManager?.userComments || [];
     const suggestionIdNum = parseInt(suggestion.id);
     const wasAdopted = userComments.some(comment =>
-      comment.parent_id && (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
+      // A dismissed comment no longer adopts its suggestion (dismissing it
+      // dismisses the suggestion); the cache keeps dismissed comments.
+      comment.status !== 'inactive' && comment.parent_id &&
+        (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
     );
 
     // Determine if suggestion should be collapsed based on status or adoption
