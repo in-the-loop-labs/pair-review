@@ -3744,7 +3744,7 @@ describe('config.js', () => {
               }
             }
           }
-        })).toThrow(/Valid endpoint overrides: pending_review_comments_endpoint\.$/);
+        })).toThrow(/Valid endpoint overrides: pending_review_comments_endpoint, review_comment_edit_endpoint, review_comment_edit_list_endpoint\.$/);
       });
 
       it('accepts the recognised pending_review_comments_endpoint sub-key', () => {
