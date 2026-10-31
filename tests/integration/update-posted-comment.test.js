@@ -118,6 +118,15 @@ describe('posted comment updates never recreate', () => {
     assertNoCreate();
   });
 
+  it('recovers a legacy single-line posting whose end line was never stored', async () => {
+    db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL, backfilled = 1, line_end = NULL').run();
+    client.listReviewComments.mockResolvedValue([candidate()]);
+    await update();
+    expect((await postings.listByComment(commentId)).every(p => p.github_comment_id === '123')).toBe(true);
+    expect(client.updateReviewComment).toHaveBeenCalledOnce();
+    assertNoCreate();
+  });
+
   it('falls back to PR-wide comments only for an untrusted legacy review link', async () => {
     db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL, backfilled = 1').run();
     client.listReviewComments.mockResolvedValue([candidate()]);
@@ -169,6 +178,12 @@ describe('strict sent anchor identity', () => {
     expect(matchesPosting({ ...comment, subject_type: 'file' }, { ...posting, is_file_level: 1 }, 'me')).toBe(true);
     expect(matchesPosting({ ...comment, line: null, subject_type: undefined }, { ...posting, is_file_level: 1 }, 'me')).toBe(false);
   });
+  it('never treats absent non-file coordinates as a matching anchor', () => {
+    const noAnchor = { ...posting, line_start: null, line_end: null };
+    expect(matchesPosting({ ...comment, original_line: null, original_start_line: null, start_side: null }, noAnchor, 'me')).toBe(false);
+    expect(matchesPosting({ ...comment, original_line: null }, posting, 'me')).toBe(false);
+  });
+
   it.each([{ side: 'RIGHT' }, { start_side: 'RIGHT' }, { original_start_line: null }, { original_line: 9 }, { in_reply_to_id: 123 }, { path: 'b.js' }, { body: 'exact\n ' }])('rejects a changed identity %j', (change) => {
     expect(matchesPosting({ ...comment, ...change }, posting, 'me')).toBe(false);
   });

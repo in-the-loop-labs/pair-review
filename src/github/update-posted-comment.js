@@ -12,8 +12,10 @@ function matchesPosting(candidate, posting, login) {
   // becomes outdated. Original coordinates identify the anchor we sent.
   const line = candidate.original_line;
   const start = candidate.original_start_line;
-  const expectedStart = posting.line_start === posting.line_end ? null : posting.line_start;
-  return line === posting.line_end && (start ?? null) === (expectedStart ?? null) &&
+  const expectedEnd = posting.line_end ?? posting.line_start;
+  if (expectedEnd == null || line == null) return false;
+  const expectedStart = posting.line_start === expectedEnd ? null : posting.line_start;
+  return line === expectedEnd && (start ?? null) === (expectedStart ?? null) &&
     candidate.side === (posting.side || 'RIGHT') &&
     (candidate.start_side ?? null) === (expectedStart == null ? null : (posting.side || 'RIGHT'));
 }
