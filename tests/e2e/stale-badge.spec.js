@@ -68,7 +68,7 @@ test.describe('Stale PR Badge', () => {
     });
 
     // Override comments to return empty (no user comments)
-    await page.route('**/api/reviews/*/comments', route => {
+    await page.route(/\/api\/reviews\/\d+\/comments(\?|$)/, route => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',

@@ -7270,6 +7270,11 @@ body:not([data-theme="dark"]) .theme-icon-light {
   z-index: 11;
 }
 
+/* Open comment filter menu must overlay the sections below the segment row */
+.ai-panel > .segment-control.comment-filter-open {
+  z-index: 11;
+}
+
 /* Prevent text selection during drag */
 body.resizing {
   user-select: none;
