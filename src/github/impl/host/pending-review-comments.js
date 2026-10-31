@@ -55,7 +55,8 @@ const logger = require('../../../utils/logger');
  * When set to `false`, each wire comment is sent as the complete request body
  * in its own POST. This supports hosts whose review-comments extension is
  * singular while preserving the generic batch contract by default. Any 2xx
- * counts as success and the response body is ignored. A 400/422 fails only
+ * counts as success; optional response ids/URL are captured in `posted`.
+ * A 400/422 fails only
  * that comment; any other failure stops the loop and reports the remaining
  * comments as skipped.
  *
@@ -182,11 +183,11 @@ function toWireComment(comment, commitId) {
  * @param {Array} comments - Comments with `{ path, line?, start_line?,
  *   side?, body, isFileLevel? }`. Same shape the GraphQL impl accepts.
  * @param {number} [_batchSize] - Ignored; kept for signature parity.
- * @returns {Promise<{successCount: number, failed: boolean, failedDetails: string[]}>}
+ * @returns {Promise<{successCount: number, failed: boolean, failedDetails: string[], posted: Array|null}>}
  */
 async function addCommentsInBatches(octokit, features, prContext, reviewId, comments, _batchSize) {
   if (!comments || comments.length === 0) {
-    return { successCount: 0, failed: false, failedDetails: [] };
+    return { successCount: 0, failed: false, failedDetails: [], posted: [] };
   }
 
   if (!prContext || typeof prContext !== 'object') {
@@ -261,15 +262,23 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
   if (!useBatchRequest) {
     let successCount = 0;
     const failedDetails = [];
+    let posted = [];
     const locationOf = (c) => (c.line ? `${c.path}:${c.line}` : `${c.path}:file-level`);
 
     for (let index = 0; index < wireComments.length; index++) {
       try {
-        await octokit.request(`POST ${endpoint}`, {
+        const response = await octokit.request(`POST ${endpoint}`, {
           headers,
           data: wireComments[index]
         });
         successCount++;
+        const data = response?.data;
+        posted.push({
+          index,
+          github_comment_id: data?.id != null ? String(data.id) : null,
+          github_comment_node_id: data?.node_id ?? null,
+          github_comment_url: data?.html_url ?? null
+        });
       } catch (error) {
         const status = error && (error.status || error.statusCode);
         const message = (error && error.message) || 'Unknown error';
@@ -282,6 +291,9 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
         // shares the endpoint, review and credentials with the remaining
         // comments and would fail them all, so stop here.
         if (status !== 400 && status !== 422) {
+          // A lost response/server error may have attached this comment.
+          // The subset is unknown, unlike an explicit validation rejection.
+          posted = null;
           for (const skipped of comments.slice(index + 1)) {
             failedDetails.push(
               `${locationOf(skipped)} - skipped after ${status || 'network error'}`
@@ -304,7 +316,8 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
     return {
       successCount,
       failed: failedDetails.length > 0,
-      failedDetails
+      failedDetails,
+      posted
     };
   }
 
@@ -333,7 +346,8 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
     return {
       successCount: 0,
       failed: true,
-      failedDetails
+      failedDetails,
+      posted: null
     };
   }
 
@@ -348,7 +362,7 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
 
   const failedDetails = [];
   for (const entry of failedList) {
-    const idx = typeof entry.index === 'number' ? entry.index : null;
+    const idx = typeof entry?.index === 'number' ? entry.index : null;
     const errMsg = (entry && (entry.error_message || entry.message)) || 'Unknown error';
     const source = idx !== null && idx >= 0 && idx < comments.length ? comments[idx] : null;
     const location = source
@@ -358,10 +372,25 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
     logger.warn(`Host comment failed: ${location} - ${errMsg}`);
   }
 
+  // Only infer the complement when every failure has a unique valid index
+  // and the host explicitly accounts for every submitted comment. No ids
+  // are inferred from an undocumented batch response shape.
+  const failedIndexes = new Set(failedList.map(entry => entry?.index));
+  const knownSubset = hasExplicitAdded && Number.isInteger(added) && added >= 0 &&
+    added + failedList.length === comments.length &&
+    failedIndexes.size === failedList.length &&
+    [...failedIndexes].every(index => Number.isInteger(index) && index >= 0 && index < comments.length);
+  const posted = knownSubset
+    ? comments.flatMap((_, index) => failedIndexes.has(index) ? [] : [{
+      index, github_comment_id: null, github_comment_node_id: null, github_comment_url: null
+    }])
+    : null;
+
   // Sanity check: if the host reported an explicit count, the accounted-
   // for items (added + failed) should equal the total submitted. If they
   // don't, the host response is internally inconsistent — log a warning
-  // but still trust the explicit counts.
+  // but preserve the legacy explicit counts. `posted` remains null: callers
+  // must not use these counts to guess which comments were attached.
   if (hasExplicitAdded && added + failedList.length !== comments.length) {
     logger.warn(
       `Host pending_review_comments inconsistent counts: added=${added}, ` +
@@ -376,7 +405,8 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
     return {
       successCount: added,
       failed: true,
-      failedDetails
+      failedDetails,
+      posted
     };
   }
 
@@ -388,7 +418,8 @@ async function addCommentsInBatches(octokit, features, prContext, reviewId, comm
   return {
     successCount,
     failed: false,
-    failedDetails: []
+    failedDetails: [],
+    posted
   };
 }
 
