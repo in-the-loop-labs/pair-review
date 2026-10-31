@@ -5349,6 +5349,12 @@ div.external-comment-row {
   cursor: pointer;
 }
 
+.hide-posted-override-hint {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--color-text-tertiary, #6e7781);
+}
+
 .posted-comment-hidden {
   display: none !important;
 }
