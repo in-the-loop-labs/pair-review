@@ -118,6 +118,31 @@ describe('posted comment updates never recreate', () => {
     assertNoCreate();
   });
 
+  it.each([
+    { github_comment_id: '123', github_comment_node_id: 'OTHER' },
+    { github_comment_id: '999', github_comment_node_id: 'C' }
+  ])('never recovers an identity already claimed by another local comment: %j', async (identity) => {
+    const otherId = await new CommentRepository(db).createLineComment({ review_id: reviewId, file: 'a.js', line_start: 8, body: 'before' });
+    await postings.insertMany([{ comment_id: otherId, github_review_row_id: review.id, body: 'before', ...identity }]);
+    db.prepare('UPDATE comment_postings SET github_comment_id = NULL, github_comment_node_id = NULL, backfilled = 1 WHERE comment_id = ?').run(commentId);
+    client.listReviewComments.mockResolvedValue([candidate()]);
+    await expect(update()).rejects.toMatchObject({ code: 'unresolved_identity' });
+    expect(client.updateReviewComment).not.toHaveBeenCalled();
+    expect((await postings.listByComment(commentId))[0].github_comment_id).toBeNull();
+    assertNoCreate();
+  });
+
+  it('counts only unclaimed candidates when recovering a legacy identity', async () => {
+    const otherId = await new CommentRepository(db).createLineComment({ review_id: reviewId, file: 'a.js', line_start: 8, body: 'before' });
+    await postings.insertMany([{ comment_id: otherId, github_review_row_id: review.id, body: 'before', github_comment_id: '123', github_comment_node_id: 'C' }]);
+    db.prepare('UPDATE comment_postings SET github_comment_id = NULL, github_comment_node_id = NULL, backfilled = 1 WHERE comment_id = ?').run(commentId);
+    client.listReviewComments.mockResolvedValue([candidate(), candidate({ id: 124, node_id: 'UNCLAIMED' })]);
+    await update();
+    expect(client.updateReviewComment).toHaveBeenCalledWith(expect.objectContaining({ github_comment_id: '124', github_comment_node_id: 'UNCLAIMED' }), 'edited');
+    expect((await postings.listByComment(otherId))[0].github_comment_id).toBe('123');
+    assertNoCreate();
+  });
+
   it('recovers a legacy single-line posting whose end line was never stored', async () => {
     db.prepare('UPDATE comment_postings SET github_comment_node_id = NULL, github_comment_id = NULL, backfilled = 1, line_end = NULL').run();
     client.listReviewComments.mockResolvedValue([candidate()]);

@@ -49,7 +49,16 @@ async function updatePostedComment(db, { commentId, githubClient, owner, repo, p
     const candidates = trustedReview
       ? await githubClient.listCommentsForReview(ref)
       : await githubClient.listReviewComments({ owner, repo, pull_number });
-    const matches = candidates.filter(c => matchesPosting(c, posting, user.login));
+    const matches = [];
+    for (const candidate of candidates.filter(c => matchesPosting(c, posting, user.login))) {
+      // A legacy PR-wide search can otherwise mistake another locally known
+      // comment for this one when the original copy was deleted on the host.
+      const claimed = await queryOne(db, `SELECT 1 FROM comment_postings WHERE comment_id != ? AND
+        ((? IS NOT NULL AND github_comment_id = ?) OR (? IS NOT NULL AND github_comment_node_id = ?)) LIMIT 1`,
+      [commentId, candidate.id == null ? null : String(candidate.id), candidate.id == null ? null : String(candidate.id),
+        candidate.node_id ?? null, candidate.node_id ?? null]);
+      if (!claimed) matches.push(candidate);
+    }
     if (matches.length !== 1) throw identityError(posting);
     const match = matches[0];
     recovered = { id: match.id == null ? null : String(match.id), node: match.node_id || null,
