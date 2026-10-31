@@ -132,6 +132,7 @@ class ReviewModal {
             <label class="hide-posted-comments-option">
               <input type="checkbox" id="hide-posted-comments">
               Hide comments after posting
+              <span class="hide-posted-override-hint" hidden>(set for this review in the comment filter; changing it here applies to all reviews)</span>
             </label>
             
             <!-- Warning dialog for large reviews -->
@@ -257,7 +258,12 @@ class ReviewModal {
     // Update comment count
     this.updateCommentCount();
     const hidePosted = this.modal.querySelector('#hide-posted-comments');
-    if (hidePosted) hidePosted.checked = window.PostedComment?.isHidePostedEnabled() || false;
+    // Show what applies to this review: its "Show posted" override, if any,
+    // else the browser-wide setting. Toggling writes the browser-wide setting
+    // and clears the override (handleHidePostedToggle), so the box always
+    // matches what happens.
+    if (hidePosted) hidePosted.checked = window.PostedComment?.isHidePostedInEffect() || false;
+    this.updateHidePostedOverrideHint();
     
     // Reset form
     const textarea = this.modal.querySelector('#review-body-modal');
@@ -415,12 +421,19 @@ class ReviewModal {
     this.updateLargeReviewWarning(userComments);
   }
 
+  /** Show the override hint while this review has its own "Show posted" setting. */
+  updateHidePostedOverrideHint() {
+    const hint = this.modal?.querySelector('.hide-posted-override-hint');
+    if (hint) hint.hidden = (window.PostedComment?.getShowPostedOverride() ?? null) === null;
+  }
+
   handleHidePostedToggle() {
     const checked = this.modal.querySelector('#hide-posted-comments').checked;
     window.PostedComment.setHidePostedEnabled(checked);
     // The reviewer just chose the browser-wide setting, so this review
     // follows it again instead of its own "Show posted" override.
     window.aiPanel?.clearShowPostedOverride?.();
+    this.updateHidePostedOverrideHint();
     try {
       window.prManager?.applyPostedCommentVisibility();
     } catch (error) {
