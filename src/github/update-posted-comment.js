@@ -35,8 +35,8 @@ async function updatePostedComment(db, { commentId, githubClient, owner, repo, p
   const ref = { owner, repo, pull_number, github_comment_id: posting.github_comment_id,
     github_comment_node_id: posting.github_comment_node_id, github_review_id: posting.github_review_id,
     github_node_id: posting.github_node_id };
-  const mode = githubClient.features?.review_comment_edit || 'graphql';
-  const hasUsableId = mode === 'graphql' ? ref.github_comment_node_id : ref.github_comment_id;
+  // Each adapter can resolve the other ID form through a read-only lookup.
+  const hasUsableId = ref.github_comment_node_id || ref.github_comment_id;
   let recovered = null;
   if (!hasUsableId) {
     const user = await githubClient.getAuthenticatedUser();
@@ -53,18 +53,24 @@ async function updatePostedComment(db, { commentId, githubClient, owner, repo, p
       url: match.html_url || null };
     ref.github_comment_id = recovered.id;
     ref.github_comment_node_id = recovered.node;
-    if (!(mode === 'graphql' ? recovered.node : recovered.id)) throw identityError(posting);
+    if (!recovered.node && !recovered.id) throw identityError(posting);
     // Repair survives even an update rejection, so the next attempt targets the same comment.
     await run(db, `UPDATE comment_postings SET github_comment_id = ?, github_comment_node_id = ?,
       github_comment_url = COALESCE(?, github_comment_url) WHERE comment_id = ?`,
     [recovered.id, recovered.node, recovered.url, commentId]);
   }
   const sent = buildReviewComments([comment], diffContent)[0];
-  await githubClient.updateReviewComment(ref, sent.body);
+  const result = await githubClient.updateReviewComment(ref, sent.body);
+  const ids = { id: result?.github_comment_id || ref.github_comment_id,
+    node: result?.github_comment_node_id || ref.github_comment_node_id,
+    url: result?.github_comment_url || recovered?.url || posting.github_comment_url };
   await withTransaction(db, async () => {
+    await run(db, `UPDATE comment_postings SET github_comment_id = ?, github_comment_node_id = ?,
+      github_comment_url = COALESCE(?, github_comment_url) WHERE comment_id = ?`,
+    [ids.id, ids.node, ids.url, commentId]);
     await new CommentPostingRepository(db).insertMany([{ ...posting, id: undefined,
-      github_comment_id: ref.github_comment_id, github_comment_node_id: ref.github_comment_node_id,
-      github_comment_url: recovered?.url || posting.github_comment_url,
+      github_comment_id: ids.id, github_comment_node_id: ids.node,
+      github_comment_url: ids.url,
       comment_body: comment.body, body: sent.body, kind: 'update',
       posted_at: new Date().toISOString() }]);
   });
