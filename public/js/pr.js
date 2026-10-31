@@ -682,7 +682,7 @@ class PRManager {
       e.preventDefault();
       e.stopPropagation();
       this.updatePostedCommentOnHost(button.dataset.updateCommentId).then(result => {
-        if (result?.ok) window.toast?.showSuccess(`Comment updated on ${window.PostedComment.hostName()}`);
+        if (result?.ok) window.toast?.showSuccess(`Comment updated on ${window.PostedComment.escapeHtml(window.PostedComment.hostName())}`);
       });
     });
 
