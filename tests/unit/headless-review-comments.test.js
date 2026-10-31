@@ -10,6 +10,7 @@ import { createTestDatabase, closeTestDatabase, seedTestReview } from '../utils/
 
 const { loadHeadlessSuggestions } = require('../../src/main');
 const { buildReviewComments } = require('../../src/utils/diff-annotator');
+const { recordReviewSubmission, recordRetainedSubmission } = require('../../src/github/record-submission');
 const logger = require('../../src/utils/logger');
 const { QUOTEPATH_FALSE_DIFF } = require('../utils/git-path-fixtures');
 
@@ -150,6 +151,31 @@ describe('loadHeadlessSuggestions', () => {
       { path: 'café.js', line: 2, body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false },
       { path: 'quo"te.js', line: 2, start_line: 1, start_side: 'RIGHT', body: '[bug] Check this.', side: 'RIGHT', isFileLevel: false }
     ]);
+  });
+
+  it('records headless drafts as terminal submitted suggestions and skips their postings on rerun', async () => {
+    const id = insertComment({});
+    const sourceRows = await loadHeadlessSuggestions(db, reviewId);
+    await recordReviewSubmission(db, {
+      reviewId, event: 'DRAFT', githubReview: { id: 'PRR_draft', databaseId: 123 },
+      sourceRows, sentComments: buildReviewComments(sourceRows, DIFF)
+    });
+    expect(db.prepare('SELECT status FROM comments WHERE id = ?').get(id).status).toBe('submitted');
+    expect(await loadHeadlessSuggestions(db, reviewId)).toEqual([]);
+    // Posting guard remains authoritative even if an old caller reactivates it.
+    db.prepare("UPDATE comments SET status = 'active' WHERE id = ?").run(id);
+    expect(await loadHeadlessSuggestions(db, reviewId)).toEqual([]);
+  });
+
+  it('a retained headless partial failure excludes only its captured suggestions on rerun', async () => {
+    const first = insertComment({ line_start: 1, line_end: 1 });
+    const second = insertComment({ line_start: 2, line_end: 2 });
+    const sourceRows = await loadHeadlessSuggestions(db, reviewId);
+    await recordRetainedSubmission(db, Object.assign(new Error('partial'), {
+      reviewRetained: true, pendingReview: { id: 'PRR_partial', databaseId: 456 }, postedComments: [{ index: 0 }]
+    }), { reviewId, sourceRows, sentComments: buildReviewComments(sourceRows, DIFF) });
+    expect(db.prepare('SELECT status FROM comments WHERE id = ?').get(first).status).toBe('submitted');
+    expect((await loadHeadlessSuggestions(db, reviewId)).map(s => s.id)).toEqual([second]);
   });
 
   it('returns an empty list when the review has no findings', async () => {
