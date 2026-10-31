@@ -56,6 +56,9 @@ function isSafeToRetry(error) {
     return true;
   }
 
+  // A real HTTP response means the request reached GitHub, whatever its
+  // message says; only response-less failures can be pre-send.
+  if (error.response) return false;
   const codes = [error.code, error.cause && error.cause.code, error.message].filter(Boolean).join(' ');
   return PRE_SEND_NETWORK_CODES.test(codes);
 }
@@ -164,8 +167,9 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
       } catch (error) {
         batchError = error;
 
-        // Complexity/cost limit: halve batch size and re-attempt
-        if (isComplexityError(error)) {
+        // Complexity/cost limit: halve batch size and re-attempt. Never when
+        // the response carries data: some comments may have landed.
+        if (error.data === undefined && isComplexityError(error)) {
           const newSize = Math.max(MIN_BATCH_SIZE, Math.floor(currentBatchSize / 2));
           if (newSize < currentBatchSize) {
             logger.warn(
