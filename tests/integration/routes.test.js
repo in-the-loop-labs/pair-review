@@ -24,6 +24,7 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
+const ws = require('../../src/ws');
 
 // Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
 // shared by every test file that mocks getConfigDir the same way — vitest
@@ -3496,6 +3497,106 @@ describe('Review Submission Endpoint', () => {
 
       const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Earlier draft'", [prId]);
       expect(row.status).toBe('draft');
+    });
+
+    describe('review:comments_changed broadcast', () => {
+      let broadcastSpy;
+
+      beforeEach(() => {
+        broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+      });
+
+      afterEach(() => {
+        broadcastSpy.mockRestore();
+      });
+
+      const commentsChangedCalls = () => broadcastSpy.mock.calls.filter(
+        ([, payload]) => payload.type === 'review:comments_changed'
+      );
+
+      async function insertActiveComment() {
+        await run(db, `
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+          VALUES (?, 'user', 'file.js', 3, 5, 'Pending', 'active')
+        `, [prId]);
+      }
+
+      it.each(['COMMENT', 'DRAFT'])('broadcasts after a %s submit commits, with the submitting client id', async (event) => {
+        await insertActiveComment();
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .set('X-Client-Id', 'tab-a')
+          .send({ event, body: '' });
+        expect(response.status).toBe(200);
+
+        const calls = commentsChangedCalls();
+        expect(calls).toHaveLength(1);
+        const [topic, payload] = calls[0];
+        expect(topic).toBe(`review:${prId}`);
+        expect(payload).toMatchObject({ type: 'review:comments_changed', reviewId: prId, sourceClientId: 'tab-a' });
+
+        // Other tabs reload on this event, so the new statuses must already be committed.
+        const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Pending'", [prId]);
+        expect(row.status).toBe(event === 'DRAFT' ? 'draft' : 'submitted');
+      });
+
+      it('broadcasts on the alt-host (REST + host comments) path too', async () => {
+        app.set('config', {
+          github_token: 'top-level-token',
+          port: 7247,
+          repos: {
+            'owner/repo': {
+              api_host: 'ghe.example.com',
+              token: 'alt-host-token',
+              features: { review_lifecycle: 'rest', pending_review_comments: 'host' }
+            }
+          }
+        });
+        await insertActiveComment();
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .set('X-Client-Id', 'tab-b')
+          .send({ event: 'COMMENT', body: '' });
+        expect(response.status).toBe(200);
+
+        expect(commentsChangedCalls()).toHaveLength(1);
+        expect(commentsChangedCalls()[0][1].sourceClientId).toBe('tab-b');
+      });
+
+      it('does not broadcast when the GitHub call fails', async () => {
+        await insertActiveComment();
+        GitHubClient.prototype.createReviewGraphQL.mockRejectedValueOnce(new Error('GitHub exploded'));
+
+        const response = await request(server)
+          .post('/api/pr/owner/repo/1/submit-review')
+          .set('X-Client-Id', 'tab-a')
+          .send({ event: 'COMMENT', body: '' });
+        expect(response.status).toBe(500);
+
+        expect(commentsChangedCalls()).toHaveLength(0);
+      });
+
+      it('does not broadcast when the submission transaction rolls back', async () => {
+        await insertActiveComment();
+        const updateSpy = vi.spyOn(ReviewRepository.prototype, 'updateAfterSubmission')
+          .mockRejectedValueOnce(new Error('disk full'));
+
+        try {
+          const response = await request(server)
+            .post('/api/pr/owner/repo/1/submit-review')
+            .set('X-Client-Id', 'tab-a')
+            .send({ event: 'COMMENT', body: '' });
+          expect(response.status).toBe(500);
+        } finally {
+          updateSpy.mockRestore();
+        }
+
+        expect(commentsChangedCalls()).toHaveLength(0);
+        const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Pending'", [prId]);
+        expect(row.status).toBe('active');
+      });
     });
 
     describe('GraphQL PR node id feature-gating', () => {
