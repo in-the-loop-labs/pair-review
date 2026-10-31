@@ -600,11 +600,12 @@ class ReviewModal {
         window.removeEventListener('beforeunload', handleBeforeUnload);
       }
 
-      try {
-        const refreshed = await window.prManager?.loadUserComments(window.aiPanel?.showDismissedComments || false);
-        if (refreshed === false) throw new Error('Could not reload comments');
-      } catch (error) {
-        console.error('Review posted, but comment refresh failed:', error);
+      // loadUserComments catches its own errors and resolves false when the
+      // reload failed. It resolves undefined when no PR is loaded, which is
+      // not a failure, so compare with false rather than testing !refreshed.
+      const refreshed = await window.prManager?.loadUserComments(window.aiPanel?.showDismissedComments || false);
+      if (refreshed === false) {
+        console.error('Review posted, but comment refresh failed');
         window.toast?.showWarning('Review posted, but comments could not be refreshed. Please reload the page.');
       }
 

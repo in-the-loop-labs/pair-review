@@ -6549,49 +6549,40 @@ class PRManager {
    *   When true, dismissed comments are returned by the API so they can be shown in the AI Panel.
    *   Note: Dismissed comments are NEVER shown in the diff panel per design decision.
    */
-  async loadUserComments(includeDismissed = false) {
+  /**
+   * @returns {Promise<boolean|undefined>} true once rendered, false if the
+   *   reload failed, undefined when no PR is loaded. A load overtaken by a
+   *   newer one resolves with the newer load's result.
+   */
+  loadUserComments(includeDismissed = false) {
+    const load = this._loadUserComments(includeDismissed);
+    this._latestUserCommentsLoad = load;
+    return load;
+  }
+
+  async _loadUserComments(includeDismissed) {
     if (!this.currentPR) return;
 
+    const generation = (this._userCommentsLoadGeneration || 0) + 1;
+    this._userCommentsLoadGeneration = generation;
+
     try {
-      const queryParam = includeDismissed ? '?includeDismissed=true' : '';
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
-      if (!response.ok) throw new Error('Failed to load comments');
-
-      const data = await response.json();
-      this.userComments = data.comments || [];
-
-      // Separate file-level and line-level comments for diff view rendering
-      // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
-      // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
-      // Posted comments remain visible unless the reviewer opts to hide them.
-      const fileLevelComments = [];
-      const lineLevelComments = [];
-
-      this.userComments.forEach(comment => {
-        if (comment.status === 'inactive') {
-          return;
-        }
-        if (comment.is_file_level === 1) {
-          fileLevelComments.push(comment);
-        } else {
-          lineLevelComments.push(comment);
-        }
-      });
-
-      // Ensure every comment's target line is reachable in the DOM before
-      // rendering. `ensureLinesVisible` handles both engines — for Pierre
-      // files it expands collapsed gaps via `addContextRanges` so the
-      // annotation row exists; for legacy files it expands hidden hunks.
-      // Without this, comments on lines outside the default hunks render
-      // nowhere on reload and "jump to comment" silently fails.
-      if (lineLevelComments.length > 0) {
-        await this.ensureLinesVisible(lineLevelComments.map(c => ({
-          file: c.file,
-          line_start: c.line_start,
-          line_end: c.line_end || c.line_start,
-          side: c.side || 'RIGHT',
-        })));
+      let comments;
+      let fileLevelComments;
+      let lineLevelComments;
+      // A save, edit or dismissal that lands while this load is in flight
+      // isn't in the fetched data. Rendering that data would wipe the new row,
+      // so fetch again (a few times at most) until the cache stood still.
+      for (let attempt = 1; ; attempt++) {
+        const cacheVersion = this._userCommentsVersion || 0;
+        ({ comments, fileLevelComments, lineLevelComments } = await this._fetchUserCommentsForRender(includeDismissed));
+        if (generation !== this._userCommentsLoadGeneration) return this._latestUserCommentsLoad;
+        if (cacheVersion === (this._userCommentsVersion || 0) || attempt >= 3) break;
       }
+
+      // Assign the cache only now, next to the render: an overtaken or retried
+      // load must not replace data that a save made meanwhile.
+      this.userComments = comments;
 
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
@@ -6666,6 +6657,54 @@ class PRManager {
       console.error('Error loading user comments:', error);
       return false;
     }
+  }
+
+  /**
+   * Fetch the review's user comments, split them for rendering, and make
+   * every line-level comment's target line reachable in the DOM.
+   * @private
+   */
+  async _fetchUserCommentsForRender(includeDismissed) {
+    const queryParam = includeDismissed ? '?includeDismissed=true' : '';
+    const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
+    if (!response.ok) throw new Error('Failed to load comments');
+
+    const data = await response.json();
+    const comments = data.comments || [];
+
+    // Separate file-level and line-level comments for diff view rendering
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+    // Posted comments remain visible unless the reviewer opts to hide them.
+    const fileLevelComments = [];
+    const lineLevelComments = [];
+    comments.forEach(comment => {
+      if (comment.status === 'inactive') {
+        return;
+      }
+      if (comment.is_file_level === 1) {
+        fileLevelComments.push(comment);
+      } else {
+        lineLevelComments.push(comment);
+      }
+    });
+
+    // Ensure every comment's target line is reachable in the DOM before
+    // rendering. `ensureLinesVisible` handles both engines — for Pierre
+    // files it expands collapsed gaps via `addContextRanges` so the
+    // annotation row exists; for legacy files it expands hidden hunks.
+    // Without this, comments on lines outside the default hunks render
+    // nowhere on reload and "jump to comment" silently fails.
+    if (lineLevelComments.length > 0) {
+      await this.ensureLinesVisible(lineLevelComments.map(c => ({
+        file: c.file,
+        line_start: c.line_start,
+        line_end: c.line_end || c.line_start,
+        side: c.side || 'RIGHT',
+      })));
+    }
+
+    return { comments, fileLevelComments, lineLevelComments };
   }
 
   applyPostedCommentVisibility() {
@@ -7413,6 +7452,8 @@ class PRManager {
   registerUserComment(comment) {
     const stored = { status: 'active', ...comment };
     this.userComments = [...(this.userComments || []).filter(c => c.id !== stored.id), stored];
+    // Lets an in-flight loadUserComments see that its data is stale
+    this._userCommentsVersion = (this._userCommentsVersion || 0) + 1;
     window.aiPanel?.addComment?.(stored);
     this.updateCommentCount();
     this.commentMinimizer?.refreshIndicators();
@@ -7429,6 +7470,7 @@ class PRManager {
    */
   patchUserComment(commentId, updates) {
     this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
+    this._userCommentsVersion = (this._userCommentsVersion || 0) + 1;
     if (updates.status === 'inactive' && !window.aiPanel?.showDismissedComments) {
       window.aiPanel?.removeComment?.(commentId);
     } else {

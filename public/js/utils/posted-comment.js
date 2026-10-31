@@ -58,7 +58,7 @@ function shouldHidePostedComment(comment, hidePosted = isHidePostedEnabled()) {
 
 function getPostedCommentIcon(comment) {
   if (!isPostedComment(comment)) return '';
-  const label = 'Posted comment';
+  const label = commentStatus(comment) === 'draft' ? 'In pending draft review' : 'Posted comment';
   return `<span class="posted-comment-icon" title="${label}" role="img" aria-label="${label}">${POSTED_ICON_SVG}</span>`;
 }
 
