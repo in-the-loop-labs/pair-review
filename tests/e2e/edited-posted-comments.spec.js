@@ -26,8 +26,8 @@ async function createFileComment(page, reviewId, body) {
   return (await response.json()).commentId;
 }
 
-async function submit(page, event = 'COMMENT') {
-  const response = await page.request.post('/api/pr/test-owner/test-repo/1/submit-review', { data: { event, body: 'Review body' } });
+async function submit(page, event = 'COMMENT', body = 'Review body') {
+  const response = await page.request.post('/api/pr/test-owner/test-repo/1/submit-review', { data: { event, body } });
   expect(response.ok()).toBeTruthy();
 }
 
@@ -140,12 +140,12 @@ test.describe('edited posted comments (PR mode)', () => {
     await expect(page.locator(`.file-comment-card[data-comment-id="${editedId}"] .posted-comment-edited`)).toHaveCount(0);
   });
 
-  test('review history lists submissions with their comments and edits, and jumps to a comment', async ({ page, testServer }, testInfo) => {
+  test('review history lists submissions, drills into comments, navigates back and jumps to a comment', async ({ page, testServer }, testInfo) => {
     const reviewId = await openFreshPR(page, testServer);
     await page.setViewportSize({ width: 1440, height: 900 });
     const historyBody = 'History original\n\n```suggestion\nconst value = 42;\n```';
     const id = await createFileComment(page, reviewId, historyBody);
-    await submit(page, 'APPROVE');
+    await submit(page, 'APPROVE', 'History approval\n\nFull **review** summary.');
     await reload(page);
     const cardBody = page.locator(`.file-comment-card[data-comment-id="${id}"] .user-comment-body`);
     await expect(cardBody.locator('pre code.language-suggestion')).toBeVisible();
@@ -157,19 +157,64 @@ test.describe('edited posted comments (PR mode)', () => {
     expect((await page.request.put(`/api/reviews/${reviewId}/comments/${id}`, { data: { body: 'History edited' } })).ok()).toBeTruthy();
     const update = await page.request.post(`/api/reviews/${reviewId}/comments/${id}/update-on-github`);
     expect(update.ok()).toBeTruthy();
+    await createFileComment(page, reviewId, 'A separate submission comment');
+    await submit(page, 'REQUEST_CHANGES', 'History follow-up');
+    const history = await (await page.request.get(`/api/reviews/${reviewId}/submissions`)).json();
     await reload(page);
+    // As in the chat specs, Pi isn't installed in E2E: enable the availability gate.
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.__pairReview = window.__pairReview || {};
+      window.__pairReview.chatProvider = 'pi';
+      window.__pairReview.chatProviders = [{ id: 'pi', name: 'Pi', type: 'pi', available: true }];
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+    await page.locator('#chat-toggle-btn').click();
+    const chat = page.locator('.chat-panel');
+    await expect(chat).toBeVisible();
 
     await page.locator('#split-button-dropdown-toggle').click();
     await page.getByRole('menuitem', { name: 'Review history' }).click();
     const modal = page.locator('#review-history-modal');
     await expect(modal).toBeVisible();
-    const submission = modal.locator('.review-history-submission').filter({ hasText: 'History original' });
-    await expect(submission.locator('.review-history-chip').first()).toHaveText('Approved');
-    await expect(submission.locator('.review-history-link').first()).toHaveAttribute('href', /pullrequestreview-/);
-    const editedItem = submission.locator('.review-history-comment[data-posting-kind="update"]');
+    const rows = modal.locator('.review-history-row');
+    await expect(rows).toHaveCount(history.submissions.length);
+    await expect(rows.first()).toContainText('History follow-up');
+    await expect(rows.first().locator('button')).toBeFocused();
+    await expect(modal.locator('.review-history-comment')).toHaveCount(0);
+    const approval = rows.filter({ hasText: 'History approval' });
+    await expect(approval.locator('.review-history-chip')).toHaveText('Approved');
+    await expect(approval.locator('.review-history-counts')).toHaveText('1 comment · 1 edit');
+    await expect(approval.locator('.review-history-summary-preview')).toHaveText('History approval');
+    await expect(approval.locator('.review-history-link')).toHaveAttribute('href', /pullrequestreview-/);
+    await approval.locator('button').focus();
+    await page.keyboard.press('Enter');
+    const back = modal.getByRole('button', { name: '← Back' });
+    await expect(back).toBeFocused();
+    await expect(modal.locator('.review-history-comment')).toHaveCount(2);
+    await expect(modal.locator('.review-history-summary strong')).toHaveText('review');
+    await expect(modal).not.toContainText('A separate submission comment');
+    await back.click();
+    await expect(approval.locator('button')).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(back).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeVisible();
+    await expect(chat).toBeVisible();
+    await expect(approval.locator('button')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+    await expect(chat).toBeVisible();
+    await expect(page.locator('#split-button-dropdown-toggle')).toBeFocused();
+
+    // Reopen at the list, then jump from the historical edit to the diff.
+    await page.locator('#split-button-dropdown-toggle').click();
+    await page.getByRole('menuitem', { name: 'Review history' }).click();
+    await approval.locator('button').click();
+    const editedItem = modal.locator('.review-history-comment[data-posting-kind="update"]');
     await expect(editedItem).toContainText('History edited');
     await expect(editedItem.locator('.review-history-chip-edited')).toHaveText('edited');
-    const original = submission.locator('.review-history-comment[data-posting-kind="post"]');
+    const original = modal.locator('.review-history-comment[data-posting-kind="post"]');
     const body = original.locator('.user-comment-body');
     await expect(body.locator('pre code.language-suggestion')).toHaveText('const value = 42;\n');
     expect(await body.innerHTML()).toBe(cardMarkup);

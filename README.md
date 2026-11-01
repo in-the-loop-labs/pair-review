@@ -908,7 +908,7 @@ In PR mode, editing a comment you've already posted marks it **Edited since post
 
 If pair-review cannot confidently identify the original GitHub comment, or GitHub rejects an update, it reports the failure and leaves your local edit intact. It never creates a replacement comment. Dismissing a posted comment is local-only; it does not delete it on GitHub.
 
-**Review history** shows the comments as originally sent and subsequent edits, with links back to GitHub and the diff. Legacy backfilled entries are approximate. Publication actions and history are not shown in local mode.
+**Review history** lists submitted reviews newest first, with their state, date, comment/edit counts and summary preview. Open a review to read its full summary, comments as originally sent, and subsequent edits, with links back to GitHub and the diff. Use Back (or Escape) to return to the list; Escape from the list closes history. Legacy backfilled entries are approximate. Publication actions and history are not shown in local mode.
 
 ### GitHub Review Comments
 
