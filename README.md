@@ -811,7 +811,7 @@ There are three ways to configure which models run your analysis, each building 
 **Review Council** — Pick multiple provider+model combinations that all run in parallel across the selected analysis levels. You pick a separate consolidation model that merges everything together.
 
 - Each reviewer can have its own timeout, instructions, and prompt tier (see [Model Tiers](#model-tiers))
-- Results consolidate first across levels for each reviewer, then across reviewers
+- Results consolidate first across levels for each reviewer, then across reviewers (a reviewer with results from only one level skips its own consolidation step)
 - Individual reviewer results are available alongside the overall council result
 
 **Advanced** — For each enabled analysis level, pick different provider+model combinations. Level 1 might use a fast model while Level 3 uses a thorough one. Supports the same per-model options as Review Council (timeout, instructions, tier). Consolidation model is selected separately. Results consolidate first within each level (if multiple reviewers), then across levels.
