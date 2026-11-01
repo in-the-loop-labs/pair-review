@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.4.0
+
+### Minor Changes
+
+- 303bccb: Replace the comment panel's eye toggle with a filter menu: a funnel button opens labeled "Show dismissed" and "Show posted" options, with a dot when either differs from its default. "Show posted" overrides "Hide comments after posting" for the current review only. When filters hide user comments, a line at the end of the list says how many (e.g. "3 posted · 2 dismissed hidden") with a Show button that reveals them.
+- efa4492: Record each comment posted to GitHub separately from its active or dismissed lifecycle. Restoring a dismissed posted comment no longer queues it for another submission, and Clear All keeps posted comments. Posted indicators link to the GitHub comment (or review), and drafts submitted or discarded directly on GitHub reconcile on reload.
+
+  Existing posted comments are backfilled with approximate review links. Comments dismissed before this upgrade cannot be backfilled because their old posted status was already lost. Review history browsing and explicit re-posting are coming separately.
+
+- 6739f4c: Browse review history as a list of submissions, then open one to read its summary and posted comments. Use Back or Escape to return to the list while keeping your place.
+- d75127e: Editing a posted comment can now update the existing GitHub comment in place, including comments in pending draft reviews. Missing comment identities are recovered only by an exact match; failed updates never create duplicate comments. The submit dialog can also update edited comments after submission. A PR-only review history shows original sent text and subsequent edits.
+
+  Discarded drafts remain non-pending until authoritative deletion provenance is available. Dismissing a posted comment remains local-only.
+
+### Patch Changes
+
+- 86d5460: Make `pnpm-lock.yaml` the only lock file. The generated npm `package-lock.json` (and `scripts/generate-package-lock.sh`) is gone: packagers should build from `pnpm-lock.yaml`, which is what CI tests. Also bump `@pierre/diffs` to `^1.6.2` (with `@pierre/theming` 1.0.2), so the tested diff renderer matches what users install, and keep inline comment and suggestion cards in place when 1.6 re-renders a file (clicking a finding whose range reaches outside the visible hunk now scrolls to its card again).
+- 2ff0ec8: Show pending comment counts and edited-comment updates below the review summary, and render review history comments with normal card spacing and code suggestion styling.
+
 ## 5.3.7
 
 ### Patch Changes
