@@ -174,7 +174,7 @@ describe('PRManager.loadUserComments with no file-level comments', () => {
     manager.ensureLinesVisible = vi.fn(async () => {});
     manager.findFileElement = vi.fn(() => null);
 
-    await manager.loadUserComments(true);
+    await manager.loadUserComments();
 
     expect(loadSpy).toHaveBeenCalledWith([], null);
     // The stale user card is gone; the AI card stays.

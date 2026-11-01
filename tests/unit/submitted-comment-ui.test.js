@@ -9,11 +9,13 @@ const { FileCommentManager } = require('../../public/js/modules/file-comment-man
 const PierreBridge = require('../../public/js/modules/pierre-bridge.js');
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
 const { getPostedCommentIcon, shouldHidePostedComment } = require('../../public/js/utils/posted-comment.js');
+const PostedComment = require('../../public/js/utils/posted-comment.js');
 
 let comments, fetchMock;
 
 beforeEach(() => {
   localStorage.clear();
+  PostedComment.setShowPostedOverride(null);
   document.body.innerHTML = `
     <button id="review-button"><span class="review-button-text"></span></button>
     <button id="clear-comments-btn"></button>
@@ -142,6 +144,49 @@ describe('posted comment UI', () => {
     expect(document.querySelectorAll('.posted-comment-icon')).toHaveLength(3);
     expect(document.querySelectorAll('.posted-comment-hidden')).toHaveLength(0);
     expect(localStorage.getItem('pair-review-hide-posted-comments')).toBe('false');
+  });
+
+  it('the dialog shows the review override and toggling clears it through the filter menu', async () => {
+    // A real comment panel, with this review showing posted comments while the
+    // browser-wide setting hides them
+    Element.prototype.scrollIntoView = vi.fn();
+    const segmentControl = document.createElement('div');
+    segmentControl.className = 'segment-control';
+    segmentControl.id = 'segment-control';
+    segmentControl.innerHTML = '<button class="segment-btn" data-segment="comments">User</button>';
+    const findingsList = document.createElement('div');
+    findingsList.id = 'findings-list';
+    document.body.append(segmentControl, findingsList);
+    localStorage.setItem('pair-review-hide-posted-comments', 'true');
+    localStorage.setItem('pair-review-show-posted_acme/widget#7', 'true');
+    const panel = new AIPanel();
+    panel.setPR('acme', 'widget', 7);
+    window.aiPanel = panel;
+    const funnel = document.querySelector('.comment-filter-btn');
+    const showPosted = document.querySelector('input[data-filter="showPosted"]');
+    expect(showPosted.checked).toBe(true);
+    expect(funnel.classList.contains('has-active-filter')).toBe(true);
+
+    const manager = makeManager();
+    await manager.loadUserComments();
+    const modal = makeModal();
+    modal.show();
+    const checkbox = modal.modal.querySelector('#hide-posted-comments');
+    const hint = modal.modal.querySelector('.hide-posted-override-hint');
+    // What applies to this review, not the browser-wide setting
+    expect(checkbox.checked).toBe(false);
+    expect(hint.hidden).toBe(false);
+
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(localStorage.getItem('pair-review-show-posted_acme/widget#7')).toBeNull();
+    expect(localStorage.getItem('pair-review-hide-posted-comments')).toBe('true');
+    expect(PostedComment.getShowPostedOverride()).toBeNull();
+    expect(showPosted.checked).toBe(false);
+    expect(funnel.classList.contains('has-active-filter')).toBe(false);
+    expect(hint.hidden).toBe(true);
+    expect(document.querySelectorAll('.user-comment-row:not(.posted-comment-hidden)')).toHaveLength(1);
   });
 
   it('refreshes file-comment header state and minimize indicators when hiding posted comments', async () => {
@@ -416,7 +461,7 @@ describe('posted comment UI', () => {
   it('does not render inactive comments or count them as pending', async () => {
     comments = [{ id: 8, status: 'inactive', file: 'src/a.js', line_start: 10, body: 'Dismissed' }];
     const manager = makeManager();
-    await manager.loadUserComments(true);
+    await manager.loadUserComments();
     expect(document.querySelectorAll('.user-comment-row, .file-comment-card')).toHaveLength(0);
     expect(manager.getPendingCommentCount()).toBe(0);
   });

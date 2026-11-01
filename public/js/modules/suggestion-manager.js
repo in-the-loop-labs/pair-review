@@ -619,7 +619,10 @@ class SuggestionManager {
 
       // Check if this suggestion was adopted by looking for user comments with matching parent_id
       const wasAdopted = userComments.some(comment =>
-        comment.parent_id && (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
+        // A dismissed comment no longer adopts its suggestion (dismissing it
+        // dismisses the suggestion); the cache keeps dismissed comments.
+        comment.status !== 'inactive' && comment.parent_id &&
+          (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
       );
 
       // Log when a suggestion is detected as adopted

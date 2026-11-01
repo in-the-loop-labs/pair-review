@@ -5349,6 +5349,12 @@ div.external-comment-row {
   cursor: pointer;
 }
 
+.hide-posted-override-hint {
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--color-text-tertiary, #6e7781);
+}
+
 .posted-comment-hidden {
   display: none !important;
 }
@@ -7270,6 +7276,11 @@ body:not([data-theme="dark"]) .theme-icon-light {
   z-index: 11;
 }
 
+/* Open comment filter menu must overlay the sections below the segment row */
+.ai-panel > .segment-control.comment-filter-open {
+  z-index: 11;
+}
+
 /* Prevent text selection during drag */
 body.resizing {
   user-select: none;
@@ -8876,8 +8887,15 @@ body.resizing * {
   display: none;
 }
 
-/* Filter Toggle Button - shows dismissed user comments */
-.filter-toggle-btn {
+/* Comment filter menu: a funnel at the right of the segment row that opens
+   labeled options for user comments (show dismissed, show posted). */
+.comment-filter {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.comment-filter-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8890,28 +8908,105 @@ body.resizing * {
   color: var(--color-text-tertiary);
   cursor: pointer;
   transition: var(--transition-ui-fast);
-  flex-shrink: 0;
 }
 
-.filter-toggle-btn:hover {
+.comment-filter-btn:hover,
+.comment-filter-btn[aria-expanded="true"] {
   color: var(--color-text-secondary);
   background: var(--color-bg-tertiary);
   border-color: var(--color-border-secondary);
 }
 
-.filter-toggle-btn.active {
-  color: var(--comment-primary);
-  background: var(--comment-subtle);
-  border-color: var(--comment-border);
+.comment-filter-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
-.filter-toggle-btn.hidden {
+/* Flat dot: some filter option differs from its default */
+.comment-filter-dot {
+  display: none;
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--comment-primary);
+}
+
+.comment-filter-btn.has-active-filter {
+  color: var(--comment-primary);
+}
+
+.comment-filter-btn.has-active-filter .comment-filter-dot {
+  display: block;
+}
+
+.comment-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  min-width: 160px;
+  padding: 6px 0;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.comment-filter-menu[hidden] {
   display: none;
 }
 
-.filter-toggle-btn svg {
-  width: 14px;
-  height: 14px;
+.comment-filter-menu-title {
+  padding: 2px 12px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.comment-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.comment-filter-option:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.comment-filter-option input {
+  margin: 0;
+  accent-color: var(--comment-primary);
+}
+
+/* Muted line at the end of the user comment list when filters hide some */
+.hidden-comments-notice {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.hidden-comments-show {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--color-text-link, var(--comment-primary));
+  cursor: pointer;
+}
+
+.hidden-comments-show:hover {
+  text-decoration: underline;
 }
 
 /* Level Filter Pills */

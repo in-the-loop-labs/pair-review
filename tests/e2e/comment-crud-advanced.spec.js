@@ -32,6 +32,25 @@ async function cleanupAllComments(page) {
 }
 
 
+// Turn the comment panel's "Show dismissed" filter on or off through the
+// funnel menu, waiting for the user-comment reload it triggers.
+async function setShowDismissed(page, checked) {
+  const funnel = page.locator('.comment-filter-btn');
+  await expect(funnel).toBeVisible({ timeout: 5000 });
+  await funnel.click();
+  const option = page.getByRole('checkbox', { name: 'Show dismissed' });
+  await expect(option).toBeVisible();
+  const reload = page.waitForResponse(
+    response => /\/api\/reviews\/\d+\/comments(\?|$)/.test(response.url()) && response.request().method() === 'GET' && response.status() === 200,
+    { timeout: 10000 }
+  );
+  await option.setChecked(checked);
+  await reload;
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.comment-filter-menu')).toBeHidden();
+}
+
+
 test.describe('Comment Display', () => {
   test('should display line info in comment header', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
@@ -125,19 +144,8 @@ test.describe('Dismissed Comment Persistence', () => {
     await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
     await userSegmentBtn.click();
 
-    // Enable the 'show dismissed' filter by clicking the filter toggle button
-    const filterToggleBtn = page.locator('.filter-toggle-btn');
-    await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
-
-    // Set up listener for the user-comments API call before clicking
-    const filterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
-      { timeout: 10000 }
-    );
-    await filterToggleBtn.click();
-
-    // Wait for the API response that includes dismissed comments
-    await filterResponsePromise;
+    // Enable the 'Show dismissed' filter from the funnel menu
+    await setShowDismissed(page, true);
 
     // The dismissed comment should appear in the AI Panel with dismissed styling
     const aiPanelCommentItem = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
@@ -163,10 +171,14 @@ test.describe('Dismissed Comment Persistence', () => {
     await expect(userSegmentBtnAfterReload).toBeVisible({ timeout: 5000 });
     await userSegmentBtnAfterReload.click();
 
-    // Verify the filter toggle is still active (persisted via localStorage)
-    const filterToggleBtnAfterReload = page.locator('.filter-toggle-btn');
-    await expect(filterToggleBtnAfterReload).toBeVisible({ timeout: 5000 });
-    await expect(filterToggleBtnAfterReload).toHaveClass(/active/);
+    // Verify the filter is still on (persisted via localStorage): the funnel
+    // shows its non-default dot and the option is checked
+    const funnelAfterReload = page.locator('.comment-filter-btn');
+    await expect(funnelAfterReload).toBeVisible({ timeout: 5000 });
+    await expect(funnelAfterReload).toHaveClass(/has-active-filter/);
+    await funnelAfterReload.click();
+    await expect(page.getByRole('checkbox', { name: 'Show dismissed' })).toBeChecked();
+    await page.keyboard.press('Escape');
 
     // The dismissed comment should still appear in the AI Panel with dismissed styling
     const aiPanelCommentItemAfterReload = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
@@ -233,19 +245,8 @@ test.describe('Comment Restore', () => {
     await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
     await userSegmentBtn.click();
 
-    // Enable the 'show dismissed' filter by clicking the filter toggle button
-    const filterToggleBtn = page.locator('.filter-toggle-btn');
-    await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
-
-    // Set up listener for the user-comments API call before clicking
-    const restoreFilterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
-      { timeout: 10000 }
-    );
-    await filterToggleBtn.click();
-
-    // Wait for the API response that includes dismissed comments
-    await restoreFilterResponsePromise;
+    // Enable the 'Show dismissed' filter from the funnel menu
+    await setShowDismissed(page, true);
 
     // The dismissed comment should now appear in the AI Panel with dismissed styling
     // Comment items in the AI Panel have class 'finding-item finding-comment' with data-id attribute
@@ -439,18 +440,8 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
     await userSegmentBtn.click();
 
-    // Enable the 'show dismissed' filter
-    const filterToggleBtn = page.locator('.filter-toggle-btn');
-    await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
-
-    // Set up listener for the user-comments API call with includeDismissed
-    const filterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
-      { timeout: 10000 }
-    );
-
-    await filterToggleBtn.click();
-    await filterResponsePromise;
+    // Enable the 'Show dismissed' filter from the funnel menu
+    await setShowDismissed(page, true);
 
     // Both dismissed comments should now appear in the AI Panel with dismissed styling
     const aiPanelComment1 = page.locator(`.finding-item.finding-comment[data-id="${commentId1}"]`);
@@ -532,9 +523,8 @@ test.describe('Bulk Deletion via Clear All', () => {
 
     // The comment should either not be visible OR if visible, should have dismissed styling
     // Since filter is off by default, it should not be visible
-    const filterToggleBtn = page.locator('.filter-toggle-btn');
-    const isFilterActive = await filterToggleBtn.evaluate(
-      btn => btn.classList.contains('active')
+    const isFilterActive = await page.evaluate(
+      () => window.aiPanel.getCommentFilterState().includeDismissed
     );
 
     if (!isFilterActive) {

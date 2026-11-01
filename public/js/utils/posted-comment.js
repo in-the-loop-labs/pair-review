@@ -8,6 +8,10 @@
  * held in the pending review on GitHub. Pending comments are what the next
  * submit sends; posted ones are history, and the reviewer can hide the
  * submitted ones ("Hide comments after posting").
+ *
+ * That setting is browser-wide. The comment panel's "Show posted" filter can
+ * override it for one review (setShowPostedOverride); the override never
+ * changes the browser-wide setting.
  */
 
 const HIDE_POSTED_STORAGE_KEY = 'pair-review-hide-posted-comments';
@@ -36,14 +40,42 @@ function setHidePostedEnabled(enabled) {
   localStorage.setItem(HIDE_POSTED_STORAGE_KEY, String(enabled));
 }
 
+// The current review's "Show posted" override: true or false, or null to
+// follow the browser-wide setting. Set by the comment panel.
+let showPostedOverride = null;
+
+/** @param {boolean|null} value - true/false for this review, null to follow the browser-wide setting */
+function setShowPostedOverride(value) {
+  showPostedOverride = typeof value === 'boolean' ? value : null;
+}
+
+function getShowPostedOverride() {
+  return showPostedOverride;
+}
+
+/** Whether posted comments are hidden in this review: its override, else the browser-wide setting. */
+function isHidePostedInEffect() {
+  return showPostedOverride === null ? isHidePostedEnabled() : !showPostedOverride;
+}
+
 /**
  * True when the comment should be hidden as posted. Saved drafts stay visible:
  * they can still change before the pending review is submitted.
  * @param {Object} comment
- * @param {boolean} [hidePosted] - The reviewer's setting (default: read it)
+ * @param {boolean} [hidePosted] - Whether posted comments are hidden
+ *   (default: this review's setting, see isHidePostedInEffect)
  */
-function shouldHidePostedComment(comment, hidePosted = isHidePostedEnabled()) {
+function shouldHidePostedComment(comment, hidePosted = isHidePostedInEffect()) {
   return hidePosted && commentStatus(comment) === 'submitted';
+}
+
+/**
+ * How many of the comments are hidden as posted.
+ * @param {Array<Object>} comments
+ * @param {boolean} [hidePosted] - As for shouldHidePostedComment
+ */
+function countHiddenPostedComments(comments, hidePosted = isHidePostedInEffect()) {
+  return (comments || []).filter(c => shouldHidePostedComment(c, hidePosted)).length;
 }
 
 function getPostedCommentIcon(comment) {
@@ -68,7 +100,11 @@ const PostedComment = {
   isPostedComment,
   isHidePostedEnabled,
   setHidePostedEnabled,
+  setShowPostedOverride,
+  getShowPostedOverride,
+  isHidePostedInEffect,
   shouldHidePostedComment,
+  countHiddenPostedComments,
   getPostedCommentIcon,
   stampCommentStatus
 };

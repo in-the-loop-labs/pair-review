@@ -125,7 +125,7 @@ describe('PR mode: refreshPR() reloads comments after diff refresh', () => {
     ]);
   });
 
-  it('should pass includeDismissed flag from aiPanel to loadUserComments', async () => {
+  it('should reload comments without arguments, leaving the filters to the loader', async () => {
     const prManager = createTestPRManager();
 
     window.aiPanel.showDismissedComments = true;
@@ -142,27 +142,8 @@ describe('PR mode: refreshPR() reloads comments after diff refresh', () => {
 
     await prManager.refreshPR();
 
-    expect(prManager.loadUserComments).toHaveBeenCalledWith(true);
-  });
-
-  it('should default includeDismissed to false when aiPanel is not available', async () => {
-    const prManager = createTestPRManager();
-
-    window.aiPanel = null;
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        success: true,
-        data: prManager.currentPR
-      })
-    });
-
-    vi.spyOn(global, 'setTimeout').mockImplementation((cb) => cb());
-
-    await prManager.refreshPR();
-
-    expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+    // loadUserComments reads the comment panel's filters itself
+    expect(prManager.loadUserComments).toHaveBeenCalledWith();
   });
 
   it('should not call loadUserComments when refresh API fails', async () => {
@@ -262,7 +243,7 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     expect(refreshDiffMatch[0]).toContain('this._applyRefreshedDiff(');
   });
 
-  it('should verify local.js _applyRefreshedDiff passes includeDismissed from aiPanel', async () => {
+  it('should verify local.js _applyRefreshedDiff leaves the comment filters to loadUserComments', async () => {
     const fs = require('fs');
     const path = require('path');
     const localSource = fs.readFileSync(
@@ -277,9 +258,9 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     expect(applyMatch).toBeTruthy();
     const applyBody = applyMatch[0];
 
-    // Verify the dismissed filter flag is derived from aiPanel
-    expect(applyBody).toContain('window.aiPanel?.showDismissedComments');
-    expect(applyBody).toContain('await manager.loadUserComments(includeDismissed)');
+    // loadUserComments reads the comment panel's filters itself
+    expect(applyBody).toContain('await manager.loadUserComments()');
+    expect(applyBody).not.toContain('showDismissedComments');
   });
 });
 
