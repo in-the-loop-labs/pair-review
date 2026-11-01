@@ -45,6 +45,10 @@ class PierreBridge {
     // Monotonic counter for unique annotation IDs
     this._annotationCounter = 0;
 
+    // Rendered annotation elements, keyed by the annotation's metadata object.
+    // See _renderAnnotation for why these are reused across renders.
+    this._renderedAnnotations = new WeakMap();
+
     // Cache for gutter button containers — keyed by fileName.
     // Stored here instead of on fileState because renderGutterUtility fires
     // during instance.render(), before fileState is set on this.files.
@@ -1853,6 +1857,35 @@ class PierreBridge {
    * @private
    */
   _renderAnnotation(annotation, fileName, formElements) {
+    const { metadata, lineNumber, side } = annotation;
+    // Forms already reuse their DOM through formElements.
+    if (metadata.type === 'comment-form') {
+      return this._renderAnnotationContent(annotation, fileName, formElements);
+    }
+    // @pierre/diffs 1.6 calls renderAnnotation again for EVERY annotation
+    // whenever the fileDiff object changes (context ranges, gap expansion,
+    // rebuilds from base metadata), not only when the annotation changed, as
+    // 1.2 did. Rebuilt cards would disconnect elements that callers still hold
+    // (e.g. a scroll-to-finding in flight) and drop in-place DOM state. An
+    // annotation's metadata object is replaced whenever its content changes
+    // (_pushAnnotation), so the same metadata at the same line and side means
+    // the same card: hand back the element already built for it.
+    const cached = this._renderedAnnotations.get(metadata);
+    if (cached && cached.lineNumber === lineNumber && cached.side === side) {
+      return cached.element;
+    }
+    const element = this._renderAnnotationContent(annotation, fileName, formElements);
+    if (element) {
+      this._renderedAnnotations.set(metadata, { element, lineNumber, side });
+    }
+    return element;
+  }
+
+  /**
+   * Build the element for an annotation, by type.
+   * @private
+   */
+  _renderAnnotationContent(annotation, fileName, formElements) {
     const { type, data, id } = annotation.metadata;
 
     switch (type) {
