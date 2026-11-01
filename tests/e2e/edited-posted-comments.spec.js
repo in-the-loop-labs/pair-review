@@ -125,6 +125,13 @@ test.describe('edited posted comments (PR mode)', () => {
     await option.click();
     await expect(option.locator('input')).toBeChecked();
     await page.screenshot({ path: testInfo.outputPath('submit-after.png') });
+    // Author toggle styles must not override the hidden attribute in Draft mode.
+    const hidePosted = modal.locator('.hide-posted-comments-option');
+    await expect(hidePosted).toBeVisible();
+    await modal.locator('input[value="DRAFT"]').click();
+    await expect(hidePosted).toBeHidden();
+    await modal.locator('input[value="COMMENT"]').click();
+    await expect(hidePosted).toBeVisible();
     await modal.locator('#submit-review-btn-modal').click();
     await expect(modal).toBeHidden();
 

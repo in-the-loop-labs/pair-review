@@ -5342,7 +5342,7 @@ div.external-comment-row {
   font-size: 14px;
 }
 
-.hide-posted-comments-option {
+.review-modal-body .hide-posted-comments-option {
   margin-top: 0;
   color: var(--color-text-secondary, #57606a);
   font-size: 13px;
@@ -5416,14 +5416,15 @@ a.posted-comment-icon:focus-visible {
   color: var(--color-danger, #cf222e);
 }
 
-.update-edited-comments-option {
+.review-modal-body .update-edited-comments-option {
   margin-top: 0;
   color: var(--color-text-secondary, #57606a);
   font-size: 13px;
   cursor: pointer;
 }
 
-.update-edited-comments-option[hidden] {
+.update-edited-comments-option[hidden],
+.hide-posted-comments-option[hidden] {
   display: none;
 }
 
