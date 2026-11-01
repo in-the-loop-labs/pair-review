@@ -69,7 +69,7 @@ curl -s http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments
 
 Optional query param: \`includeDismissed=true\` to include soft-deleted (inactive) comments.
 
-User comment \`status\` is lifecycle only: \`active\` or \`inactive\`. Each comment has \`publication: null\` (never posted) or \`{ state: "draft"|"posted", posted_at, review_url, comment_url, github_review_row_id, posting_count }\`. Restoring a posted comment does not post it again. Local-mode comments have no publication.
+User comment \`status\` is lifecycle only: \`active\` or \`inactive\`. Each comment has \`publication: null\` (never posted) or \`{ state: "draft"|"posted", posted_at, review_url, comment_url, github_review_row_id, posting_count, changed }\`. Restoring a posted comment does not post it again. Local-mode comments have no publication.
 
 **Response:** \`{ "success": true, "comments": [...] }\`
 
@@ -124,6 +124,24 @@ curl -s -X PUT http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments/COMM
 \`\`\`
 
 **Response:** \`{ "success": true, "message": "Comment updated successfully" }\`
+
+### Update a posted comment on GitHub (PR mode only)
+
+Editing a comment locally does not create another GitHub comment. If \`publication.changed\` is true, an explicit update sends the edited text to the existing host comment, including a comment in a pending draft review:
+
+\`\`\`bash
+curl -s -X POST http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/comments/COMMENT_ID/update-on-github
+\`\`\`
+
+**Response:** \`{ "success": true, "comment": {...} }\`. Failed updates return \`{ error, code, review_url? }\` (\`not_found_on_github\`, \`forbidden\`, or \`unresolved_identity\`) and never create a replacement. Missing identities are recovered only from exactly one strict match of the original sent text, author, and anchor. Dismissal remains local-only.
+
+### Review history (PR mode only)
+
+\`\`\`bash
+curl -s http://localhost:{{PORT}}/api/reviews/{{REVIEW_ID}}/submissions
+\`\`\`
+
+**Response:** \`{ "submissions": [{ ...review, "postings": [...] }] }\`, newest review first. Each posting retains the sent body, anchor, host link, current \`comment_status\`, and \`kind\` (\`post\` or \`update\`). Legacy duplicate review identities are grouped; backfilled snapshots are approximate.
 
 ### Delete a comment
 

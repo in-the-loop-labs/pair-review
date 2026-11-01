@@ -902,6 +902,14 @@ The markdown includes file paths, line numbers, and your comments - everything t
 - Edit or discard AI suggestions before finalizing
 - Comments include file and line number for precision
 
+### Posted Comments and Review History
+
+In PR mode, editing a comment you've already posted marks it **Edited since posted**. Choose **Update on GitHub** to update that same comment in place, including comments in a pending draft review. The submit dialog can also update edited comments after the review succeeds; those edits are never counted as new comments to post.
+
+If pair-review cannot confidently identify the original GitHub comment, or GitHub rejects an update, it reports the failure and leaves your local edit intact. It never creates a replacement comment. Dismissing a posted comment is local-only; it does not delete it on GitHub.
+
+**Review history** shows the comments as originally sent and subsequent edits, with links back to GitHub and the diff. Legacy backfilled entries are approximate. Publication actions and history are not shown in local mode.
+
 ### GitHub Review Comments
 
 When reviewing a PR, pair-review fetches existing inline review comments from GitHub and shows them in the diff alongside AI suggestions (orange) and your own draft comments (purple). External comments render as read-only blue-themed bubbles, with threads preserved (root plus replies). Each comment and each thread has a "Chat about this" button that opens the AI chat panel with the comment as context, so you can quickly ask the agent to investigate, explain, or draft a response.

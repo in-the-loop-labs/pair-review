@@ -41,6 +41,7 @@ const { GIT_DIFF_FLAGS_ARRAY, SIMPLE_GIT_PATH_OPTIONS } = require('../git/diff-f
 const { walkPRStack, DEFAULT_TRUNK_BRANCHES } = require('../github/stack-walker');
 const { buildSubmitPrContext } = require('../github/submit-pr-context');
 const { recordReviewSubmission, recordRetainedSubmission } = require('../github/record-submission');
+const { updatePostedComment, listSubmissions } = require('../github/update-posted-comment');
 const summaryGenerator = require('../ai/summary-generator');
 const tourGenerator = require('../ai/tour-generator');
 const {
@@ -1477,6 +1478,48 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     res.status(500).json({
       error: 'Internal server error while retrieving file content'
     });
+  }
+});
+
+// Publication actions are PR-only. Local reviews have no host identity.
+router.get('/api/reviews/:id/submissions', async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const review = await new ReviewRepository(db).getReview(Number(req.params.id));
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    if (!review.pr_number || !review.repository) return res.status(400).json({ error: 'Review history is only available in PR mode' });
+    res.json({ submissions: await listSubmissions(db, review.id) });
+  } catch (error) {
+    logger.error('Error loading review history:', error);
+    res.status(500).json({ error: 'Failed to load review history' });
+  }
+});
+
+router.post('/api/reviews/:id/comments/:commentId/update-on-github', async (req, res) => {
+  try {
+    const db = req.app.get('db');
+    const comment = await new CommentRepository(db).getComment(Number(req.params.commentId), 'user');
+    if (!comment || comment.review_id !== Number(req.params.id)) return res.status(404).json({ error: 'Comment not found' });
+    const review = await new ReviewRepository(db).getReview(comment.review_id);
+    if (!review?.pr_number || !review.repository) return res.status(400).json({ error: 'Updating on GitHub is only available in PR mode' });
+    const [owner, repo] = review.repository.split('/');
+    // Reuse the PR-aware resolver, including recorded alt-host evidence.
+    const resolved = await resolveBindingForRequest({ app: req.app, params: { number: String(review.pr_number) } }, review.repository);
+    if (!resolved) return res.status(401).json({ error: 'GitHub token not configured' });
+    const updated = await updatePostedComment(db, { commentId: comment.id, owner, repo,
+      pull_number: review.pr_number, githubClient: new GitHubClient(resolved.binding) },
+    reviewId => broadcastReviewEvent(reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') }));
+    res.json({ success: true, comment: updated });
+  } catch (error) {
+    logger.error('Error updating posted comment:', error);
+    const code = error.code === 'unresolved_identity' ? 'unresolved_identity'
+      : error.status === 404 || error.code === 'not_found' ? 'not_found_on_github'
+        : [403, 422].includes(error.status) || error.code === 'forbidden' ? 'forbidden' : 'update_failed';
+    const status = error.status || (code === 'unresolved_identity' ? 409 : code === 'not_found_on_github' ? 404 : code === 'forbidden' ? 403 : 500);
+    const message = code === 'not_found_on_github' ? 'The host could not find this comment. Nothing was posted.'
+      : code === 'forbidden' ? 'The host refused this update. Check your permissions or whether the conversation is locked. Nothing was posted.'
+        : error.message;
+    res.status(status).json({ error: message, code, review_url: error.review_url });
   }
 });
 

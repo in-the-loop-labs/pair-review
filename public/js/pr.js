@@ -675,6 +675,17 @@ class PRManager {
    * This avoids memory leaks from attaching listeners to each textarea
    */
   setupCommentFormDelegation() {
+    // "Update on GitHub" on an edited posted comment, in any diff renderer
+    document.addEventListener('click', (e) => {
+      const button = e.target.closest?.('.btn-update-on-host');
+      if (!button || button.disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.updatePostedCommentOnHost(button.dataset.updateCommentId).then(result => {
+        if (result?.ok) window.toast?.showSuccess(`Comment updated on ${window.PostedComment.escapeHtml(window.PostedComment.hostName())}`);
+      });
+    });
+
     document.addEventListener('keydown', (e) => {
       // Check if we're in a comment-related textarea
       const textarea = e.target;
@@ -7348,6 +7359,7 @@ class PRManager {
           onPreview: () => this.openPreviewModal(),
           onClear: () => this.clearAllUserComments(),
           onShare: () => this.openSharePage(),
+          onHistory: window.PAIR_REVIEW_LOCAL_MODE ? null : () => this.openReviewHistory(),
           shareUrl: validatedShareUrl,
           shareIcon: shareConfig?.icon || null,
           shareLabel: shareConfig?.label || 'Share',
@@ -7376,6 +7388,17 @@ class PRManager {
       this.reviewModal = new ReviewModal();
     }
     this.reviewModal.show();
+  }
+
+  /**
+   * Open the review history: what this review posted to the host. PR mode only.
+   */
+  openReviewHistory() {
+    if (window.PAIR_REVIEW_LOCAL_MODE || !this.currentPR?.id || !window.ReviewHistoryModal) return;
+    if (!this.reviewHistoryModal) {
+      this.reviewHistoryModal = new window.ReviewHistoryModal();
+    }
+    this.reviewHistoryModal.show(this.currentPR.id);
   }
 
   /**
@@ -7479,7 +7502,14 @@ class PRManager {
    * @param {Object} updates - e.g. { body } or { status: 'inactive' }
    */
   patchUserComment(commentId, updates) {
+    const before = (this.userComments || []).find(c => c.id === commentId);
     this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
+    // Editing a posted comment changes whether it differs from what was
+    // posted; only the server knows the posted text, so ask it.
+    if (updates.body !== undefined && before && window.PostedComment?.isPostedComment(before)) {
+      window.PostedComment.setUpdateError(commentId, null);
+      this.refreshCommentPublication(commentId);
+    }
     this._userCommentsVersion = (this._userCommentsVersion || 0) + 1;
     if (window.aiPanel?.setHiddenCommentCounts) {
       window.aiPanel.setHiddenCommentCounts(this.getHiddenCommentCounts());
@@ -7491,6 +7521,77 @@ class PRManager {
     }
     this.updateCommentCount();
     this.commentMinimizer?.refreshIndicators();
+  }
+
+  /**
+   * Replace a cached comment with the server's copy (fresh publication) and
+   * re-render its edited-since-posted note in place, in every renderer.
+   * @param {Object} comment - Comment from the server
+   */
+  applyServerComment(comment) {
+    if (!comment) return;
+    this.userComments = (this.userComments || []).map(c => c.id === comment.id ? { ...c, ...comment } : c);
+    this._userCommentsVersion = (this._userCommentsVersion || 0) + 1;
+    const cached = this.userComments.find(c => c.id === comment.id) || comment;
+    // @pierre/diffs re-renders annotations from their stored data
+    for (const annotation of this.pierreBridge?.getAnnotations?.(cached.file, 'comment') || []) {
+      if (annotation.metadata?.data?.id === cached.id) Object.assign(annotation.metadata.data, cached);
+    }
+    window.PostedComment?.findRenderedComments(comment.id)
+      .forEach(element => window.PostedComment.syncEditedSincePosted(element, cached));
+    window.aiPanel?.updateComment?.(comment.id, { body: cached.body, publication: cached.publication });
+    if (this.reviewModal?.isVisible) this.reviewModal.updateCommentCount();
+  }
+
+  /** Fetch one comment's publication after an edit. Best effort. */
+  async refreshCommentPublication(commentId) {
+    const reviewId = this.currentPR?.id;
+    if (!reviewId || window.PAIR_REVIEW_LOCAL_MODE) return;
+    try {
+      const response = await fetch(`/api/reviews/${reviewId}/comments/${commentId}`);
+      if (!response.ok) return;
+      this.applyServerComment(await response.json());
+    } catch (error) {
+      console.warn('Could not refresh comment publication:', error);
+    }
+  }
+
+  /**
+   * Update an edited, already-posted comment on the host in place. Never
+   * creates a comment. On failure the comment stays "Edited since posted" and
+   * the server's message is shown beside it.
+   * @param {number|string} commentId
+   * @returns {Promise<{ok: boolean, comment?: Object, error?: Object}>}
+   */
+  async updatePostedCommentOnHost(commentId) {
+    const PostedComment = window.PostedComment;
+    const reviewId = this.currentPR?.id;
+    if (!PostedComment || !reviewId) return { ok: false, error: { message: 'No review loaded' } };
+    const id = Number(commentId);
+    this._hostUpdatesInFlight = this._hostUpdatesInFlight || new Map();
+    if (this._hostUpdatesInFlight.has(id)) return this._hostUpdatesInFlight.get(id);
+
+    const run = (async () => {
+      PostedComment.setUpdateBusy(id, true);
+      const result = await PostedComment.requestHostUpdate(reviewId, id);
+      PostedComment.setUpdateError(id, result.ok ? null : result.error);
+      const comment = result.ok ? result.comment
+        : (this.userComments || []).find(c => c.id === id);
+      // Re-rendering the note also clears the busy state
+      if (comment) {
+        if (result.ok) this.applyServerComment(comment);
+        else PostedComment.findRenderedComments(id).forEach(el => PostedComment.syncEditedSincePosted(el, comment));
+      } else {
+        PostedComment.setUpdateBusy(id, false);
+      }
+      return result;
+    })();
+    this._hostUpdatesInFlight.set(id, run);
+    try {
+      return await run;
+    } finally {
+      this._hostUpdatesInFlight.delete(id);
+    }
   }
 
   /** Comments the next submit will post: what "will be submitted" counts. */

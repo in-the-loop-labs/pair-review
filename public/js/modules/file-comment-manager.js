@@ -399,6 +399,7 @@ class FileCommentManager {
         </div>
       </div>
       <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${renderedBody}</div>
+      ${window.PostedComment?.getEditedSincePostedHtml(comment) || ''}
     `;
 
     // Wire up edit/delete buttons
