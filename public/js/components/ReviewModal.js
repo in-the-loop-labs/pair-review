@@ -89,6 +89,15 @@ class ReviewModal {
               </label>
             </div>
             
+            <div class="review-comment-summary">
+              <div class="review-comment-count"></div>
+            </div>
+            <label class="remember-toggle update-edited-comments-option" hidden>
+              <input type="checkbox" id="update-edited-comments" checked>
+              <span class="toggle-switch"></span>
+              <span class="toggle-label update-edited-comments-text"></span>
+            </label>
+
             <div class="review-type-section">
               <label class="review-label">Review Type</label>
               <div class="review-type-options">
@@ -126,16 +135,10 @@ class ReviewModal {
               </div>
             </div>
             
-            <div class="review-comment-summary">
-              <div class="review-comment-count"></div>
-            </div>
-            <label class="update-edited-comments-option" hidden>
-              <input type="checkbox" id="update-edited-comments" checked>
-              <span class="update-edited-comments-text"></span>
-            </label>
-            <label class="hide-posted-comments-option">
+            <label class="remember-toggle hide-posted-comments-option">
               <input type="checkbox" id="hide-posted-comments">
-              Hide comments after posting
+              <span class="toggle-switch"></span>
+              <span class="toggle-label">Hide comments after posting</span>
               <span class="hide-posted-override-hint" hidden>(set for this review in the comment filter; changing it here applies to all reviews)</span>
             </label>
             

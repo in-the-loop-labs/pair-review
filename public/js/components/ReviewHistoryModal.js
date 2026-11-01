@@ -122,7 +122,7 @@ class ReviewHistoryModal {
       ? `<div class="review-history-summary">${ReviewHistoryModal.renderMarkdown(submission.body)}</div>` : '';
     const postings = submission.postings || [];
     const comments = postings.length
-      ? `<ul class="review-history-comments">${postings.map(p => this.renderPosting(p)).join('')}</ul>`
+      ? `<ul class="review-history-comments">${postings.map(p => this.renderPostedComment(p)).join('')}</ul>`
       : '<div class="review-history-no-comments">No comments</div>';
     return `<li class="review-history-submission" data-submission-state="${esc(submission.state || '')}">
       <div class="review-history-submission-header">
@@ -135,7 +135,8 @@ class ReviewHistoryModal {
     </li>`;
   }
 
-  renderPosting(posting) {
+  /** Render one posted snapshot, shared by every history presentation. */
+  renderPostedComment(posting) {
     const PC = window.PostedComment;
     const esc = ReviewHistoryModal.escapeHtml;
     const edited = PC.isEditPosting(posting);
@@ -157,7 +158,7 @@ class ReviewHistoryModal {
         ${when ? `<time class="review-history-time" datetime="${esc(when.iso)}">${esc(when.text)}</time>` : ''}
         ${url ? `<a class="review-history-link" href="${esc(url)}" target="_blank" rel="noopener">View</a>` : ''}
       </div>
-      <div class="review-history-comment-body">${ReviewHistoryModal.renderMarkdown(posting.body || '')}</div>
+      <div class="review-history-comment-body user-comment-body">${ReviewHistoryModal.renderMarkdown(posting.body || '')}</div>
     </li>`;
   }
 

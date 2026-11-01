@@ -5342,8 +5342,8 @@ div.external-comment-row {
   font-size: 14px;
 }
 
-.hide-posted-comments-option {
-  margin-top: 16px;
+.review-modal-body .hide-posted-comments-option {
+  margin-top: 0;
   color: var(--color-text-secondary, #57606a);
   font-size: 13px;
   cursor: pointer;
@@ -5416,16 +5416,33 @@ a.posted-comment-icon:focus-visible {
   color: var(--color-danger, #cf222e);
 }
 
-.update-edited-comments-option {
-  display: block;
-  margin-top: 12px;
+.review-modal-body .update-edited-comments-option {
+  margin-top: 0;
   color: var(--color-text-secondary, #57606a);
   font-size: 13px;
   cursor: pointer;
 }
 
-.update-edited-comments-option[hidden] {
+.update-edited-comments-option[hidden],
+.hide-posted-comments-option[hidden] {
   display: none;
+}
+
+/* Keep these toggle-styled checkboxes keyboard accessible. */
+.review-modal-body .update-edited-comments-option input,
+.review-modal-body .hide-posted-comments-option input {
+  display: block;
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+
+.review-modal-body .update-edited-comments-option input:focus-visible + .toggle-switch,
+.review-modal-body .hide-posted-comments-option input:focus-visible + .toggle-switch {
+  outline: 2px solid var(--color-accent-fg, #0969da);
+  outline-offset: 2px;
 }
 
 /* Review history modal */
@@ -5521,7 +5538,7 @@ a.posted-comment-icon:focus-visible {
 }
 
 .review-history-comment {
-  padding: 8px 12px;
+  padding: 16px;
   border: 1px solid var(--color-border-secondary, #d8dee4);
   border-radius: 8px;
 }
@@ -5549,8 +5566,11 @@ a.posted-comment-icon:focus-visible {
 }
 
 .review-history-comment-body {
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 16px;
+}
+
+.review-history-comment-body > :last-child {
+  margin-bottom: 0;
 }
 
 .review-history-error {
