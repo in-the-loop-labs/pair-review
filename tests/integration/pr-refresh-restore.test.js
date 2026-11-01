@@ -29,6 +29,8 @@ const setupRoutes = require('../../src/routes/setup');
 const freshPR = {
   title: 'Refreshed PR', body: 'Refreshed description', author: 'newauthor',
   base_branch: 'main', head_branch: 'feature', state: 'open',
+  // Stored flat metadata wins over a conflicting nested ref in every path.
+  head: { ref: 'outdated-nested-feature' },
   base_sha: 'base-sha', head_sha: 'head-sha', node_id: 'PR_node',
   repository: { default_branch: 'main', clone_url: 'https://github.com/owner/repo.git' }
 };

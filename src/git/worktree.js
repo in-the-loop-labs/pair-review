@@ -16,6 +16,15 @@ const { spawn, execSync } = require('child_process');
 const MISSING_COMMIT_ERROR_CODE = 'PAIR_REVIEW_MISSING_COMMIT';
 
 /**
+ * Resolve the PR head branch consistently for stored and REST metadata.
+ * @param {Object|null} prData
+ * @returns {string}
+ */
+function getPRHeadBranch(prData) {
+  return prData?.head_branch || prData?.head?.ref || '';
+}
+
+/**
  * Git worktree manager for handling PR branch checkouts and diffs
  */
 class GitWorktreeManager {
@@ -213,7 +222,7 @@ class GitWorktreeManager {
    * @returns {string}
    */
   getPRHeadBranch(prData) {
-    return prData?.head_branch || prData?.head?.ref || '';
+    return getPRHeadBranch(prData);
   }
 
   /**
@@ -1498,4 +1507,4 @@ class GitWorktreeManager {
   }
 }
 
-module.exports = { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE };
+module.exports = { GitWorktreeManager, MISSING_COMMIT_ERROR_CODE, getPRHeadBranch };
