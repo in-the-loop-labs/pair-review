@@ -602,36 +602,6 @@ describe('CommentRepository', () => {
     });
   });
 
-  describe('markDraftCommentsSubmitted', () => {
-    it('moves only the review\'s draft comments to submitted', async () => {
-      const insert = (reviewId, source, status, body) => run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status)
-        VALUES (?, ?, 'test.js', 1, ?, ?)
-      `, [reviewId, source, body, status]);
-      await insert(1, 'user', 'draft', 'user draft');
-      await insert(1, 'ai', 'draft', 'ai draft');
-      await insert(1, 'user', 'active', 'user active');
-      await insert(1, 'user', 'inactive', 'user dismissed');
-      await insert(2, 'user', 'draft', 'other review draft');
-
-      const changed = await commentRepo.markDraftCommentsSubmitted(1, '2026-10-31T00:00:00.000Z');
-
-      expect(changed).toBe(2);
-      const rows = await query(db, 'SELECT body, status, updated_at FROM comments ORDER BY id');
-      expect(rows).toEqual([
-        { body: 'user draft', status: 'submitted', updated_at: '2026-10-31T00:00:00.000Z' },
-        { body: 'ai draft', status: 'submitted', updated_at: '2026-10-31T00:00:00.000Z' },
-        expect.objectContaining({ body: 'user active', status: 'active' }),
-        expect.objectContaining({ body: 'user dismissed', status: 'inactive' }),
-        expect.objectContaining({ body: 'other review draft', status: 'draft' })
-      ]);
-    });
-
-    it('returns 0 when the review has no drafts', async () => {
-      expect(await commentRepo.markDraftCommentsSubmitted(1)).toBe(0);
-    });
-  });
-
   describe('getUserComments', () => {
     it('should get all active user comments for a PR', async () => {
       await run(db, `

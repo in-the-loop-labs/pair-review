@@ -8,6 +8,8 @@ const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, Work
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { buildSubmitPrContext } = require('./github/submit-pr-context');
+const { recordReviewSubmission, recordRetainedSubmission } = require('./github/record-submission');
+const { broadcastReviewEvent } = require('./events/review-events');
 const { GitWorktreeManager } = require('./git/worktree');
 const { fetchNoTags } = require('./git/fetch-helpers');
 const { cleanupOrphanedKeepFiles } = require('./git/pack-cleanup');
@@ -1374,7 +1376,7 @@ async function loadHeadlessSuggestions(db, reviewId) {
       type,
       is_file_level
     FROM comments
-    WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL AND (is_raw = 0 OR is_raw IS NULL) AND status = 'active'
+    WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL AND (is_raw = 0 OR is_raw IS NULL) AND ${CommentRepository.pendingCommentSql('comments')}
     ORDER BY file, line_start
   `, [reviewId]);
 
@@ -1400,7 +1402,6 @@ async function loadHeadlessSuggestions(db, reviewId) {
  * @param {Object} options - Mode-specific options
  * @param {string} options.mode - 'draft' or 'review'
  * @param {string} options.reviewEvent - 'DRAFT' or 'COMMENT'
- * @param {string} options.commentStatus - 'draft' or 'submitted'
  * @param {string} options.modeLabel - Display label for log messages (e.g., 'draft mode', 'action review mode')
  * @param {import('../git/worktree-pool-lifecycle').WorktreePoolLifecycle} [externalPoolLifecycle] - Shared pool lifecycle instance (avoids creating a fresh singleton)
  */
@@ -1783,14 +1784,22 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
     });
 
     let githubReview;
-    if (options.reviewEvent === 'DRAFT') {
-      githubReview = await githubClient.createDraftReviewGraphQL(
-        prNodeId, reviewBody, githubComments, existingDraft?.id, submitPrContext
-      );
-    } else {
-      githubReview = await githubClient.createReviewGraphQL(
-        prNodeId, options.reviewEvent, reviewBody, githubComments, existingDraft?.id, submitPrContext
-      );
+    try {
+      if (options.reviewEvent === 'DRAFT') {
+        githubReview = await githubClient.createDraftReviewGraphQL(
+          prNodeId, reviewBody, githubComments, existingDraft?.id, submitPrContext
+        );
+      } else {
+        githubReview = await githubClient.createReviewGraphQL(
+          prNodeId, options.reviewEvent, reviewBody, githubComments, existingDraft?.id, submitPrContext
+        );
+      }
+    } catch (error) {
+      await recordRetainedSubmission(db, error, {
+        reviewId: review.id, body: reviewBody, existingDraft,
+        sourceRows: aiSuggestions, sentComments: githubComments
+      }, () => broadcastReviewEvent(review.id, { type: 'review:comments_changed' }));
+      throw error;
     }
 
     // When adding to an existing draft, use the existing URL and include prior comments in total count
@@ -1804,12 +1813,6 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
     // - github_reviews.github_node_id -> GraphQL node ID (e.g., "PRR_kwDOM...")
     // - reviewData JSON -> uses 'github_node_id' key for the GraphQL node ID
     const githubNodeId = String(githubReview.id); // GraphQL methods return node IDs
-    const githubDatabaseId = githubReview.databaseId
-      ? String(githubReview.databaseId)
-      : existingDraft ? String(existingDraft.databaseId) : null;
-
-    const githubReviewState = options.reviewEvent === 'DRAFT' ? 'pending' : 'submitted';
-
     // Update database to track the review
     await run(db, 'BEGIN TRANSACTION');
 
@@ -1831,35 +1834,14 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
         reviewData: reviewData
       });
 
-      // Create a github_reviews record to track this submission (matches pr.js)
-      const githubReviewRepo = new GitHubReviewRepository(db);
-      await githubReviewRepo.create(review.id, {
-        github_review_id: githubDatabaseId,
-        github_node_id: githubNodeId,
-        state: githubReviewState,
-        body: reviewBody || '',
-        github_url: githubReview.html_url
+      await recordReviewSubmission(db, {
+        reviewId: review.id, event: options.reviewEvent, body: reviewBody,
+        githubReview, existingDraft, sourceRows: aiSuggestions,
+        sentComments: githubComments, postedComments: githubReview.postedComments
       });
 
-      // Update AI suggestions to appropriate status (batch update for performance)
-      // Only the submitted suggestions (loadHeadlessSuggestions skipped the rest)
-      if (aiSuggestions.length > 0) {
-        const suggestionIds = aiSuggestions.map(s => s.id);
-        const placeholders = suggestionIds.map(() => '?').join(',');
-        await run(db, `
-          UPDATE comments
-          SET status = ?, updated_at = ?
-          WHERE id IN (${placeholders})
-        `, [options.commentStatus, now, ...suggestionIds]);
-      }
-
-      // Submitting a pending review publishes the comments saved to it
-      // earlier, which are still 'draft' locally.
-      if (options.reviewEvent !== 'DRAFT' && existingDraft) {
-        await new CommentRepository(db).markDraftCommentsSubmitted(review.id, now);
-      }
-
       await run(db, 'COMMIT');
+      broadcastReviewEvent(review.id, { type: 'review:comments_changed' });
 
       const successLabel = options.reviewEvent === 'DRAFT' ? 'Draft review created' : 'Review submitted';
       console.log(`\n✅ ${successLabel} successfully!`);
@@ -2701,7 +2683,6 @@ async function handleDraftModeReview(args, config, db, flags = {}, poolLifecycle
   await performHeadlessReview(args, config, db, flags, {
     mode: 'draft',
     reviewEvent: 'DRAFT',
-    commentStatus: 'draft',
     modeLabel: 'draft mode'
   }, poolLifecycle);
 }
@@ -2720,7 +2701,6 @@ async function handleActionReview(args, config, db, flags = {}, poolLifecycle = 
   await performHeadlessReview(args, config, db, flags, {
     mode: 'review',
     reviewEvent: 'COMMENT',
-    commentStatus: 'submitted',
     modeLabel: 'action review mode'
   }, poolLifecycle);
 }

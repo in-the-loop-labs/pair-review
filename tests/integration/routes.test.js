@@ -22,9 +22,12 @@ import { listenOnLoopback, closeServer } from '../utils/loopback-server';
 // Import actual modules for spying (vi.mock doesn't work with CommonJS require())
 // We'll spy on prototype methods instead
 const { GitHubClient } = require('../../src/github/client');
+const realCreateReviewGraphQL = GitHubClient.prototype.createReviewGraphQL;
+const realAddCommentsInBatches = GitHubClient.prototype.addCommentsInBatches;
 const { GitWorktreeManager } = require('../../src/git/worktree');
 const configModule = require('../../src/config');
 const ws = require('../../src/ws');
+const { CommentRepository } = require('../../src/database');
 
 // Per-file temp config dir. A fixed path like '/tmp/.pair-review-test' is
 // shared by every test file that mocks getConfigDir the same way — vitest
@@ -1788,38 +1791,20 @@ describe('User Comment Endpoints', () => {
       expect(response.body.deletedCount).toBe(2);
     });
 
-    it('should delete comments with active, submitted, and draft statuses', async () => {
-      // Create comments with different statuses that should all be deleted
-      await run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status)
-        VALUES (?, 'user', 'file1.js', 10, 'Active comment', 'active')
-      `, [prId]);
-      await run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status)
-        VALUES (?, 'user', 'file2.js', 20, 'Submitted comment', 'submitted')
-      `, [prId]);
-      await run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status)
-        VALUES (?, 'user', 'file3.js', 30, 'Draft comment', 'draft')
-      `, [prId]);
-      // This inactive comment should NOT be deleted again
-      await run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status)
-        VALUES (?, 'user', 'file4.js', 40, 'Already inactive', 'inactive')
-      `, [prId]);
-
-      const response = await request(server)
-        .delete(`/api/reviews/${prId}/comments`);
-
+    it('clears only pending comments and keeps both draft and published postings', async () => {
+      for (const state of [null, 'submitted', 'pending']) {
+        const c = await run(db, `INSERT INTO comments (review_id, source, file, body, status)
+          VALUES (?, 'user', 'a.js', 'body', 'active')`, [prId]);
+        if (state) {
+          const gr = await run(db, 'INSERT INTO github_reviews (review_id, state) VALUES (?, ?)', [prId, state]);
+          await run(db, 'INSERT INTO comment_postings (comment_id, github_review_row_id, body) VALUES (?, ?, ?)', [c.lastID, gr.lastID, 'body']);
+        }
+      }
+      const response = await request(server).delete(`/api/reviews/${prId}/comments`);
       expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.deletedCount).toBe(3); // Only active, submitted, draft
-
-      // Verify all deletable comments are now inactive
-      const comments = await query(db, `
-        SELECT status FROM comments WHERE review_id = ? AND source = 'user' ORDER BY line_start
-      `, [prId]);
-      expect(comments.every(c => c.status === 'inactive')).toBe(true);
+      expect(response.body.deletedCount).toBe(1);
+      const comments = await query(db, "SELECT status FROM comments WHERE review_id = ? AND source = 'user' ORDER BY id", [prId]);
+      expect(comments.map(c => c.status)).toEqual(['inactive', 'active', 'active']);
     });
 
     it('should return dismissedSuggestionIds when bulk deleting adopted comments', async () => {
@@ -3370,7 +3355,8 @@ describe('Review Submission Endpoint', () => {
       // User comments should have 'submitted' status
       const userCommentsAfter = commentsAfter.filter(c => c.source === 'user');
       expect(userCommentsAfter.length).toBe(2);
-      expect(userCommentsAfter.every(c => c.status === 'submitted')).toBe(true);
+      expect(userCommentsAfter.every(c => c.status === 'active')).toBe(true);
+      expect(await query(db, 'SELECT * FROM comment_postings')).toHaveLength(2);
 
       // AI comments should remain unchanged
       const aiCommentsAfter = commentsAfter.filter(c => c.source === 'ai');
@@ -3416,7 +3402,8 @@ describe('Review Submission Endpoint', () => {
       const analysisRunsAfter = await query(db, 'SELECT * FROM analysis_runs WHERE review_id = ?', [prId]);
 
       expect(commentsAfter.length).toBe(1);
-      expect(commentsAfter[0].status).toBe('draft'); // User comments get 'draft' status
+      expect(commentsAfter[0].status).toBe('active'); // Lifecycle stays active; publication is derived.
+      expect((await new CommentRepository(db).getComment(commentsAfter[0].id)).publication.state).toBe('draft');
 
       expect(analysisRunsAfter.length).toBe(1);
       expect(analysisRunsAfter[0].id).toBe('draft-test-run');
@@ -3438,11 +3425,12 @@ describe('Review Submission Endpoint', () => {
       expect(draftResponse.status).toBe(200);
 
       const afterDraft = await query(db, "SELECT status FROM comments WHERE review_id = ? AND source = 'user'", [prId]);
-      expect(afterDraft.map(c => c.status)).toEqual(['draft', 'draft']);
+      expect(afterDraft.map(c => c.status)).toEqual(['active', 'active']);
+      vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({ ...mockGitHubResponses.createReviewGraphQL, id: 'PRR_draft12346', databaseId: 12346 });
 
       // GitHub now holds the pending review that contains A and B.
       vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
-        id: 'PRR_pending', databaseId: 12345, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        id: 'PRR_draft12346', databaseId: 12346, url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
         comments: { totalCount: 2 }
       });
       await run(db, `
@@ -3457,9 +3445,9 @@ describe('Review Submission Endpoint', () => {
 
       const after = await query(db, "SELECT body, status FROM comments WHERE review_id = ? AND source = 'user' ORDER BY line_start", [prId]);
       expect(after).toEqual([
-        { body: 'Draft A', status: 'submitted' },
-        { body: 'Draft B', status: 'submitted' },
-        { body: 'New C', status: 'submitted' }
+        { body: 'Draft A', status: 'active' },
+        { body: 'Draft B', status: 'active' },
+        { body: 'New C', status: 'active' }
       ]);
     });
 
@@ -3468,8 +3456,9 @@ describe('Review Submission Endpoint', () => {
       // draft rows were not published by this submit.
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
-        VALUES (?, 'user', 'file.js', 3, 5, 'Stale draft', 'draft')
+        VALUES (?, 'user', 'file.js', 3, 5, 'Stale draft', 'active')
       `, [prId]);
+      await run(db, "INSERT INTO comment_postings (comment_id, body) SELECT id, body FROM comments WHERE body = 'Stale draft'");
 
       const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
@@ -3477,7 +3466,8 @@ describe('Review Submission Endpoint', () => {
       expect(response.status).toBe(200);
 
       const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Stale draft'", [prId]);
-      expect(row.status).toBe('draft');
+      expect(row.status).toBe('active');
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.lastCall[3]).toHaveLength(0);
     });
 
     it('keeps earlier draft comments as draft when adding to the pending review', async () => {
@@ -3487,8 +3477,10 @@ describe('Review Submission Endpoint', () => {
       });
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
-        VALUES (?, 'user', 'file.js', 3, 5, 'Earlier draft', 'draft')
+        VALUES (?, 'user', 'file.js', 3, 5, 'Earlier draft', 'active')
       `, [prId]);
+      const gr = await run(db, "INSERT INTO github_reviews (review_id, github_node_id, github_review_id, state) VALUES (?, 'PRR_pending', '12345', 'pending')", [prId]);
+      await run(db, "INSERT INTO comment_postings (comment_id, github_review_row_id, body) SELECT id, ?, body FROM comments WHERE body = 'Earlier draft'", [gr.lastID]);
 
       const response = await request(server)
         .post('/api/pr/owner/repo/1/submit-review')
@@ -3496,7 +3488,82 @@ describe('Review Submission Endpoint', () => {
       expect(response.status).toBe(200);
 
       const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Earlier draft'", [prId]);
-      expect(row.status).toBe('draft');
+      expect(row.status).toBe('active');
+      const [comment] = await new CommentRepository(db).getUserComments(prId);
+      expect(comment.publication.state).toBe('draft');
+      expect(GitHubClient.prototype.createDraftReviewGraphQL.mock.lastCall[2]).toHaveLength(0);
+    });
+
+    it.each([{ failed: [] }, { added: 0, failed: [] }])('host success with ambiguous accounting %j records every comment and never reposts', async (data) => {
+      app.set('config', { github_token: 'test', repos: { 'owner/repo': {
+        api_host: 'ghe.example.com', token: 'test',
+        features: { review_lifecycle: 'rest', pending_review_comments: 'host' }
+      } } });
+      const requestMock = vi.fn().mockResolvedValue({ data });
+      const octokit = { request: requestMock, rest: { pulls: {
+        createReview: vi.fn().mockResolvedValue({ data: { id: 123, node_id: 'PRR_host' } }),
+        submitReview: vi.fn().mockResolvedValue({ data: { id: 123, node_id: 'PRR_host', state: 'COMMENTED', html_url: 'https://example.test/r' } })
+      } } };
+      const build = vi.spyOn(GitHubClient.prototype, '_buildOctokit').mockReturnValue(octokit);
+      GitHubClient.prototype.createReviewGraphQL.mockImplementation(realCreateReviewGraphQL);
+      GitHubClient.prototype.addCommentsInBatches.mockImplementation(realAddCommentsInBatches);
+      try {
+        await run(db, `INSERT INTO comments (review_id, source, file, line_start, body, status)
+          VALUES (?, 'user', 'file.js', 3, 'body', 'active')`, [prId]);
+        const response = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' });
+        expect(response.status).toBe(200);
+        const [comment] = await new CommentRepository(db).getUserComments(prId);
+        expect(comment.publication.state).toBe('posted');
+        expect(comment.publication.comment_url).toBeNull();
+        const retry = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'APPROVE' });
+        expect(retry.status).toBe(200);
+        expect(requestMock).toHaveBeenCalledTimes(1); // real host adapter sent only the first time
+      } finally {
+        build.mockRestore();
+      }
+    });
+
+    it('retained partial failure records only the attached subset and retry skips it', async () => {
+      for (const line of [3, 4]) await run(db, `INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', ?, 'body', 'active')`, [prId, line]);
+      const error = Object.assign(new Error('batch failed'), {
+        reviewRetained: true, pendingReview: { id: 'PRR_retained', databaseId: 123 },
+        postedComments: [{ index: 1, github_comment_id: '987', github_comment_url: 'https://example.test/c' }]
+      });
+      vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockRejectedValueOnce(error);
+      const failed = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' });
+      expect(failed.status).toBe(500);
+      expect(JSON.stringify(failed.body)).toContain('1 of 2 comments');
+      const comments = await new CommentRepository(db).getUserComments(prId);
+      expect(comments.map(c => c.publication?.state ?? null)).toEqual([null, 'draft']);
+      expect(comments[1].publication.comment_url).toBe('https://example.test/c');
+      const retry = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' });
+      expect(retry.status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.lastCall[3]).toHaveLength(1);
+    });
+
+    it('does not infer an unknown retained subset', async () => {
+      await run(db, `INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 3, 'body', 'active')`, [prId]);
+      vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockRejectedValueOnce(Object.assign(new Error('batch failed'), {
+        reviewRetained: true, pendingReview: { id: 'PRR_retained', databaseId: 123 }, postedComments: null
+      }));
+      const failed = await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' });
+      expect(failed.status).toBe(500);
+      expect(JSON.stringify(failed.body)).toContain('check the pending review on GitHub before resubmitting');
+      expect(await query(db, 'SELECT * FROM comment_postings')).toEqual([]);
+    });
+
+    it('dismiss and restore retains publication and does not send another copy (#613-4)', async () => {
+      const c = await run(db, `INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 3, 'body', 'active')`, [prId]);
+      expect((await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'COMMENT' })).status).toBe(200);
+      expect((await request(server).delete(`/api/reviews/${prId}/comments/${c.lastID}`)).status).toBe(200);
+      const restored = await request(server).put(`/api/reviews/${prId}/comments/${c.lastID}/restore`);
+      expect(restored.status).toBe(200);
+      expect(restored.body.comment).toMatchObject({ status: 'active', publication: { state: 'posted' } });
+      expect((await request(server).post('/api/pr/owner/repo/1/submit-review').send({ event: 'APPROVE' })).status).toBe(200);
+      expect(GitHubClient.prototype.createReviewGraphQL.mock.lastCall[3]).toEqual([]);
     });
 
     describe('review:comments_changed broadcast', () => {
@@ -3538,7 +3605,9 @@ describe('Review Submission Endpoint', () => {
 
         // Other tabs reload on this event, so the new statuses must already be committed.
         const row = await queryOne(db, "SELECT status FROM comments WHERE review_id = ? AND body = 'Pending'", [prId]);
-        expect(row.status).toBe(event === 'DRAFT' ? 'draft' : 'submitted');
+        expect(row.status).toBe('active');
+        const [comment] = await new CommentRepository(db).getUserComments(prId);
+        expect(comment.publication.state).toBe(event === 'DRAFT' ? 'draft' : 'posted');
       });
 
       it('broadcasts on the alt-host (REST + host comments) path too', async () => {

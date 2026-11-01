@@ -5366,6 +5366,12 @@ div.external-comment-row {
   opacity: 0.7;
 }
 
+a.posted-comment-icon:hover,
+a.posted-comment-icon:focus-visible {
+  opacity: 1;
+  color: var(--color-accent-fg, #0969da);
+}
+
 .review-modal-footer {
   padding: 16px 24px;
   border-top: 1px solid #d1d9e0;

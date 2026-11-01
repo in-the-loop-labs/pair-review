@@ -1,0 +1,425 @@
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
+// Historical production schema fixture, verbatim from src/database.js at
+// 17b9ee7f (schema version 55). Keep frozen to exercise real upgrades.
+const SCHEMA_SQL = {
+  reviews: `
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pr_number INTEGER,
+      repository TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
+      review_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      submitted_at DATETIME,
+      review_data TEXT,
+      custom_instructions TEXT,
+      review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+      local_path TEXT,
+      local_head_sha TEXT,
+      summary TEXT,
+      name TEXT,
+      local_mode TEXT DEFAULT 'uncommitted',
+      local_base_branch TEXT,
+      local_head_branch TEXT,
+      local_scope_start TEXT DEFAULT 'unstaged',
+      local_scope_end TEXT DEFAULT 'untracked'
+    )
+  `,
+
+  comments_old: `
+    CREATE TABLE IF NOT EXISTS comments_old (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      line_number INTEGER,
+      comment_text TEXT NOT NULL,
+      comment_type TEXT NOT NULL DEFAULT 'user' CHECK(comment_type IN ('user', 'ai', 'system')),
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'adopted', 'discarded')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews (id) ON DELETE CASCADE
+    )
+  `,
+
+  comments: `
+    CREATE TABLE IF NOT EXISTS comments (
+      id INTEGER PRIMARY KEY,
+      review_id INTEGER,
+      source TEXT,
+      author TEXT,
+
+      ai_run_id TEXT,
+      ai_level INTEGER,
+      ai_confidence REAL,
+
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
+      commit_sha TEXT,
+      type TEXT,
+      title TEXT,
+      body TEXT,
+      suggestion_text TEXT,
+      reasoning TEXT,
+
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+      status_reason TEXT,
+      adopted_as_id INTEGER,
+      parent_id INTEGER,
+      is_file_level INTEGER DEFAULT 0,
+
+      voice_id TEXT,
+      is_raw INTEGER DEFAULT 0,
+
+      severity TEXT,
+
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
+      FOREIGN KEY (parent_id) REFERENCES comments(id)
+    )
+  `,
+
+  pr_metadata: `
+    CREATE TABLE IF NOT EXISTS pr_metadata (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pr_number INTEGER NOT NULL,
+      repository TEXT NOT NULL,
+      title TEXT,
+      description TEXT,
+      author TEXT,
+      base_branch TEXT,
+      head_branch TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      pr_data TEXT,
+      last_ai_run_id TEXT,
+      last_accessed_at TEXT,
+      host TEXT,
+      UNIQUE(pr_number, repository)
+    )
+  `,
+
+  worktrees: `
+    CREATE TABLE IF NOT EXISTS worktrees (
+      id TEXT PRIMARY KEY,
+      pr_number INTEGER NOT NULL,
+      repository TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_accessed_at TEXT NOT NULL,
+      UNIQUE(pr_number, repository)
+    )
+  `,
+
+  repo_settings: `
+    CREATE TABLE IF NOT EXISTS repo_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      default_instructions TEXT,
+      default_provider TEXT,
+      default_model TEXT,
+      default_council_id TEXT,
+      default_tab TEXT,
+      default_chat_instructions TEXT,
+      local_path TEXT,
+      auto_branch_review INTEGER DEFAULT 0,
+      pool_size INTEGER,
+      pool_fetch_interval_minutes INTEGER,
+      pool_fetch_started_at TEXT,
+      pool_fetch_finished_at TEXT,
+      pool_fetch_owner TEXT,
+      load_skills INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
+  analysis_runs: `
+    CREATE TABLE IF NOT EXISTS analysis_runs (
+      id TEXT PRIMARY KEY,
+      review_id INTEGER NOT NULL,
+      provider TEXT,
+      model TEXT,
+      tier TEXT,
+      custom_instructions TEXT,
+      global_instructions TEXT,
+      repo_instructions TEXT,
+      request_instructions TEXT,
+      head_sha TEXT,
+      diff TEXT,
+      summary TEXT,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+      total_suggestions INTEGER DEFAULT 0,
+      files_analyzed INTEGER DEFAULT 0,
+      started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP,
+      parent_run_id TEXT,
+      config_type TEXT DEFAULT 'single',
+      levels_config TEXT,
+      level_outcomes TEXT,
+      scope_start TEXT,
+      scope_end TEXT,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
+  local_diffs: `
+    CREATE TABLE IF NOT EXISTS local_diffs (
+      review_id INTEGER PRIMARY KEY,
+      diff_text TEXT,
+      stats TEXT,
+      digest TEXT,
+      captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
+  github_reviews: `
+    CREATE TABLE IF NOT EXISTS github_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      github_review_id TEXT,
+      github_node_id TEXT,
+      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'dismissed')),
+      event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
+      body TEXT,
+      submitted_at DATETIME,
+      github_url TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
+  councils: `
+    CREATE TABLE IF NOT EXISTS councils (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT DEFAULT 'advanced',
+      config JSON NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
+  chat_sessions: `
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      context_comment_id INTEGER,
+      agent_session_id TEXT, -- Reserved: agent session ID for future reconnection support
+      provider TEXT NOT NULL,
+      model TEXT,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed', 'error')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id) ON DELETE SET NULL
+    )
+  `,
+
+  chat_messages: `
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      type TEXT DEFAULT 'message',
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    )
+  `,
+
+  context_files: `
+    CREATE TABLE IF NOT EXISTS context_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file TEXT NOT NULL,
+      line_start INTEGER NOT NULL,
+      line_end INTEGER NOT NULL,
+      label TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
+  hunk_summaries: `
+    CREATE TABLE IF NOT EXISTS hunk_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file_path TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      summary_text TEXT,
+      trivial_reason TEXT,
+      provider TEXT,
+      model TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      CHECK (summary_text IS NOT NULL OR trivial_reason IS NOT NULL),
+      UNIQUE (review_id, content_hash)
+    )
+  `,
+
+  tours: `
+    CREATE TABLE IF NOT EXISTS tours (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL UNIQUE,
+      stops TEXT NOT NULL,
+      diff_hash TEXT NOT NULL,
+      provider TEXT,
+      model TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
+  github_pr_cache: `
+    CREATE TABLE IF NOT EXISTS github_pr_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT,
+      author TEXT,
+      updated_at TEXT,
+      html_url TEXT,
+      state TEXT DEFAULT 'open',
+      collection TEXT NOT NULL,
+      host TEXT,
+      fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
+  worktree_pool: `
+    CREATE TABLE IF NOT EXISTS worktree_pool (
+      id TEXT PRIMARY KEY,
+      repository TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'available'
+        CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+      current_pr_number INTEGER,
+      current_review_id INTEGER,
+      last_switched_at TEXT,
+      last_fetched_at TEXT,
+      last_fetch_attempt_at TEXT,
+      fetch_failure_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `,
+
+  external_comments: `
+    CREATE TABLE IF NOT EXISTS external_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      in_reply_to_id TEXT,
+      parent_id INTEGER,
+      external_url TEXT,
+      author TEXT,
+      author_url TEXT,
+      file TEXT NOT NULL,
+      side TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      commit_sha TEXT,
+      is_outdated INTEGER NOT NULL DEFAULT 0,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
+      original_line_start INTEGER,
+      original_line_end INTEGER,
+      original_commit_sha TEXT,
+      body TEXT,
+      external_created_at TEXT,
+      synced_at TEXT,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES external_comments(id) ON DELETE SET NULL
+    )
+  `,
+
+  global_settings: `
+    CREATE TABLE IF NOT EXISTS global_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
+  // Global (user-level) reusable chat prompt snippets. No `repository` column
+  // now; repo-scoping later is a non-breaking ALTER TABLE ADD COLUMN + WHERE
+  // filter. MRU order comes from last_used_at (see ChatSnippetRepository).
+  chat_snippets: `
+    CREATE TABLE IF NOT EXISTS chat_snippets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      body TEXT NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `
+};
+
+const INDEX_SQL = [
+  'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
+  'CREATE INDEX IF NOT EXISTS idx_pr_metadata_last_accessed ON pr_metadata(last_accessed_at)',
+  'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
+  'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository COLLATE NOCASE)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha, local_head_branch) WHERE review_type = \'local\'',
+  // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\'',
+  // Analysis runs indexes
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)',
+  // GitHub reviews indexes
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // Council indexes
+  'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
+  // Voice tracking indexes
+  'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
+  // Chat indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)',
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)',
+  // Context files indexes
+  'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)',
+  // Hunk summaries indexes
+  'CREATE INDEX IF NOT EXISTS idx_hunk_summaries_review ON hunk_summaries(review_id)',
+  // GitHub PR cache indexes. `host` is part of the unique key so a dual-host
+  // repo can cache the same (collection, owner, repo, number) from github.com
+  // (host NULL) AND its alt host (host = api_host URL) without colliding —
+  // independently-numbered PRs across systems overlap on small numbers. SQLite
+  // treats NULLs as distinct in unique indexes, so two NULL-host rows would not
+  // collide, but the collections refresh DELETEs the collection before
+  // re-inserting, so duplicate NULL-host rows can't accumulate. See migration 51.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_github_pr_cache_unique ON github_pr_cache(collection, owner, repo, number, host)',
+  // Worktree pool indexes
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_repo ON worktree_pool(repository)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_status ON worktree_pool(repository, status)',
+  'CREATE INDEX IF NOT EXISTS idx_worktree_pool_lru ON worktree_pool(repository, status, last_switched_at)',
+  // External comments indexes (read-only mirror of GitHub/etc. PR review comments)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_external_comments_unique ON external_comments(review_id, source, external_id)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_anchor ON external_comments(review_id, file, line_end)',
+  'CREATE INDEX IF NOT EXISTS idx_external_comments_parent_lookup ON external_comments(review_id, source, in_reply_to_id)',
+  // Global settings (in-app overrides). key is already UNIQUE in the table, but
+  // the explicit index keeps parity with the test schema and lookup by key fast.
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_global_settings_key ON global_settings(key)',
+  // Chat snippets MRU lookup by last_used_at.
+  'CREATE INDEX IF NOT EXISTS idx_chat_snippets_last_used ON chat_snippets(last_used_at DESC)'
+];
+
+module.exports = { SCHEMA_SQL, INDEX_SQL };

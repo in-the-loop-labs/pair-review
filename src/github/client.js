@@ -686,9 +686,11 @@ class GitHubClient {
    *
    * @param {string} nodeId - GraphQL node id
    * @param {Object} [prContext] - `{ owner, repo, prNumber, reviewId? }`
+   * @param {Object} [options]
+   * @param {boolean} [options.strict=false] - Throw lookup failures other than not found
    */
-  async getReviewById(nodeId, prContext) {
-    return pendingReviewOps.getReviewById(this.octokit, this.features, nodeId, prContext);
+  async getReviewById(nodeId, prContext, options) {
+    return pendingReviewOps.getReviewById(this.octokit, this.features, nodeId, prContext, options);
   }
 
   /**
@@ -734,6 +736,7 @@ class GitHubClient {
     // the alt-host REST/extension path rather than GraphQL. Keep the
     // messages accurate to what really ran.
     const transport = this.apiHost ? 'alt-host' : 'GraphQL';
+    const submission = { postedComments: [], reviewRetained: false, pendingReview: null };
     try {
       console.log(`Creating review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -783,10 +786,13 @@ class GitHubClient {
         ? { ...prContext, reviewId: reviewDatabaseId !== null ? reviewDatabaseId : prContext.reviewId }
         : (reviewDatabaseId !== null ? { reviewId: reviewDatabaseId } : null);
 
+      submission.pendingReview = { id: reviewId, databaseId: reviewDatabaseId };
+      submission.reviewRetained = true;
       let successfulComments = 0;
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         let batchResult;
+        submission.postedComments = null; // Unknown until the transport reports a subset.
         try {
           batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments, 10, downstreamPrContext);
         } catch (commentError) {
@@ -797,8 +803,10 @@ class GitHubClient {
           // `batchResult.failed` was returned, leaving a pending review
           // behind on these throws when we created it ourselves.
           console.error(`CRITICAL: comment batch threw before completion: ${commentError.message}`);
+          submission.postedComments = commentError.postedComments ?? null;
           if (!usedExistingReview) {
             const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
+            submission.reviewRetained = !cleaned;
             if (!cleaned) {
               console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
             }
@@ -813,6 +821,7 @@ class GitHubClient {
           throw wrapped;
         }
         successfulComments = batchResult.successCount;
+        submission.postedComments = batchResult.posted ?? null;
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
@@ -820,6 +829,7 @@ class GitHubClient {
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
           if (!usedExistingReview) {
             const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
+            submission.reviewRetained = !cleaned;
             if (!cleaned) {
               console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
             }
@@ -848,7 +858,8 @@ class GitHubClient {
         databaseId: result.databaseId,
         html_url: result.url,
         state: result.state,
-        comments_count: successfulComments
+        comments_count: successfulComments,
+        postedComments: submission.postedComments
       };
 
     } catch (error) {
@@ -859,10 +870,10 @@ class GitHubClient {
       // label the message with the actual transport for accuracy.
       if (error.errors) {
         const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub ${transport} error: ${messages}`);
+        throw Object.assign(new Error(`GitHub ${transport} error: ${messages}`), submission);
       }
 
-      throw new Error(`Failed to submit review (${transport}): ${error.message}`);
+      throw Object.assign(new Error(`Failed to submit review (${transport}): ${error.message}`), submission);
     }
   }
 
@@ -884,6 +895,7 @@ class GitHubClient {
     // historical; the real transport may be the alt-host REST/extension
     // path rather than GraphQL. See createReviewGraphQL for the rationale.
     const transport = this.apiHost ? 'alt-host' : 'GraphQL';
+    const submission = { postedComments: [], reviewRetained: false, pendingReview: null };
     try {
       console.log(`Creating draft review (${transport}) for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -933,10 +945,13 @@ class GitHubClient {
         ? { ...prContext, reviewId: reviewDatabaseId !== null ? reviewDatabaseId : prContext.reviewId }
         : (reviewDatabaseId !== null ? { reviewId: reviewDatabaseId } : null);
 
+      submission.pendingReview = { id: reviewId, databaseId: reviewDatabaseId };
+      submission.reviewRetained = true;
       let successfulComments = 0;
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments in batches...`);
         let batchResult;
+        submission.postedComments = null; // Unknown until the transport reports a subset.
         try {
           batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments, 10, downstreamPrContext);
         } catch (commentError) {
@@ -947,8 +962,10 @@ class GitHubClient {
           // `batchResult.failed` was returned, leaving a pending review
           // behind on these throws when we created it ourselves.
           console.error(`CRITICAL: comment batch threw before completion: ${commentError.message}`);
+          submission.postedComments = commentError.postedComments ?? null;
           if (!usedExistingReview) {
             const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
+            submission.reviewRetained = !cleaned;
             if (!cleaned) {
               console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
             }
@@ -963,6 +980,7 @@ class GitHubClient {
           throw wrapped;
         }
         successfulComments = batchResult.successCount;
+        submission.postedComments = batchResult.posted ?? null;
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
@@ -971,6 +989,7 @@ class GitHubClient {
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
           if (!usedExistingReview) {
             const cleaned = await this.deletePendingReview(reviewId, downstreamPrContext);
+            submission.reviewRetained = !cleaned;
             if (!cleaned) {
               console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
             }
@@ -993,7 +1012,8 @@ class GitHubClient {
         databaseId: reviewDatabaseId,
         html_url: reviewUrl,
         state: 'PENDING',
-        comments_count: successfulComments
+        comments_count: successfulComments,
+        postedComments: submission.postedComments
       };
 
     } catch (error) {
@@ -1003,10 +1023,10 @@ class GitHubClient {
       // harmless on the REST/host path. Label with the actual transport.
       if (error.errors) {
         const messages = error.errors.map(e => e.message).join(', ');
-        throw new Error(`GitHub ${transport} error: ${messages}`);
+        throw Object.assign(new Error(`GitHub ${transport} error: ${messages}`), submission);
       }
 
-      throw new Error(`Failed to create draft review (${transport}): ${error.message}`);
+      throw Object.assign(new Error(`Failed to create draft review (${transport}): ${error.message}`), submission);
     }
   }
 

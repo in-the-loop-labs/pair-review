@@ -378,7 +378,7 @@ class FileCommentManager {
             ${commentIcon}
           </span>
           <span class="file-comment-badge" title="Comment applies to the entire file">File comment</span>
-          ${window.getPostedCommentIcon?.(comment) || ''}
+          ${window.getPostedCommentIcon?.(comment, { link: true }) || ''}
           ${praiseBadge}
           ${titleHtml}
         </div>

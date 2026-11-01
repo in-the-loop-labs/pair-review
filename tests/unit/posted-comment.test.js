@@ -1,105 +1,65 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
-
 const PostedComment = require('../../public/js/utils/posted-comment.js');
-const {
-  HIDE_POSTED_STORAGE_KEY,
-  isPostedComment,
-  isHidePostedEnabled,
-  setHidePostedEnabled,
-  shouldHidePostedComment,
-  getPostedCommentIcon,
-  stampCommentStatus
-} = PostedComment;
-
-beforeEach(() => {
-  localStorage.clear();
-  PostedComment.setShowPostedOverride(null);
-});
+const { publicationState, isPendingComment, isPostedComment, shouldHidePostedComment,
+  getPostedCommentIcon, stampCommentStatus, setHidePostedEnabled } = PostedComment;
+const posted = { status: 'active', publication: { state: 'posted' } };
+const draft = { status: 'active', publication: { state: 'draft' } };
+beforeEach(() => { localStorage.clear(); PostedComment.setShowPostedOverride(null); });
 
 describe('posted-comment helpers', () => {
   it.each([
-    ['active', false],
-    [undefined, false],
-    ['submitted', true],
-    ['draft', true],
-    ['inactive', false]
-  ])('status %s: posted=%s', (status, posted) => {
-    expect(isPostedComment({ status })).toBe(posted);
+    [{ status: 'active' }, 'none', true],
+    [{ status: 'inactive' }, 'none', false],
+    [posted, 'posted', false], [draft, 'draft', false],
+    [{ ...posted, status: 'inactive' }, 'posted', false],
+    [null, 'none', false]
+  ])('derives publication and pending independently of lifecycle: %j', (comment, state, pending) => {
+    expect(publicationState(comment)).toBe(state);
+    expect(isPostedComment(comment)).toBe(state !== 'none');
+    expect(isPendingComment(comment)).toBe(pending);
   });
 
-  it('reads and writes the hide-posted preference under one key', () => {
-    expect(isHidePostedEnabled()).toBe(false);
+  it('stores the preference and lets the review override it without changing storage', () => {
+    expect(shouldHidePostedComment(posted)).toBe(false);
     setHidePostedEnabled(true);
-    expect(localStorage.getItem(HIDE_POSTED_STORAGE_KEY)).toBe('true');
-    expect(isHidePostedEnabled()).toBe(true);
-    setHidePostedEnabled(false);
-    expect(isHidePostedEnabled()).toBe(false);
+    expect(localStorage.getItem(PostedComment.HIDE_POSTED_STORAGE_KEY)).toBe('true');
+    expect(shouldHidePostedComment(posted)).toBe(true);
+    expect(shouldHidePostedComment(draft)).toBe(false);
+    PostedComment.setShowPostedOverride(true);
+    expect(shouldHidePostedComment(posted)).toBe(false);
+    expect(PostedComment.isHidePostedEnabled()).toBe(true);
+    PostedComment.setShowPostedOverride(null);
+    expect(shouldHidePostedComment(posted)).toBe(true);
+    expect(shouldHidePostedComment(posted, false)).toBe(false);
+    expect(PostedComment.countHiddenPostedComments([posted, posted, draft], true)).toBe(2);
+    expect(PostedComment.countHiddenPostedComments(undefined, true)).toBe(0);
   });
 
-  it('hides only submitted comments, and only when the preference is on', () => {
-    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(false);
-    setHidePostedEnabled(true);
-    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(true);
-    expect(shouldHidePostedComment({ status: 'draft' })).toBe(false);
-    expect(shouldHidePostedComment({ status: 'active' })).toBe(false);
-    // An explicit setting wins over the stored one
-    expect(shouldHidePostedComment({ status: 'submitted' }, false)).toBe(false);
-  });
-
-  it('a per-review "Show posted" override wins over the browser-wide setting without changing it', () => {
-    const { setShowPostedOverride, getShowPostedOverride, isHidePostedInEffect } = PostedComment;
-    setHidePostedEnabled(true);
-    expect(isHidePostedInEffect()).toBe(true);
-
-    setShowPostedOverride(true);
-    expect(getShowPostedOverride()).toBe(true);
-    expect(isHidePostedInEffect()).toBe(false);
-    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(false);
-    expect(localStorage.getItem(HIDE_POSTED_STORAGE_KEY)).toBe('true');
-
-    setHidePostedEnabled(false);
-    setShowPostedOverride(false);
-    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(true);
-
-    setShowPostedOverride(null);
-    expect(getShowPostedOverride()).toBeNull();
-    expect(shouldHidePostedComment({ status: 'submitted' })).toBe(false);
-  });
-
-  it('counts the comments hidden as posted', () => {
-    const { countHiddenPostedComments } = PostedComment;
-    const comments = [{ status: 'submitted' }, { status: 'submitted' }, { status: 'draft' }, { status: 'active' }, { status: 'inactive' }];
-    expect(countHiddenPostedComments(comments)).toBe(0);
-    expect(countHiddenPostedComments(comments, true)).toBe(2);
-    setHidePostedEnabled(true);
-    expect(countHiddenPostedComments(comments)).toBe(2);
-    expect(countHiddenPostedComments(undefined, true)).toBe(0);
-  });
-
-  it('shows the posted icon for posted comments only', () => {
+  it('links to the precise comment or review, escapes attributes, and keeps panel icons noninteractive', () => {
+    const comment = { ...posted, publication: { state: 'posted', comment_url: 'https://example.test/c?x="&y=1', review_url: 'https://example.test/r' } };
+    expect(getPostedCommentIcon(comment)).toMatch(/^<span/);
+    const html = getPostedCommentIcon(comment, { link: true });
+    expect(html).toContain('href="https://example.test/c?x=&quot;&amp;y=1"');
+    expect(html).toContain('rel="noopener"');
+    expect(html).toContain('Posted comment');
+    expect(getPostedCommentIcon({ ...draft, publication: { state: 'draft', review_url: 'https://example.test/r' } }, { link: true })).toContain('In pending draft review');
+    expect(getPostedCommentIcon({ ...posted, publication: { state: 'posted', review_url: 'https://example.test/r' } }, { link: true })).toContain('Posted review');
+    expect(getPostedCommentIcon(posted, { link: true })).toMatch(/^<span/);
+    expect(getPostedCommentIcon({ ...posted, publication: { state: 'posted', comment_url: 'javascript:alert(1)' } }, { link: true })).toMatch(/^<span/);
     expect(getPostedCommentIcon({ status: 'active' })).toBe('');
-    expect(getPostedCommentIcon({ status: 'submitted' })).toContain('posted-comment-icon');
-    expect(getPostedCommentIcon({ status: 'draft' })).toContain('posted-comment-icon');
   });
 
-  it('stamps status and the hidden class onto an element', () => {
+  it('stamps both lifecycle and publication', () => {
     const el = document.createElement('div');
-    stampCommentStatus(el, { id: 1 });
-    expect(el.dataset.commentStatus).toBe('active');
-    expect(el.classList.contains('posted-comment-hidden')).toBe(false);
-
     setHidePostedEnabled(true);
-    stampCommentStatus(el, { status: 'submitted' });
-    expect(el.dataset.commentStatus).toBe('submitted');
+    stampCommentStatus(el, posted);
+    expect(el.dataset.commentStatus).toBe('active');
+    expect(el.dataset.commentPublication).toBe('posted');
     expect(el.classList.contains('posted-comment-hidden')).toBe(true);
-
-    stampCommentStatus(el, { status: 'draft' });
+    stampCommentStatus(el, draft);
     expect(el.classList.contains('posted-comment-hidden')).toBe(false);
-  });
-
-  it('publishes itself on window for browser scripts', () => {
     expect(window.PostedComment).toBe(PostedComment);
   });
 });

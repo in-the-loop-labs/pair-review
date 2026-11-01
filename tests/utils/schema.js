@@ -41,6 +41,26 @@ const SCHEMA_SQL = {
     )
   `,
 
+  comment_postings: `
+    CREATE TABLE IF NOT EXISTS comment_postings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      github_review_row_id INTEGER REFERENCES github_reviews(id) ON DELETE SET NULL,
+      comment_body TEXT,
+      body TEXT NOT NULL,
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      side TEXT,
+      is_file_level INTEGER NOT NULL DEFAULT 0,
+      github_comment_id TEXT,
+      github_comment_node_id TEXT,
+      github_comment_url TEXT,
+      backfilled INTEGER NOT NULL DEFAULT 0,
+      posted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `,
+
   comments: `
     CREATE TABLE IF NOT EXISTS comments (
       id INTEGER PRIMARY KEY,
@@ -361,6 +381,8 @@ const SCHEMA_SQL = {
  * Synchronized with production src/database.js INDEX_SQL
  */
 const INDEX_SQL = [
+  'CREATE INDEX IF NOT EXISTS idx_comment_postings_comment ON comment_postings(comment_id, id)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_postings_github_review ON comment_postings(github_review_row_id)',
   'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',

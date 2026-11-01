@@ -12,7 +12,9 @@ const { isComplexityError } = require('../../errors');
  *
  * The return shape (success count, failed flag, failedDetails) is the
  * same shape `GitHubClient.addCommentsInBatches` historically returned;
- * callers depend on that exact shape for cleanup and error reporting.
+ * callers depend on those fields for cleanup and error reporting. The
+ * additive `posted` array maps successful aliases back to input indexes;
+ * null means a transport failure left the subset unknown.
  */
 
 const MIN_BATCH_SIZE = 1;
@@ -78,7 +80,10 @@ function isSafeToRetry(error) {
  * @param {Array} batch - Slice of comments to include in this mutation
  * @returns {string} The full mutation text
  */
-function buildBatchMutation(batch) {
+function buildBatchMutation(batch, { includeCommentMetadata = true } = {}) {
+  const threadSelection = includeCommentMetadata
+    ? 'thread { id comments(first: 1) { nodes { id fullDatabaseId url } } }'
+    : 'thread { id }';
   const commentMutations = batch.map((comment, index) => {
     const isFileLevel = comment.isFileLevel || !comment.line;
 
@@ -91,7 +96,7 @@ function buildBatchMutation(batch) {
             subjectType: FILE
             body: ${JSON.stringify(comment.body)}
           }) {
-            thread { id }
+            ${threadSelection}
           }
         `;
     }
@@ -111,7 +116,7 @@ function buildBatchMutation(batch) {
             side: ${side}
             body: ${JSON.stringify(comment.body)}
           }) {
-            thread { id }
+            ${threadSelection}
           }
         `;
   }).join('\n');
@@ -134,18 +139,29 @@ function buildBatchMutation(batch) {
  * @param {string} reviewId - GraphQL node ID for the pending review
  * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
  * @param {number} [batchSize=10] - Initial batch size
- * @returns {Promise<{successCount: number, failed: boolean, failedDetails: string[]}>}
+ * @returns {Promise<{successCount: number, failed: boolean, failedDetails: string[], posted: Array|null}>}
  */
 async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batchSize = DEFAULT_BATCH_SIZE) {
   if (comments.length === 0) {
-    return { successCount: 0, failed: false, failedDetails: [] };
+    return { successCount: 0, failed: false, failedDetails: [], posted: [] };
   }
 
   let currentBatchSize = batchSize;
   let remaining = comments.slice();
   let totalSuccessful = 0;
   const failedDetails = [];
+  const posted = [];
+  const recordPosted = (result, index) => {
+    const comment = result.thread.comments?.nodes?.[0];
+    posted.push({
+      index,
+      github_comment_id: comment?.fullDatabaseId != null ? String(comment.fullDatabaseId) : null,
+      github_comment_node_id: comment?.id ?? null,
+      github_comment_url: comment?.url ?? null
+    });
+  };
   let batchNumber = 0;
+  let includeCommentMetadata = true;
 
   logger.info(`Adding ${comments.length} comments in batches of up to ${currentBatchSize}`);
 
@@ -154,7 +170,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
     const batch = remaining.slice(0, currentBatchSize);
     logger.info(`Adding comments batch ${batchNumber} (${batch.length} comments, ${remaining.length} remaining)...`);
 
-    const batchMutation = buildBatchMutation(batch);
+    let batchMutation = buildBatchMutation(batch, { includeCommentMetadata });
 
     // Try the batch, with one retry on failure
     let batchResult = null;
@@ -173,6 +189,24 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
         break;
       } catch (error) {
         batchError = error;
+
+        // Inspect partial results before any retry, including complexity
+        // retries. Replaying this mutation would duplicate successful aliases.
+        // Stop this batch and report its exact subset to the orchestrator.
+        if (error.data) break;
+
+        // Older GraphQL hosts may not expose fullDatabaseId. Only a pure
+        // field-validation rejection is safe to retry: validation precedes
+        // all mutation execution. Never replay partial or transport failures.
+        const metadataValidationError = error.errors?.length && error.errors.every(e =>
+          (e.extensions?.code === 'undefinedField' && e.extensions?.fieldName === 'fullDatabaseId') ||
+          /(?:Cannot query field ["']fullDatabaseId["']|Field ["']fullDatabaseId["'] doesn.t exist)/i.test(e.message || ''));
+        if (includeCommentMetadata && metadataValidationError && isSafeToRetry(error)) {
+          includeCommentMetadata = false;
+          batchMutation = buildBatchMutation(batch, { includeCommentMetadata });
+          logger.warn('GraphQL host lacks fullDatabaseId; posting without optional comment metadata');
+          continue;
+        }
 
         // Complexity/cost limit: halve batch size and re-attempt. Only when
         // re-sending is safe: never after data (some comments may have
@@ -238,6 +272,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
           const commentResult = batchError.data[`comment${i}`];
           if (commentResult && commentResult.thread && commentResult.thread.id) {
             batchSuccessful++;
+            recordPosted(commentResult, comments.length - remaining.length + i);
           } else {
             const ghError = perCommentErrors[`comment${i}`] || 'No error details available';
             const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
@@ -247,7 +282,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
         }
         if (batchSuccessful < batch.length) {
           logger.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-          return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
+          return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails, posted };
         }
         logger.info(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
         totalSuccessful += batchSuccessful;
@@ -259,7 +294,10 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
           const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
           failedDetails.push(`${location} - ${ghError}`);
         }
-        return { successCount: totalSuccessful, failed: true, failedDetails };
+        // The earlier batches are known only if GitHub did not run this one;
+        // a failure it may have applied leaves the subset unknown.
+        return { successCount: totalSuccessful, failed: true, failedDetails,
+          posted: isSafeToRetry(batchError) ? posted : null };
       }
     } else if (batchResult) {
       let batchSuccessful = 0;
@@ -267,6 +305,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
         const commentResult = batchResult[`comment${i}`];
         if (commentResult && commentResult.thread && commentResult.thread.id) {
           batchSuccessful++;
+          recordPosted(commentResult, comments.length - remaining.length + i);
         } else {
           const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
           logger.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - No error details available`);
@@ -276,7 +315,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
 
       if (batchSuccessful < batch.length) {
         logger.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-        return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
+        return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails, posted };
       }
 
       totalSuccessful += batchSuccessful;
@@ -287,7 +326,7 @@ async function addCommentsInBatches(octokit, prNodeId, reviewId, comments, batch
   }
 
   logger.info(`All batches complete: ${totalSuccessful} total comments added`);
-  return { successCount: totalSuccessful, failed: false, failedDetails };
+  return { successCount: totalSuccessful, failed: false, failedDetails, posted };
 }
 
 module.exports = {
