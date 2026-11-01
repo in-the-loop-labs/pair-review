@@ -5478,6 +5478,71 @@ a.posted-comment-icon:focus-visible {
   border-bottom: none;
 }
 
+.review-history-row {
+  position: relative;
+  padding: 0;
+}
+
+.review-history-row-button {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 16px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-primary, #24292f);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-history-row-button:hover {
+  background: var(--color-bg-secondary, #f6f8fa);
+}
+
+.review-history-row-button:focus-visible,
+.review-history-back:focus-visible {
+  outline: 2px solid var(--color-text-link, #0969da);
+  outline-offset: -2px;
+}
+
+.review-history-row .review-history-link {
+  position: absolute;
+  right: 12px;
+  top: 20px;
+}
+
+.review-history-row .review-history-submission-header {
+  padding-right: 110px;
+}
+
+.review-history-counts {
+  font-size: 12px;
+  color: var(--color-text-secondary, #57606a);
+}
+
+.review-history-summary-preview {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.review-history-back {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link, #0969da);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  margin-right: 12px;
+  padding: 6px;
+}
+
 .review-history-submission-header,
 .review-history-comment-header {
   display: flex;

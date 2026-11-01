@@ -296,9 +296,16 @@ describe('review history modal', () => {
     expect(items).toHaveLength(2);
     expect(items[0].querySelector('.review-history-chip').textContent).toBe('Approved');
     expect(items[0].querySelector('time').getAttribute('datetime')).toBe('2026-10-30T12:00:00.000Z');
-    expect(items[0].querySelector('.review-history-summary').textContent).toContain('Looks');
+    expect(items[0].querySelector('.review-history-summary-preview').textContent).toContain('Looks');
+    expect(items[0].querySelector('.review-history-counts').textContent).toBe('2 comments · 1 edit');
+    expect(modal.modal.querySelectorAll('.review-history-comment')).toHaveLength(0);
+    expect(items[1].querySelector('.review-history-chip').textContent).toBe('Pending draft');
+    expect(items[1].querySelector('a')).toBeNull();
+    expect(items[1].textContent).toContain('0 comments · 0 edits');
     expect(items[0].querySelector('.review-history-link').getAttribute('href')).toBe('https://github.com/o/r/pull/1#pullrequestreview-2');
-    const comments = items[0].querySelectorAll('.review-history-comment');
+    items[0].querySelector('button').click();
+    expect(modal.modal.querySelector('.review-history-summary').textContent).toContain('Looks');
+    const comments = modal.modal.querySelectorAll('.review-history-comment');
     expect(comments[0].querySelector('.review-history-chip-edited')).toBeNull();
     expect(comments[1].querySelector('.review-history-chip-edited').textContent).toBe('edited');
     expect(comments[1].textContent).toContain('New text');
@@ -307,9 +314,9 @@ describe('review history modal', () => {
     expect(comments[2].textContent).toContain('approximate');
     expect(comments[2].querySelector('.review-history-chip-dismissed')).not.toBeNull();
     expect(comments[2].hasAttribute('data-jump-comment-id')).toBe(false);
-    expect(items[1].querySelector('.review-history-chip').textContent).toBe('Pending draft');
-    expect(items[1].querySelector('a')).toBeNull();
-    expect(items[1].textContent).toContain('No comments');
+    modal.showList();
+    modal.modal.querySelector('[data-submission-index="1"]').click();
+    expect(modal.body.textContent).toContain('No comments');
   });
 
   it('renders a standalone posted comment with the shared sanitized markdown and card styles', () => {
@@ -345,9 +352,51 @@ describe('review history modal', () => {
     window.aiPanel = { scrollToComment: vi.fn() };
     const modal = new ReviewHistoryModal({ fetchImpl: async () => jsonResponse(200, { submissions }) });
     await modal.show(5);
+    modal.modal.querySelector('[data-submission-index="0"]').click();
     modal.modal.querySelectorAll('.review-history-comment')[1].querySelector('.review-history-comment-body').click();
     expect(window.aiPanel.scrollToComment).toHaveBeenCalledWith('7', 'src/a.js', '3', 'RIGHT');
     expect(modal.isVisible).toBe(false);
+  });
+
+  it('counts postings, not updates, as comments and extracts only the first summary line', () => {
+    expect(ReviewHistoryModal.postingCounts()).toEqual({ comments: 0, edits: 0 });
+    expect(ReviewHistoryModal.postingCounts(null)).toEqual({ comments: 0, edits: 0 });
+    expect(ReviewHistoryModal.postingCounts([{ kind: 'update' }, {}, { kind: 'post' }])).toEqual({ comments: 2, edits: 1 });
+    expect(ReviewHistoryModal.summaryLine(null)).toBe('');
+    expect(ReviewHistoryModal.summaryLine('  First line\r\nSecond line')).toBe('First line');
+  });
+
+  it('focuses rows and Back, returns to the originating row, and resets on reopen', async () => {
+    const modal = new ReviewHistoryModal({ fetchImpl: async () => jsonResponse(200, { submissions }) });
+    await modal.show(5);
+    expect(document.activeElement.dataset.submissionIndex).toBe('0');
+    modal.modal.querySelector('[data-submission-index="1"]').click();
+    expect(document.activeElement.hasAttribute('data-history-back')).toBe(true);
+    document.activeElement.click();
+    expect(document.activeElement.dataset.submissionIndex).toBe('1');
+    document.activeElement.click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(modal.selectedIndex).toBeNull();
+    expect(modal.isVisible).toBe(true);
+    expect(document.activeElement.dataset.submissionIndex).toBe('1');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(modal.isVisible).toBe(false);
+    await modal.show(5);
+    expect(modal.selectedIndex).toBeNull();
+    modal.modal.querySelector('[data-submission-index="0"]').click();
+    modal.modal.querySelector('.modal-close-btn').click();
+    expect(modal.isVisible).toBe(false);
+  });
+
+  it('does not apply stale responses or steal focus after closing', async () => {
+    let resolve;
+    const fetchImpl = vi.fn(() => new Promise(r => { resolve = r; }));
+    const modal = new ReviewHistoryModal({ fetchImpl });
+    const loading = modal.show(5);
+    modal.hide();
+    resolve(jsonResponse(200, { submissions }));
+    await loading;
+    expect(modal.body.querySelector('.review-history-row')).toBeNull();
   });
 
   it('shows an empty state and server errors', async () => {
