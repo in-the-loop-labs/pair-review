@@ -8,6 +8,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const markdownit = require('markdown-it');
+const createDOMPurify = require('dompurify');
+const { configureMarkdownIt, createRenderMarkdown } = require('../../public/js/utils/markdown.js');
 const PostedComment = require('../../public/js/utils/posted-comment.js');
 const { CommentManager } = require('../../public/js/modules/comment-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
@@ -307,6 +310,35 @@ describe('review history modal', () => {
     expect(items[1].querySelector('.review-history-chip').textContent).toBe('Pending draft');
     expect(items[1].querySelector('a')).toBeNull();
     expect(items[1].textContent).toContain('No comments');
+  });
+
+  it('renders a standalone posted comment with the shared sanitized markdown and card styles', () => {
+    const previous = window.renderMarkdown;
+    try {
+      window.renderMarkdown = createRenderMarkdown({
+        md: configureMarkdownIt(markdownit),
+        purify: createDOMPurify(window)
+      });
+      const modal = new ReviewHistoryModal();
+      const body = 'Try **this**\n\n```suggestion\nconst value = "<safe>";\n```\n\n<script>alert(1)</script>';
+      const item = document.createElement('ul');
+      item.innerHTML = modal.renderPostedComment({ body, file: '<unsafe>.js', comment_id: 7 });
+      const rendered = item.querySelector('.review-history-comment-body.user-comment-body');
+      expect(rendered.innerHTML).toBe(window.renderMarkdown(body));
+      expect(rendered.querySelector('pre code.language-suggestion').textContent).toBe('const value = "<safe>";\n');
+      expect(rendered.querySelector('strong').textContent).toBe('this');
+      expect(item.querySelector('script')).toBeNull();
+      expect(item.querySelector('.review-history-comment-file').textContent).toBe('<unsafe>.js');
+      item.innerHTML = modal.renderPostedComment({});
+      expect(item.querySelector('.user-comment-body').innerHTML).toBe('');
+      delete window.renderMarkdown;
+      item.innerHTML = modal.renderPostedComment({ body: '<img src=x onerror=alert(1)>' });
+      expect(item.querySelector('.user-comment-body').textContent).toBe('<img src=x onerror=alert(1)>');
+      expect(item.querySelector('img')).toBeNull();
+    } finally {
+      if (previous) window.renderMarkdown = previous;
+      else delete window.renderMarkdown;
+    }
   });
 
   it('jumps to a comment through the comment panel and closes', async () => {

@@ -92,7 +92,8 @@ test.describe('edited posted comments (PR mode)', () => {
     expect(await page.evaluate(() => window.prManager.getPendingCommentCount())).toBe(0);
   });
 
-  test('the submit dialog updates edited comments after the review, never counting them as new', async ({ page, testServer }) => {
+  test('the submit dialog updates edited comments after the review, never counting them as new', async ({ page, testServer }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     const reviewId = await openFreshPR(page, testServer);
     const editedId = await createFileComment(page, reviewId, 'First version');
     await submit(page);
@@ -106,6 +107,24 @@ test.describe('edited posted comments (PR mode)', () => {
     const option = modal.locator('.update-edited-comments-option');
     await expect(option).toContainText('Also update 1 edited comment on GitHub');
     await expect(option.locator('input')).toBeChecked();
+    // The counts must be visible before choosing a review type, without scrolling.
+    const count = modal.locator('.review-comment-summary');
+    const summary = await modal.locator('.review-summary-section').boundingBox();
+    const countBox = await count.boundingBox();
+    const optionBox = await option.boundingBox();
+    const typeBox = await modal.locator('.review-type-section').boundingBox();
+    expect(summary.y + summary.height).toBeLessThanOrEqual(countBox.y);
+    expect(countBox.y + countBox.height).toBeLessThanOrEqual(optionBox.y);
+    expect(optionBox.y + optionBox.height).toBeLessThanOrEqual(typeBox.y);
+    await expect(count).toBeInViewport({ ratio: 1 });
+    await expect(option).toBeInViewport({ ratio: 1 });
+    expect(await modal.locator('.review-modal-body').evaluate(el => el.scrollTop)).toBe(0);
+    await option.locator('input').focus();
+    await page.keyboard.press('Space');
+    await expect(option.locator('input')).not.toBeChecked();
+    await option.click();
+    await expect(option.locator('input')).toBeChecked();
+    await page.screenshot({ path: testInfo.outputPath('submit-after.png') });
     await modal.locator('#submit-review-btn-modal').click();
     await expect(modal).toBeHidden();
 
@@ -114,10 +133,20 @@ test.describe('edited posted comments (PR mode)', () => {
     await expect(page.locator(`.file-comment-card[data-comment-id="${editedId}"] .posted-comment-edited`)).toHaveCount(0);
   });
 
-  test('review history lists submissions with their comments and edits, and jumps to a comment', async ({ page, testServer }) => {
+  test('review history lists submissions with their comments and edits, and jumps to a comment', async ({ page, testServer }, testInfo) => {
     const reviewId = await openFreshPR(page, testServer);
-    const id = await createFileComment(page, reviewId, 'History original');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const historyBody = 'History original\n\n```suggestion\nconst value = 42;\n```';
+    const id = await createFileComment(page, reviewId, historyBody);
     await submit(page, 'APPROVE');
+    await reload(page);
+    const cardBody = page.locator(`.file-comment-card[data-comment-id="${id}"] .user-comment-body`);
+    await expect(cardBody.locator('pre code.language-suggestion')).toBeVisible();
+    const cardMarkup = await cardBody.innerHTML();
+    const codeStyles = await cardBody.locator('pre').evaluate(el => {
+      const style = getComputedStyle(el);
+      return { padding: style.padding, border: style.border, background: style.backgroundColor };
+    });
     expect((await page.request.put(`/api/reviews/${reviewId}/comments/${id}`, { data: { body: 'History edited' } })).ok()).toBeTruthy();
     const update = await page.request.post(`/api/reviews/${reviewId}/comments/${id}/update-on-github`);
     expect(update.ok()).toBeTruthy();
@@ -133,6 +162,21 @@ test.describe('edited posted comments (PR mode)', () => {
     const editedItem = submission.locator('.review-history-comment[data-posting-kind="update"]');
     await expect(editedItem).toContainText('History edited');
     await expect(editedItem.locator('.review-history-chip-edited')).toHaveText('edited');
+    const original = submission.locator('.review-history-comment[data-posting-kind="post"]');
+    const body = original.locator('.user-comment-body');
+    await expect(body.locator('pre code.language-suggestion')).toHaveText('const value = 42;\n');
+    expect(await body.innerHTML()).toBe(cardMarkup);
+    expect(await body.locator('pre').evaluate(el => {
+      const style = getComputedStyle(el);
+      return { padding: style.padding, border: style.border, background: style.backgroundColor };
+    })).toEqual(codeStyles);
+    const headerBox = await original.locator('.review-history-comment-header').boundingBox();
+    const bodyBox = await body.boundingBox();
+    const paragraphBox = await body.locator('p').boundingBox();
+    const suggestionBox = await body.locator('pre').boundingBox();
+    expect(bodyBox.y - (headerBox.y + headerBox.height)).toBeGreaterThanOrEqual(16);
+    expect(suggestionBox.y - (paragraphBox.y + paragraphBox.height)).toBeGreaterThanOrEqual(12);
+    await page.screenshot({ path: testInfo.outputPath('history-after.png') });
 
     await editedItem.locator('.review-history-comment-body').click();
     await expect(modal).toBeHidden();
