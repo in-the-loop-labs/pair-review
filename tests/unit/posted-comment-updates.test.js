@@ -364,6 +364,10 @@ describe('review history modal', () => {
     expect(ReviewHistoryModal.postingCounts([{ kind: 'update' }, {}, { kind: 'post' }])).toEqual({ comments: 2, edits: 1 });
     expect(ReviewHistoryModal.summaryLine(null)).toBe('');
     expect(ReviewHistoryModal.summaryLine('  First line\r\nSecond line')).toBe('First line');
+    expect(ReviewHistoryModal.summaryLine('## Summary')).toBe('Summary');
+    expect(ReviewHistoryModal.summaryLine('- **LGTM**')).toBe('LGTM');
+    expect(ReviewHistoryModal.summaryLine('1. _Review_ `code`')).toBe('Review code');
+    expect(ReviewHistoryModal.summaryLine('check_some_file.js')).toBe('check_some_file.js');
   });
 
   it('focuses rows and Back, returns to the originating row, and resets on reopen', async () => {
@@ -389,14 +393,45 @@ describe('review history modal', () => {
   });
 
   it('does not apply stale responses or steal focus after closing', async () => {
+    const toggle = document.createElement('button');
+    toggle.id = 'split-button-dropdown-toggle';
+    document.body.appendChild(toggle);
+    toggle.focus();
     let resolve;
     const fetchImpl = vi.fn(() => new Promise(r => { resolve = r; }));
     const modal = new ReviewHistoryModal({ fetchImpl });
     const loading = modal.show(5);
     modal.hide();
+    expect(document.activeElement).toBe(toggle);
     resolve(jsonResponse(200, { submissions }));
     await loading;
     expect(modal.body.querySelector('.review-history-row')).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('captures Escape before background listeners but yields to a nested confirm dialog', async () => {
+    const background = vi.fn();
+    document.addEventListener('keydown', background);
+    const modal = new ReviewHistoryModal({ fetchImpl: async () => jsonResponse(200, { submissions }) });
+    try {
+      await modal.show(5);
+      modal.showSubmission(0);
+      window.confirmDialog = { isVisible: true };
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(modal.selectedIndex).toBe(0);
+      expect(background).toHaveBeenCalledTimes(1);
+      window.confirmDialog.isVisible = false;
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(modal.selectedIndex).toBeNull();
+      expect(background).toHaveBeenCalledTimes(1);
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(modal.isVisible).toBe(false);
+      expect(background).toHaveBeenCalledTimes(1);
+    } finally {
+      modal.hide();
+      delete window.confirmDialog;
+      document.removeEventListener('keydown', background);
+    }
   });
 
   it('shows an empty state and server errors', async () => {

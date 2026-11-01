@@ -75,7 +75,7 @@ class ReviewHistoryModal {
   }
 
   handleKeydown(e) {
-    if (!this.isVisible) return;
+    if (!this.isVisible || window.confirmDialog?.isVisible) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -107,7 +107,8 @@ class ReviewHistoryModal {
     this.modal.querySelector('#review-history-title').textContent = 'Review history';
     this.modal.style.display = 'flex';
     this.isVisible = true;
-    document.addEventListener('keydown', this.handleKeydown);
+    // Capture before ChatPanel's document listener so history owns its Escape ladder.
+    document.addEventListener('keydown', this.handleKeydown, true);
     this.modal.querySelector('.modal-close-btn').focus();
     await this.load(reviewId);
   }
@@ -117,8 +118,11 @@ class ReviewHistoryModal {
     this.modal.style.display = 'none';
     this.isVisible = false;
     ++this._loadGen;
-    document.removeEventListener('keydown', this.handleKeydown);
-    this.opener?.focus();
+    document.removeEventListener('keydown', this.handleKeydown, true);
+    // The split-menu item that opened us is hidden when its dropdown closes.
+    const opener = this.opener?.getClientRects().length
+      ? this.opener : document.getElementById('split-button-dropdown-toggle');
+    opener?.focus();
   }
 
   async load(reviewId) {
@@ -249,7 +253,9 @@ class ReviewHistoryModal {
   }
 
   static summaryLine(body) {
-    return String(body ?? '').trim().split(/\r?\n/, 1)[0];
+    return String(body ?? '').trim().split(/\r?\n/, 1)[0]
+      .replace(/^(?:#{1,6}\s+|(?:[-+*]|\d+[.)])\s+)/, '')
+      .replace(/(?<!\w)(\*\*|__|~~|`|\*|_)(.+?)\1(?!\w)/g, '$2');
   }
 
   static postingCounts(postings) {

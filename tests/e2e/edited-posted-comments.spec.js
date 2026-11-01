@@ -161,6 +161,17 @@ test.describe('edited posted comments (PR mode)', () => {
     await submit(page, 'REQUEST_CHANGES', 'History follow-up');
     const history = await (await page.request.get(`/api/reviews/${reviewId}/submissions`)).json();
     await reload(page);
+    // As in the chat specs, Pi isn't installed in E2E: enable the availability gate.
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.__pairReview = window.__pairReview || {};
+      window.__pairReview.chatProvider = 'pi';
+      window.__pairReview.chatProviders = [{ id: 'pi', name: 'Pi', type: 'pi', available: true }];
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+    await page.locator('#chat-toggle-btn').click();
+    const chat = page.locator('.chat-panel');
+    await expect(chat).toBeVisible();
 
     await page.locator('#split-button-dropdown-toggle').click();
     await page.getByRole('menuitem', { name: 'Review history' }).click();
@@ -189,9 +200,12 @@ test.describe('edited posted comments (PR mode)', () => {
     await expect(back).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(modal).toBeVisible();
+    await expect(chat).toBeVisible();
     await expect(approval.locator('button')).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(modal).toBeHidden();
+    await expect(chat).toBeVisible();
+    await expect(page.locator('#split-button-dropdown-toggle')).toBeFocused();
 
     // Reopen at the list, then jump from the historical edit to the diff.
     await page.locator('#split-button-dropdown-toggle').click();
