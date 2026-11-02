@@ -1268,8 +1268,19 @@
   /**
    * Fetch and display recent reviews (initial load).
    * Resets pagination state and renders the full table from scratch.
+   *
+   * The help modal is opt-in: only the initial page load passes
+   * `showHelpIfEmpty`, so a first-time user with no reviews is greeted with
+   * it, while every refresh (single delete, bulk delete) that happens to
+   * empty the list just shows the empty-state message.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.showHelpIfEmpty=false] - Open the help modal
+   *   when the list comes back empty.
    */
-  async function loadRecentReviews() {
+  async function loadRecentReviews(options) {
+    const showHelpIfEmpty = Boolean(options && options.showHelpIfEmpty);
+
     prSelection.exit();
 
     const container = document.getElementById('recent-reviews-container');
@@ -1294,8 +1305,9 @@
             '<p>No PR reviews yet. Paste a PR URL above to get started.</p>' +
           '</div>';
         container.classList.remove('recent-reviews-loading');
-        // Show help modal when no reviews exist
-        openHelpModal();
+        // Greet first-time users with the help modal, but only on initial
+        // page load, never after the user emptied the list themselves.
+        if (showHelpIfEmpty) openHelpModal();
         return;
       }
 
@@ -2476,8 +2488,9 @@
       }
     }
 
-    // Always load PR reviews (they show on initial load)
-    loadRecentReviews();
+    // Always load PR reviews (they show on initial load). This is the only
+    // caller that opens the help modal for an empty list.
+    loadRecentReviews({ showHelpIfEmpty: true });
 
     // If local tab is active, load local reviews immediately
     if (savedTab === 'local-tab') {
