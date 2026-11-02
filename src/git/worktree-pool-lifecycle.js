@@ -4,7 +4,7 @@
 const fs = require('fs');
 const logger = require('../utils/logger');
 const { WorktreePoolRepository, WorktreeRepository, RepoSettingsRepository, generateWorktreeId } = require('../database');
-const { GitWorktreeManager } = require('./worktree');
+const { GitWorktreeManager, getPRHeadBranch } = require('./worktree');
 const { WorktreePoolUsageTracker } = require('./worktree-pool-usage');
 const { normalizeRepository } = require('../utils/paths');
 const { resolvePoolConfig } = require('../config');
@@ -129,7 +129,7 @@ class WorktreePoolLifecycle {
 
     const normalizedPrData = {
       head_sha: prData.head?.sha || prData.head_sha,
-      head_branch: prData.head?.ref || prData.head_branch,
+      head_branch: getPRHeadBranch(prData),
       base_sha: prData.base?.sha || prData.base_sha,
       base_branch: prData.base?.ref || prData.base_branch,
       repository: prData.repository,
@@ -182,7 +182,7 @@ class WorktreePoolLifecycle {
     // Normalize prData into the shape createWorktreeForPR expects
     const normalizedPrData = {
       head_sha: prData.head?.sha || prData.head_sha,
-      head_branch: prData.head?.ref || prData.head_branch,
+      head_branch: getPRHeadBranch(prData),
       base_sha: prData.base?.sha || prData.base_sha,
       base_branch: prData.base?.ref || prData.base_branch,
       repository: prData.repository,
@@ -271,7 +271,7 @@ class WorktreePoolLifecycle {
       // Run reset_script if configured
       if (options.resetScript) {
         logger.info(`Executing reset script: ${options.resetScript}`);
-        const headRef = prData.head?.ref || prData.head_branch || '';
+        const headRef = getPRHeadBranch(prData);
         const baseRef = prData.base?.ref || prData.base_branch || '';
         const headSha = worktreeManager.getPRHeadSha(prData);
         const baseSha = worktreeManager.getPRBaseSha(prData);
@@ -290,7 +290,7 @@ class WorktreePoolLifecycle {
       }
 
       // Update worktrees table (returns paths of deleted non-pool worktree records)
-      const branch = prData.head?.ref || prData.head_branch || '';
+      const branch = getPRHeadBranch(prData);
       const deletedPaths = await this._worktreeRepo.switchPR(poolEntry.id, prInfo.prNumber, branch);
 
       // Best-effort disk cleanup for deleted non-pool worktree directories
@@ -363,7 +363,7 @@ class WorktreePoolLifecycle {
 
     const normalizedPrData = {
       head_sha: prData.head?.sha || prData.head_sha,
-      head_branch: prData.head?.ref || prData.head_branch,
+      head_branch: getPRHeadBranch(prData),
       base_sha: prData.base?.sha || prData.base_sha,
       base_branch: prData.base?.ref || prData.base_branch,
       repository: prData.repository,

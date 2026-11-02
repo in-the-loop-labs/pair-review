@@ -584,7 +584,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     // Check if PR exists in database
     const existingPR = await queryOne(db, `
-      SELECT id FROM pr_metadata
+      SELECT id, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
@@ -639,8 +639,11 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const diff = await worktreeManager.generateUnifiedDiff(worktreePath, diffPrData);
     const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diff);
 
-    // Prepare extended data
+    // Preserve review state and cached repository metadata, then overlay the
+    // fresh PR payload. Diff fields below use the locally generated results.
     const extendedData = {
+      ...safeParseJson(existingPR.pr_data, {}),
+      ...prData,
       state: prData.state,
       diff: diff,
       changed_files: changedFiles,
@@ -659,6 +662,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       SET
         title = ?,
         description = ?,
+        author = ?,
         base_branch = ?,
         head_branch = ?,
         updated_at = CURRENT_TIMESTAMP,
@@ -667,6 +671,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     `, [
       prData.title,
       prData.body || '',
+      prData.author,
       prData.base_branch,
       prData.head_branch,
       JSON.stringify(extendedData),

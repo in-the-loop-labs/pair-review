@@ -810,7 +810,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
         await worktreeRepo.getOrCreate({
           prNumber,
           repository,
-          branch: prData.head_branch || prData.head?.ref || '',
+          branch: worktreeManager.getPRHeadBranch(prData),
           path: worktreePath
         });
       }
