@@ -550,6 +550,31 @@ describe('GitWorktreeManager base SHA availability', () => {
     );
   });
 
+  it.each([
+    [{ head_branch: 'flat', head: { ref: 'nested' } }, 'flat'],
+    [{ head: { ref: 'nested' } }, 'nested'],
+    [{}, '']
+  ])('persists a non-null head branch for metadata %j', async (headData, expectedBranch) => {
+    manager.pathExists = vi.fn().mockResolvedValue(false);
+    manager._gitFor = vi.fn().mockReturnValue(createMockGit({
+      raw: vi.fn().mockResolvedValue('commit\n')
+    }));
+    manager.worktreeRepo = {
+      findByPR: vi.fn().mockResolvedValue(null),
+      getOrCreate: vi.fn().mockResolvedValue({ id: 'wt-1' })
+    };
+
+    await manager.createWorktreeForPR(
+      { owner: 'owner', repo: 'repo', number: 42 },
+      { base_branch: 'main', base_sha: 'base-sha', head_sha: 'head-sha', ...headData },
+      '/tmp/repo'
+    );
+
+    expect(manager.worktreeRepo.getOrCreate).toHaveBeenCalledWith(expect.objectContaining({
+      branch: expectedBranch
+    }));
+  });
+
   it('builds changed files from the given diff without running git', async () => {
     const longPath = 'areas/internal-services/meteorite/ui/app/frontend/src/routes/repos/$owner/$repo/pulls/$number/route.tsx';
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worktree-changed-files-'));

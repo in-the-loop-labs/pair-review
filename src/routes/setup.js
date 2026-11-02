@@ -167,7 +167,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const existingPR = await queryOne(
       db,
-      'SELECT id, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+      'SELECT id, title, description, author, base_branch, head_branch, pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
       [prNumber, repository]
     );
     if (existingPR) {
@@ -210,7 +210,14 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       try {
         const parsed = JSON.parse(existingPR.pr_data);
         if (parsed.head_sha) {
-          restoreMetadata = parsed;
+          restoreMetadata = {
+            ...parsed,
+            title: parsed.title ?? existingPR.title,
+            body: parsed.body ?? existingPR.description,
+            author: parsed.author ?? existingPR.author,
+            base_branch: parsed.base_branch ?? existingPR.base_branch,
+            head_branch: parsed.head_branch ?? existingPR.head_branch
+          };
         }
       } catch (e) {
         logger.warn(`Could not parse stored pr_data for ${repository} #${prNumber}`);

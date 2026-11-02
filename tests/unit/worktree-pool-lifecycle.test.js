@@ -165,6 +165,36 @@ describe('WorktreePoolLifecycle', () => {
       expect(deps._mockGit.checkout).toHaveBeenCalled();
     });
 
+    it('uses the shared head branch for pool switching and reset scripts', async () => {
+      const entry = { id: 'pair-review--xyz', path: '/tmp/worktree/pair-review--xyz' };
+      deps.poolRepo.claimAvailable.mockResolvedValue(entry);
+      deps.worktreeRepo.findById.mockResolvedValue({ ...entry, pr_number: 99 });
+
+      await lifecycle.acquireForPR(prInfo, {
+        ...prData, head_branch: 'stored-feature'
+      }, '/tmp/source', { ...options, resetScript: '/tmp/reset.sh' });
+
+      expect(deps.worktreeRepo.switchPR).toHaveBeenCalledWith(entry.id, 123, 'stored-feature');
+      expect(deps._mockWorktreeManagerInstance.executeCheckoutScript).toHaveBeenCalledWith(
+        '/tmp/reset.sh', entry.path,
+        expect.objectContaining({ HEAD_BRANCH: 'stored-feature', BASE_BRANCH: 'main' }),
+        options.checkoutTimeout
+      );
+    });
+
+    it.each([true, false])('uses the shared head branch when reserving a slot succeeds=%s', async (reserved) => {
+      deps.poolRepo.reserveSlot.mockResolvedValue(reserved);
+
+      await lifecycle.acquireForPR(prInfo, {
+        ...prData, head_branch: 'stored-feature'
+      }, '/tmp/source', options);
+
+      expect(deps._mockWorktreeManagerInstance.createWorktreeForPR).toHaveBeenCalledWith(
+        expect.any(Object), expect.objectContaining({ head_branch: 'stored-feature' }),
+        '/tmp/source', expect.any(Object)
+      );
+    });
+
     it('creates a new worktree when pool is not full (reserveSlot succeeds)', async () => {
       deps.poolRepo.claimByPR.mockResolvedValue(null);
       deps.poolRepo.claimAvailable.mockResolvedValue(null);

@@ -171,6 +171,38 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.body.setupId).toBeTruthy();
   });
 
+  it.each([
+    [{ head_sha: 'abc123' }, {
+      title: 'Column title', body: 'Column body', author: 'column-author',
+      base_branch: 'main', head_branch: 'feature'
+    }],
+    [{ head_sha: 'abc123', title: 'JSON title', body: '', author: 'json-author',
+      base_branch: 'release', head_branch: 'json-feature' }, {
+      title: 'JSON title', body: '', author: 'json-author',
+      base_branch: 'release', head_branch: 'json-feature'
+    }],
+    [{ head_sha: 'abc123', title: null, body: null, author: null,
+      base_branch: null, head_branch: null }, {
+      title: 'Column title', body: 'Column body', author: 'column-author',
+      base_branch: 'main', head_branch: 'feature'
+    }]
+  ])('hydrates only absent restore fields from metadata columns (%j)', async (stored, expected) => {
+    const json = JSON.stringify(stored);
+    db.prepare(`INSERT INTO pr_metadata
+      (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+      VALUES (42, 'owner/repo', 'Column title', 'Column body', 'column-author', 'main', 'feature', ?)`)
+      .run(json);
+    server = await listenOnLoopback(createApp(db));
+
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(res.status).toBe(200);
+    expect(prSetupModule.setupPRReview.mock.calls[0][0].restoreMetadata).toEqual({
+      head_sha: 'abc123', ...expected
+    });
+    expect(db.prepare('SELECT pr_data FROM pr_metadata').get().pr_data).toBe(json);
+  });
+
   it('passes restoreMetadata to setupPRReview when pr_data has head_sha', async () => {
     // Seed PR metadata WITH pr_data containing head_sha
     const now = new Date().toISOString();
