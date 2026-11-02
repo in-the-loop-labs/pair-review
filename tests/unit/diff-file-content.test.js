@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 
 const {
+  buildFileBlobIndex,
   findFileBlobInfoInDiff,
   parseDiffGitPaths,
   resolveOriginalFileContentSpecs,
@@ -71,6 +72,95 @@ describe('diff-file-content', () => {
         oldBlob: 'aa11bb2',
         newBlob: 'cc33dd4'
       });
+    });
+  });
+
+  describe('buildFileBlobIndex', () => {
+    const MULTI_FILE_DIFF = [
+      'diff --git a/src/a.js b/src/a.js',
+      'index aaa1111..aaa2222 100644',
+      '--- a/src/a.js',
+      '+++ b/src/a.js',
+      '@@ -1 +1 @@',
+      '-old a',
+      '+new a',
+      'diff --git a/src/old.js b/src/new.js',
+      'similarity index 80%',
+      'rename from src/old.js',
+      'rename to src/new.js',
+      'index bbb1111..bbb2222 100644',
+      '--- a/src/old.js',
+      '+++ b/src/new.js',
+      'diff --git a/src/added.js b/src/added.js',
+      'new file mode 100644',
+      'index 0000000..ccc2222',
+      '--- /dev/null',
+      '+++ b/src/added.js'
+    ].join('\n');
+
+    it('indexes every file by both its old and new path in one pass', () => {
+      const index = buildFileBlobIndex(MULTI_FILE_DIFF);
+
+      expect(index.get('src/a.js')).toEqual({
+        oldPath: 'src/a.js', newPath: 'src/a.js', oldBlob: 'aaa1111', newBlob: 'aaa2222'
+      });
+      expect(index.get('src/new.js')).toEqual({
+        oldPath: 'src/old.js', newPath: 'src/new.js', oldBlob: 'bbb1111', newBlob: 'bbb2222'
+      });
+      expect(index.get('src/old.js')).toBe(index.get('src/new.js'));
+      expect(index.get('src/added.js')).toMatchObject({ oldBlob: '0000000', newBlob: 'ccc2222' });
+      expect(index.has('src/missing.js')).toBe(false);
+    });
+
+    it('agrees with findFileBlobInfoInDiff for every path', () => {
+      const index = buildFileBlobIndex(MULTI_FILE_DIFF);
+      for (const filePath of ['src/a.js', 'src/old.js', 'src/new.js', 'src/added.js', 'src/missing.js']) {
+        expect(index.get(filePath) ?? null).toEqual(findFileBlobInfoInDiff(MULTI_FILE_DIFF, filePath));
+      }
+    });
+
+    it('keeps the first block for a path that appears twice', () => {
+      const diff = [
+        'diff --git a/src/a.js b/src/a.js',
+        'index 1111111..2222222 100644',
+        'diff --git a/src/a.js b/src/a.js',
+        'index 3333333..4444444 100644'
+      ].join('\n');
+
+      expect(buildFileBlobIndex(diff).get('src/a.js')).toMatchObject({ oldBlob: '1111111' });
+    });
+
+    it('records null for a malformed index line and does not let a later block override it', () => {
+      const diff = [
+        'diff --git a/src/a.js b/src/a.js',
+        'index not-a-blob',
+        'diff --git a/src/a.js b/src/a.js',
+        'index 3333333..4444444 100644'
+      ].join('\n');
+
+      const index = buildFileBlobIndex(diff);
+      expect(index.has('src/a.js')).toBe(true);
+      expect(index.get('src/a.js')).toBeNull();
+      expect(findFileBlobInfoInDiff(diff, 'src/a.js')).toBeNull();
+    });
+
+    it('lets a later block supply a path whose earlier block had no index line', () => {
+      const diff = [
+        'diff --git a/src/old.js b/src/new.js',
+        'similarity index 100%',
+        'rename from src/old.js',
+        'rename to src/new.js',
+        'diff --git a/src/new.js b/src/new.js',
+        'index 5555555..6666666 100644'
+      ].join('\n');
+
+      expect(buildFileBlobIndex(diff).get('src/new.js')).toMatchObject({ oldBlob: '5555555' });
+      expect(buildFileBlobIndex(diff).has('src/old.js')).toBe(false);
+    });
+
+    it('returns an empty index for an empty or missing diff', () => {
+      expect(buildFileBlobIndex('').size).toBe(0);
+      expect(buildFileBlobIndex(undefined).size).toBe(0);
     });
   });
 
