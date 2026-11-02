@@ -44,6 +44,17 @@ class AdvancedConfigTab {
   /** Default timeout in milliseconds (10 minutes) */
   static DEFAULT_TIMEOUT = 600000;
 
+  /** DOM shape for the shared timeout mixin (see utils/council-timeout.js) */
+  static TIMEOUT_DOM = {
+    panelId: 'tab-panel-advanced',
+    voiceWrapperClass: 'participant-wrapper',
+    voiceKeys: ['level', 'index'],
+    timeoutClass: 'adv-timeout',
+    orchestrationTimeoutId: 'adv-orchestration-timeout',
+    orchestrationToggleId: 'adv-orchestration-timeout-toggle',
+    orchestrationRowId: 'orchestration-voice',
+  };
+
 
   constructor(modal) {
     this.modal = modal;
@@ -669,7 +680,7 @@ class AdvancedConfigTab {
           this._updateOrchestrationTimeoutIcon(panel, e.target.value);
         } else {
           const { level, index } = e.target.dataset;
-          this._updateTimeoutIcon(panel, level, index, e.target.value);
+          this._updateTimeoutIcon(panel, { level, index }, e.target.value);
         }
       }
     });
@@ -946,45 +957,6 @@ class AdvancedConfigTab {
     iconBtn.classList.toggle('has-instructions', hasContent);
   }
 
-  /**
-   * Get the default timeout for a provider, falling back to the static DEFAULT_TIMEOUT.
-   * @param {string} providerId - Provider ID (e.g., 'pi', 'claude')
-   * @returns {number} Default timeout in ms
-   */
-  _getProviderDefaultTimeout(providerId) {
-    const provider = this.providers[providerId];
-    return provider?.defaultTimeout ?? AdvancedConfigTab.DEFAULT_TIMEOUT;
-  }
-
-  /**
-   * Update the clock/timeout icon styling to indicate non-default timeout.
-   * @param {Element} panel - The council panel element
-   * @param {string} level - Level number
-   * @param {string} index - Voice index
-   * @param {string} value - Current timeout value (as string of ms)
-   */
-  _updateTimeoutIcon(panel, level, index, value) {
-    const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
-    const iconBtn = wrapper?.querySelector(`.toggle-timeout-icon[data-level="${level}"][data-index="${index}"]`);
-    if (!iconBtn) return;
-
-    const providerId = wrapper?.querySelector('.voice-provider')?.value;
-    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
-    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
-    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
-  }
-
-  _updateOrchestrationTimeoutIcon(panel, value) {
-    const iconBtn = panel.querySelector('#adv-orchestration-timeout-toggle');
-    if (!iconBtn) return;
-
-    const orchRow = panel.querySelector('#orchestration-voice');
-    const providerId = orchRow?.querySelector('.voice-provider')?.value;
-    const defaultTimeout = this._getProviderDefaultTimeout(providerId);
-    const isNonDefault = parseInt(value, 10) !== defaultTimeout;
-    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
-  }
-
   _updateOrchestrationInstructionsIcon(panel, value) {
     const iconBtn = panel.querySelector('#adv-orchestration-instructions-toggle');
     if (!iconBtn) return;
@@ -994,48 +966,6 @@ class AdvancedConfigTab {
       ? AdvancedConfigTab.SPEECH_BUBBLE_SVG_SOLID
       : AdvancedConfigTab.SPEECH_BUBBLE_SVG;
     iconBtn.classList.toggle('has-instructions', hasContent);
-  }
-
-  /**
-   * When a voice's provider changes, update its timeout to the new provider's default,
-   * preserving explicit user overrides via Math.max when the user had customized the value.
-   * @param {HTMLSelectElement} providerSelect - The provider dropdown that changed
-   */
-  _applyProviderDefaultTimeout(providerSelect) {
-    const panel = this.modal.querySelector('#tab-panel-advanced');
-    if (!panel) return;
-
-    const providerId = providerSelect.value;
-    const newDefault = this._getProviderDefaultTimeout(providerId);
-    const oldProviderId = providerSelect.dataset.previousProvider;
-    const oldDefault = oldProviderId ? this._getProviderDefaultTimeout(oldProviderId) : null;
-
-    const isOrchestration = providerSelect.dataset.target === 'orchestration';
-    if (isOrchestration) {
-      const timeoutEl = panel.querySelector('#adv-orchestration-timeout');
-      if (timeoutEl) {
-        const currentValue = parseInt(timeoutEl.value, 10);
-        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
-          ? Math.max(currentValue, newDefault)
-          : newDefault;
-        timeoutEl.value = String(resolvedTimeout);
-        this._updateOrchestrationTimeoutIcon(panel, String(resolvedTimeout));
-      }
-    } else {
-      const { level, index } = providerSelect.dataset;
-      const wrapper = providerSelect.closest('.participant-wrapper');
-      const timeoutEl = wrapper?.querySelector('.adv-timeout');
-      if (timeoutEl) {
-        const currentValue = parseInt(timeoutEl.value, 10);
-        const resolvedTimeout = (oldDefault !== null && currentValue !== oldDefault)
-          ? Math.max(currentValue, newDefault)
-          : newDefault;
-        timeoutEl.value = String(resolvedTimeout);
-        this._updateTimeoutIcon(panel, level, index, String(resolvedTimeout));
-      }
-    }
-
-    providerSelect.dataset.previousProvider = providerId;
   }
 
   // --- Dirty state tracking ---
@@ -1231,18 +1161,7 @@ class AdvancedConfigTab {
             TimeoutSelect.mount(mount, { className: 'adv-timeout', title: 'Per-reviewer timeout' });
           }
           const timeoutEl = row?.querySelector('.adv-timeout');
-          const providerDefaultTimeout = this._getProviderDefaultTimeout(voice.provider);
-          if (timeoutEl && voice.timeout) {
-            timeoutEl.value = String(voice.timeout);
-            // Show the dropdown if non-default for this provider
-            if (voice.timeout !== providerDefaultTimeout) {
-              timeoutEl.style.display = '';
-            }
-            this._updateTimeoutIcon(panel, String(level), String(i), String(voice.timeout));
-          } else if (timeoutEl) {
-            // No saved timeout — apply the provider's default
-            timeoutEl.value = String(providerDefaultTimeout);
-          }
+          this._restoreVoiceTimeout(panel, { level: String(level), index: String(i) }, timeoutEl, voice);
 
           if (voice.customInstructions) {
             const instrInput = participantWrapper?.querySelector(`.voice-instructions-input[data-level="${level}"][data-index="${i}"]`);
@@ -1280,20 +1199,7 @@ class AdvancedConfigTab {
       }
 
       // Restore consolidation timeout
-      const orchTimeoutSelect = panel.querySelector('#adv-orchestration-timeout');
-      const orchProviderDefaultTimeout = this._getProviderDefaultTimeout(consolSection.provider);
-      if (orchTimeoutSelect && consolSection.timeout) {
-        orchTimeoutSelect.value = String(consolSection.timeout);
-        // Show the dropdown if non-default for this provider
-        if (consolSection.timeout !== orchProviderDefaultTimeout) {
-          orchTimeoutSelect.style.display = '';
-        }
-        this._updateOrchestrationTimeoutIcon(panel, String(consolSection.timeout));
-      } else if (orchTimeoutSelect) {
-        // No saved timeout — apply the provider's default
-        orchTimeoutSelect.value = String(orchProviderDefaultTimeout);
-        this._updateOrchestrationTimeoutIcon(panel, String(orchProviderDefaultTimeout));
-      }
+      this._restoreOrchestrationTimeout(panel, consolSection);
 
       // Restore consolidation custom instructions
       const orchInstrInput = panel.querySelector('#adv-orchestration-instructions');
@@ -1474,6 +1380,10 @@ class AdvancedConfigTab {
     }
   }
 }
+
+// Shared timeout methods (public/js/utils/council-timeout.js). In the browser the
+// util's <script> tag loads first; unit tests load it via require().
+((typeof window !== 'undefined' && window.CouncilTimeout) || require('../utils/council-timeout.js')).mixInto(AdvancedConfigTab);
 
 // Export for use in other modules
 if (typeof window !== 'undefined') {
