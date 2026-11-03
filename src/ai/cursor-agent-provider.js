@@ -773,6 +773,22 @@ class CursorAgentProvider extends AIProvider {
   }
 
   /**
+   * Resolve merged env (provider env + model env) for the given model.
+   * Same merge the constructor applies for the analysis model, so the
+   * extraction model (possibly a different fast-tier model) gets its own env.
+   *
+   * @param {string} model - The model identifier
+   * @returns {Object} Env vars to merge into the child environment
+   */
+  _resolveEnvForModel(model) {
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    return {
+      ...(this.configOverrides?.env || {}),
+      ...(modelConfig?.env || {})
+    };
+  }
+
+  /**
    * Get CLI configuration for LLM extraction
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
@@ -785,6 +801,7 @@ class CursorAgentProvider extends AIProvider {
 
     // Build args consistently using the shared method, applying provider and model extra_args
     const args = this.buildArgsForModel(model);
+    const env = this._resolveEnvForModel(model);
 
     // For extraction, we pass the prompt via stdin
     if (useShell) {
@@ -792,14 +809,16 @@ class CursorAgentProvider extends AIProvider {
         command: `${agentCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
-        promptViaStdin: true
+        promptViaStdin: true,
+        env
       };
     }
     return {
       command: agentCmd,
       args,
       useShell: false,
-      promptViaStdin: true
+      promptViaStdin: true,
+      env
     };
   }
 
