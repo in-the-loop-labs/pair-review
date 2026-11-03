@@ -853,6 +853,34 @@ describe('OpenCodeProvider', () => {
       expect(config.command).toContain('--fast');
       expect(config.command).toContain('fast-model');
     });
+
+    it('should return merged provider + model env for the extraction model', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        env: { PROVIDER_VAR: 'p', SHARED: 'provider' },
+        models: [
+          { id: 'test-model', env: { ANALYSIS_VAR: 'a' } },
+          { id: 'fast-model', env: { MODEL_VAR: 'm', SHARED: 'model' } }
+        ]
+      });
+      const config = provider.getExtractionConfig('fast-model');
+
+      // Extraction model's own env, not the analysis model's; model wins over provider
+      expect(config.env).toEqual({ PROVIDER_VAR: 'p', SHARED: 'model', MODEL_VAR: 'm' });
+    });
+
+    it('should include env in shell mode', () => {
+      process.env.PAIR_REVIEW_OPENCODE_CMD = 'npx opencode';
+      const provider = new OpenCodeProvider('test-model', { env: { PROVIDER_VAR: 'p' } });
+      const config = provider.getExtractionConfig('test-model');
+
+      expect(config.useShell).toBe(true);
+      expect(config.env).toEqual({ PROVIDER_VAR: 'p' });
+    });
+
+    it('should return empty env when none is configured', () => {
+      const provider = new OpenCodeProvider('test-model');
+      expect(provider.getExtractionConfig('test-model').env).toEqual({});
+    });
   });
 
   describe('provider registration', () => {
