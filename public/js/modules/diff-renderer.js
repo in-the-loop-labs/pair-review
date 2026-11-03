@@ -41,7 +41,10 @@ class DiffRenderer {
     </svg>
   `;
 
-  // Map of file extensions to highlight.js language names
+  // Map of file extensions to highlight.js language names. Every value must be
+  // registered by the bundles pr.html and local.html load (the cdnjs common set
+  // plus their languages/*.min.js tags); tests/unit/hljs-language-map.test.js
+  // enforces this.
   static LANGUAGE_MAP = {
     // JavaScript/TypeScript
     'js': 'javascript',
@@ -56,7 +59,6 @@ class DiffRenderer {
     'xml': 'xml',
     'css': 'css',
     'scss': 'scss',
-    'sass': 'sass',
     'less': 'less',
     // Python
     'py': 'python',
@@ -113,8 +115,7 @@ class DiffRenderer {
     'r': 'r',
     'lua': 'lua',
     'perl': 'perl',
-    'pl': 'perl',
-    'vim': 'vim'
+    'pl': 'perl'
   };
 
   /**
@@ -447,9 +448,9 @@ class DiffRenderer {
     }
 
     // Apply syntax highlighting if highlight.js is available
-    if (window.hljs && fileName) {
+    const language = fileName ? DiffRenderer.detectLanguage(fileName) : null;
+    if (language && window.hljs?.getLanguage(language)) {
       try {
-        const language = DiffRenderer.detectLanguage(fileName);
         const highlighted = window.hljs.highlight(content, { language, ignoreIllegals: true });
         let html = highlighted.value;
 
