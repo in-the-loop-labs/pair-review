@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { WorktreePoolLifecycle } = require('../../src/git/worktree-pool-lifecycle.js');
 const { GRACE_PERIOD_MS } = require('../../src/git/worktree-pool-usage.js');
+const logger = require('../../src/utils/logger');
+
+/** The pid the mocked lifecycle claims as (never the real process.pid). */
+const SELF_PID = 1001;
 
 function createMockDeps() {
   const mockGit = {
@@ -41,6 +45,7 @@ function createMockDeps() {
     removeAnalysis: vi.fn(),
     removeAnalysisById: vi.fn(),
     clearWorktree: vi.fn(),
+    cancelGrace: vi.fn().mockReturnValue(false),
     getActiveAnalyses: vi.fn().mockReturnValue(new Set()),
     isInUse: vi.fn().mockReturnValue(false),
     onIdle: null,
@@ -59,12 +64,14 @@ function createMockDeps() {
       findByReviewId: vi.fn().mockResolvedValue(null),
       countForRepo: vi.fn().mockResolvedValue(0),
       reserveSlot: vi.fn().mockResolvedValue(true),
-      finalizeReservation: vi.fn().mockResolvedValue(undefined),
+      finalizeReservation: vi.fn().mockResolvedValue(true),
       deleteReservation: vi.fn().mockResolvedValue(undefined),
       create: vi.fn().mockResolvedValue(undefined),
-      markInUse: vi.fn().mockResolvedValue(undefined),
-      markAvailable: vi.fn().mockResolvedValue(undefined),
-      markSwitching: vi.fn().mockResolvedValue(undefined),
+      markInUse: vi.fn().mockResolvedValue(true),
+      markAvailable: vi.fn().mockResolvedValue(true),
+      abandonSwitch: vi.fn().mockResolvedValue(true),
+      forceMarkAvailable: vi.fn().mockResolvedValue(undefined),
+      reclaimAvailableForPR: vi.fn().mockResolvedValue(true),
       delete: vi.fn().mockResolvedValue(undefined),
       setCurrentReviewId: vi.fn().mockResolvedValue(undefined),
       getPoolEntry: vi.fn().mockResolvedValue(null),
@@ -85,6 +92,9 @@ function createMockDeps() {
     usageTracker: mockUsageTracker,
     simpleGit: vi.fn(() => mockGit),
     GitWorktreeManager: MockGitWorktreeManager,
+    pid: SELF_PID,
+    isProcessAlive: vi.fn().mockReturnValue(true),
+    getBootTimeMs: vi.fn().mockReturnValue(Date.parse('2026-01-01T00:00:00.000Z')),
     _mockGit: mockGit,
     _mockWorktreeManagerInstance: mockWorktreeManagerInstance,
     _mockUsageTracker: mockUsageTracker,
@@ -139,7 +149,8 @@ describe('WorktreePoolLifecycle', () => {
         expect.objectContaining({ head_sha: 'abc123', head_branch: 'feature-branch' }),
         expect.objectContaining({ owner: 'test', repo: 'repo', number: 123 })
       );
-      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(deps.poolRepo.claimByPR).toHaveBeenCalledWith(123, 'test/repo', SELF_PID);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123, SELF_PID, 'in_use');
     });
 
     it('switches an available worktree when no existing assignment', async () => {
@@ -153,8 +164,8 @@ describe('WorktreePoolLifecycle', () => {
 
       expect(result.worktreePath).toBe('/tmp/worktree/pair-review--xyz');
       expect(result.worktreeId).toBe('pair-review--xyz');
-      // claimAvailable already marked as switching -- no separate markSwitching call
-      expect(deps.poolRepo.markSwitching).not.toHaveBeenCalled();
+      expect(deps.poolRepo.claimAvailable).toHaveBeenCalledWith('test/repo', SELF_PID);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--xyz', 123, SELF_PID, 'switching');
       expect(deps._mockWorktreeManagerInstance.resolveRemoteForPR).toHaveBeenCalled();
       expect(deps._mockWorktreeManagerInstance.fetchPRHead).toHaveBeenCalledWith(
         deps._mockGit,
@@ -204,14 +215,14 @@ describe('WorktreePoolLifecycle', () => {
 
       expect(result.worktreePath).toBe('/tmp/worktree/pair-review--abc');
       expect(deps.poolRepo.reserveSlot).toHaveBeenCalledWith(
-        expect.stringMatching(/^pair-review--/), 'test/repo', 3
+        expect.stringMatching(/^pair-review--/), 'test/repo', 3, SELF_PID
       );
       expect(deps._mockWorktreeManagerInstance.createWorktreeForPR).toHaveBeenCalled();
       // finalizeReservation must be called with the same poolId that was
       // passed to reserveSlot, NOT the worktrees-table ID from createWorktreeForPR.
       const reservedPoolId = deps.poolRepo.reserveSlot.mock.calls[0][0];
       expect(deps.poolRepo.finalizeReservation).toHaveBeenCalledWith(
-        reservedPoolId, '/tmp/worktree/pair-review--abc', 123
+        reservedPoolId, '/tmp/worktree/pair-review--abc', 123, SELF_PID
       );
       // The returned worktreeId should be the poolId, not the worktrees-table ID
       expect(result.worktreeId).toBe(reservedPoolId);
@@ -310,6 +321,133 @@ describe('WorktreePoolLifecycle', () => {
     });
   });
 
+  // ── acquireForPR: holder bookkeeping and acquire-time races ─────────────
+  describe('acquireForPR holder handling', () => {
+    const claimed = { id: 'pair-review--abc', path: '/tmp/worktree/pair-review--abc', current_pr_number: 123, repository: 'test/repo', previousHolderPid: null };
+    const worktreeRecord = { id: 'pair-review--abc', pr_number: 123, path: '/tmp/worktree/pair-review--abc' };
+
+    it('cancels a pending grace timer right after claimByPR, before any refresh work', async () => {
+      const callOrder = [];
+      deps.poolRepo.claimByPR.mockImplementation(async () => { callOrder.push('claimByPR'); return claimed; });
+      deps._mockUsageTracker.cancelGrace.mockImplementation((id) => { callOrder.push(`cancelGrace:${id}`); return true; });
+      deps.worktreeRepo.findById.mockImplementation(async () => { callOrder.push('findById'); return worktreeRecord; });
+      deps._mockGit.reset.mockImplementation(async () => { callOrder.push('reset'); });
+
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
+
+      expect(callOrder.slice(0, 3)).toEqual(['claimByPR', 'cancelGrace:pair-review--abc', 'findById']);
+      expect(callOrder).toContain('reset');
+    });
+
+    it('cancels a pending grace timer right after claimAvailable, before any switch work', async () => {
+      const callOrder = [];
+      const entry = { id: 'pair-review--xyz', path: '/tmp/worktree/pair-review--xyz' };
+      deps.poolRepo.claimAvailable.mockImplementation(async () => { callOrder.push('claimAvailable'); return entry; });
+      deps._mockUsageTracker.cancelGrace.mockImplementation((id) => { callOrder.push(`cancelGrace:${id}`); return false; });
+      deps.worktreeRepo.findById.mockImplementation(async () => { callOrder.push('findById'); return { ...entry, pr_number: 99 }; });
+
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
+
+      expect(callOrder).toEqual(['claimAvailable', 'cancelGrace:pair-review--xyz', 'findById']);
+    });
+
+    it('does not cancel anything when no row is claimed', async () => {
+      await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
+
+      expect(deps._mockUsageTracker.cancelGrace).not.toHaveBeenCalled();
+    });
+
+    it('logs at info when claimByPR took the row from another process (same PR)', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      try {
+        deps.poolRepo.claimByPR.mockResolvedValue({ ...claimed, previousHolderPid: 777 });
+        deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+
+        await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
+
+        expect(info).toHaveBeenCalledWith('Taking over pool worktree pair-review--abc from pid 777 (same PR)');
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it('does not log a takeover when the row had no other holder', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      try {
+        deps.poolRepo.claimByPR.mockResolvedValue(claimed);
+        deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+
+        await lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options);
+
+        expect(info).not.toHaveBeenCalledWith(expect.stringContaining('Taking over'));
+      } finally {
+        info.mockRestore();
+      }
+    });
+
+    it('throws when the refresh markInUse finds the row taken over', async () => {
+      deps.poolRepo.claimByPR.mockResolvedValue(claimed);
+      deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+      deps.poolRepo.markInUse.mockResolvedValue(false);
+
+      await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options))
+        .rejects.toThrow('pool worktree pair-review--abc was taken over during refresh');
+    });
+
+    it('throws when the switch markInUse finds the row taken over', async () => {
+      const entry = { id: 'pair-review--xyz', path: '/tmp/worktree/pair-review--xyz' };
+      deps.poolRepo.claimAvailable.mockResolvedValue(entry);
+      deps.worktreeRepo.findById.mockResolvedValue({ ...entry, pr_number: 99 });
+      deps.poolRepo.markInUse.mockResolvedValue(false);
+
+      await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options))
+        .rejects.toThrow('pool worktree pair-review--xyz was taken over during switch');
+      // The rollback is the gated abandonSwitch, never an unconditional release
+      expect(deps.poolRepo.abandonSwitch).toHaveBeenCalledWith('pair-review--xyz', SELF_PID);
+      expect(deps.poolRepo.forceMarkAvailable).not.toHaveBeenCalled();
+    });
+
+    it('frees the claimed row with the gated release when the refresh throws and the tracker is not using it', async () => {
+      deps.poolRepo.claimByPR.mockResolvedValue(claimed);
+      deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+      deps._mockWorktreeManagerInstance.refreshWorktree.mockRejectedValue(new Error('fetch exploded'));
+      deps._mockUsageTracker.isInUse.mockReturnValue(false);
+
+      await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options)).rejects.toThrow('fetch exploded');
+
+      expect(deps._mockUsageTracker.isInUse).toHaveBeenCalledWith('pair-review--abc');
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc', SELF_PID);
+      expect(deps.poolRepo.forceMarkAvailable).not.toHaveBeenCalled();
+    });
+
+    it('keeps the claimed row when the refresh throws but the tracker still has it in use', async () => {
+      deps.poolRepo.claimByPR.mockResolvedValue(claimed);
+      deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+      deps._mockWorktreeManagerInstance.refreshWorktree.mockRejectedValue(new Error('fetch exploded'));
+      deps._mockUsageTracker.isInUse.mockReturnValue(true);
+
+      await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options)).rejects.toThrow('fetch exploded');
+
+      expect(deps.poolRepo.markAvailable).not.toHaveBeenCalled();
+    });
+
+    it('rethrows the refresh error even when the release itself fails, logging the release failure', async () => {
+      const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      try {
+        deps.poolRepo.claimByPR.mockResolvedValue(claimed);
+        deps.worktreeRepo.findById.mockResolvedValue(worktreeRecord);
+        deps._mockWorktreeManagerInstance.refreshWorktree.mockRejectedValue(new Error('fetch exploded'));
+        deps.poolRepo.markAvailable.mockRejectedValue(new Error('db locked'));
+
+        await expect(lifecycle.acquireForPR(prInfo, prData, '/tmp/source', options)).rejects.toThrow('fetch exploded');
+
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('Failed to release pool worktree pair-review--abc after refresh failure: db locked'));
+      } finally {
+        error.mockRestore();
+      }
+    });
+  });
+
   // ── _switchPoolWorktree (ported from WorktreePoolManager) ───────────────
   describe('_switchPoolWorktree', () => {
     const poolEntry = { id: 'pair-review--xyz', path: '/tmp/worktree/pair-review--xyz' };
@@ -335,7 +473,7 @@ describe('WorktreePoolLifecycle', () => {
       deps._mockGit.checkout.mockImplementation(() => { callOrder.push('checkout'); return Promise.resolve(); });
       deps.worktreeRepo.switchPR.mockImplementation(() => { callOrder.push('switchPR'); return Promise.resolve([]); });
       deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
-      deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(); });
+      deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(true); });
 
       await lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options);
 
@@ -420,7 +558,9 @@ describe('WorktreePoolLifecycle', () => {
       await expect(lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
         .rejects.toThrow('fetch failed');
 
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--xyz');
+      expect(deps.poolRepo.abandonSwitch).toHaveBeenCalledWith('pair-review--xyz', SELF_PID);
+      expect(deps.poolRepo.markAvailable).not.toHaveBeenCalled();
+      expect(deps.poolRepo.forceMarkAvailable).not.toHaveBeenCalled();
     });
 
     it('checks out prData.head.sha instead of ref when available', async () => {
@@ -469,7 +609,7 @@ describe('WorktreePoolLifecycle', () => {
       await expect(lifecycle._switchPoolWorktree(poolEntry, worktreeRecord, prInfo, prData, options))
         .rejects.toThrow('checkout failed: unknown revision');
 
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--xyz');
+      expect(deps.poolRepo.abandonSwitch).toHaveBeenCalledWith('pair-review--xyz', SELF_PID);
     });
   });
 
@@ -485,7 +625,7 @@ describe('WorktreePoolLifecycle', () => {
       // finalizeReservation must use the poolId ('pair-review--reserved'), NOT the
       // worktrees-table ID ('pair-review--abc') returned by createWorktreeForPR.
       expect(deps.poolRepo.finalizeReservation).toHaveBeenCalledWith(
-        'pair-review--reserved', '/tmp/worktree/pair-review--abc', 123
+        'pair-review--reserved', '/tmp/worktree/pair-review--abc', 123, SELF_PID
       );
       // Old create and markInUse should NOT be called
       expect(deps.poolRepo.create).not.toHaveBeenCalled();
@@ -493,6 +633,31 @@ describe('WorktreePoolLifecycle', () => {
       expect(result.worktreePath).toBe('/tmp/worktree/pair-review--abc');
       // The returned worktreeId should be the poolId, consistent with other methods
       expect(result.worktreeId).toBe('pair-review--reserved');
+    });
+
+    it('warns (and still returns) when finalizeReservation finds the reservation no longer ours', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        deps.poolRepo.finalizeReservation.mockResolvedValue(false);
+
+        const result = await lifecycle._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pair-review--reserved');
+
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Pool reservation pair-review--reserved was no longer creating and held by this process'));
+        expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--reserved' });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not warn when finalizeReservation succeeds', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        await lifecycle._createPoolWorktree(prInfo, prData, '/tmp/source', options, 'pair-review--reserved');
+
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('deletes reservation on creation failure', async () => {
@@ -537,7 +702,7 @@ describe('WorktreePoolLifecycle', () => {
         }),
         expect.objectContaining({ owner: 'test', repo: 'repo', number: 123 })
       );
-      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123, SELF_PID, 'in_use');
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
     });
 
@@ -546,7 +711,7 @@ describe('WorktreePoolLifecycle', () => {
       deps._mockGit.reset.mockImplementation(() => { callOrder.push('reset'); return Promise.resolve(); });
       deps._mockGit.clean.mockImplementation(() => { callOrder.push('clean'); return Promise.resolve(); });
       deps._mockWorktreeManagerInstance.refreshWorktree.mockImplementation(() => { callOrder.push('refreshWorktree'); return Promise.resolve('/tmp/worktree/pair-review--abc'); });
-      deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(); });
+      deps.poolRepo.markInUse.mockImplementation(() => { callOrder.push('markInUse'); return Promise.resolve(true); });
 
       await lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData);
 
@@ -572,8 +737,31 @@ describe('WorktreePoolLifecycle', () => {
       // Should NOT call refreshWorktree -- early return
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).not.toHaveBeenCalled();
       // Should still mark in_use
-      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123, SELF_PID, 'in_use');
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
+    });
+
+    it('throws on a takeover in the already-at-target fast path without falling through to a full refresh', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('abc123');
+      deps.poolRepo.markInUse.mockResolvedValue(false);
+
+      await expect(lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData))
+        .rejects.toThrow('pool worktree pair-review--abc was taken over during refresh');
+
+      // Never touches the checkout another process now holds
+      expect(deps._mockGit.reset).not.toHaveBeenCalled();
+      expect(deps._mockGit.clean).not.toHaveBeenCalled();
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).not.toHaveBeenCalled();
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws on a takeover detected after a full refresh', async () => {
+      deps._mockGit.revparse = vi.fn().mockResolvedValue('different_sha_999');
+      deps.poolRepo.markInUse.mockResolvedValue(false);
+
+      await expect(lifecycle._refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData))
+        .rejects.toThrow('pool worktree pair-review--abc was taken over during refresh');
+      expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
     });
 
     it('skips refresh when HEAD matches target SHA with trailing whitespace', async () => {
@@ -593,7 +781,7 @@ describe('WorktreePoolLifecycle', () => {
       expect(deps._mockGit.revparse).toHaveBeenCalledWith(['HEAD']);
       // HEAD differs -- should proceed with full refresh
       expect(deps._mockWorktreeManagerInstance.refreshWorktree).toHaveBeenCalled();
-      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123, SELF_PID, 'in_use');
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
     });
 
@@ -643,16 +831,25 @@ describe('WorktreePoolLifecycle', () => {
       // Should still succeed and return the worktree path
       expect(result).toEqual({ worktreePath: '/tmp/worktree/pair-review--abc', worktreeId: 'pair-review--abc' });
       // Should still mark in_use
-      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123);
+      expect(deps.poolRepo.markInUse).toHaveBeenCalledWith('pair-review--abc', 123, SELF_PID, 'in_use');
     });
   });
 
-  // ── release (ported from WorktreePoolManager) ───────────────────────────
+  // ── release (removed: no production caller) ─────────────────────────────
   describe('release', () => {
-    it('marks the pool worktree as available', async () => {
-      await lifecycle.release('pair-review--abc');
+    it('no longer exists', () => {
+      expect(lifecycle.release).toBeUndefined();
+    });
+  });
 
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc');
+  // ── reclaimForPR ────────────────────────────────────────────────────────
+  describe('reclaimForPR', () => {
+    it.each([true, false])('delegates to reclaimAvailableForPR with this pid and returns its result (%s)', async (outcome) => {
+      deps.poolRepo.reclaimAvailableForPR.mockResolvedValue(outcome);
+
+      await expect(lifecycle.reclaimForPR('pair-review--abc', 42)).resolves.toBe(outcome);
+
+      expect(deps.poolRepo.reclaimAvailableForPR).toHaveBeenCalledWith('pair-review--abc', 42, SELF_PID);
     });
   });
 
@@ -720,16 +917,18 @@ describe('WorktreePoolLifecycle', () => {
 
   // ── releaseForDeletion ──────────────────────────────────────────────────
   describe('releaseForDeletion', () => {
-    it('clears usage state then marks available (ordering matters)', async () => {
+    it('clears usage state then force-marks available (ordering matters)', async () => {
       const callOrder = [];
       deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
-      deps.poolRepo.markAvailable.mockImplementation(() => { callOrder.push('markAvailable'); return Promise.resolve(); });
+      deps.poolRepo.forceMarkAvailable.mockImplementation(() => { callOrder.push('forceMarkAvailable'); return Promise.resolve(); });
 
       await lifecycle.releaseForDeletion('pair-review--abc');
 
-      expect(callOrder).toEqual(['clearWorktree', 'markAvailable']);
+      expect(callOrder).toEqual(['clearWorktree', 'forceMarkAvailable']);
       expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pair-review--abc');
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc');
+      expect(deps.poolRepo.forceMarkAvailable).toHaveBeenCalledWith('pair-review--abc');
+      // User-initiated delete is unconditional: not the holder-gated release
+      expect(deps.poolRepo.markAvailable).not.toHaveBeenCalled();
     });
   });
 
@@ -738,13 +937,21 @@ describe('WorktreePoolLifecycle', () => {
     it('clears usage state then marks available (ordering matters -- prevents race)', async () => {
       const callOrder = [];
       deps._mockUsageTracker.clearWorktree.mockImplementation(() => { callOrder.push('clearWorktree'); });
-      deps.poolRepo.markAvailable.mockImplementation(() => { callOrder.push('markAvailable'); return Promise.resolve(); });
+      deps.poolRepo.markAvailable.mockImplementation(() => { callOrder.push('markAvailable'); return Promise.resolve(true); });
 
       await lifecycle.releaseAfterHeadless('pair-review--abc');
 
       expect(callOrder).toEqual(['clearWorktree', 'markAvailable']);
       expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pair-review--abc');
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc');
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc', SELF_PID);
+    });
+
+    it.each([true, false])('returns the gated release result (%s)', async (outcome) => {
+      deps.poolRepo.markAvailable.mockResolvedValue(outcome);
+
+      await expect(lifecycle.releaseAfterHeadless('pair-review--abc')).resolves.toBe(outcome);
+      // The tracker is cleared either way
+      expect(deps._mockUsageTracker.clearWorktree).toHaveBeenCalledWith('pair-review--abc');
     });
   });
 
@@ -778,10 +985,13 @@ describe('WorktreePoolLifecycle', () => {
 
   // ── resetAndRehydrate ───────────────────────────────────────────────────
   describe('resetAndRehydrate', () => {
-    it('calls resetStaleAndPreserve on the pool repo', async () => {
+    it('calls resetStaleAndPreserve on the pool repo with this pid and a predicate', async () => {
       await lifecycle.resetAndRehydrate();
 
-      expect(deps.poolRepo.resetStaleAndPreserve).toHaveBeenCalled();
+      expect(deps.poolRepo.resetStaleAndPreserve).toHaveBeenCalledTimes(1);
+      const [selfPid, predicate] = deps.poolRepo.resetStaleAndPreserve.mock.calls[0];
+      expect(selfPid).toBe(SELF_PID);
+      expect(predicate).toBeTypeOf('function');
     });
 
     it('returns preserved entries', async () => {
@@ -805,7 +1015,29 @@ describe('WorktreePoolLifecycle', () => {
       // Invoke the wired-up onIdle callback
       await deps._mockUsageTracker.onIdle('pair-review--abc');
 
-      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc');
+      expect(deps.poolRepo.markAvailable).toHaveBeenCalledWith('pair-review--abc', SELF_PID);
+    });
+
+    it('onIdle callback logs at info and does not retry when the row is no longer held by this process', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+      try {
+        await lifecycle.resetAndRehydrate();
+        deps.poolRepo.markAvailable.mockResolvedValue(false);
+
+        await deps._mockUsageTracker.onIdle('pair-review--abc');
+
+        expect(deps.poolRepo.markAvailable).toHaveBeenCalledTimes(1);
+        expect(info).toHaveBeenCalledWith(expect.stringContaining('pair-review--abc idle but not released: no longer held by this process'));
+        expect(info).not.toHaveBeenCalledWith(expect.stringContaining('is now available'));
+        expect(warn).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+      } finally {
+        info.mockRestore();
+        warn.mockRestore();
+        error.mockRestore();
+      }
     });
 
     it('onIdle callback retries once on failure then succeeds', async () => {
@@ -813,7 +1045,7 @@ describe('WorktreePoolLifecycle', () => {
 
       deps.poolRepo.markAvailable
         .mockRejectedValueOnce(new Error('db busy'))
-        .mockResolvedValueOnce(undefined);
+        .mockResolvedValueOnce(true);
 
       // Use fake timers to handle the 1s retry delay
       vi.useFakeTimers();
@@ -889,9 +1121,9 @@ describe('WorktreePoolLifecycle', () => {
 
       const result = await poolLifecycle.resetAndRehydrate();
 
-      // wt-1 has a review -> adopted as in_use
+      // wt-1 has a review -> adopted as in_use, held by this process
       expect(deps.poolRepo.create).toHaveBeenCalledWith({
-        id: 'wt-1', repository: 'test/repo', path: '/tmp/wt-1', prNumber: 10,
+        id: 'wt-1', repository: 'test/repo', path: '/tmp/wt-1', prNumber: 10, holderPid: SELF_PID,
       });
       expect(deps.poolRepo.setCurrentReviewId).toHaveBeenCalledWith('wt-1', 100);
 
@@ -1027,7 +1259,7 @@ describe('WorktreePoolLifecycle', () => {
 
       // wt-exists should be adopted
       expect(deps.poolRepo.create).toHaveBeenCalledWith({
-        id: 'wt-exists', repository: 'test/repo', path: '/tmp/wt-exists', prNumber: 10,
+        id: 'wt-exists', repository: 'test/repo', path: '/tmp/wt-exists', prNumber: 10, holderPid: SELF_PID,
       });
       expect(deps.poolRepo.setCurrentReviewId).toHaveBeenCalledWith('wt-exists', 100);
 
@@ -1040,6 +1272,71 @@ describe('WorktreePoolLifecycle', () => {
       // Only wt-exists should be in the result
       expect(result).toContainEqual({ id: 'wt-exists', current_review_id: 100 });
       expect(result).not.toContainEqual(expect.objectContaining({ id: 'wt-missing' }));
+    });
+  });
+
+  // ── startup holder liveness ─────────────────────────────────────────────
+  describe('startup holder liveness predicate', () => {
+    const BOOT_MS = Date.parse('2026-03-01T00:00:00.000Z');
+    const AFTER_BOOT = '2026-03-02T00:00:00.000Z';
+    const BEFORE_BOOT = '2026-02-28T00:00:00.000Z';
+
+    /** Run startup and return the predicate it handed to resetStaleAndPreserve. */
+    async function capturePredicate() {
+      deps.getBootTimeMs.mockReturnValue(BOOT_MS);
+      await lifecycle.resetAndRehydrate();
+      const [selfPid, predicate] = deps.poolRepo.resetStaleAndPreserve.mock.calls[0];
+      expect(selfPid).toBe(SELF_PID);
+      return predicate;
+    }
+
+    it('treats a row stamped with its own pid as dead, even with a recent claim', async () => {
+      const isHolderDead = await capturePredicate();
+
+      expect(isHolderDead({ id: 'a', status: 'in_use', holder_pid: SELF_PID, holder_claimed_at: AFTER_BOOT })).toBe(true);
+      expect(deps.isProcessAlive).not.toHaveBeenCalled();
+    });
+
+    it('treats a live peer that claimed after boot as alive', async () => {
+      const isHolderDead = await capturePredicate();
+      deps.isProcessAlive.mockReturnValue(true);
+
+      expect(isHolderDead({ id: 'a', status: 'switching', holder_pid: 2002, holder_claimed_at: AFTER_BOOT })).toBe(false);
+      expect(deps.isProcessAlive).toHaveBeenCalledWith(2002);
+    });
+
+    it('treats a peer whose process is gone as dead', async () => {
+      const isHolderDead = await capturePredicate();
+      deps.isProcessAlive.mockReturnValue(false);
+
+      expect(isHolderDead({ id: 'a', status: 'creating', holder_pid: 2002, holder_claimed_at: AFTER_BOOT })).toBe(true);
+      expect(deps.isProcessAlive).toHaveBeenCalledWith(2002);
+    });
+
+    it('treats a claim from before the OS booted as dead without probing the pid', async () => {
+      const isHolderDead = await capturePredicate();
+      deps.isProcessAlive.mockReturnValue(true);
+
+      expect(isHolderDead({ id: 'a', status: 'in_use', holder_pid: 2002, holder_claimed_at: BEFORE_BOOT })).toBe(true);
+      expect(deps.isProcessAlive).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no holder (legacy row)', { holder_pid: null, holder_claimed_at: null }],
+      ['a missing claim time', { holder_pid: 2002, holder_claimed_at: null }],
+      ['an unparseable claim time', { holder_pid: 2002, holder_claimed_at: 'not-a-date' }],
+    ])('treats %s as dead', async (_label, holder) => {
+      const isHolderDead = await capturePredicate();
+      deps.isProcessAlive.mockReturnValue(true);
+
+      expect(isHolderDead({ id: 'a', status: 'in_use', ...holder })).toBe(true);
+      expect(deps.isProcessAlive).not.toHaveBeenCalled();
+    });
+
+    it('reads the boot time once per startup', async () => {
+      await capturePredicate();
+
+      expect(deps.getBootTimeMs).toHaveBeenCalledTimes(1);
     });
   });
 
