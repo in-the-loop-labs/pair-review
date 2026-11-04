@@ -322,7 +322,9 @@ const SCHEMA_SQL = {
       last_fetched_at TEXT,
       last_fetch_attempt_at TEXT,
       fetch_failure_count INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      holder_pid INTEGER,
+      holder_claimed_at TEXT
     )
   `,
 

@@ -1882,8 +1882,12 @@ Found ${aiSuggestions.length} suggestion${aiSuggestions.length === 1 ? '' : 's'}
     // so the pool slot must be freed immediately.
     if (poolWorktreeId && poolLifecycle) {
       try {
-        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
-        logger.info(`Released pool worktree ${poolWorktreeId} after headless review`);
+        const released = await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
+        if (released) {
+          logger.info(`Released pool worktree ${poolWorktreeId} after headless review`);
+        } else {
+          logger.info(`Pool worktree ${poolWorktreeId} not released after headless review: no longer held by this process`);
+        }
       } catch (releaseErr) {
         logger.error(`Failed to release pool worktree ${poolWorktreeId}: ${releaseErr.message}`);
       }
@@ -2244,8 +2248,12 @@ async function preparePrHeadless(db, config, flags, prArgs, externalPoolLifecycl
     // logged, not allowed to mask the original failure.
     if (poolWorktreeId && poolLifecycle) {
       try {
-        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
-        logger.info(`Released pool worktree ${poolWorktreeId} after headless prep failure`);
+        const released = await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
+        if (released) {
+          logger.info(`Released pool worktree ${poolWorktreeId} after headless prep failure`);
+        } else {
+          logger.info(`Pool worktree ${poolWorktreeId} not released after headless prep failure: no longer held by this process`);
+        }
       } catch (releaseErr) {
         logger.error(`Failed to release pool worktree ${poolWorktreeId} after prep failure: ${releaseErr.message}`);
       }
@@ -2510,8 +2518,12 @@ async function handleHeadlessAnalysis(prArgs, config, db, flags, poolLifecycle) 
       // pool slot isn't leaked per headless run. Local mode has no pool.
       if (prep.poolWorktreeId && prep.poolLifecycle) {
         try {
-          await prep.poolLifecycle.releaseAfterHeadless(prep.poolWorktreeId);
-          logger.info(`Released pool worktree ${prep.poolWorktreeId} after headless analysis`);
+          const released = await prep.poolLifecycle.releaseAfterHeadless(prep.poolWorktreeId);
+          if (released) {
+            logger.info(`Released pool worktree ${prep.poolWorktreeId} after headless analysis`);
+          } else {
+            logger.info(`Pool worktree ${prep.poolWorktreeId} not released after headless analysis: no longer held by this process`);
+          }
         } catch (releaseErr) {
           logger.error(`Failed to release pool worktree ${prep.poolWorktreeId}: ${releaseErr.message}`);
         }

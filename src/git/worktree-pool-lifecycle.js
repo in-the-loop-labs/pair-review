@@ -8,6 +8,7 @@ const { GitWorktreeManager, getPRHeadBranch } = require('./worktree');
 const { WorktreePoolUsageTracker } = require('./worktree-pool-usage');
 const { normalizeRepository } = require('../utils/paths');
 const { resolvePoolConfig } = require('../config');
+const { isProcessAlive, getBootTimeMs } = require('../utils/process-liveness');
 
 /**
  * Consolidates the worktree pool state machine: absorbs WorktreePoolManager
@@ -30,6 +31,9 @@ class WorktreePoolLifecycle {
       fs: fs,
       simpleGit: require('simple-git'),
       GitWorktreeManager: GitWorktreeManager,
+      pid: process.pid,
+      isProcessAlive: isProcessAlive,
+      getBootTimeMs: getBootTimeMs,
     };
     const deps = { ...defaults, ..._deps };
 
@@ -42,6 +46,15 @@ class WorktreePoolLifecycle {
     this._fs = deps.fs;
     this._simpleGit = deps.simpleGit;
     this._GitWorktreeManager = deps.GitWorktreeManager;
+    // The process this lifecycle claims pool rows as. Several pair-review
+    // processes can share one database; every claim is stamped with this pid
+    // and normal releases are gated on still holding the row. The exceptions
+    // are user-initiated deletes (releaseForDeletion, destroyPoolWorktree),
+    // removal of stale rows just claimed, and failed-reservation cleanup; see
+    // WorktreePoolRepository.
+    this._pid = deps.pid;
+    this._isProcessAlive = deps.isProcessAlive;
+    this._getBootTimeMs = deps.getBootTimeMs;
   }
 
   /**
@@ -78,8 +91,14 @@ class WorktreePoolLifecycle {
     const { poolSize } = options;
 
     // 1. Already assigned to this PR? Atomically claim via DB transaction.
-    const existingPool = await this._poolRepo.claimByPR(prInfo.prNumber, repository);
+    const existingPool = await this._poolRepo.claimByPR(prInfo.prNumber, repository, this._pid);
     if (existingPool) {
+      // A grace timer armed for this row's previous use must not fire during
+      // the refresh fetch and free the row under this claim.
+      this._usageTracker.cancelGrace(existingPool.id);
+      if (existingPool.previousHolderPid) {
+        logger.info(`Taking over pool worktree ${existingPool.id} from pid ${existingPool.previousHolderPid} (same PR)`);
+      }
       const worktreeRecord = await this._worktreeRepo.findById(existingPool.id);
       if (worktreeRecord) {
         if (!this._fs.existsSync(worktreeRecord.path)) {
@@ -88,7 +107,29 @@ class WorktreePoolLifecycle {
           await this._worktreeRepo.delete(existingPool.id);
         } else {
           logger.info(`Pool worktree ${existingPool.id} already assigned to PR #${prInfo.prNumber}, refreshing`);
-          return this._refreshPoolWorktree(existingPool, worktreeRecord, prInfo, prData);
+          try {
+            return await this._refreshPoolWorktree(existingPool, worktreeRecord, prInfo, prData);
+          } catch (err) {
+            // The claim left the row in_use under this process. Free it unless
+            // this process is still using it (a session or analysis from an
+            // earlier acquisition); the release is gated on still holding it.
+            // Never free a row this claim took from another process: that
+            // process may still be serving the PR, and this tracker cannot
+            // see it. If it is actually dead, startup reclaims the row.
+            if (!existingPool.previousHolderPid && !this._usageTracker.isInUse(existingPool.id)) {
+              try {
+                const released = await this._poolRepo.markAvailable(existingPool.id, this._pid);
+                if (released) {
+                  logger.info(`Released pool worktree ${existingPool.id} after refresh failure`);
+                } else {
+                  logger.info(`Pool worktree ${existingPool.id} not released after refresh failure: no longer held by this process`);
+                }
+              } catch (releaseErr) {
+                logger.error(`Failed to release pool worktree ${existingPool.id} after refresh failure: ${releaseErr.message}`);
+              }
+            }
+            throw err;
+          }
         }
       } else {
         logger.warn(`Orphaned pool entry ${existingPool.id} -- removing`);
@@ -97,8 +138,9 @@ class WorktreePoolLifecycle {
     }
 
     // 2. Available slot (LRU eviction)? Atomically claim via DB transaction.
-    const available = await this._poolRepo.claimAvailable(repository);
+    const available = await this._poolRepo.claimAvailable(repository, this._pid);
     if (available) {
+      this._usageTracker.cancelGrace(available.id);
       const worktreeRecord = await this._worktreeRepo.findById(available.id);
       if (worktreeRecord) {
         if (!this._fs.existsSync(worktreeRecord.path)) {
@@ -117,7 +159,7 @@ class WorktreePoolLifecycle {
 
     // 3. Pool not full -- atomically reserve a slot, then create
     const poolId = generateWorktreeId();
-    const reserved = await this._poolRepo.reserveSlot(poolId, repository, poolSize);
+    const reserved = await this._poolRepo.reserveSlot(poolId, repository, poolSize, this._pid);
     if (reserved) {
       logger.info(`Reserved pool slot ${poolId} for PR #${prInfo.prNumber}, creating worktree`);
       return this._createPoolWorktree(prInfo, prData, repositoryPath, options, poolId);
@@ -204,7 +246,10 @@ class WorktreePoolLifecycle {
 
       // Finalize the reservation: set path and mark in_use.
       // Use poolId (the reserved pool slot ID), NOT worktreeId (the worktrees-table ID).
-      await this._poolRepo.finalizeReservation(poolId, worktreePath, prInfo.prNumber);
+      const finalized = await this._poolRepo.finalizeReservation(poolId, worktreePath, prInfo.prNumber, this._pid);
+      if (!finalized) {
+        logger.warn(`Pool reservation ${poolId} was no longer creating and held by this process when finalizing; pool row not updated`);
+      }
 
       logger.info(`Created pool worktree ${poolId} at ${worktreePath}`);
       return { worktreePath, worktreeId: poolId };
@@ -311,15 +356,20 @@ class WorktreePoolLifecycle {
       // that marks the worktree available while the new PR is using it.
       this._usageTracker.clearWorktree(poolEntry.id);
 
-      // Mark in_use in pool table
-      await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
+      // Mark in_use in pool table -- only if the row is still switching under
+      // this process. False means it was taken over mid-switch.
+      const marked = await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber, this._pid, 'switching');
+      if (!marked) {
+        throw new Error(`pool worktree ${poolEntry.id} was taken over during switch`);
+      }
 
       logger.info(`Switched pool worktree ${poolEntry.id} to PR #${prInfo.prNumber}`);
       return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
     } catch (err) {
-      // Roll back to available on failure
+      // Roll back to available on failure (only while still switching under
+      // this process -- never frees a row someone else now holds)
       try {
-        await this._poolRepo.markAvailable(poolEntry.id);
+        await this._poolRepo.abandonSwitch(poolEntry.id, this._pid);
       } catch (rollbackErr) {
         logger.error(`Failed to roll back pool worktree ${poolEntry.id} status: ${rollbackErr.message}`);
       }
@@ -340,6 +390,7 @@ class WorktreePoolLifecycle {
    */
   async _refreshPoolWorktree(poolEntry, worktreeRecord, prInfo, prData) {
     const targetSha = prData.head?.sha || prData.head_sha;
+    let alreadyAtTarget = false;
     if (targetSha) {
       try {
         const git = this._simpleGit(poolEntry.path);
@@ -352,13 +403,18 @@ class WorktreePoolLifecycle {
             number: prInfo.prNumber,
           });
           await worktreeManager.ensureBaseShaAvailable(git, prData, remote);
-          logger.info(`Pool worktree ${poolEntry.id} already at target SHA ${targetSha.slice(0, 8)}, skipping refresh`);
-          await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
-          return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
+          alreadyAtTarget = true;
         }
       } catch (err) {
         logger.warn(`Could not check HEAD of pool worktree ${poolEntry.id}: ${err.message}`);
       }
+    }
+    // Outside the try above: a takeover detected here must propagate, not
+    // fall through to a full refresh (reset/clean) of a row someone else holds.
+    if (alreadyAtTarget) {
+      logger.info(`Pool worktree ${poolEntry.id} already at target SHA ${targetSha.slice(0, 8)}, skipping refresh`);
+      await this._markRefreshedInUse(poolEntry.id, prInfo.prNumber);
+      return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
     }
 
     const normalizedPrData = {
@@ -398,23 +454,39 @@ class WorktreePoolLifecycle {
       }
     }
 
-    // Ensure pool entry is marked in_use
-    await this._poolRepo.markInUse(poolEntry.id, prInfo.prNumber);
+    // Ensure pool entry is still in_use for this PR under this process
+    await this._markRefreshedInUse(poolEntry.id, prInfo.prNumber);
 
     logger.info(`Refreshed pool worktree ${poolEntry.id} for PR #${prInfo.prNumber}`);
     return { worktreePath: poolEntry.path, worktreeId: poolEntry.id };
   }
 
   /**
-   * Release a pool worktree, marking it as available for reuse.
-   * Kept for backward compatibility -- callers that only need to mark
-   * a worktree available without touching usage tracking can use this.
+   * Conditionally confirm a refreshed pool row is still in_use for the PR
+   * under this process. Throws if it was taken over while refreshing.
    *
    * @param {string} worktreeId - Pool worktree ID
+   * @param {number} prNumber - PR number
+   * @private
    */
-  async release(worktreeId) {
-    await this._poolRepo.markAvailable(worktreeId);
-    logger.info(`Pool worktree ${worktreeId} released`);
+  async _markRefreshedInUse(worktreeId, prNumber) {
+    const marked = await this._poolRepo.markInUse(worktreeId, prNumber, this._pid, 'in_use');
+    if (!marked) {
+      throw new Error(`pool worktree ${worktreeId} was taken over during refresh`);
+    }
+  }
+
+  /**
+   * Take an `available` pool worktree that still carries this PR back into
+   * use under this process (the setup route's reclaim fast path). Atomic and
+   * conditional: false when a peer claimed or reassigned the row first.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @param {number} prNumber - PR number the row must still carry
+   * @returns {Promise<boolean>} true if the row was reclaimed
+   */
+  async reclaimForPR(worktreeId, prNumber) {
+    return this._poolRepo.reclaimAvailableForPR(worktreeId, prNumber, this._pid);
   }
 
   // ── New lifecycle methods ────────────────────────────────────────────────
@@ -476,13 +548,14 @@ class WorktreePoolLifecycle {
 
   /**
    * Release a worktree for deletion: clear usage state first, then
-   * mark available in the database.
+   * mark available in the database. User-initiated, so unconditional
+   * (whoever holds the row).
    *
    * @param {string} worktreeId - Pool worktree ID
    */
   async releaseForDeletion(worktreeId) {
     this._usageTracker.clearWorktree(worktreeId);
-    await this._poolRepo.markAvailable(worktreeId);
+    await this._poolRepo.forceMarkAvailable(worktreeId);
   }
 
   /**
@@ -491,11 +564,16 @@ class WorktreePoolLifecycle {
    * before the DB write prevents a race where another request claims the slot
    * (after the DB write) and then has its tracking state wiped by clearWorktree.
    *
+   * The DB write only frees a row this process still holds; a row another
+   * process has since taken over is left alone.
+   *
    * @param {string} worktreeId - Pool worktree ID
+   * @returns {Promise<boolean>} true if the row was released, false if this
+   *   process no longer held it
    */
   async releaseAfterHeadless(worktreeId) {
     this._usageTracker.clearWorktree(worktreeId);
-    await this._poolRepo.markAvailable(worktreeId);
+    return this._poolRepo.markAvailable(worktreeId, this._pid);
   }
 
   /**
@@ -559,11 +637,41 @@ class WorktreePoolLifecycle {
   }
 
   /**
+   * Decide at startup whether the process recorded as holding a pool row is
+   * gone. Used only by resetAndRehydrate; there is no runtime liveness check.
+   *
+   * Dead when: no holder recorded (legacy rows); the holder is this pid (a
+   * process that has just started holds nothing, so its own pid on a row
+   * means the pid was reused); the claim time is missing, unparseable or
+   * before the OS booted; or the holder process no longer exists. Uncertain
+   * liveness answers count as alive.
+   *
+   * @param {{holder_pid: number|null, holder_claimed_at: string|null}} row
+   * @param {number} bootTimeMs - OS boot time (ms since epoch)
+   * @returns {boolean}
+   * @private
+   */
+  _isHolderDeadAtStartup(row, bootTimeMs) {
+    if (row.holder_pid == null) return true;
+    if (row.holder_pid === this._pid) return true;
+    const claimedAtMs = row.holder_claimed_at ? Date.parse(row.holder_claimed_at) : NaN;
+    if (Number.isNaN(claimedAtMs) || claimedAtMs < bootTimeMs) return true;
+    return !this._isProcessAlive(row.holder_pid);
+  }
+
+  /**
    * Reset stale pool entries and rehydrate preserved ones on startup.
+   *
+   * MUST run before this process acquires any pool worktree (true for both
+   * callers, src/main.js and src/server.js): the startup liveness check
+   * treats rows stamped with this process's own pid as left over by a dead
+   * process that had the same pid.
    *
    * This method:
    * 1. Calls resetStaleAndPreserve() to clean up stale DB entries and
-   *    identify entries with valid review ownership
+   *    identify entries with valid review ownership. Rows held by another
+   *    live pair-review process are skipped; preserved rows are taken over
+   *    by this process
    * 2. Wires the onIdle callback with retry logic (2 attempts, 1s delay)
    *    so that idle worktrees are automatically marked available
    * 3. Rehydrates preserved entries by triggering a synthetic
@@ -575,7 +683,11 @@ class WorktreePoolLifecycle {
    */
   async resetAndRehydrate() {
     // 1. Reset stale entries and get preserved ones
-    const preserved = await this._poolRepo.resetStaleAndPreserve();
+    const bootTimeMs = this._getBootTimeMs();
+    const preserved = await this._poolRepo.resetStaleAndPreserve(
+      this._pid,
+      (row) => this._isHolderDeadAtStartup(row, bootTimeMs)
+    );
     if (preserved.length > 0) {
       logger.info(`Pool startup: preserved ${preserved.length} active worktree(s)`);
     }
@@ -590,8 +702,14 @@ class WorktreePoolLifecycle {
     this._usageTracker.onIdle = async (worktreeId) => {
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          await this._poolRepo.markAvailable(worktreeId);
-          logger.info(`Pool worktree ${worktreeId} is now available`);
+          const released = await this._poolRepo.markAvailable(worktreeId, this._pid);
+          if (released) {
+            logger.info(`Pool worktree ${worktreeId} is now available`);
+          } else {
+            // Not an error: the row is no longer in_use under this process
+            // (freed, switched, or taken over). Retrying cannot change that.
+            logger.info(`Pool worktree ${worktreeId} idle but not released: no longer held by this process`);
+          }
           return;
         } catch (err) {
           if (attempt < 2) {
@@ -670,6 +788,7 @@ class WorktreePoolLifecycle {
             repository: orphan.repository,
             path: orphan.path,
             prNumber: orphan.pr_number,
+            holderPid: this._pid,
           });
           await this._poolRepo.setCurrentReviewId(orphan.id, orphan.reviewId);
           adoptedInUse.push({ id: orphan.id, current_review_id: orphan.reviewId });

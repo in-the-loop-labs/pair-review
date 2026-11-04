@@ -206,6 +206,59 @@ describe('WorktreePoolUsageTracker', () => {
     });
   });
 
+  // ── cancelGrace ─────────────────────────────────────────────────────────
+  describe('cancelGrace', () => {
+    it('cancels a pending grace timer so onIdle never fires', async () => {
+      const onIdle = vi.fn();
+      tracker.onIdle = onIdle;
+      tracker.addSession('wt-1', 'sess-a');
+      tracker.removeSession('wt-1', 'sess-a');
+      expect(tracker.isInUse('wt-1')).toBe(true);
+
+      expect(tracker.cancelGrace('wt-1')).toBe(true);
+      await vi.advanceTimersByTimeAsync(GRACE_PERIOD_MS * 2);
+
+      expect(onIdle).not.toHaveBeenCalled();
+      expect(tracker.isInUse('wt-1')).toBe(false);
+    });
+
+    it('leaves sessions and analyses untouched', async () => {
+      const onIdle = vi.fn();
+      tracker.onIdle = onIdle;
+      tracker.addSession('wt-1', 'sess-a');
+      tracker.addAnalysis('wt-1', 'run-1');
+
+      expect(tracker.cancelGrace('wt-1')).toBe(false);
+
+      expect(tracker.isInUse('wt-1')).toBe(true);
+      expect(tracker.getActiveAnalyses('wt-1')).toEqual(new Set(['run-1']));
+      // The session still counts: removing the analysis does not arm a timer
+      tracker.removeAnalysis('wt-1', 'run-1');
+      await vi.advanceTimersByTimeAsync(GRACE_PERIOD_MS * 2);
+      expect(onIdle).not.toHaveBeenCalled();
+      expect(tracker.isInUse('wt-1')).toBe(true);
+    });
+
+    it('only cancels the named worktree', async () => {
+      const onIdle = vi.fn();
+      tracker.onIdle = onIdle;
+      tracker.addSession('wt-1', 's1');
+      tracker.removeSession('wt-1', 's1');
+      tracker.addSession('wt-2', 's2');
+      tracker.removeSession('wt-2', 's2');
+
+      tracker.cancelGrace('wt-1');
+      await vi.advanceTimersByTimeAsync(GRACE_PERIOD_MS);
+
+      expect(onIdle).toHaveBeenCalledTimes(1);
+      expect(onIdle).toHaveBeenCalledWith('wt-2');
+    });
+
+    it('returns false for a worktree with no pending timer', () => {
+      expect(tracker.cancelGrace('unknown')).toBe(false);
+    });
+  });
+
   // ── clearWorktree ───────────────────────────────────────────────────────
   describe('clearWorktree', () => {
     it('removes sessions, analyses, and grace timers for a worktree', () => {

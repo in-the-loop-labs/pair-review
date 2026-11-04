@@ -953,8 +953,12 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, bindingRe
     // mechanism can never fire to reclaim it.
     if (poolWorktreeId && poolLifecycle) {
       try {
-        await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
-        logger.info(`Released pool worktree ${poolWorktreeId} after setup failure`);
+        const released = await poolLifecycle.releaseAfterHeadless(poolWorktreeId);
+        if (released) {
+          logger.info(`Released pool worktree ${poolWorktreeId} after setup failure`);
+        } else {
+          logger.info(`Pool worktree ${poolWorktreeId} not released after setup failure: no longer held by this process`);
+        }
       } catch (releaseErr) {
         logger.error(`Failed to release pool worktree ${poolWorktreeId} after setup failure: ${releaseErr.message}`);
       }
