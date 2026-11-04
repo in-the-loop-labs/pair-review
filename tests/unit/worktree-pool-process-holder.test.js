@@ -314,6 +314,21 @@ describe('pool worktrees across two processes sharing one database', () => {
       expect(row.holder_claimed_at === null).toBe(true);
     });
 
+    it('keeps the row when the refresh throws after this claim took it from a live peer (same PR)', async () => {
+      await aHoldsPR1();
+      const b = makeProcess(PID_B);
+      await b.lifecycle.resetAndRehydrate();
+      b.manager.refreshWorktree.mockRejectedValue(new Error('fetch exploded'));
+
+      await expect(b.lifecycle.acquireForPR(prInfo(1), prData, '/repo', POOL_OPTIONS)).rejects.toThrow('fetch exploded');
+
+      const row = poolRow('pool-1');
+      expect(row.status).toBe('in_use');
+      expect(row.current_pr_number).toBe(1);
+      // A review of a different PR, from any process, cannot take A's worktree
+      expect(await new WorktreePoolRepository(db).claimAvailable(REPOSITORY, PEER_PID)).toBeNull();
+    });
+
     it('keeps the row when the refresh throws but this process still has a session on it', async () => {
       const { a, reviewId } = await aHoldsPR1();
       await a.lifecycle.startSession(reviewId, 'ws-a');

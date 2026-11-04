@@ -110,7 +110,10 @@ class WorktreePoolLifecycle {
             // The claim left the row in_use under this process. Free it unless
             // this process is still using it (a session or analysis from an
             // earlier acquisition); the release is gated on still holding it.
-            if (!this._usageTracker.isInUse(existingPool.id)) {
+            // Never free a row this claim took from another process: that
+            // process may still be serving the PR, and this tracker cannot
+            // see it. If it is actually dead, startup reclaims the row.
+            if (!existingPool.previousHolderPid && !this._usageTracker.isInUse(existingPool.id)) {
               try {
                 const released = await this._poolRepo.markAvailable(existingPool.id, this._pid);
                 if (released) {

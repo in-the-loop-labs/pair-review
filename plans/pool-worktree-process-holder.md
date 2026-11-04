@@ -101,8 +101,12 @@ otherwise). The repository never reads `process.pid`.
    conditional `markInUse` is the backstop: if it returns false, throw
    ("pool worktree X was taken over during refresh/switch").
 2. **Refresh failure leaks the claim.** Wrap the `_refreshPoolWorktree` call in
-   `acquireForPR`: on error, if `!this._usageTracker.isInUse(id)`, call
-   `markAvailable(id, self)` (gated, best effort, log failures); rethrow.
+   `acquireForPR`: on error, if `!this._usageTracker.isInUse(id)` **and the claim
+   did not take the row from another process** (`previousHolderPid` is null),
+   call `markAvailable(id, self)` (gated, best effort, log failures); rethrow.
+   A row taken from a peer stays `in_use`: that peer may still be serving the
+   PR and this tracker cannot see it (on `main` a failed refresh released
+   nothing). If the peer is actually dead, the next startup reclaims the row.
 
 ## Tests (same change)
 - `tests/unit/process-liveness.test.js`: invalid pid, success, ESRCH, EPERM,
