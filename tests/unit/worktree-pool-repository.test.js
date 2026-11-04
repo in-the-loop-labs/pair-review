@@ -287,6 +287,14 @@ describe('WorktreePoolRepository', () => {
 
         await expectRefusedNoWrite('pool-a', () => repo.markInUse('pool-a', 42, SELF, 'in_use'));
       });
+
+      it('refuses a row this process is switching, even for the same PR', async () => {
+        await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+        setRow('pool-a', { current_pr_number: 42 });
+        putSwitching('pool-a'); // holder defaults to SELF
+
+        await expectRefusedNoWrite('pool-a', () => repo.markInUse('pool-a', 42, SELF, 'in_use'));
+      });
     });
 
     it('throws TypeError for an unknown fromStatus and writes nothing', async () => {
@@ -790,6 +798,7 @@ describe('WorktreePoolRepository', () => {
 
     it('does not update non-creating entries', async () => {
       await repo.create({ id: 'pool-a', repository: 'owner/repo', path: '/tmp/a' });
+      putInUse('pool-a', 42); // holder defaults to SELF
 
       await expectRefusedNoWrite('pool-a', () => repo.finalizeReservation('pool-a', '/tmp/new-path', 99, SELF));
     });

@@ -4144,4 +4144,82 @@ describe('Migration 59 - holder process on worktree_pool', () => {
     expect(() => MIGRATIONS[59](db)).not.toThrow();
     expect(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'worktree_pool'`).get()).toBeUndefined();
   });
+
+  it('runs its column checks and ALTERs inside a transaction', () => {
+    db = createPreMigration59Database();
+    const seen = [];
+    const realPrepare = db.prepare.bind(db);
+    const realExec = db.exec.bind(db);
+    db.prepare = (sql) => {
+      if (sql.includes('table_info(worktree_pool)')) seen.push(['check', db.inTransaction]);
+      return realPrepare(sql);
+    };
+    db.exec = (sql) => {
+      if (sql.startsWith('ALTER TABLE worktree_pool')) seen.push(['alter', db.inTransaction]);
+      return realExec(sql);
+    };
+
+    MIGRATIONS[59](db);
+
+    expect(seen).toEqual([
+      ['check', true], ['alter', true],
+      ['check', true], ['alter', true],
+    ]);
+    expect(db.inTransaction).toBe(false);
+  });
+
+  it('still applies when a caller already holds a transaction (nests as a savepoint)', () => {
+    db = createPreMigration59Database();
+
+    db.transaction(() => MIGRATIONS[59](db))();
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames).toContain('holder_pid');
+    expect(colNames).toContain('holder_claimed_at');
+  });
+
+  describe('against a shared database file', () => {
+    const fsSync = require('fs');
+    const os = require('os');
+    const path = require('path');
+    let tmpDir;
+    let holder;
+
+    beforeEach(() => {
+      tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'pair-review-mig59-'));
+    });
+
+    afterEach(() => {
+      if (holder) {
+        if (holder.inTransaction) holder.exec('ROLLBACK');
+        holder.close();
+        holder = null;
+      }
+      fsSync.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('takes the write lock before checking, then skips once a peer has added the columns', () => {
+      const file = path.join(tmpDir, 'pool.db');
+      holder = new Database(file);
+      holder.exec(`CREATE TABLE worktree_pool (id TEXT PRIMARY KEY, repository TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL)`);
+      // A peer process has already added the columns and still holds the
+      // write lock (for instance, it is now writing its schema version).
+      holder.exec('ALTER TABLE worktree_pool ADD COLUMN holder_pid INTEGER');
+      holder.exec('ALTER TABLE worktree_pool ADD COLUMN holder_claimed_at TEXT');
+      holder.exec('BEGIN IMMEDIATE');
+
+      // Only reads would be needed here (both columns exist), so a deferred
+      // or absent transaction would succeed; an IMMEDIATE one must wait for
+      // the lock first. timeout: 0 turns that wait into an immediate
+      // SQLITE_BUSY instead of a busy-timeout wait.
+      db = new Database(file, { timeout: 0 });
+      expect(() => MIGRATIONS[59](db)).toThrow(expect.objectContaining({ code: 'SQLITE_BUSY' }));
+
+      holder.exec('COMMIT');
+      expect(() => MIGRATIONS[59](db)).not.toThrow();
+      const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+      expect(colNames.filter(n => n === 'holder_pid')).toHaveLength(1);
+      expect(colNames.filter(n => n === 'holder_claimed_at')).toHaveLength(1);
+    });
+  });
 });

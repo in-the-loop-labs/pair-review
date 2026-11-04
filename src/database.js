@@ -2453,11 +2453,20 @@ const MIGRATIONS = {
   // now skip or refuse rows a live peer holds. Existing rows get NULL holders,
   // which startup treats as dead. Each ALTER is guarded by columnExists so a
   // re-run after a crash between the two finishes the remaining piece.
+  // The checks and ALTERs run in one IMMEDIATE transaction: two processes
+  // starting together against a v58 database would otherwise both see the
+  // column missing, and the second ALTER would fail with a duplicate-column
+  // error. Under the write lock the second process waits (busy timeout),
+  // then sees the columns and skips. runVersionedMigrations does not wrap
+  // migrations in a transaction; if a caller ever does, better-sqlite3 turns
+  // this into a SAVEPOINT inside the caller's transaction.
   59: (db) => {
     console.log('Running migration to schema version 59: add holder process to worktree_pool...');
-    if (!tableExists(db, 'worktree_pool')) {
-      console.log('  worktree_pool table does not exist, skipping');
-    } else {
+    db.transaction(() => {
+      if (!tableExists(db, 'worktree_pool')) {
+        console.log('  worktree_pool table does not exist, skipping');
+        return;
+      }
       if (!columnExists(db, 'worktree_pool', 'holder_pid')) {
         db.exec('ALTER TABLE worktree_pool ADD COLUMN holder_pid INTEGER');
         console.log('  Added holder_pid column to worktree_pool');
@@ -2470,7 +2479,7 @@ const MIGRATIONS = {
       } else {
         console.log('  holder_claimed_at column already present; nothing to do');
       }
-    }
+    }).immediate();
     console.log('Migration to schema version 59 complete');
   }
 };
@@ -3062,9 +3071,6 @@ class WorktreeRepository {
 }
 
 /**
- * WorktreePoolRepository class for managing pool worktree database records
- */
-/**
  * Validate the process ID a pool claim is stamped with. Every holder-taking
  * WorktreePoolRepository method requires one; the repository never reads
  * process.pid itself, so the caller (WorktreePoolLifecycle) owns identity.
@@ -3080,8 +3086,19 @@ function assertHolderPid(holderPid, method) {
 /**
  * Pool worktree rows record the pair-review process that holds them
  * (`holder_pid`, `holder_claimed_at`). Several processes can share one
- * database, so every claim stamps the claimant and every release is gated on
- * still being the holder: a process can only free a row it holds.
+ * database, so every claim stamps the claimant, and the normal releases
+ * (`markAvailable`, `abandonSwitch`) are gated on still being the holder: in
+ * normal operation a process only frees a row it holds.
+ *
+ * Deliberate exceptions, which do not check the holder:
+ * - `forceMarkAvailable` serves user-initiated deletes (releaseForDeletion)
+ *   and frees the row whoever holds it;
+ * - `delete` serves user-initiated destroys (destroyPoolWorktree) and the
+ *   removal of stale or orphaned rows the caller has just claimed;
+ * - `deleteReservation` removes a failed `creating` placeholder, gated on
+ *   status only;
+ * - `resetStaleAndPreserve` (startup) checks holder liveness instead of
+ *   holding: it reclaims or resets only rows whose holder is dead.
  */
 class WorktreePoolRepository {
   constructor(db) {
@@ -3531,7 +3548,7 @@ class WorktreePoolRepository {
         if (!isHolderDead(row)) continue;
         if (row.status === 'creating') {
           deleteCreating.run(row.id);
-        } else if (row.status === 'in_use' && row.current_review_id != null && reviewExists) {
+        } else if (row.status === 'in_use' && reviewExists) {
           takeOver.run(selfPid, now, row.id);
           preserved.push({ id: row.id, current_review_id: row.current_review_id });
         } else {

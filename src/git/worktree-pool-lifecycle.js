@@ -48,7 +48,10 @@ class WorktreePoolLifecycle {
     this._GitWorktreeManager = deps.GitWorktreeManager;
     // The process this lifecycle claims pool rows as. Several pair-review
     // processes can share one database; every claim is stamped with this pid
-    // and every release is gated on still holding the row.
+    // and normal releases are gated on still holding the row. The exceptions
+    // are user-initiated deletes (releaseForDeletion, destroyPoolWorktree),
+    // removal of stale rows just claimed, and failed-reservation cleanup; see
+    // WorktreePoolRepository.
     this._pid = deps.pid;
     this._isProcessAlive = deps.isProcessAlive;
     this._getBootTimeMs = deps.getBootTimeMs;
