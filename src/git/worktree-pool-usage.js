@@ -141,6 +141,26 @@ class WorktreePoolUsageTracker {
   }
 
   /**
+   * Cancel a pending grace-period timer for a worktree, if one is armed.
+   * Sessions and analyses are untouched, and onIdle does not fire.
+   *
+   * Used when this process claims a pool row: a timer armed for the row's
+   * previous use must not fire mid-acquire and free the row under the new
+   * claim.
+   *
+   * @param {string} worktreeId - Pool worktree ID
+   * @returns {boolean} true if a pending timer was cancelled
+   */
+  cancelGrace(worktreeId) {
+    const timer = this._graceTimers.get(worktreeId);
+    if (!timer) return false;
+    clearTimeout(timer);
+    this._graceTimers.delete(worktreeId);
+    logger.debug(`Grace period cancelled for pool worktree ${worktreeId} — claimed by this process`);
+    return true;
+  }
+
+  /**
    * Forcefully clear all tracking state for a single worktree.
    *
    * Removes sessions, analyses, and grace timers.

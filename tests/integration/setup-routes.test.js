@@ -18,16 +18,22 @@ const express = require('express');
 const request = require('supertest');
 const setupRoutes = require('../../src/routes/setup');
 const { WorktreePoolRepository } = require('../../src/database');
+const { WorktreePoolLifecycle } = require('../../src/git/worktree-pool-lifecycle');
 const { activeSetups } = require('../../src/routes/shared');
 const logger = require('../../src/utils/logger');
 
-function createApp(db, config = { github_token: 'test-token' }, { withPool = false } = {}) {
+/** PID the route's pool lifecycle claims as (never the real process.pid). */
+const SELF_PID = 4242;
+/** PID of a peer pair-review process sharing the database. */
+const PEER_PID = 5151;
+
+function createApp(db, config = { github_token: 'test-token' }, { withPool = false, poolLifecycle = null } = {}) {
   const app = express();
   app.use(express.json());
   app.set('db', db);
   app.set('config', config);
   if (withPool) {
-    app.set('poolLifecycle', { poolRepo: new WorktreePoolRepository(db) });
+    app.set('poolLifecycle', poolLifecycle || new WorktreePoolLifecycle(db, {}, { pid: SELF_PID }));
   }
   app.use(setupRoutes);
   return app;
@@ -124,10 +130,49 @@ describe('POST /api/setup/pr/:owner/:repo/:number', () => {
     expect(res.status).toBe(200);
     expect(res.body.existing).toBe(true);
     expect(res.body.reviewUrl).toBe('/pr/owner/repo/42');
-    // Pool entry should be reclaimed as in_use
-    const poolEntry = db.prepare('SELECT status, current_review_id FROM worktree_pool WHERE id = ?').get('pool-abc');
+    // Pool entry should be reclaimed as in_use, held by this process
+    const poolEntry = db.prepare('SELECT status, current_review_id, holder_pid FROM worktree_pool WHERE id = ?').get('pool-abc');
     expect(poolEntry.status).toBe('in_use');
     expect(poolEntry.current_review_id).toBeTruthy();
+    expect(poolEntry.holder_pid).toBe(SELF_PID);
+  });
+
+  it('falls through to setup when a peer claims the row between the read and the reclaim', async () => {
+    seedPRMetadata(db);
+    seedWorktree(db, { id: 'pool-abc' });
+    seedPoolEntry(db, { id: 'pool-abc', status: 'available', prNumber: 42 });
+
+    const poolLifecycle = new WorktreePoolLifecycle(db, {}, { pid: SELF_PID });
+    const peerRepo = new WorktreePoolRepository(db);
+    // The route reads the row as available for PR 42; a peer process then
+    // claims it for a different PR before the route's reclaim runs.
+    const realGetPoolEntry = poolLifecycle.poolRepo.getPoolEntry.bind(poolLifecycle.poolRepo);
+    let peerRow = null;
+    vi.spyOn(poolLifecycle.poolRepo, 'getPoolEntry').mockImplementation(async (id) => {
+      const snapshot = await realGetPoolEntry(id);
+      const peerClaim = await peerRepo.claimAvailable('owner/repo', PEER_PID);
+      expect(peerClaim.id).toBe('pool-abc');
+      peerRow = db.prepare('SELECT * FROM worktree_pool WHERE id = ?').get('pool-abc');
+      return snapshot;
+    });
+    const reclaimSpy = vi.spyOn(poolLifecycle, 'reclaimForPR');
+
+    server = await listenOnLoopback(createApp(db, undefined, { withPool: true, poolLifecycle }));
+    const res = await request(server).post('/api/setup/pr/owner/repo/42');
+
+    expect(reclaimSpy).toHaveBeenCalledWith('pool-abc', 42);
+    await expect(reclaimSpy.mock.results[0].value).resolves.toBe(false);
+    // Fell through to a normal setup instead of handing out the peer's row
+    expect(res.status).toBe(200);
+    expect(res.body.existing).toBeUndefined();
+    expect(res.body.setupId).toBeTruthy();
+    // The peer's row is byte-identical to right after the peer's claim
+    const row = db.prepare('SELECT * FROM worktree_pool WHERE id = ?').get('pool-abc');
+    expect(peerRow).not.toBeNull();
+    expect(row).toEqual(peerRow);
+    expect(row.status).toBe('switching');
+    expect(row.holder_pid).toBe(PEER_PID);
+    expect(row.current_review_id === null).toBe(true);
   });
 
   it('falls through to setup when pool worktree was reassigned to a different PR', async () => {

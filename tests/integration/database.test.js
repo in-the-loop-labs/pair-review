@@ -4049,3 +4049,177 @@ describe('Migration 55 - fetch attempt tracking on worktree_pool', () => {
     expect(db.prepare('PRAGMA table_info(repo_settings)').all().map(c => c.name)).toContain('pool_fetch_owner');
   });
 });
+
+// ============================================================================
+// Migration 59: holder process on worktree_pool
+// ============================================================================
+
+describe('Migration 59 - holder process on worktree_pool', () => {
+  let db;
+  const Database = require('better-sqlite3');
+
+  /** Pre-59 baseline: worktree_pool without the holder columns. */
+  function createPreMigration59Database() {
+    const testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE worktree_pool (
+        id TEXT PRIMARY KEY,
+        repository TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'available'
+          CHECK(status IN ('available', 'in_use', 'switching', 'creating')),
+        current_pr_number INTEGER,
+        current_review_id INTEGER,
+        last_switched_at TEXT,
+        last_fetched_at TEXT,
+        last_fetch_attempt_at TEXT,
+        fetch_failure_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )
+    `);
+    return testDb;
+  }
+
+  afterEach(() => {
+    if (db) {
+      db.close();
+      db = null;
+    }
+  });
+
+  it('adds holder_pid and holder_claimed_at', () => {
+    db = createPreMigration59Database();
+
+    MIGRATIONS[59](db);
+
+    const cols = db.prepare('PRAGMA table_info(worktree_pool)').all();
+    const byName = Object.fromEntries(cols.map(c => [c.name, c]));
+    expect(byName.holder_pid.type).toBe('INTEGER');
+    expect(byName.holder_pid.notnull).toBe(0);
+    expect(byName.holder_claimed_at.type).toBe('TEXT');
+    expect(byName.holder_claimed_at.notnull).toBe(0);
+  });
+
+  it('leaves existing rows with NULL holders and their data intact', () => {
+    db = createPreMigration59Database();
+    db.prepare(`INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, current_review_id, created_at)
+      VALUES ('pool-a', 'owner/repo', '/tmp/a', 'in_use', 7, 3, '2026-01-01T00:00:00Z')`).run();
+
+    MIGRATIONS[59](db);
+
+    const row = db.prepare(`SELECT * FROM worktree_pool WHERE id = 'pool-a'`).get();
+    expect(row.holder_pid === null).toBe(true);
+    expect(row.holder_claimed_at === null).toBe(true);
+    expect(row.status).toBe('in_use');
+    expect(row.current_pr_number).toBe(7);
+    expect(row.current_review_id).toBe(3);
+  });
+
+  it('completes a partial apply left by a crashed earlier run', () => {
+    db = createPreMigration59Database();
+    db.exec('ALTER TABLE worktree_pool ADD COLUMN holder_pid INTEGER');
+    db.prepare(`INSERT INTO worktree_pool (id, repository, path, created_at, holder_pid) VALUES ('pool-a', 'owner/repo', '/tmp/a', '2026-01-01T00:00:00Z', 99)`).run();
+
+    MIGRATIONS[59](db);
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames.filter(n => n === 'holder_pid')).toHaveLength(1);
+    expect(colNames).toContain('holder_claimed_at');
+    expect(db.prepare(`SELECT holder_pid FROM worktree_pool WHERE id = 'pool-a'`).get().holder_pid).toBe(99);
+  });
+
+  it('is idempotent when re-run', () => {
+    db = createPreMigration59Database();
+
+    MIGRATIONS[59](db);
+    expect(() => MIGRATIONS[59](db)).not.toThrow();
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames.filter(n => n === 'holder_pid')).toHaveLength(1);
+    expect(colNames.filter(n => n === 'holder_claimed_at')).toHaveLength(1);
+  });
+
+  it('skips cleanly when worktree_pool does not exist', () => {
+    db = new Database(':memory:');
+    expect(() => MIGRATIONS[59](db)).not.toThrow();
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'worktree_pool'`).get()).toBeUndefined();
+  });
+
+  it('runs its column checks and ALTERs inside a transaction', () => {
+    db = createPreMigration59Database();
+    const seen = [];
+    const realPrepare = db.prepare.bind(db);
+    const realExec = db.exec.bind(db);
+    db.prepare = (sql) => {
+      if (sql.includes('table_info(worktree_pool)')) seen.push(['check', db.inTransaction]);
+      return realPrepare(sql);
+    };
+    db.exec = (sql) => {
+      if (sql.startsWith('ALTER TABLE worktree_pool')) seen.push(['alter', db.inTransaction]);
+      return realExec(sql);
+    };
+
+    MIGRATIONS[59](db);
+
+    expect(seen).toEqual([
+      ['check', true], ['alter', true],
+      ['check', true], ['alter', true],
+    ]);
+    expect(db.inTransaction).toBe(false);
+  });
+
+  it('still applies when a caller already holds a transaction (nests as a savepoint)', () => {
+    db = createPreMigration59Database();
+
+    db.transaction(() => MIGRATIONS[59](db))();
+
+    const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+    expect(colNames).toContain('holder_pid');
+    expect(colNames).toContain('holder_claimed_at');
+  });
+
+  describe('against a shared database file', () => {
+    const fsSync = require('fs');
+    const os = require('os');
+    const path = require('path');
+    let tmpDir;
+    let holder;
+
+    beforeEach(() => {
+      tmpDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'pair-review-mig59-'));
+    });
+
+    afterEach(() => {
+      if (holder) {
+        if (holder.inTransaction) holder.exec('ROLLBACK');
+        holder.close();
+        holder = null;
+      }
+      fsSync.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('takes the write lock before checking, then skips once a peer has added the columns', () => {
+      const file = path.join(tmpDir, 'pool.db');
+      holder = new Database(file);
+      holder.exec(`CREATE TABLE worktree_pool (id TEXT PRIMARY KEY, repository TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL)`);
+      // A peer process has already added the columns and still holds the
+      // write lock (for instance, it is now writing its schema version).
+      holder.exec('ALTER TABLE worktree_pool ADD COLUMN holder_pid INTEGER');
+      holder.exec('ALTER TABLE worktree_pool ADD COLUMN holder_claimed_at TEXT');
+      holder.exec('BEGIN IMMEDIATE');
+
+      // Only reads would be needed here (both columns exist), so a deferred
+      // or absent transaction would succeed; an IMMEDIATE one must wait for
+      // the lock first. timeout: 0 turns that wait into an immediate
+      // SQLITE_BUSY instead of a busy-timeout wait.
+      db = new Database(file, { timeout: 0 });
+      expect(() => MIGRATIONS[59](db)).toThrow(expect.objectContaining({ code: 'SQLITE_BUSY' }));
+
+      holder.exec('COMMIT');
+      expect(() => MIGRATIONS[59](db)).not.toThrow();
+      const colNames = db.prepare('PRAGMA table_info(worktree_pool)').all().map(c => c.name);
+      expect(colNames.filter(n => n === 'holder_pid')).toHaveLength(1);
+      expect(colNames.filter(n => n === 'holder_claimed_at')).toHaveLength(1);
+    });
+  });
+});

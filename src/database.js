@@ -21,7 +21,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 58;
+const CURRENT_SCHEMA_VERSION = 59;
 
 /**
  * Database schema SQL statements
@@ -354,7 +354,9 @@ const SCHEMA_SQL = {
       last_fetched_at TEXT,
       last_fetch_attempt_at TEXT,
       fetch_failure_count INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      holder_pid INTEGER,
+      holder_claimed_at TEXT
     )
   `,
 
@@ -2443,6 +2445,42 @@ const MIGRATIONS = {
     if (!columnExists(db, 'comment_postings', 'kind')) {
       db.exec("ALTER TABLE comment_postings ADD COLUMN kind TEXT NOT NULL DEFAULT 'post' CHECK (kind IN ('post', 'update'))");
     }
+  },
+
+  // Migration to version 59: record which pair-review process holds a pool
+  // worktree. Several processes can share one database (two --headless runs,
+  // or a headless run beside the server); startup cleanup and idle release
+  // now skip or refuse rows a live peer holds. Existing rows get NULL holders,
+  // which startup treats as dead. Each ALTER is guarded by columnExists so a
+  // re-run after a crash between the two finishes the remaining piece.
+  // The checks and ALTERs run in one IMMEDIATE transaction: two processes
+  // starting together against a v58 database would otherwise both see the
+  // column missing, and the second ALTER would fail with a duplicate-column
+  // error. Under the write lock the second process waits (busy timeout),
+  // then sees the columns and skips. runVersionedMigrations does not wrap
+  // migrations in a transaction; if a caller ever does, better-sqlite3 turns
+  // this into a SAVEPOINT inside the caller's transaction.
+  59: (db) => {
+    console.log('Running migration to schema version 59: add holder process to worktree_pool...');
+    db.transaction(() => {
+      if (!tableExists(db, 'worktree_pool')) {
+        console.log('  worktree_pool table does not exist, skipping');
+        return;
+      }
+      if (!columnExists(db, 'worktree_pool', 'holder_pid')) {
+        db.exec('ALTER TABLE worktree_pool ADD COLUMN holder_pid INTEGER');
+        console.log('  Added holder_pid column to worktree_pool');
+      } else {
+        console.log('  holder_pid column already present; nothing to do');
+      }
+      if (!columnExists(db, 'worktree_pool', 'holder_claimed_at')) {
+        db.exec('ALTER TABLE worktree_pool ADD COLUMN holder_claimed_at TEXT');
+        console.log('  Added holder_claimed_at column to worktree_pool');
+      } else {
+        console.log('  holder_claimed_at column already present; nothing to do');
+      }
+    }).immediate();
+    console.log('Migration to schema version 59 complete');
   }
 };
 
@@ -3033,7 +3071,34 @@ class WorktreeRepository {
 }
 
 /**
- * WorktreePoolRepository class for managing pool worktree database records
+ * Validate the process ID a pool claim is stamped with. Every holder-taking
+ * WorktreePoolRepository method requires one; the repository never reads
+ * process.pid itself, so the caller (WorktreePoolLifecycle) owns identity.
+ * @param {*} holderPid
+ * @param {string} method - Method name for the error message
+ */
+function assertHolderPid(holderPid, method) {
+  if (!Number.isInteger(holderPid) || holderPid <= 0) {
+    throw new TypeError(`WorktreePoolRepository.${method}: holderPid must be a positive integer, got ${holderPid}`);
+  }
+}
+
+/**
+ * Pool worktree rows record the pair-review process that holds them
+ * (`holder_pid`, `holder_claimed_at`). Several processes can share one
+ * database, so every claim stamps the claimant, and the normal releases
+ * (`markAvailable`, `abandonSwitch`) are gated on still being the holder: in
+ * normal operation a process only frees a row it holds.
+ *
+ * Deliberate exceptions, which do not check the holder:
+ * - `forceMarkAvailable` serves user-initiated deletes (releaseForDeletion)
+ *   and frees the row whoever holds it;
+ * - `delete` serves user-initiated destroys (destroyPoolWorktree) and the
+ *   removal of stale or orphaned rows the caller has just claimed;
+ * - `deleteReservation` removes a failed `creating` placeholder, gated on
+ *   status only;
+ * - `resetStaleAndPreserve` (startup) checks holder liveness instead of
+ *   holding: it reclaims or resets only rows whose holder is dead.
  */
 class WorktreePoolRepository {
   constructor(db) {
@@ -3047,11 +3112,13 @@ class WorktreePoolRepository {
    * @param {string} params.repository - owner/repo
    * @param {string} params.path - Absolute filesystem path
    * @param {number} [params.prNumber] - If provided, insert as 'in_use' for this PR (avoids race with claimAvailable)
+   * @param {number} [params.holderPid] - Required with prNumber: the process that holds the in_use row
    */
-  async create({ id, repository, path, prNumber }) {
+  async create({ id, repository, path, prNumber, holderPid }) {
     const now = new Date().toISOString();
     if (prNumber != null) {
-      await run(this.db, `INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, last_switched_at, created_at) VALUES (?, ?, ?, 'in_use', ?, ?, ?)`, [id, repository, path, prNumber, now, now]);
+      assertHolderPid(holderPid, 'create');
+      await run(this.db, `INSERT INTO worktree_pool (id, repository, path, status, current_pr_number, last_switched_at, created_at, holder_pid, holder_claimed_at) VALUES (?, ?, ?, 'in_use', ?, ?, ?, ?, ?)`, [id, repository, path, prNumber, now, now, holderPid, now]);
     } else {
       await run(this.db, `INSERT INTO worktree_pool (id, repository, path, status, created_at) VALUES (?, ?, ?, 'available', ?)`, [id, repository, path, now]);
     }
@@ -3109,26 +3176,92 @@ class WorktreePoolRepository {
   }
 
   /**
-   * Mark a pool worktree as in_use.
+   * Conditionally mark a pool worktree in_use for a PR, completing a claim
+   * this process already holds. Clears current_review_id (the caller sets
+   * the review owner afterwards).
+   *
+   * - fromStatus 'switching' (end of a PR switch): requires the row to still be
+   *   `switching` and held by holderPid.
+   * - fromStatus 'in_use' (end of a refresh): requires the row to still be
+   *   `in_use` for this PR and held by holderPid.
+   *
+   * A false return means the row was freed or taken over while the caller was
+   * working on it; nothing is written.
+   *
+   * @param {string} id - Pool worktree ID
+   * @param {number} prNumber - PR number the row is being marked for
+   * @param {number} holderPid - Process that must hold the row
+   * @param {'switching'|'in_use'} fromStatus - Status the row must still be in
+   * @returns {Promise<boolean>} true if the row was updated
    */
-  async markInUse(id, prNumber) {
+  async markInUse(id, prNumber, holderPid, fromStatus) {
+    assertHolderPid(holderPid, 'markInUse');
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ?`, [prNumber, now, id]);
+    let result;
+    if (fromStatus === 'switching') {
+      result = await run(this.db, `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ? AND status = 'switching' AND holder_pid = ?`, [prNumber, now, id, holderPid]);
+    } else if (fromStatus === 'in_use') {
+      result = await run(this.db, `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ? AND status = 'in_use' AND current_pr_number = ? AND holder_pid = ?`, [prNumber, now, id, prNumber, holderPid]);
+    } else {
+      throw new TypeError(`WorktreePoolRepository.markInUse: fromStatus must be 'switching' or 'in_use', got ${fromStatus}`);
+    }
+    return result.changes > 0;
   }
 
   /**
-   * Mark a pool worktree as available (evictable).
-   * Clears current_review_id to release ownership.
+   * Atomically take an `available` pool worktree that still carries this PR
+   * back into use (the setup route's reclaim fast path). Conditional on the
+   * row still being available for the same PR, so a peer that claimed it
+   * first is never overwritten.
+   *
+   * @param {string} id - Pool worktree ID
+   * @param {number} prNumber - PR number the row must still carry
+   * @param {number} holderPid - Process taking the row
+   * @returns {Promise<boolean>} true if the row was reclaimed
    */
-  async markAvailable(id) {
-    await run(this.db, `UPDATE worktree_pool SET status = 'available', current_review_id = NULL WHERE id = ?`, [id]);
+  async reclaimAvailableForPR(id, prNumber, holderPid) {
+    assertHolderPid(holderPid, 'reclaimAvailableForPR');
+    const now = new Date().toISOString();
+    const result = await run(this.db, `UPDATE worktree_pool SET status = 'in_use', last_switched_at = ?, current_review_id = NULL, holder_pid = ?, holder_claimed_at = ? WHERE id = ? AND status = 'available' AND current_pr_number = ?`, [now, holderPid, now, id, prNumber]);
+    return result.changes > 0;
   }
 
   /**
-   * Mark a pool worktree as switching (transitional state during PR switch).
+   * Mark a pool worktree available (evictable), but only if it is `in_use`
+   * and held by holderPid. Clears review ownership and the holder.
+   *
+   * @param {string} id - Pool worktree ID
+   * @param {number} holderPid - Process that must hold the row
+   * @returns {Promise<boolean>} true if the row was released
    */
-  async markSwitching(id) {
-    await run(this.db, `UPDATE worktree_pool SET status = 'switching' WHERE id = ?`, [id]);
+  async markAvailable(id, holderPid) {
+    assertHolderPid(holderPid, 'markAvailable');
+    const result = await run(this.db, `UPDATE worktree_pool SET status = 'available', current_review_id = NULL, holder_pid = NULL, holder_claimed_at = NULL WHERE id = ? AND status = 'in_use' AND holder_pid = ?`, [id, holderPid]);
+    return result.changes > 0;
+  }
+
+  /**
+   * Roll back a failed PR switch: return a `switching` row held by holderPid
+   * to `available`. Clears review ownership and the holder.
+   *
+   * @param {string} id - Pool worktree ID
+   * @param {number} holderPid - Process that must hold the row
+   * @returns {Promise<boolean>} true if the row was rolled back
+   */
+  async abandonSwitch(id, holderPid) {
+    assertHolderPid(holderPid, 'abandonSwitch');
+    const result = await run(this.db, `UPDATE worktree_pool SET status = 'available', current_review_id = NULL, holder_pid = NULL, holder_claimed_at = NULL WHERE id = ? AND status = 'switching' AND holder_pid = ?`, [id, holderPid]);
+    return result.changes > 0;
+  }
+
+  /**
+   * Unconditionally mark a pool worktree available, clearing review ownership
+   * and the holder. Only for user-initiated deletes (releaseForDeletion).
+   *
+   * @param {string} id - Pool worktree ID
+   */
+  async forceMarkAvailable(id) {
+    await run(this.db, `UPDATE worktree_pool SET status = 'available', current_review_id = NULL, holder_pid = NULL, holder_claimed_at = NULL WHERE id = ?`, [id]);
   }
 
   /**
@@ -3246,16 +3379,19 @@ class WorktreePoolRepository {
    * Uses BEGIN IMMEDIATE to serialize against concurrent callers, preventing
    * two requests from both observing spare capacity and both creating slots.
    *
-   * Inserts a placeholder row with status 'creating'. The caller must:
-   * - On success: call markInUse() to transition to 'in_use'
+   * Inserts a placeholder row with status 'creating', held by holderPid.
+   * The caller must:
+   * - On success: call finalizeReservation() to transition to 'in_use'
    * - On failure: call deleteReservation() to remove the placeholder
    *
    * @param {string} id - Pool worktree ID (e.g., 'pool-abc')
    * @param {string} repository - Repository in "owner/repo" format
    * @param {number} poolSize - Maximum pool slots for this repository
+   * @param {number} holderPid - Process reserving the slot
    * @returns {Promise<boolean>} true if the slot was reserved, false if at capacity
    */
-  async reserveSlot(id, repository, poolSize) {
+  async reserveSlot(id, repository, poolSize, holderPid) {
+    assertHolderPid(holderPid, 'reserveSlot');
     const reserveTx = this.db.transaction(() => {
       const row = this.db.prepare(
         `SELECT COUNT(*) as count FROM worktree_pool WHERE repository = ? COLLATE NOCASE`
@@ -3269,8 +3405,8 @@ class WorktreePoolRepository {
       // finalizeReservation will replace it with the real path.
       const placeholderPath = `__creating__${id}`;
       this.db.prepare(
-        `INSERT INTO worktree_pool (id, repository, path, status, created_at) VALUES (?, ?, ?, 'creating', ?)`
-      ).run(id, repository, placeholderPath, now);
+        `INSERT INTO worktree_pool (id, repository, path, status, created_at, holder_pid, holder_claimed_at) VALUES (?, ?, ?, 'creating', ?, ?, ?)`
+      ).run(id, repository, placeholderPath, now, holderPid, now);
       return true;
     });
     return reserveTx.immediate();
@@ -3279,14 +3415,19 @@ class WorktreePoolRepository {
   /**
    * Finalize a reserved pool slot after successful worktree creation.
    * Updates the placeholder row with the actual path and marks it in_use.
+   * Requires the row to still be `creating` and held by holderPid.
    *
    * @param {string} id - Pool worktree ID
    * @param {string} path - Absolute filesystem path to the created worktree
    * @param {number} prNumber - PR number to assign
+   * @param {number} holderPid - Process that must hold the reservation
+   * @returns {Promise<boolean>} true if the reservation was finalized
    */
-  async finalizeReservation(id, path, prNumber) {
+  async finalizeReservation(id, path, prNumber, holderPid) {
+    assertHolderPid(holderPid, 'finalizeReservation');
     const now = new Date().toISOString();
-    await run(this.db, `UPDATE worktree_pool SET path = ?, status = 'in_use', current_pr_number = ?, last_switched_at = ? WHERE id = ? AND status = 'creating'`, [path, prNumber, now, id]);
+    const result = await run(this.db, `UPDATE worktree_pool SET path = ?, status = 'in_use', current_pr_number = ?, last_switched_at = ? WHERE id = ? AND status = 'creating' AND holder_pid = ?`, [path, prNumber, now, id, holderPid]);
+    return result.changes > 0;
   }
 
   /**
@@ -3301,26 +3442,35 @@ class WorktreePoolRepository {
   /**
    * Atomically find and claim a pool worktree already assigned to a PR.
    * Uses BEGIN IMMEDIATE to serialize against concurrent callers.
+   * The holder moves to holderPid. Same-PR sharing is intentional: a row
+   * held by another process for the same PR is still taken, and that
+   * process's pid is returned as `previousHolderPid` so the caller can log it.
    *
    * @param {number} prNumber - PR number to find
    * @param {string} repository - Repository in "owner/repo" format
-   * @returns {Promise<Object|null>} Claimed pool entry or null if not found
+   * @param {number} holderPid - Process claiming the row
+   * @returns {Promise<Object|null>} Claimed pool entry (with `previousHolderPid`,
+   *   null unless a different process held it) or null if not found
    */
-  async claimByPR(prNumber, repository) {
+  async claimByPR(prNumber, repository, holderPid) {
+    assertHolderPid(holderPid, 'claimByPR');
     const claimTx = this.db.transaction(() => {
       const entry = this.db.prepare(`
-        SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
+        SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at, holder_pid
         FROM worktree_pool
         WHERE current_pr_number = ? AND repository = ? COLLATE NOCASE
           AND status IN ('in_use', 'available')
       `).get(prNumber, repository);
-      if (entry) {
-        const now = new Date().toISOString();
-        this.db.prepare(
-          `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL WHERE id = ?`
-        ).run(prNumber, now, entry.id);
-      }
-      return entry || null;
+      if (!entry) return null;
+      const now = new Date().toISOString();
+      this.db.prepare(
+        `UPDATE worktree_pool SET status = 'in_use', current_pr_number = ?, last_switched_at = ?, current_review_id = NULL, holder_pid = ?, holder_claimed_at = ? WHERE id = ?`
+      ).run(prNumber, now, holderPid, now, entry.id);
+      const { holder_pid: priorHolder, ...claimed } = entry;
+      return {
+        ...claimed,
+        previousHolderPid: priorHolder != null && priorHolder !== holderPid ? priorHolder : null,
+      };
     });
     return claimTx.immediate();
   }
@@ -3328,12 +3478,15 @@ class WorktreePoolRepository {
   /**
    * Atomically find and claim the LRU available pool worktree for a repository.
    * Uses BEGIN IMMEDIATE to serialize against concurrent callers.
-   * Marks the claimed entry as 'switching' so no other caller can grab it.
+   * Marks the claimed entry as 'switching', held by holderPid, so no other
+   * caller can grab it.
    *
    * @param {string} repository - Repository in "owner/repo" format
+   * @param {number} holderPid - Process claiming the row
    * @returns {Promise<Object|null>} Claimed pool entry or null if none available
    */
-  async claimAvailable(repository) {
+  async claimAvailable(repository, holderPid) {
+    assertHolderPid(holderPid, 'claimAvailable');
     const claimTx = this.db.transaction(() => {
       const entry = this.db.prepare(`
         SELECT id, repository, path, status, current_pr_number, last_switched_at, last_fetched_at, created_at
@@ -3343,9 +3496,10 @@ class WorktreePoolRepository {
         LIMIT 1
       `).get(repository);
       if (entry) {
+        const now = new Date().toISOString();
         this.db.prepare(
-          `UPDATE worktree_pool SET status = 'switching' WHERE id = ?`
-        ).run(entry.id);
+          `UPDATE worktree_pool SET status = 'switching', holder_pid = ?, holder_claimed_at = ? WHERE id = ?`
+        ).run(holderPid, now, entry.id);
       }
       return entry || null;
     });
@@ -3354,29 +3508,56 @@ class WorktreePoolRepository {
 
   /**
    * Reset stale pool entries on startup while preserving valid ownership.
-   * Entries are considered stale if: no review owner, interrupted switching,
-   * or the owning review has been deleted.
-   * @returns {Array<{id: string, current_review_id: number}>} Preserved entries for in-memory rehydration
+   * Runs in one IMMEDIATE transaction.
+   *
+   * Rows held by a live process (`isHolderDead(row)` false) are skipped: not
+   * written and not returned — another pair-review process sharing this
+   * database is preparing or using them. For rows whose holder is dead:
+   * - `creating` placeholders are deleted (no worktree on disk to recover);
+   * - `in_use` rows whose review still exists are taken over (holder =
+   *   selfPid) and returned for in-memory rehydration;
+   * - everything else (`switching`, `in_use` with no or a deleted review) is
+   *   reset to `available` with review ownership and holder cleared.
+   *
+   * @param {number} selfPid - The starting process, which takes over preserved rows
+   * @param {(row: {id: string, status: string, current_review_id: number|null,
+   *   holder_pid: number|null, holder_claimed_at: string|null}) => boolean} isHolderDead
+   *   Synchronous predicate deciding whether a row's holder is gone
+   * @returns {Promise<Array<{id: string, current_review_id: number}>>} Preserved entries for in-memory rehydration
    */
-  async resetStaleAndPreserve() {
-    // Delete placeholder entries that were mid-creation when the server stopped.
-    // These have no valid path or worktree on disk — they cannot be recovered.
-    await run(this.db, `DELETE FROM worktree_pool WHERE status = 'creating'`);
-
-    // Reset entries that are stale: no review owner, interrupted switching, or review deleted
-    await run(this.db, `
-      UPDATE worktree_pool SET status = 'available', current_review_id = NULL
-      WHERE status != 'available' AND (
-        current_review_id IS NULL
-        OR status = 'switching'
-        OR current_review_id NOT IN (SELECT id FROM reviews)
-      )
-    `);
-    // Return preserved entries for in-memory rehydration
-    return await query(this.db, `
-      SELECT id, current_review_id FROM worktree_pool
-      WHERE status = 'in_use' AND current_review_id IS NOT NULL
-    `);
+  async resetStaleAndPreserve(selfPid, isHolderDead) {
+    assertHolderPid(selfPid, 'resetStaleAndPreserve');
+    if (typeof isHolderDead !== 'function') {
+      throw new TypeError('WorktreePoolRepository.resetStaleAndPreserve: isHolderDead must be a function');
+    }
+    const resetTx = this.db.transaction(() => {
+      const rows = this.db.prepare(`
+        SELECT wp.id, wp.status, wp.current_review_id, wp.holder_pid, wp.holder_claimed_at,
+               (r.id IS NOT NULL) AS review_exists
+        FROM worktree_pool wp
+        LEFT JOIN reviews r ON r.id = wp.current_review_id
+        WHERE wp.status != 'available'
+        ORDER BY wp.id
+      `).all();
+      const deleteCreating = this.db.prepare(`DELETE FROM worktree_pool WHERE id = ? AND status = 'creating'`);
+      const takeOver = this.db.prepare(`UPDATE worktree_pool SET holder_pid = ?, holder_claimed_at = ? WHERE id = ?`);
+      const reset = this.db.prepare(`UPDATE worktree_pool SET status = 'available', current_review_id = NULL, holder_pid = NULL, holder_claimed_at = NULL WHERE id = ?`);
+      const now = new Date().toISOString();
+      const preserved = [];
+      for (const { review_exists: reviewExists, ...row } of rows) {
+        if (!isHolderDead(row)) continue;
+        if (row.status === 'creating') {
+          deleteCreating.run(row.id);
+        } else if (row.status === 'in_use' && reviewExists) {
+          takeOver.run(selfPid, now, row.id);
+          preserved.push({ id: row.id, current_review_id: row.current_review_id });
+        } else {
+          reset.run(row.id);
+        }
+      }
+      return preserved;
+    });
+    return resetTx.immediate();
   }
 }
 
