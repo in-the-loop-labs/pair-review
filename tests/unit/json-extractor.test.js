@@ -554,6 +554,11 @@ describe('extractJSON', () => {
 
     it.each([
       ['unquoted', ', ', 'line:3'],
+      ['unquoted with a string value', ', ', 'title:"next"'],
+      ['unquoted with a spaced string value', ', ', 'title: "next"'],
+      ['unquoted with a string value after a missing comma', ' ', 'title:"next"'],
+      ['unquoted with a spaced string value after a missing comma', ' ', 'title: "next"'],
+      ['unquoted with a string value on the next line', ',\n  ', 'title:"next"'],
       ['single-quoted', ', ', "'line':3"],
       ['backticked', ', ', '`line`: 3'],
       ['unquoted after a missing comma', ' ', 'line:3'],
@@ -568,6 +573,14 @@ describe('extractJSON', () => {
       const json = `{"suggestions":[{"file":"a.js","type":"bug","description":"text"${sep}${key},"title":"next"}]}`;
       const result = extractJSON(json, 'test');
       expect(result.success).toBe(false);
+    });
+
+    it('should not fold a bare string-valued key into a string in a minimal object', () => {
+      const json = '{"a":"x" b:"y"}';
+      expect(extractJSON(json, 'test').success).toBe(false);
+      const repaired = repairUnescapedQuotes(json);
+      expect(repaired.data).toBeNull();
+      expect(repaired.repairs).toBe(0);
     });
 
     it('should still repair a string whose prose ends in a colon', () => {
