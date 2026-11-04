@@ -556,6 +556,7 @@ describe('extractJSON', () => {
       ['unquoted', ', ', 'line:3'],
       ['unquoted with a string value', ', ', 'title:"next"'],
       ['unquoted with a spaced string value', ', ', 'title: "next"'],
+      ['unquoted with an empty string value', ', ', 'title:""'],
       ['unquoted with a string value after a missing comma', ' ', 'title:"next"'],
       ['unquoted with a spaced string value after a missing comma', ' ', 'title: "next"'],
       ['unquoted with a string value on the next line', ',\n  ', 'title:"next"'],
@@ -595,6 +596,16 @@ describe('extractJSON', () => {
       const result = extractJSON(json, 'test');
       expect(result.success).toBe(true);
       expect(result.data.suggestions[0].description).toBe('see "foo", then note: bar');
+    });
+
+    it.each([
+      'In "config.js" set mode: "strict" here',
+      'In "config.js" use values like: "a" or "b" here',
+    ])('should repair quoted prose after a colon: %s', (description) => {
+      const json = `{"suggestions":[{"description":"${description}","line":1}]}`;
+      const result = extractJSON(json, 'test');
+      expect(result.success).toBe(true);
+      expect(result.data.suggestions[0]).toEqual({ description, line: 1 });
     });
 
     it('should keep a shell line continuation alongside an unescaped quote and raw newlines', () => {

@@ -154,8 +154,8 @@ function isClosingQuote(text, q) {
  * when the span escaping it would pull into the string (up to the next
  * unescaped quote) looks like a malformed field (e.g. `, line":3,` or
  * `, title:` followed by a string value's opening quote). A bare word and
- * colon can also end prose; if the next quote is followed by a JSON value
- * delimiter, treat it as the prose's closing quote instead.
+ * colon can also appear in prose; only reject it when the would-be string
+ * value's closing quote is followed by a JSON value delimiter.
  *
  * @param {string} text - Candidate JSON text
  * @param {string} message - JSON.parse error message
@@ -192,10 +192,13 @@ function findPrematureStringEnd(text, message) {
   const span = text.slice(q, spanEnd);
   if (LOOKS_LIKE_FIELD.test(span) || /["'`]\s*:\s*$/.test(span)) return -1;
   // A bare key's string value also opens at spanEnd (`, title:"next"`).
-  // But `as follows:"` can end prose: a delimiter after that quote means
-  // it closes the prose, rather than opening a malformed field's value.
-  if (/[A-Za-z_$][\w$]*\s*:\s*$/.test(span) &&
-      !/^\s*[,}\]]/.test(text.slice(spanEnd + 1))) return -1;
+  // Only reject it if the would-be value's closing quote precedes a JSON
+  // delimiter: `as follows:"` ends prose, and `mode: "strict" here` is prose
+  // too, despite having a word and colon before a quoted phrase.
+  if (/[A-Za-z_$][\w$]*\s*:\s*$/.test(span)) {
+    const valueEnd = nextUnescapedQuote(text, spanEnd + 1);
+    if (/^\s*[,}\]]/.test(text.slice(valueEnd + 1))) return -1;
+  }
   return q;
 }
 
