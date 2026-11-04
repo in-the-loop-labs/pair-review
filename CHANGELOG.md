@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.4.1
+
+### Patch Changes
+
+- 9e36e8f: Speed up file content loading on large PRs: the file-content endpoints now cache each PR's per-file diff blob info instead of re-parsing the whole stored diff on every request
+- 1a23763: Copilot, Cursor Agent and OpenCode now pass provider and per-model `env` config to the LLM JSON-extraction fallback, matching analysis runs and the other providers.
+- 300a0e4: Syntax-highlight ERB, Scala and Dockerfile lines in context files and legacy diff rendering by loading their Highlight.js grammars, and drop the `.sass` and `.vim` mappings that never highlighted. Lines in a language whose grammar isn't loaded now fall back to plain text without a console warning per line.
+- 7e7ddef: Stop the help modal popping up after deleting the last PR review on the home page. It now appears only on the initial page load for users with no reviews yet; emptying the list shows the empty-state message instead.
+- 9e94946: A pair-review process starting up, or going idle, no longer frees or reassigns a pool worktree that another running pair-review process is preparing or using for a different PR.
+- 1f826d0: Recover AI responses whose JSON contains an unescaped `"` inside a string value (e.g. a description that quotes a word without escaping it). Previously one such quote made every JSON extraction strategy fail, so a whole consolidation response could be discarded; extraction now escapes the offending quotes at the offsets the JSON parser reports and retries.
+- 49f245f: Fix reopening refreshed PR reviews after their worktree has been removed. Preserve PR metadata during refresh and recover missing branch and title fields from stored columns when restoring older reviews.
+
 ## 5.4.0
 
 ### Minor Changes
