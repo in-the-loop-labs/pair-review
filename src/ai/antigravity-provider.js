@@ -6,7 +6,7 @@
  * the official successor to the Gemini CLI.
  *
  * ============================================================================
- * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16; models re-verified against 1.3.5)
+ * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16; models re-verified against 1.5.7)
  * ============================================================================
  * The Antigravity CLI's non-interactive "print" mode (`agy -p`) IS a real
  * agentic loop — it reads files, searches the tree, and runs shell commands to
@@ -93,34 +93,44 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  *
  * We curate the Gemini-family models here — Antigravity is the Gemini CLI's
  * successor and its native models are Gemini. Ordered thorough -> balanced ->
- * fast, matching the other providers' pickers. Gemini 3.8 Flash at high effort
- * is the default: it is the strongest Gemini every agy plan can run
- * (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4 — on par with GPT-6 Astra and
- * Muse 1.3), so "Flash" now describes latency, not capability. Gemini 4 Argon
- * (Oct 2026) is Google's new frontier model, but agy gates it to Google AI
- * Ultra and eligible Enterprise subscriptions; on any other plan agy exits 1
- * with `"Gemini 4 Argon" is unavailable: ... available to Ultra plan
- * subscribers`, so it is an explicit thorough-tier choice and never the
- * default. It also never LEADS the thorough tier: provider-switch paths
- * (AnalysisConfigModal.selectProvider, RepoSettingsPage) map the previous
- * model's tier onto the first model of that tier here, so a thorough Claude
- * selection switched to Antigravity must land on a model every plan can run.
- * agy (1.3.5) recognizes Argon only by its bare display name —
- * `Gemini 4 Argon (High)`, `gemini-4-argon`, and `gemini-4-argon-high` are all
- * "not recognized" — and runs it at the server-default effort, which is High.
- * Gemini 3.8 Flash at medium effort is the balanced entry and at low effort
- * the sole fast-tier entry, which also makes it the JSON-extraction model
- * (getFastTierModel() picks the first `tier: 'fast'` model — position in this
- * array does not matter). Retired ids (3.5 Flash) are kept as aliases of their
- * 3.8 Flash counterparts so saved selections keep working.
+ * fast, matching the other providers' pickers. Every built-in passes an
+ * effort-suffixed display name (`Gemini 4 Argon (High)`): as of agy 1.5.7 a
+ * bare display name is "not recognized", and a bare slug resolves to the
+ * server-default effort (Medium for Argon), so effort stays in the `cliName`.
+ *
+ * Gemini 3.8 Flash at high effort stays the default: it is the strongest
+ * Gemini every agy plan can run (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4),
+ * and its medium and low variants lead the balanced and fast tiers.
+ * Provider-switch paths (AnalysisConfigModal.selectProvider,
+ * RepoSettingsPage) map the previous model's tier onto the first model of
+ * that tier here, and getFastTierModel() picks the first `tier: 'fast'` model
+ * for JSON extraction, so each tier must be LED by a model every plan can run.
+ *
+ * Gemini 4 Hydrogen (GA 2026-11-12) is the everyday Gemini 4 model and 3.8
+ * Flash's successor (Terminal-Bench 4.1 57.0 vs 18.2; xhigh is a new level).
+ * It is an explicit choice, not the default: at $1.50/$7.50 per 1M tokens it
+ * costs twice 3.8 Flash ($0.75/$3.75 through 2026-12-31), and Google is
+ * rolling it out to paid Google AI Pro and Ultra subscribers first.
+ *
+ * Gemini 4 Argon (GA 2026-10-13, "efficient frontier") needs a paid Google AI
+ * Pro, Ultra, or eligible Enterprise plan; it is never the default or a tier
+ * leader. Its original id `gemini-4-argon` is kept as an alias of the High
+ * entry: agy 1.3.5 accepted only the bare `Gemini 4 Argon` and ran it at
+ * High, which is exactly what `gemini-4-argon-high` now runs.
+ *
+ * Gemini 4 Carbon (Ultra / Enterprise only) is not built in: agy offers it
+ * only to Application Default Credentials sign-ins (`AGY_ADC_AUTH`), and a
+ * Google-account sign-in reports it as "not recognized". Reach it via a
+ * `providers.antigravity.models` config override with `cli_model`.
  *
  * Deprecated: gemini-3.1-pro-high, gemini-3.1-pro-low (alias gemini-3.1-pro) —
- * agy 1.3.5 no longer offers 3.1 Pro ("not recognized as a known model").
- * They are deliberately NOT aliased onto another model (3.8 Flash is a
- * different line; Argon is plan-gated). The browser resolvers fall back to the
- * provider default for a saved selection that is no longer in the catalog;
+ * agy no longer offers 3.1 Pro outside Enterprise ("not recognized as a known
+ * model"). They are deliberately NOT aliased onto another model (3.8 Flash is
+ * a different line; Argon is plan-gated). The browser resolvers fall back to
+ * the provider default for a saved selection that is no longer in the catalog;
  * headless, MCP, and saved-council runs pass the id through and agy fails with
- * an unknown-model error.
+ * an unknown-model error. Retired 3.5 Flash ids are aliases of their 3.8 Flash
+ * counterparts at the same effort, so saved selections keep working.
  *
  * `agy` also exposes Claude and GPT-OSS models; those remain reachable via a
  * `providers.antigravity.models` config override but are intentionally left
@@ -136,21 +146,42 @@ const ANTIGRAVITY_MODELS = [
     name: '3.8 Flash (High)',
     tier: 'thorough',
     tagline: 'Frontier Review',
-    description: 'Gemini 3.8 Flash at high effort is the strongest Gemini available on every agy plan — DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4, on par with GPT-6 Astra and Muse 1.3. "Flash" now means latency, not capability. Uses the thorough prompt set.',
+    description: 'Gemini 3.8 Flash at high effort is the strongest Gemini available on every agy plan — DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4. "Flash" now means latency, not capability. Uses the thorough prompt set.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
   },
   {
-    id: 'gemini-4-argon',
-    // agy rejects every effort-suffixed form for Argon; the bare display name
-    // is the only accepted --model value, and it runs at High (Argon's default).
-    cliName: 'Gemini 4 Argon',
-    name: '4 Argon',
+    id: 'gemini-4-hydrogen-xhigh',
+    cliName: 'Gemini 4 Hydrogen (XHigh)',
+    name: '4 Hydrogen (XHigh)',
     tier: 'thorough',
-    tagline: 'Frontier — Ultra Plan',
-    description: 'Gemini 4 Argon (Oct 2026), Google\'s frontier model, at its default High effort. Requires a Google AI Ultra or eligible Gemini Enterprise subscription — on other plans agy refuses it as unavailable. Uses the thorough prompt set.',
-    badge: 'Ultra Plan',
+    tagline: 'Deepest Everyday Review',
+    description: 'Gemini 4 Hydrogen (Nov 2026), the 3.8 Flash successor, at its new extra-high effort — Terminal-Bench 4.1 57.0 vs 3.8 Flash\'s 18.2. $1.50/$7.50 per 1M tokens, twice 3.8 Flash; rolling out to paid Google AI Pro and Ultra plans first. Uses the thorough prompt set.',
+    badge: 'Newest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gemini-4-hydrogen-high',
+    cliName: 'Gemini 4 Hydrogen (High)',
+    name: '4 Hydrogen (High)',
+    tier: 'thorough',
+    tagline: 'Fast Deep Review',
+    description: 'Gemini 4 Hydrogen at its default high effort — Google reports it 2.5x faster than 3.8 Flash at high. $1.50/$7.50 per 1M tokens; rolling out to paid Google AI Pro and Ultra plans first. Uses the thorough prompt set.',
+    badge: 'High Effort',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gemini-4-argon-high',
+    cliName: 'Gemini 4 Argon (High)',
+    // agy 1.3.5 accepted Argon only as the bare `Gemini 4 Argon`, which ran at
+    // High; agy 1.5.7 rejects that string, so the old id lands here.
+    aliases: ['gemini-4-argon'],
+    name: '4 Argon (High)',
+    tier: 'thorough',
+    tagline: 'Frontier — Paid Plan',
+    description: 'Gemini 4 Argon (Oct 2026), Google\'s efficient-frontier model, at high effort — DeepSWE v1.1 77.9. Requires a paid Google AI Pro, Ultra, or eligible Gemini Enterprise plan; on other plans agy refuses it. Uses the thorough prompt set.',
+    badge: 'Paid Plan',
     badgeClass: 'badge-power'
   },
   {
@@ -161,6 +192,16 @@ const ANTIGRAVITY_MODELS = [
     tagline: 'Standard Review',
     description: 'Gemini 3.8 Flash at medium effort — a faster, cheaper middle ground for routine PRs',
     badge: 'Balanced',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gemini-4-hydrogen-medium',
+    cliName: 'Gemini 4 Hydrogen (Medium)',
+    name: '4 Hydrogen (Medium)',
+    tier: 'balanced',
+    tagline: 'Newer Standard Review',
+    description: 'Gemini 4 Hydrogen at medium effort — the newer model for routine PRs. $1.50/$7.50 per 1M tokens, twice 3.8 Flash; rolling out to paid Google AI Pro and Ultra plans first.',
+    badge: 'Medium Effort',
     badgeClass: 'badge-balanced'
   },
   {

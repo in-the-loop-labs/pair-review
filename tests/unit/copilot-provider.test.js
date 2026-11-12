@@ -113,7 +113,7 @@ describe('CopilotProvider', () => {
     });
 
     it('should return default model', () => {
-      expect(CopilotProvider.getDefaultModel()).toBe('claude-sonnet-4.6');
+      expect(CopilotProvider.getDefaultModel()).toBe('claude-sonnet-5.5');
     });
 
     it('should return array of models', () => {
@@ -139,7 +139,7 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const defaultModels = models.filter(m => m.default);
       expect(defaultModels).toHaveLength(1);
-      expect(defaultModels[0].id).toBe('claude-sonnet-4.6');
+      expect(defaultModels[0].id).toBe('claude-sonnet-5.5');
     });
 
     it('should return install instructions with correct GitHub Copilot package', () => {
@@ -161,43 +161,60 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const fastModels = models.filter(m => m.tier === 'fast');
       expect(fastModels.length).toBeGreaterThan(0);
-      expect(fastModels[0].id).toBe('claude-haiku-4.6');
+      expect(fastModels[0].id).toBe('claude-haiku-5.5');
     });
 
     it('should have balanced tier models', () => {
       const models = CopilotProvider.getModels();
       const balancedModels = models.filter(m => m.tier === 'balanced');
       expect(balancedModels.length).toBeGreaterThan(0);
-      expect(balancedModels[0].id).toBe('claude-sonnet-4.6');
+      expect(balancedModels[0].id).toBe('claude-sonnet-5.5');
     });
 
     it('should have thorough tier models', () => {
       const models = CopilotProvider.getModels();
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(5);
-      const thoroughIds = thoroughModels.map(m => m.id);
-      expect(thoroughIds).toContain('gpt-5.4');
-      expect(thoroughIds).toContain('gpt-5.3-codex');
-      expect(thoroughIds).toContain('claude-opus-4.5');
-      expect(thoroughIds).toContain('claude-opus-4.6');
-      expect(thoroughIds).toContain('claude-opus-4.6-fast');
+      expect(thoroughModels.map(m => m.id)).toEqual(['claude-opus-5.5', 'gpt-5.6-sol']);
     });
 
-    it('should have exactly 9 models covering tiers', () => {
+    it('should have exactly 6 models covering tiers', () => {
       const models = CopilotProvider.getModels();
-      expect(models).toHaveLength(8);
+      expect(models.map(m => m.id)).toEqual([
+        'claude-haiku-5.5',
+        'gpt-5.6-luna',
+        'claude-sonnet-5.5',
+        'gpt-5.6-terra',
+        'claude-opus-5.5',
+        'gpt-5.6-sol'
+      ]);
 
       const tiers = models.map(m => m.tier);
       expect(tiers).toContain('fast');
       expect(tiers).toContain('balanced');
       expect(tiers).toContain('thorough');
     });
+
+    it('should use claude-haiku-5.5 as the fast-tier (extraction) model', () => {
+      const provider = new CopilotProvider();
+      expect(provider.getFastTierModel()).toBe('claude-haiku-5.5');
+    });
+
+    it('should not keep or alias retired model ids', () => {
+      const models = CopilotProvider.getModels();
+      const retired = [
+        'claude-haiku-4.6', 'gpt-5.4-mini', 'claude-sonnet-4.6', 'gpt-5.4',
+        'gpt-5.3-codex', 'claude-opus-4.5', 'claude-opus-4.6', 'claude-opus-4.6-fast'
+      ];
+      for (const id of retired) {
+        expect(models.some(m => m.id === id || m.aliases?.includes(id)), `${id} should be gone`).toBe(false);
+      }
+    });
   });
 
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CopilotProvider();
-      expect(provider.model).toBe('claude-sonnet-4.6');
+      expect(provider.model).toBe('claude-sonnet-5.5');
     });
 
     it('should create instance with custom model', () => {
@@ -473,7 +490,7 @@ describe('CopilotProvider', () => {
       expect(balancedModel.badgeClass).toBe('badge-recommended');
 
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(5);
+      expect(thoroughModels.length).toBe(2);
     });
 
     it('should have meaningful taglines for each model', () => {

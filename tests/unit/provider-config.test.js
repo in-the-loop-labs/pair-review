@@ -1492,7 +1492,7 @@ describe('Provider Configuration', () => {
     });
 
     it.each([
-      ['fable', 'fable-5.1-xhigh'],
+      ['fable', 'fable-5.2-high'],
       ['opus', 'opus-5.5-xhigh'],
     ])('ignores an alias (%s) in disabled_models and warns that it needs the canonical id', (alias, canonicalId) => {
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});

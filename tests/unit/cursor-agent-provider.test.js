@@ -64,60 +64,62 @@ describe('CursorAgentProvider', () => {
       expect(CursorAgentProvider.getProviderId()).toBe('cursor-agent');
     });
 
-    it('should return composer-1.5 as default model', () => {
-      expect(CursorAgentProvider.getDefaultModel()).toBe('composer-1.5');
+    it('should return composer-2.5 as default model', () => {
+      expect(CursorAgentProvider.getDefaultModel()).toBe('composer-2.5');
     });
 
     it('should return array of models with expected structure', () => {
       const models = CursorAgentProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(15);
-
-      // Check that we have the expected model IDs
-      const modelIds = models.map(m => m.id);
-      expect(modelIds).toContain('auto');
-      expect(modelIds).toContain('composer-2');
-      expect(modelIds).toContain('composer-2-fast');
-      expect(modelIds).toContain('composer-1.5');
-      expect(modelIds).toContain('gpt-5.3-codex-fast');
-      expect(modelIds).toContain('gemini-3-flash');
-      expect(modelIds).toContain('sonnet-4.6-thinking');
-      expect(modelIds).toContain('sonnet-4.5-thinking');
-      expect(modelIds).toContain('gemini-3.1-pro');
-      expect(modelIds).toContain('gpt-5.3-codex-high');
-      expect(modelIds).toContain('gpt-5.3-codex-xhigh');
-      expect(modelIds).toContain('opus-4.5-thinking');
-      expect(modelIds).toContain('opus-4.6-thinking');
-      expect(modelIds).toContain('gpt-5.4-high');
-      expect(modelIds).toContain('gpt-5.4-medium');
+      expect(models.map(m => m.id)).toEqual([
+        'auto',
+        'composer-2.5-fast',
+        'composer-2.5',
+        'gpt-5.3-codex-high'
+      ]);
 
       // Check model structure for the default model
-      const defaultModel = models.find(m => m.id === 'composer-1.5');
+      const defaultModel = models.find(m => m.id === 'composer-2.5');
       expect(defaultModel).toMatchObject({
-        id: 'composer-1.5',
-        name: 'Composer 1.5',
+        id: 'composer-2.5',
+        name: 'Composer 2.5',
         tier: 'balanced',
         default: true
       });
-      expect(models.filter(m => m.default).map(m => m.id)).toEqual(['composer-1.5']);
+      expect(models.filter(m => m.default).map(m => m.id)).toEqual(['composer-2.5']);
     });
 
     it('should have correct tier assignments', () => {
       const models = CursorAgentProvider.getModels();
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
-      expect(tierMap['auto']).toBe('free');
-      expect(tierMap['composer-2']).toBe('thorough');
-      expect(tierMap['composer-2-fast']).toBe('fast');
-      expect(tierMap['composer-1.5']).toBe('balanced');
-      expect(tierMap['gpt-5.3-codex-fast']).toBe('fast');
-      expect(tierMap['gemini-3-flash']).toBe('fast');
-      expect(tierMap['sonnet-4.6-thinking']).toBe('balanced');
-      expect(tierMap['sonnet-4.5-thinking']).toBe('balanced');
-      expect(tierMap['gemini-3.1-pro']).toBe('balanced');
-      expect(tierMap['gpt-5.3-codex-high']).toBe('thorough');
-      expect(tierMap['gpt-5.3-codex-xhigh']).toBe('thorough');
-      expect(tierMap['opus-4.5-thinking']).toBe('thorough');
-      expect(tierMap['opus-4.6-thinking']).toBe('thorough');
+      expect(tierMap).toEqual({
+        'auto': 'free',
+        'composer-2.5-fast': 'fast',
+        'composer-2.5': 'balanced',
+        'gpt-5.3-codex-high': 'thorough'
+      });
+    });
+
+    it('should use composer-2.5-fast as the fast-tier (extraction) model', () => {
+      const provider = new CursorAgentProvider();
+      expect(provider.getFastTierModel()).toBe('composer-2.5-fast');
+    });
+
+    it('should alias composer-2 onto composer-2.5 (same line, same price)', () => {
+      const models = CursorAgentProvider.getModels();
+      expect(models.find(m => m.id === 'composer-2.5').aliases).toEqual(['composer-2']);
+    });
+
+    it('should not keep or alias retired model ids', () => {
+      const models = CursorAgentProvider.getModels();
+      const retired = [
+        'composer-2-fast', 'composer-1.5', 'gpt-5.3-codex-fast', 'gpt-5.3-codex-xhigh',
+        'gpt-5.4-high', 'gpt-5.4-medium', 'sonnet-4.5-thinking', 'sonnet-4.6-thinking',
+        'opus-4.5-thinking', 'opus-4.6-thinking', 'gemini-3-flash', 'gemini-3.1-pro'
+      ];
+      for (const id of retired) {
+        expect(models.some(m => m.id === id || m.aliases?.includes(id)), `${id} should be gone`).toBe(false);
+      }
     });
 
     it('should return install instructions', () => {
@@ -130,7 +132,7 @@ describe('CursorAgentProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CursorAgentProvider();
-      expect(provider.model).toBe('composer-1.5');
+      expect(provider.model).toBe('composer-2.5');
     });
 
     it('should create instance with specified model', () => {

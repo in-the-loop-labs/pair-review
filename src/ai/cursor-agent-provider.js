@@ -29,11 +29,23 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 /**
  * Cursor Agent model definitions with tier mappings
  *
- * Tier structure:
+ * Tier structure (as of November 2026):
  * - free (auto): Cursor's default auto-routing model
- * - fast (composer-2-fast, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
- * - balanced (composer-1.5 (default), sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3.1-pro): Recommended for most reviews
- * - thorough (composer-2, gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
+ * - fast (composer-2.5-fast): Quick analysis
+ * - balanced (composer-2.5 (default)): Recommended for most reviews
+ * - thorough (gpt-5.3-codex-high): Deep analysis for complex code
+ *
+ * Any other model the account has enabled can be passed verbatim with --model
+ * (see `cursor-agent --list-models`) or added via `providers.cursor-agent.models`.
+ * Models and prices: cursor.com/docs/models
+ *
+ * Deprecated (November 2026): composer-2 (alias → composer-2.5, same line and
+ *   price), composer-2-fast, composer-1.5 (Composer models superseded by
+ *   Composer 2.5); gpt-5.3-codex-fast, gpt-5.3-codex-xhigh, gpt-5.4-high,
+ *   gpt-5.4-medium, sonnet-4.5-thinking, sonnet-4.6-thinking, opus-4.5-thinking,
+ *   opus-4.6-thinking, gemini-3-flash, gemini-3.1-pro (older generations, hidden
+ *   by default in Cursor). Only composer-2 is aliased; the others' successors are
+ *   different generations at different prices.
  */
 const CURSOR_AGENT_MODELS = [
   {
@@ -46,130 +58,32 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'composer-2',
-    name: 'Composer 2',
-    tier: 'thorough',
-    tagline: 'Latest Composer',
-    description: 'Frontier-level coding model trained with compaction-in-the-loop RL—strong on long-horizon tasks requiring hundreds of actions',
-    badge: 'Latest',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'composer-2-fast',
-    name: 'Composer 2 Fast',
+    id: 'composer-2.5-fast',
+    name: 'Composer 2.5 Fast',
     tier: 'fast',
     tagline: 'Fast Composer',
-    description: 'Same intelligence as Composer 2 with lower latency—default for interactive Cursor sessions',
+    description: 'Same intelligence as Composer 2.5 with lower latency—quick scans for obvious issues',
     badge: 'Fast',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'composer-1.5',
-    name: 'Composer 1.5',
-    tier: 'balanced',
-    tagline: 'Previous Composer',
-    description: 'Previous generation Cursor Composer model—positioned between Sonnet and Opus for multi-file edits',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-balanced',
-    default: true
-  },
-  {
-    id: 'gpt-5.3-codex-fast',
-    name: 'GPT-5.3 Codex Fast',
-    tier: 'fast',
-    tagline: 'Lightning Fast',
-    description: 'Latest code-specialized model optimized for speed—quick scans for obvious issues',
-    badge: 'Fastest',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'gemini-3-flash',
-    name: 'Gemini 3 Flash',
-    tier: 'fast',
-    tagline: 'Fast & Capable',
-    description: 'High SWE-bench scores at a fraction of the cost—great for quick reviews',
-    badge: 'Fast',
-    badgeClass: 'badge-speed'
-  },
-  {
-    id: 'sonnet-4.6-thinking',
-    name: 'Claude 4.6 Sonnet (Thinking)',
+    id: 'composer-2.5',
+    name: 'Composer 2.5',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Latest Sonnet with extended thinking—excellent quality-to-cost ratio for thorough reviews',
+    description: "Cursor's latest in-house coding model—near-frontier review quality at a fraction of the cost",
     badge: 'Recommended',
-    badgeClass: 'badge-recommended'
-  },
-  {
-    id: 'sonnet-4.5-thinking',
-    name: 'Claude 4.5 Sonnet (Thinking)',
-    tier: 'balanced',
-    tagline: 'Previous Gen',
-    description: 'Previous generation extended thinking—still strong for thorough analysis',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-balanced'
-  },
-  {
-    id: 'gemini-3.1-pro',
-    name: 'Gemini 3.1 Pro',
-    tier: 'balanced',
-    tagline: 'Latest Gemini',
-    description: 'Newest Gemini model—cutting-edge reasoning for complex multi-file reviews',
-    badge: 'Latest',
-    badgeClass: 'badge-balanced'
+    badgeClass: 'badge-recommended',
+    default: true,
+    aliases: ['composer-2']
   },
   {
     id: 'gpt-5.3-codex-high',
     name: 'GPT-5.3 Codex High',
     tier: 'thorough',
     tagline: 'Deep Code Analysis',
-    description: "OpenAI's latest and most capable for complex code review with deep reasoning",
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.3-codex-xhigh',
-    name: 'GPT-5.3 Codex Extra High',
-    tier: 'thorough',
-    tagline: 'Maximum Reasoning',
-    description: 'Highest reasoning effort for the most complex architectural reviews',
-    badge: 'Maximum',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'opus-4.5-thinking',
-    name: 'Claude 4.5 Opus (Thinking)',
-    tier: 'thorough',
-    tagline: 'Deep Analysis',
-    description: 'Deep analysis with extended thinking for complex code reviews',
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'opus-4.6-thinking',
-    name: 'Claude 4.6 Opus (Thinking)',
-    tier: 'thorough',
-    tagline: 'Most Capable',
-    description: 'Deep analysis with extended thinking—Cursor default for maximum review quality',
+    description: 'Code-specialized OpenAI model with high reasoning effort for complex multi-file reviews',
     badge: 'Most Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.4-high',
-    name: 'GPT-5.4 High',
-    tier: 'thorough',
-    tagline: 'Latest OpenAI',
-    description: 'Latest generation with high reasoning effort—strong for complex architectural reviews',
-    badge: 'Latest Gen',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.4-medium',
-    name: 'GPT-5.4',
-    tier: 'thorough',
-    tagline: 'Latest Gen',
-    description: 'Latest generation at medium reasoning depth',
-    badge: 'Latest',
     badgeClass: 'badge-power'
   }
 ];

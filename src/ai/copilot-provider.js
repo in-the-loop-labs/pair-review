@@ -22,33 +22,43 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * GitHub Copilot CLI supports multiple AI models including OpenAI,
  * Anthropic, and Google models via the --model flag.
- * Available models (as of April 2026): claude-haiku-4.6, claude-sonnet-4.6,
- * claude-sonnet-4.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex,
- * claude-opus-4.5, claude-opus-4.6, claude-opus-4.6-fast.
- * Default is claude-sonnet-4.6.
+ * Built-in models (as of November 2026): claude-haiku-5.5, gpt-5.6-luna (fast);
+ * claude-sonnet-5.5 (default), gpt-5.6-terra (balanced); claude-opus-5.5,
+ * gpt-5.6-sol (thorough). Any other id Copilot supports (gpt-6.1-sol,
+ * claude-fable-5.2, gemini-4-argon, ...) can be passed verbatim with --model or
+ * added via `providers.copilot.models`.
+ * Ids and prices: docs.github.com/en/copilot/reference/ai-models/supported-models
+ *
+ * Deprecated (November 2026): claude-sonnet-4.6, claude-opus-4.5, claude-opus-4.6
+ *   (retired 2026-09-01), claude-opus-4.6-fast (retired 2026-06-29), gpt-5.4 and
+ *   gpt-5.4-mini (retired 2026-10-19), claude-haiku-4.6 (never in Copilot's
+ *   supported list), gpt-5.3-codex (still supported, dropped from the built-ins
+ *   as superseded by GPT-5.6). None are aliased: their successors are different
+ *   generations at different prices, so a saved council fails loudly rather than
+ *   silently running another model.
  */
 const COPILOT_MODELS = [
   {
-    id: 'claude-haiku-4.6',
-    name: 'Claude Haiku 4.6',
+    id: 'claude-haiku-5.5',
+    name: 'Claude Haiku 5.5',
     tier: 'fast',
     tagline: 'Quick Scan',
-    description: 'Rapid feedback for obvious issues, style checks, and simple logic errors',
+    description: 'Rapid, very low-cost feedback for obvious issues, style checks, and simple logic errors',
     badge: 'Speedy',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4 Mini',
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
     tier: 'fast',
     tagline: 'Fast & Cheap',
-    description: 'Low-cost fast reviews with solid reasoning—included at no premium cost',
+    description: 'Low-cost OpenAI model for quick reviews with solid reasoning',
     badge: 'Fast',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'claude-sonnet-4.6',
-    name: 'Claude Sonnet 4.6',
+    id: 'claude-sonnet-5.5',
+    name: 'Claude Sonnet 5.5',
     tier: 'balanced',
     tagline: 'Best Balance',
     description: 'Latest Sonnet—excellent code understanding with fast turnaround',
@@ -57,49 +67,31 @@ const COPILOT_MODELS = [
     default: true
   },
   {
-    id: 'gpt-5.4',
-    name: 'GPT-5.4',
-    tier: 'thorough',
-    tagline: 'Latest OpenAI',
-    description: 'Flagship OpenAI model combining coding, reasoning, and agentic workflows',
-    badge: 'Latest',
-    badgeClass: 'badge-power'
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
+    tier: 'balanced',
+    tagline: 'Balanced OpenAI',
+    description: 'Mid-tier OpenAI model—strong coding quality at a moderate price',
+    badge: 'Balanced',
+    badgeClass: 'badge-balanced'
   },
   {
-    id: 'gpt-5.3-codex',
-    name: 'GPT-5.3 Codex',
-    tier: 'thorough',
-    tagline: 'Deep Code Analysis',
-    description: 'Industry-leading coding model—frontier performance for complex multi-file reviews',
-    badge: 'Thorough',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'claude-opus-4.5',
-    name: 'Claude Opus 4.5',
-    tier: 'thorough',
-    tagline: 'Deep Analysis',
-    description: 'Highly capable model for critical code reviews—strong reasoning for security and architecture',
-    badge: 'Premium',
-    badgeClass: 'badge-premium'
-  },
-  {
-    id: 'claude-opus-4.6',
-    name: 'Claude Opus 4.6',
+    id: 'claude-opus-5.5',
+    name: 'Claude Opus 5.5',
     tier: 'thorough',
     tagline: 'Most Capable',
-    description: 'Most capable model for critical code reviews—deep reasoning for security and architecture',
+    description: 'Most capable Claude model for critical code reviews—deep reasoning for security and architecture',
     badge: 'Premium',
     badgeClass: 'badge-premium'
   },
   {
-    id: 'claude-opus-4.6-fast',
-    name: 'Claude Opus 4.6 Fast',
+    id: 'gpt-5.6-sol',
+    name: 'GPT-5.6 Sol',
     tier: 'thorough',
-    tagline: 'Fast Opus',
-    description: 'Opus-level analysis at reduced latency—preview mode for faster deep reviews',
-    badge: 'Preview',
-    badgeClass: 'badge-premium'
+    tagline: 'Deep Analysis',
+    description: 'Flagship OpenAI workhorse for complex multi-file and architectural reviews',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
   }
 ];
 
