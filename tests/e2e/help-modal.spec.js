@@ -141,4 +141,14 @@ test.describe('Help Modal', () => {
     const helpBtn = page.locator('#help-btn');
     await expect(helpBtn).toHaveAttribute('aria-label', 'Open help modal');
   });
+
+  test('moves focus into the modal on open and back to the help button on close', async ({ page }) => {
+    const helpBtn = page.locator('#help-btn');
+
+    await helpBtn.click();
+    await expect(page.locator('#help-modal-close')).toBeFocused();
+
+    await page.keyboard.press('Escape');
+    await expect(helpBtn).toBeFocused();
+  });
 });
