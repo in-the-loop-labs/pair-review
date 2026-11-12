@@ -57,12 +57,12 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'fable-5.2-high',
-    // The bare generation aliases track the newest generation at a fixed effort:
-    // 'fable' here at High, 'opus' on opus-5.5-xhigh at XHigh. A config, council,
-    // or --model naming the alias moves up a generation on each update while
-    // keeping that effort. Older generations stay reachable by their explicit
-    // ids. The provider DEFAULT (opus-5.5-high) is a separate setting, chosen by
-    // the `default: true` flag.
+    // The bare generation aliases ('fable' here, 'opus' on opus-5.5-high) track
+    // the newest generation at High: a config, council, or --model naming the
+    // alias moves up a generation on each update without changing effort. Older
+    // generations and the XHigh variants stay reachable by their explicit ids.
+    // The provider DEFAULT is a separate setting, chosen by the `default: true`
+    // flag (it happens to be opus-5.5-high today).
     aliases: ['fable'],
     cli_model: 'claude-fable-5-2',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
@@ -126,10 +126,10 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-5.5-xhigh',
-    // Generation alias; see fable-5.2-high above. The Opus 4.x entries were
-    // dropped; their ids resolve to the Opus 5.5 entry at the matching effort so
-    // saved configs, councils, and --model flags keep working.
-    aliases: ['opus', 'opus-4.8-xhigh', 'opus-4.7-xhigh'],
+    // The Opus 4.x entries were dropped; their ids resolve to the Opus 5.5 entry
+    // at the matching effort so saved configs, councils, and --model flags keep
+    // working.
+    aliases: ['opus-4.8-xhigh', 'opus-4.7-xhigh'],
     cli_model: 'claude-opus-5-5',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Opus 5.5 XHigh',
@@ -145,7 +145,8 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-5.5-high',
-    aliases: ['opus-4.8-high', 'opus-4.7-high', 'opus-4.6-high', 'opus-4.6-1m', 'opus-4.5'],
+    // Generation alias 'opus'; see fable-5.2-high above.
+    aliases: ['opus', 'opus-4.8-high', 'opus-4.7-high', 'opus-4.6-high', 'opus-4.6-1m', 'opus-4.5'],
     cli_model: 'claude-opus-5-5',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Opus 5.5 High',

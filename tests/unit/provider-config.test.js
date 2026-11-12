@@ -243,12 +243,12 @@ describe('Provider Configuration', () => {
 
     it('should resolve a preferredId that names an alias to the canonical id', () => {
       const models = [
-        { id: 'opus-5.5-xhigh', aliases: ['opus'], tier: 'thorough' },
+        { id: 'opus-5.5-high', aliases: ['opus'], tier: 'thorough' },
         { id: 'sonnet-4.6', tier: 'balanced' }
       ];
 
-      // preferredId 'opus' is an alias → resolves to canonical 'opus-5.5-xhigh'
-      expect(resolveDefaultModel(models, 'opus')).toBe('opus-5.5-xhigh');
+      // preferredId 'opus' is an alias → resolves to canonical 'opus-5.5-high'
+      expect(resolveDefaultModel(models, 'opus')).toBe('opus-5.5-high');
     });
   });
 
@@ -759,7 +759,7 @@ describe('Provider Configuration', () => {
     });
 
     it('should replace a built-in model when a config model names its alias', () => {
-      // The canonical built-in id is 'opus-5.5-xhigh' (aliased by 'opus').
+      // The canonical built-in id is 'opus-5.5-high' (aliased by 'opus').
       // A config override keyed to the alias must REPLACE the built-in (keeping
       // the canonical id) rather than append a duplicate.
       const before = getAllProvidersInfo().find(p => p.id === 'claude').models.length;
@@ -776,7 +776,7 @@ describe('Provider Configuration', () => {
 
       // No standalone 'opus' id leaked in; the canonical entry persists
       expect(claude.models.find(m => m.id === 'opus')).toBeUndefined();
-      const canonical = claude.models.find(m => m.id === 'opus-5.5-xhigh');
+      const canonical = claude.models.find(m => m.id === 'opus-5.5-high');
       expect(canonical).toBeDefined();
       // The override is reflected on the canonical entry
       expect(canonical.cli_model).toBe('custom-x');
@@ -785,8 +785,11 @@ describe('Provider Configuration', () => {
       expect(canonical.aliases).toContain('opus');
       // Replacement, not append — total count unchanged
       expect(claude.models.length).toBe(before);
-      // The generation the alias left is untouched
+      // The entries the alias left are untouched
       expect(claude.models.find(m => m.id === 'opus-5-xhigh').cli_model).toBe('claude-opus-5');
+      const xhigh = claude.models.find(m => m.id === 'opus-5.5-xhigh');
+      expect(xhigh.cli_model).toBe('claude-opus-5-5');
+      expect(xhigh.name).toBe('Opus 5.5 XHigh');
       applyConfigOverrides({ providers: {} });
     });
 
@@ -809,7 +812,7 @@ describe('Provider Configuration', () => {
       const stored = overrides.models.find(m => m.cli_model === 'custom-x');
       expect(stored).toBeDefined();
       // The raw stored id is the canonical built-in id, not the alias 'opus'.
-      expect(stored.id).toBe('opus-5.5-xhigh');
+      expect(stored.id).toBe('opus-5.5-high');
       expect(overrides.models.some(m => m.id === 'opus')).toBe(false);
       applyConfigOverrides({ providers: {} });
     });
@@ -1493,7 +1496,7 @@ describe('Provider Configuration', () => {
 
     it.each([
       ['fable', 'fable-5.2-high'],
-      ['opus', 'opus-5.5-xhigh'],
+      ['opus', 'opus-5.5-high'],
     ])('ignores an alias (%s) in disabled_models and warns that it needs the canonical id', (alias, canonicalId) => {
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
       applyConfigOverrides({
@@ -1609,13 +1612,18 @@ describe('Provider Configuration', () => {
       expect(provider.model).toBe('sonnet-4.6');
     });
 
-    it('resolves a default_model alias to the canonical id in getAllProvidersInfo', () => {
-      // 'opus' is an alias of the canonical 'opus-5.5-xhigh'
+    it.each([
+      // 'fable' resolves to a non-default entry, so this row proves the configured
+      // alias was resolved rather than ignored in favor of the built-in default
+      ['fable', 'fable-5.2-high'],
+      // 'opus' is an alias of the canonical 'opus-5.5-high' (also the built-in default)
+      ['opus', 'opus-5.5-high'],
+    ])('resolves a default_model alias (%s) to the canonical id in getAllProvidersInfo', (alias, canonicalId) => {
       applyConfigOverrides({
-        providers: { claude: { default_model: 'opus' } }
+        providers: { claude: { default_model: alias } }
       });
       const claude = getAllProvidersInfo().find(p => p.id === 'claude');
-      expect(claude.defaultModel).toBe('opus-5.5-xhigh');
+      expect(claude.defaultModel).toBe(canonicalId);
     });
 
     it('does not warn when default_model names a valid alias', () => {

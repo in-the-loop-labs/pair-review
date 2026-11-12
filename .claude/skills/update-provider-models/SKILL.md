@@ -210,9 +210,9 @@ For each provider, update:
    such as Muse may replace the entries and alias the old ids onto the new generation
    in place. Bare generation aliases (Claude's `opus`, `fable`) are the exception to
    pinning: on each update, move every one to the newest generation's entry at its
-   fixed effort — `opus` at XHigh, `fable` at **High** (changed 2026-11-12; Fable at
-   XHigh is too costly for an alias that stock configs resolve through) — so configs
-   naming the alias upgrade a generation without changing effort. The old generation
+   **High** twin (changed from XHigh on 2026-11-12: stock configs resolve through
+   these aliases, so they should run at the same sensible-cost effort as the
+   default) — so configs naming the alias upgrade a generation without changing effort. The old generation
    stays available under its explicit ids
 5. Sweep every other place that lists built-in ids: `config.example.json` `_comment`
    strings, the README provider tables, `src/main.js` `--model` help text, and the unit
@@ -249,8 +249,8 @@ default's model takes the default, on its `-high` variant, but only once every
 account the provider serves can run it. Opus 5.5 qualified ($4/$20 over Opus 5 at
 $5/$25): the demoted entries stay as the previous generation under their explicit ids.
 The bare generation aliases (`opus`, `fable`) are separate from the default: they
-move to the newest generation at their fixed effort (`opus` XHigh, `fable` High;
-step 5, item 4), not to the new default.
+move to the newest generation's High variant (step 5, item 4), not to the new
+default — though for Opus the two currently coincide (`opus-5.5-high`).
 GPT-6 Sol/Luna did not (2026-09-22): access was still rolling out and required
 Enterprise administrator enablement. The GPT-6.1 Sol update (2026-10-03) also
 keeps the new model opt-in: Enterprise and Edu administrators must enable it,
