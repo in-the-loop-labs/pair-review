@@ -594,7 +594,7 @@ function resolveCliModelConfig(builtIn, configModel, modelId) {
  * Match a model definition against a selector that may be the model's canonical
  * id OR one of its aliases. Used by config-driven selectors (`default_model`,
  * `models` overrides) so legacy config naming an alias (e.g.
- * `opus`, an alias of the canonical `opus-5.5-xhigh`) keeps working.
+ * `opus`, an alias of the canonical `opus-5.5-high`) keeps working.
  *
  * Optional-chaining is intentional: a model with no `aliases` short-circuits to
  * undefined/falsy, so no Array.isArray guard is needed.
@@ -785,7 +785,7 @@ function applyConfigOverrides(config) {
 
     // Canonicalize alias-keyed override ids to their built-in canonical id.
     // A config entry may key a model by a short alias (e.g. `opus` for the
-    // canonical `opus-5.5-xhigh`). mergeModels() already resolves aliases for the
+    // canonical `opus-5.5-high`). mergeModels() already resolves aliases for the
     // display/metadata path, but the runtime path forwards this raw `models` array
     // to the provider instance, where per-model config is looked up by EXACT id
     // (e.g. `configOverrides.models.find(m => m.id === model)`). The frontend
@@ -897,7 +897,7 @@ function mergeModels(builtInModels, configModels) {
   }
   // Replace overridden built-ins in-place to preserve display order. An override
   // matched by alias (e.g. config `{ id: 'opus' }` against built-in
-  // `opus-5.5-xhigh`) still replaces, but keeps the canonical built-in id.
+  // `opus-5.5-high`) still replaces, but keeps the canonical built-in id.
   const matched = new Set();
   const merged = builtInModels.map(bm => {
     const override = configModels.find(cm => modelMatches(bm, cm.id));

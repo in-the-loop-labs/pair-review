@@ -762,13 +762,13 @@ Use the provider-level `default_model` and `disabled_models` fields to tailor wh
   "providers": {
     "claude": {
       "default_model": "sonnet-4.6",
-      "disabled_models": ["haiku", "fable"]
+      "disabled_models": ["haiku", "fable-5.2-xhigh"]
     }
   }
 }
 ```
 
-- `disabled_models` removes those models from the picker. It matches canonical ids only (`opus-5.5-xhigh`, not the `opus` alias). An alias entry is ignored with a warning, so hiding a retired id such as `opus-4.7-high` never hides the newer model it now redirects to. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus-5.5-medium`, `sonnet-4.6`, `haiku`, …).
+- `disabled_models` removes those models from the picker. It matches canonical ids only (`opus-5.5-high`, not the `opus` alias). An alias entry is ignored with a warning, so hiding a retired id such as `opus-4.7-high` never hides the newer model it now redirects to. To find the built-in IDs for a provider, see the comments in `config.example.json` (e.g. Claude ships `opus-5.5-medium`, `sonnet-4.6`, `haiku`, …).
 - `default_model` selects which of the *remaining* models is the default. If it points at a model that is unknown or also disabled, the provider falls back to automatic selection (the model marked `default: true`, then the first `balanced`-tier model, then the first model).
 - Prefer `default_model` over the per-model `default: true` flag, which is deprecated. Setting `default_model` suppresses the deprecation warning.
 

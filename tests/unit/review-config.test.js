@@ -283,8 +283,9 @@ describe('resolveReviewConfig', () => {
 
     it('falls back to claude with the provider\'s own default model when nothing is configured', async () => {
       // The provider-default rung ranks above the hardcoded 'claude'/'opus'
-      // rescue, so the zero-config case resolves Claude's built-in default id
-      // (opus-5.5-high), not the 'opus' alias target (opus-5.5-xhigh).
+      // rescue, so the zero-config case resolves Claude's canonical built-in
+      // default id (opus-5.5-high), not the rescue's raw 'opus' alias string
+      // (which names the same entry).
       const result = await resolveReviewConfig(db, REPOSITORY, {}, {});
       expect(result).toEqual({ type: 'single', provider: 'claude', model: 'opus-5.5-high' });
     });
