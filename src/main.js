@@ -242,7 +242,7 @@ OPTIONS:
                                   sonnet-5.5-xhigh, sonnet-5.5-high,
                                   sonnet-5-xhigh, sonnet-5-high, sonnet-4.6,
                                   haiku-5.5-medium
-                            (default is opus-5.5-high; opus is Opus 5.5 XHigh;
+                            (default is opus-5.5-high; opus is Opus 5.5 High;
                             fable is Fable 5.2 High;
                             a saved default_model wins over the default)
                             or use provider-specific models with Antigravity/Codex
