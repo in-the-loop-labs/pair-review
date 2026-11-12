@@ -77,21 +77,28 @@ script auto-updates hourly).
 Each CLI has different model listing commands:
 - **Antigravity**: `agy models` lists what the *installed binary* knows (e.g.
   `gemini-3.8-flash-high	Gemini 3.8 Flash (High)` — slug, tab, display name, as of
-  agy 1.3.5), which can be behind the backend and omits plan-gated models.
-  `agy changelog` shows the newest released CLI versions, so compare it against
-  `agy --version` to spot a stale install. Probe an id directly:
+  agy 1.5.7), which reflects the account's plan. Backend models can appear here
+  with no CLI changelog entry (Gemini 4 Hydrogen, 2026-11-12). agy **updates itself
+  silently on first use** (1.3.5 → 1.5.7 mid-run on 2026-11-12), so re-check
+  `agy --version` after your first real call, then compare against `agy changelog`.
+  Probe an id directly:
   ```
   agy -p 'Reply with your exact model name and nothing else' --model <id> --dangerously-skip-permissions --print-timeout 2m
   ```
   A valid id answers with the model name and exits 0. An unknown id exits 1 and prints
   the available-model listing (agy no longer falls back to its default silently). The
   provider's clean ids (`gemini-3.8-flash-low`) work as `--model` values too.
+  The model's reply never states its effort. To see which variant actually ran, add
+  `--log-file <path>` and grep it for `model alias ... resolved to` or
+  `Propagating selected model override ... label=`. Bare slugs resolve to **Medium**
+  (`gemini-4-argon` → `gemini-4-argon-medium`), and as of 1.5.7 bare display names
+  (`Gemini 4 Argon`) are rejected as `not recognized`. Every built-in `cliName` must
+  therefore carry an effort suffix (`Gemini 4 Argon (High)`).
   A plan-gated model answers differently from an unknown one: on 2026-10-14 (agy
   1.3.5) `--model 'Gemini 4 Argon'` failed with `"Gemini 4 Argon" is unavailable:
-  Gemini 4 Argon is currently available to Ultra plan subscribers`, while every other
-  form (`gemini-4-argon`, `gemini-4-argon-high`, `Gemini 4 Argon (High)`) failed with
-  `is not recognized`. The "unavailable" message proves the id is real; keep such an
-  entry even though our account cannot run it. agy also has `--effort`, but it is
+  Gemini 4 Argon is currently available to Ultra plan subscribers`, while other
+  forms failed with `is not recognized`. The "unavailable" message proves the id is
+  real; keep such an entry even though our account cannot run it. agy also has `--effort`, but it is
   rejected (`--effort is not supported for model ...`) for display names and
   plan-gated slugs, so built-ins keep effort in the `cliName`.
 - **Codex**: No `--list-models` flag, but the CLI caches the backend catalog at
@@ -107,8 +114,21 @@ Each CLI has different model listing commands:
   `reasoning effort: <level>` header line — grep it to confirm each effort level you
   ship actually took effect. Pricing is not in the cache — use web search
   (learn.chatgpt.com/docs/models, learn.chatgpt.com/docs/changelog).
-- **Copilot**: No native list command. Use `copilot -p 'list available models'` (non-interactive) or check docs.github.com/en/copilot/reference/ai-models/supported-models
-- **Cursor Agent**: `agent --list-models` — works great, comprehensive output
+- **Copilot**: No native list command. `copilot help config` lists `--model` choices
+  but is frozen at the installed version; compare `copilot --version` with
+  `npm view @github/copilot version` to spot a stale install. Authoritative sources:
+  github/docs `data/tables/copilot/model-supported-clients.yml` (`cli:` column) and
+  `model-deprecation-history.yml` (read with
+  `gh api repos/github/docs/contents/data/tables/copilot/<file>`); exact ids and prices
+  are in github/gh-aw `pkg/cli/data/models.json` under `providers["github-copilot"]`.
+  An account denied by policy prints `Access denied by policy settings` for every id,
+  including made-up ones, so that probe says nothing about an id.
+- **Cursor Agent**: `cursor-agent --list-models`. Do not use the bare `agent` name:
+  other tools install an `agent` binary too (on 2026-11-12 the Grok CLI's `agent`
+  shadowed Cursor's on PATH). It needs `cursor-agent login` first; an unauthenticated
+  CLI prints `No models available for this account`. Probe with
+  `cursor-agent -p --output-format text --model <id> '...'`. cursor.com/docs/models
+  lists names and prices but almost no CLI ids
 - **OpenCode**: `opencode models` — lists all models in `provider/model-id` format (shows bundled + provider models)
 - **Claude**: `claude --help` or check docs at code.claude.com/docs/en/cli-reference.
   Probing `--thinking enabled` is non-discriminating on CLI ≥ 2.1.280: the CLI
@@ -132,7 +152,9 @@ Each CLI has different model listing commands:
   Each file is JSON with a `rows` array; the fields that matter are `model_id` (the value for
   `--model`), `display_label`, `is_default`, `context_limit`, and `cost`. Only the underlying
   CLI model ids appear here (`muse-spark-1.3`, `muse-spark-1.3-contributor`, older
-  `muse-spark-1.2*`) — not pair-review's reasoning-effort variants (see the note below).
+  `muse-spark-1.2*`, `muse-wonder-1.0`) — not pair-review's reasoning-effort variants
+  (see the note below). `muse-image-1.0` (no cost, no context) is an image-generation
+  model; never add it as a review model.
 
   To confirm a specific id is valid, pass it with the prompt as a **positional
   argument** and an explicit, supported effort. An unknown id fails fast with exit 1 and
@@ -187,9 +209,11 @@ For each provider, update:
    explicit id must keep the generation it was written against; lightly used providers
    such as Muse may replace the entries and alias the old ids onto the new generation
    in place. Bare generation aliases (Claude's `opus`, `fable`) are the exception to
-   pinning: on each update, move every one to the newest generation's entry at the same
-   effort (XHigh), so configs naming the alias upgrade without losing effort. The old
-   generation stays available under its explicit ids
+   pinning: on each update, move every one to the newest generation's entry at its
+   fixed effort — `opus` at XHigh, `fable` at **High** (changed 2026-11-12; Fable at
+   XHigh is too costly for an alias that stock configs resolve through) — so configs
+   naming the alias upgrade a generation without changing effort. The old generation
+   stays available under its explicit ids
 5. Sweep every other place that lists built-in ids: `config.example.json` `_comment`
    strings, the README provider tables, `src/main.js` `--model` help text, and the unit
    tests (`tests/unit/<provider>-provider.test.js`, `llm-extraction.test.js`,
@@ -225,7 +249,8 @@ default's model takes the default, on its `-high` variant, but only once every
 account the provider serves can run it. Opus 5.5 qualified ($4/$20 over Opus 5 at
 $5/$25): the demoted entries stay as the previous generation under their explicit ids.
 The bare generation aliases (`opus`, `fable`) are separate from the default: they
-move to the newest generation at XHigh (step 5, item 4), not to the new default.
+move to the newest generation at their fixed effort (`opus` XHigh, `fable` High;
+step 5, item 4), not to the new default.
 GPT-6 Sol/Luna did not (2026-09-22): access was still rolling out and required
 Enterprise administrator enablement. The GPT-6.1 Sol update (2026-10-03) also
 keeps the new model opt-in: Enterprise and Edu administrators must enable it,
@@ -238,8 +263,13 @@ balanced entry (provider-switch selection and resolver fallback), and
 `gpt-5.6-luna-low` as the first fast entry (JSON extraction and hunk summaries).
 GPT-6 and GPT-6.1 models remain explicit choices with access requirements in
 their descriptions. The same access bar applies to the first balanced and fast
-entries. GPT-5.5 retires from Codex on all plans on 2026-10-14; remove its entries
-then (the API is unaffected).
+entries. GPT-6.1 Terra (2026-10-26, $1/$5) is likewise an explicit balanced choice:
+it is not offered on Free or Go, and Enterprise access depends on workspace
+administrator controls. As of 2026-11-12 GPT-6.1 Sol ($2/$10) is newer and cheaper
+than GPT-5.6 Sol ($4/$20), so move the default to `gpt-6.1-sol-high` once the
+workspace-availability page no longer requires admin enablement. GPT-5.5 was retired
+from Codex with ChatGPT sign-in on 2026-10-14 (API keys unaffected); its entries were
+removed on 2026-11-12.
 
 ## Notes
 
@@ -250,9 +280,15 @@ then (the API is unaffected).
 - Copilot CLI may have limited model availability depending on subscription tier
 - Some CLIs may need authentication before they can list models or respond to queries
 - Antigravity only ships Gemini models in the built-in picker; agy also exposes Claude
-  and GPT-OSS models, reachable via config override only. Gemini 3.1 Pro was retired
-  from agy by 1.3.5 (2026-10-14); the frontier slot is Gemini 4 Argon, which is gated
-  to Google AI Ultra / eligible Enterprise plans and so is never the default
+  and GPT-OSS models, reachable via config override only (Antigravity drops Claude
+  Opus/Sonnet 4.6 and GPT-OSS 120B on 2026-11-18). Gemini 3.1 Pro remains in agy for
+  Enterprise only. Gemini 4 Argon is gated to paid Google AI Pro / Ultra / eligible
+  Enterprise plans, and Gemini 4 Hydrogen (2026-11-12) is still rolling out to paid
+  plans, so neither is the default and neither leads a tier; 3.8 Flash leads every
+  tier. Gemini 4 Carbon is offered only to Application Default Credentials sign-ins
+  (`AGY_ADC_AUTH`) and answers `not recognized` otherwise, so it is not built in.
+  agy 1.5.x also added `acp`, `--output-format json|stream-json`, and `--effort`;
+  the provider still treats agy as plain-text, analysis-only (separate follow-up)
 - Codex retires models per sign-in type: a slug can be dead for ChatGPT accounts while
   still documented for API keys. Probe with the account the user actually uses
 - Muse's built-in model ids are **not** raw CLI model ids. Each one pairs an underlying CLI
@@ -272,5 +308,8 @@ then (the API is unaffected).
   API, and absent from the cached catalog). On an account without that plan the Full
   id fails with ``does not exist or you lack access`` — that is a plan gate, not a dead
   id, so do not remove it on that evidence alone. Wonder has no contributor model id;
-  its entries pass `--contributor-mode off` (verified accepted by muse 1.4.7) because
-  subscriptions default contributor mode on
+  its entries pass `--contributor-mode off` (re-verified on muse 1.4.18, 2026-11-12,
+  along with the closed `ultra` gate) because subscriptions default contributor mode on
+- Muse Glimmer (open-weight 30B, Aug 2026) and Muse Spark Open (open-weight, Oct 2026)
+  are not Muse Code backends: `muse-glimmer-1.0` and `muse-spark-open[-1.0]` do not
+  resolve. Do not add them

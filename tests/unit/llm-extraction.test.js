@@ -195,10 +195,10 @@ describe('LLM-based JSON extraction fallback', () => {
     // The single place each provider's fast-tier (extraction) model is pinned.
     it('all providers should define and resolve their fast-tier model', () => {
       const providers = [
-        { Class: ClaudeProvider, expectedFast: 'haiku' },
+        { Class: ClaudeProvider, expectedFast: 'haiku-5.5-medium' },
         { Class: AntigravityProvider, expectedFast: 'gemini-3.8-flash-low' },
         { Class: CodexProvider, expectedFast: 'gpt-5.6-luna-low' },
-        { Class: CopilotProvider, expectedFast: 'claude-haiku-4.6' },
+        { Class: CopilotProvider, expectedFast: 'claude-haiku-5.5' },
       ];
 
       for (const { Class, expectedFast } of providers) {

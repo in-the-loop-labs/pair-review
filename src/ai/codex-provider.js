@@ -24,6 +24,9 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Descriptions follow the Codex CLI model catalog. GPT-5.6 Sol High stays the
  * recommended default during the GPT-6 rollout. GPT-6 Sol/Luna require admin
  * enablement in Enterprise; GPT-6.1 Sol requires it in Enterprise and Edu.
+ * GPT-6.1 Terra (2026-10-26, $1/$5 per 1M tokens, Codex CLI >= 0.159.0) runs on
+ * Plus, Pro, Business, Enterprise, and Edu, with Enterprise access subject to
+ * workspace availability and administrator controls.
  * Selecting a model locally does not grant access. testAvailability() checks
  * only `codex --version`, and model rejection does not trigger a fallback,
  * so GPT-6 and GPT-6.1 remain explicit choices.
@@ -35,8 +38,6 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * GPT-5.6 during rollout for access compatibility.
  * Guided tours use the provider default, not the fast tier.
  *
- * GPT-5.5 retires from Codex on all plans on 2026-10-14 (API unaffected);
- * remove the gpt-5.5-* entries then.
  * Workspace access: learn.chatgpt.com/docs/enterprise/workspace-model-availability
  *
  * Reasoning-effort variants (-low / -high / -xhigh / -max) use `cli_model` to pass
@@ -55,6 +56,11 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *   verbatim with no effort override, so API-key users can still name it raw
  *   (`--model gpt-5.4-mini`, or a `providers.codex.models` entry for the web UI
  *   picker).
+ * Deprecated (October 14, 2026): gpt-5.5 (gpt-5.5-high / gpt-5.5-xhigh) — retired
+ *   from Codex with ChatGPT sign-in (Codex rejects it with a 400) but still valid
+ *   for API keys. OpenAI moves ChatGPT plans to GPT-6.1 Sol; it is NOT aliased
+ *   (different model line and price). Like gpt-5.4-mini, API-key users can still
+ *   name the raw id (`--model gpt-5.5`).
  */
 const CODEX_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
@@ -147,28 +153,6 @@ const CODEX_MODELS = [
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
-  {
-    id: 'gpt-5.5-high',
-    cli_model: 'gpt-5.5',
-    extra_args: ['-c', 'model_reasoning_effort="high"'],
-    name: 'GPT-5.5 High',
-    tier: 'thorough',
-    tagline: 'Legacy Coding',
-    description: 'Legacy coding model, with high reasoning effort for demanding reviews and careful cross-file analysis. OpenAI retires GPT-5.5 from Codex on 2026-10-14.',
-    badge: 'Legacy',
-    badgeClass: 'badge-power'
-  },
-  {
-    id: 'gpt-5.5-xhigh',
-    cli_model: 'gpt-5.5',
-    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
-    name: 'GPT-5.5 XHigh',
-    tier: 'thorough',
-    tagline: 'Legacy Coding Depth',
-    description: 'Legacy coding model, with extra-high reasoning effort for architecture, concurrency, and security-sensitive reviews. OpenAI retires GPT-5.5 from Codex on 2026-10-14.',
-    badge: 'Max Reasoning',
-    badgeClass: 'badge-power'
-  },
   // ── Balanced tier ───────────────────────────────────────────────────────
   // Provider switching and default fallback must work without GPT-6 access.
   {
@@ -180,6 +164,17 @@ const CODEX_MODELS = [
     tagline: 'Older Balanced',
     description: 'Older balanced model for straightforward work, with extra-high reasoning effort for careful everyday reviews.',
     badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-6.1-terra-xhigh',
+    cli_model: 'gpt-6.1-terra',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-6.1 Terra XHigh',
+    tier: 'balanced',
+    tagline: 'Latest Balanced',
+    description: 'Fast, efficient model for professional work, with extra-high reasoning effort for careful everyday reviews and scoped fixes. Requires GPT-6.1 Terra access; Enterprise access depends on workspace availability and administrator controls.',
+    badge: 'Newest',
     badgeClass: 'badge-balanced'
   },
   {

@@ -559,7 +559,7 @@ describe('resolveReviewConfig', () => {
       const result = await resolveReviewConfig(db, REPOSITORY, { provider: 'claude' }, {});
       // With the default (opus-5.5-high) disabled, resolution falls to the
       // first balanced-tier model in Claude's built-in list.
-      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5-xhigh' });
+      expect(result).toEqual({ type: 'single', provider: 'claude', model: 'sonnet-5.5-xhigh' });
     });
   });
 

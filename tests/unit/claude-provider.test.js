@@ -135,9 +135,11 @@ describe('ClaudeProvider', () => {
       expect(provider._resolveModelConfig('opus').builtIn.id).not.toBe(ClaudeProvider.getDefaultModel());
     });
 
-    it('does not make Fable 5.1 the default (higher price tier stays an explicit pick)', () => {
+    it('does not make any Fable generation the default (higher price tier stays an explicit pick)', () => {
+      // Fable 5.2 ($8/$40) is cheaper than Fable 5.1 but still twice Opus 5.5
+      // ($4/$20), so the default stays on opus-5.5-high.
       const models = ClaudeProvider.getModels();
-      for (const id of ['fable-5.1-xhigh', 'fable-5.1-high', 'fable-5-xhigh', 'fable-5-high']) {
+      for (const id of ['fable-5.2-xhigh', 'fable-5.2-high', 'fable-5.1-xhigh', 'fable-5.1-high', 'fable-5-xhigh', 'fable-5-high']) {
         expect(models.find(m => m.id === id).default).toBeUndefined();
       }
       expect(ClaudeProvider.getDefaultModel()).not.toMatch(/fable/);
@@ -146,15 +148,20 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(14);
+      expect(models.length).toBe(19);
 
       // Check that we have haiku, sonnet, opus, and fable variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
+      expect(modelIds).toContain('haiku-5.5-medium');
+      expect(modelIds).toContain('fable-5.2-xhigh');
+      expect(modelIds).toContain('fable-5.2-high');
       expect(modelIds).toContain('fable-5.1-xhigh');
       expect(modelIds).toContain('fable-5.1-high');
       expect(modelIds).toContain('fable-5-xhigh');
       expect(modelIds).toContain('fable-5-high');
+      expect(modelIds).toContain('sonnet-5.5-xhigh');
+      expect(modelIds).toContain('sonnet-5.5-high');
       expect(modelIds).toContain('sonnet-5-xhigh');
       expect(modelIds).toContain('sonnet-5-high');
       expect(modelIds).toContain('sonnet-4.6');
@@ -169,10 +176,14 @@ describe('ClaudeProvider', () => {
       expect(modelIds.filter(id => id.startsWith('opus-4'))).toEqual([]);
       // 'opus' is a convenience alias of the canonical 'opus-5.5-xhigh', not a standalone id
       expect(modelIds).not.toContain('opus');
-      // 'fable' is a convenience alias of the canonical 'fable-5.1-xhigh', not a standalone id
+      // 'fable' is a convenience alias of the canonical 'fable-5.2-high', not a standalone id
       expect(modelIds).not.toContain('fable');
-      // Fable 5.1 is exposed only through explicit effort variants
+      // Fable 5.2, Fable 5.1, Sonnet 5.5, and Haiku 5.5 are exposed only through
+      // explicit effort variants
+      expect(modelIds).not.toContain('fable-5.2');
       expect(modelIds).not.toContain('fable-5.1');
+      expect(modelIds).not.toContain('sonnet-5.5');
+      expect(modelIds).not.toContain('haiku-5.5');
       // Opus 5.5 is exposed only through explicit effort variants
       expect(modelIds).not.toContain('opus-5.5');
 
@@ -189,10 +200,12 @@ describe('ClaudeProvider', () => {
       // Exactly one model is the default, and it is opus-5.5-high
       expect(models.filter(m => m.default).map(m => m.id)).toEqual(['opus-5.5-high']);
 
-      // haiku is fixed to the latest Haiku 4.5 cli_model
+      // 'haiku' stays pinned to Haiku 4.5 (a canonical id, not a generation alias)
       const haiku = models.find(m => m.id === 'haiku');
       expect(haiku.name).toBe('Haiku 4.5');
       expect(haiku.cli_model).toBe('claude-haiku-4-5-20251001');
+      expect(haiku.env).toBeUndefined();
+      expect(haiku.aliases).toBeUndefined();
 
       // Opus 5.5 variants: thorough tier, pinned to claude-opus-5-5, effort on the
       // env var, and adaptive-thinking-only like Fable. opus-5.5-high IS the
@@ -283,10 +296,37 @@ describe('ClaudeProvider', () => {
       expect(opus5High.extra_args).toBeUndefined();
       expect(opus5XHigh.extra_args).toBeUndefined();
 
-      // Fable 5.1 variants mirror the Fable 5 shape: thorough tier, pinned to
-      // claude-fable-5-1, effort on the env var, adaptive-thinking-only. They are
-      // NOT the default; fable-5.1-xhigh carries the bare 'fable' generation
-      // alias, just as opus-5.5-xhigh carries 'opus'.
+      // Fable 5.2 variants mirror the earlier Fable shape: thorough tier, pinned to
+      // claude-fable-5-2, effort on the env var, adaptive-thinking-only. They are
+      // NOT the default; fable-5.2-high carries the bare 'fable' generation
+      // alias (at High, unlike 'opus', which rides opus-5.5-xhigh).
+      const fable52XHigh = models.find(m => m.id === 'fable-5.2-xhigh');
+      expect(fable52XHigh).toMatchObject({
+        id: 'fable-5.2-xhigh',
+        name: 'Fable 5.2 XHigh',
+        tier: 'thorough',
+        cli_model: 'claude-fable-5-2',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+        badgeClass: 'badge-power',
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(fable52XHigh.default).toBeUndefined();
+      expect(fable52XHigh.aliases).toBeUndefined();
+      const fable52High = models.find(m => m.id === 'fable-5.2-high');
+      expect(fable52High).toMatchObject({
+        id: 'fable-5.2-high',
+        name: 'Fable 5.2 High',
+        tier: 'thorough',
+        cli_model: 'claude-fable-5-2',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+        badgeClass: 'badge-power',
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(fable52High.default).toBeUndefined();
+      expect(fable52High.aliases).toEqual(['fable']);
+
+      // Fable 5.1 variants are now explicit previous-generation picks: the
+      // 'fable' alias moved to fable-5.2-high.
       const fable51XHigh = models.find(m => m.id === 'fable-5.1-xhigh');
       expect(fable51XHigh).toMatchObject({
         id: 'fable-5.1-xhigh',
@@ -297,7 +337,8 @@ describe('ClaudeProvider', () => {
         extra_args: ['--thinking', 'adaptive']
       });
       expect(fable51XHigh.default).toBeUndefined();
-      expect(fable51XHigh.aliases).toEqual(['fable']);
+      expect(fable51XHigh.aliases).toBeUndefined();
+      expect(fable51XHigh.tagline).toBe('Previous Fable');
       const fable51High = models.find(m => m.id === 'fable-5.1-high');
       expect(fable51High).toMatchObject({
         id: 'fable-5.1-high',
@@ -311,7 +352,7 @@ describe('ClaudeProvider', () => {
       expect(fable51High.aliases).toBeUndefined();
 
       // Fable 5 variants are thorough, pinned to claude-fable-5, and adaptive-thinking-only.
-      // They are explicit previous-generation picks: the 'fable' alias moved to fable-5.1-xhigh.
+      // They are explicit older-generation picks: the 'fable' alias tracks fable-5.2-high.
       const fable5XHigh = models.find(m => m.id === 'fable-5-xhigh');
       expect(fable5XHigh).toMatchObject({
         tier: 'thorough',
@@ -329,9 +370,9 @@ describe('ClaudeProvider', () => {
       });
       expect(fable5High.aliases).toBeUndefined();
 
-      // Fable 5 is no longer the newest Fable — its copy must not claim
-      // latest/newest, nor advertise itself as a brand-new tier.
-      for (const id of ['fable-5-xhigh', 'fable-5-high']) {
+      // Fable 5.1 and Fable 5 are no longer the newest Fable — their copy must
+      // not claim latest/newest, nor advertise itself as a brand-new tier.
+      for (const id of ['fable-5.1-xhigh', 'fable-5.1-high', 'fable-5-xhigh', 'fable-5-high']) {
         const model = models.find(m => m.id === id);
         const copy = `${model.tagline} ${model.description} ${model.badge}`.toLowerCase();
         expect(copy).not.toContain('newest');
@@ -340,43 +381,92 @@ describe('ClaudeProvider', () => {
         expect(copy).not.toContain('new model tier');
       }
 
-      // Sonnet 5 variants are balanced tier, pinned to claude-sonnet-5
+      // Sonnet 5.5 variants are balanced tier, pinned to claude-sonnet-5-5, and
+      // pin adaptive thinking (Sonnet 5.5 cannot turn thinking off)
+      const sonnet55XHigh = models.find(m => m.id === 'sonnet-5.5-xhigh');
+      expect(sonnet55XHigh).toMatchObject({
+        name: 'Sonnet 5.5 XHigh',
+        tier: 'balanced',
+        cli_model: 'claude-sonnet-5-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+        badge: 'Recommended',
+        badgeClass: 'badge-recommended',
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(sonnet55XHigh.default).toBeUndefined();
+      expect(sonnet55XHigh.aliases).toBeUndefined();
+      const sonnet55High = models.find(m => m.id === 'sonnet-5.5-high');
+      expect(sonnet55High).toMatchObject({
+        name: 'Sonnet 5.5 High',
+        tier: 'balanced',
+        cli_model: 'claude-sonnet-5-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(sonnet55High.default).toBeUndefined();
+
+      // Sonnet 5 variants are balanced tier, pinned to claude-sonnet-5, and keep
+      // the base `--thinking enabled` (Sonnet 5 can still turn thinking off)
       const sonnet5XHigh = models.find(m => m.id === 'sonnet-5-xhigh');
       expect(sonnet5XHigh).toMatchObject({
         tier: 'balanced',
         cli_model: 'claude-sonnet-5',
-        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' }
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+        tagline: 'Previous Sonnet'
       });
+      expect(sonnet5XHigh.extra_args).toBeUndefined();
       const sonnet5High = models.find(m => m.id === 'sonnet-5-high');
       expect(sonnet5High).toMatchObject({
         tier: 'balanced',
         cli_model: 'claude-sonnet-5',
-        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' }
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+        tagline: 'Previous Sonnet'
       });
+      expect(sonnet5High.extra_args).toBeUndefined();
+      for (const model of [sonnet5XHigh, sonnet5High]) {
+        const copy = `${model.tagline} ${model.description} ${model.badge}`.toLowerCase();
+        expect(copy).not.toContain('newest');
+        expect(copy).not.toContain('latest');
+        expect(copy).not.toContain('recommended');
+      }
       expect(models.find(m => m.id === 'sonnet-4.6').tier).toBe('balanced');
+
+      // Haiku 5.5 is a fast-tier entry pinned to claude-haiku-5-5 at medium
+      // effort with adaptive thinking (Haiku 5.5 cannot turn thinking off)
+      const haiku55 = models.find(m => m.id === 'haiku-5.5-medium');
+      expect(haiku55).toMatchObject({
+        name: 'Haiku 5.5 Medium',
+        tier: 'fast',
+        cli_model: 'claude-haiku-5-5',
+        env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
+        badgeClass: 'badge-speed',
+        extra_args: ['--thinking', 'adaptive']
+      });
+      expect(haiku55.default).toBeUndefined();
+      expect(haiku55.aliases).toBeUndefined();
     });
 
     it('should override base --thinking enabled with adaptive for fable', () => {
-      // 'fable' is a convenience alias of the canonical 'fable-5.1-xhigh';
+      // 'fable' is a convenience alias of the canonical 'fable-5.2-high';
       // it resolves to the same entry, so the adaptive override still applies.
       const provider = new ClaudeProvider('fable');
-      expect(provider.args).toContain('claude-fable-5-1');
+      expect(provider.args).toContain('claude-fable-5-2');
       // Model extra_args come after base args so the adaptive override wins
       const lastThinkingValue = provider.args[provider.args.lastIndexOf('--thinking') + 1];
       expect(lastThinkingValue).toBe('adaptive');
-      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
     });
 
-    it('should resolve the "fable" alias to the canonical fable-5.1-xhigh model', () => {
+    it('should resolve the "fable" alias to the canonical fable-5.2-high model', () => {
       const provider = new ClaudeProvider('fable');
-      expect(provider.args).toContain('claude-fable-5-1');
-      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      expect(provider.args).toContain('claude-fable-5-2');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
       // The adaptive --thinking override carries through the alias resolution
       const lastThinkingValue = provider.args[provider.args.lastIndexOf('--thinking') + 1];
       expect(lastThinkingValue).toBe('adaptive');
       const resolved = provider._resolveModelConfig('fable');
       expect(resolved.builtIn).toBeDefined();
-      expect(resolved.builtIn.id).toBe('fable-5.1-xhigh');
+      expect(resolved.builtIn.id).toBe('fable-5.2-high');
     });
 
     it('should resolve the canonical fable-5-xhigh id to Fable 5', () => {
@@ -407,21 +497,71 @@ describe('ClaudeProvider', () => {
       expect(lastThinkingValue).toBe('adaptive');
     });
 
-    it('should resolve the bare "fable" alias to the newest generation at XHigh', () => {
+    it('should resolve the bare "fable" alias to the newest generation at High', () => {
       const provider = new ClaudeProvider('fable');
       const resolved = provider._resolveModelConfig('fable');
-      expect(resolved.builtIn.id).toBe('fable-5.1-xhigh');
-      expect(resolved.builtIn.cli_model).toBe('claude-fable-5-1');
+      expect(resolved.builtIn.id).toBe('fable-5.2-high');
+      expect(resolved.builtIn.cli_model).toBe('claude-fable-5-2');
       const modelIdx = provider.args.indexOf('--model');
-      expect(provider.args[modelIdx + 1]).toBe('claude-fable-5-1');
-      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      expect(provider.args[modelIdx + 1]).toBe('claude-fable-5-2');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
       expect(provider.args[provider.args.lastIndexOf('--thinking') + 1]).toBe('adaptive');
-      // Exactly one entry carries the alias; Fable 5 stays reachable by its explicit id
+      // Exactly one entry carries the alias; Fable 5.1 and Fable 5 stay reachable
+      // by their explicit ids
       const models = ClaudeProvider.getModels();
       expect(models.filter(m => (m.aliases || []).includes('fable'))).toHaveLength(1);
-      const fable5XHigh = models.find(m => m.id === 'fable-5-xhigh');
-      expect(fable5XHigh.cli_model).toBe('claude-fable-5');
-      expect(fable5XHigh.aliases).toBeUndefined();
+      for (const [id, cliModel] of [['fable-5.1-xhigh', 'claude-fable-5-1'], ['fable-5-xhigh', 'claude-fable-5']]) {
+        const entry = models.find(m => m.id === id);
+        expect(entry.cli_model).toBe(cliModel);
+        expect(entry.aliases).toBeUndefined();
+        const explicit = new ClaudeProvider(id);
+        expect(explicit.args[explicit.args.indexOf('--model') + 1]).toBe(cliModel);
+        expect(explicit.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' });
+      }
+    });
+
+    it('should resolve fable-5.2-xhigh and fable-5.2-high to claude-fable-5-2 with adaptive thinking', () => {
+      for (const [id, effort] of [['fable-5.2-xhigh', 'xhigh'], ['fable-5.2-high', 'high']]) {
+        const provider = new ClaudeProvider(id);
+        expect(provider.args[provider.args.indexOf('--model') + 1]).toBe('claude-fable-5-2');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: effort });
+        // Model extra_args come after base args so the adaptive override wins
+        expect(provider.args[provider.args.lastIndexOf('--thinking') + 1]).toBe('adaptive');
+        expect(provider._resolveModelConfig(id).builtIn.id).toBe(id);
+      }
+    });
+
+    it('should resolve sonnet-5.5 variants to claude-sonnet-5-5 with adaptive thinking', () => {
+      for (const [id, effort] of [['sonnet-5.5-xhigh', 'xhigh'], ['sonnet-5.5-high', 'high']]) {
+        const provider = new ClaudeProvider(id);
+        expect(provider.args[provider.args.indexOf('--model') + 1]).toBe('claude-sonnet-5-5');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: effort });
+        expect(provider.args[provider.args.lastIndexOf('--thinking') + 1]).toBe('adaptive');
+      }
+      // Sonnet 5 keeps the base `--thinking enabled`
+      const sonnet5 = new ClaudeProvider('sonnet-5-xhigh');
+      expect(sonnet5.args[sonnet5.args.indexOf('--model') + 1]).toBe('claude-sonnet-5');
+      expect(sonnet5.args[sonnet5.args.lastIndexOf('--thinking') + 1]).toBe('enabled');
+    });
+
+    it('should resolve haiku-5.5-medium to claude-haiku-5-5 at medium effort with adaptive thinking', () => {
+      const provider = new ClaudeProvider('haiku-5.5-medium');
+      expect(provider.args[provider.args.indexOf('--model') + 1]).toBe('claude-haiku-5-5');
+      expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'medium' });
+      expect(provider.args[provider.args.lastIndexOf('--thinking') + 1]).toBe('adaptive');
+    });
+
+    it('orders the tiers so the automatic picks land on the newest cheap models', () => {
+      const models = ClaudeProvider.getModels();
+      const firstOf = tier => models.find(m => m.tier === tier).id;
+      // First fast entry serves JSON extraction and hunk summaries
+      expect(firstOf('fast')).toBe('haiku-5.5-medium');
+      expect(new ClaudeProvider().getFastTierModel()).toBe('haiku-5.5-medium');
+      // First balanced entry is the provider-switch / resolver fallback pick
+      expect(firstOf('balanced')).toBe('sonnet-5.5-xhigh');
+      // Opus 5.5 Low never displaces Haiku as the extraction model
+      const fastIds = models.filter(m => m.tier === 'fast').map(m => m.id);
+      expect(fastIds).toEqual(['haiku-5.5-medium', 'haiku', 'opus-5.5-low']);
     });
 
     it('should resolve opus-5.5-xhigh to the claude-opus-5-5 CLI model with adaptive thinking', () => {

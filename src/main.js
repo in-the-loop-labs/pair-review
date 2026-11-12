@@ -234,12 +234,16 @@ OPTIONS:
                             The web UI also starts for the human reviewer.
     --model <name>          Override the AI model. Claude Code is the default provider.
                             Available models: opus, sonnet, haiku (Claude Code);
-                            also: fable-5.1-xhigh, fable-5.1-high,
+                            also: fable-5.2-xhigh, fable-5.2-high,
+                                  fable-5.1-xhigh, fable-5.1-high,
                                   fable-5-xhigh, fable-5-high, opus-5.5-xhigh,
                                   opus-5.5-high, opus-5.5-medium, opus-5.5-low,
                                   opus-5-xhigh, opus-5-high,
-                                  sonnet-5-xhigh, sonnet-5-high, sonnet-4.6
+                                  sonnet-5.5-xhigh, sonnet-5.5-high,
+                                  sonnet-5-xhigh, sonnet-5-high, sonnet-4.6,
+                                  haiku-5.5-medium
                             (default is opus-5.5-high; opus is Opus 5.5 XHigh;
+                            fable is Fable 5.2 High;
                             a saved default_model wins over the default)
                             or use provider-specific models with Antigravity/Codex
     --provider <name>       Override the AI provider for headless modes

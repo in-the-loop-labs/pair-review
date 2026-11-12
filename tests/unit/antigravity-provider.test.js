@@ -96,15 +96,18 @@ describe('AntigravityProvider', () => {
       expect(AntigravityProvider.getDefaultModel()).toBe('gemini-3.8-flash-high');
     });
 
-    it('should not make plan-gated gemini-4-argon the default', () => {
-      // Argon runs only on Google AI Ultra / eligible Enterprise plans; any
-      // other account gets agy's exit-1 "unavailable" error.
-      expect(AntigravityProvider.getDefaultModel()).not.toBe('gemini-4-argon');
-      const argon = AntigravityProvider.getModels().find(m => m.id === 'gemini-4-argon');
-      expect(argon.default).toBeUndefined();
+    it('should not make plan-gated Argon or rolling-out Hydrogen the default', () => {
+      // Argon needs a paid Google AI Pro / Ultra / eligible Enterprise plan;
+      // Hydrogen is rolling out to paid plans first and costs twice 3.8 Flash.
+      const models = AntigravityProvider.getModels();
+      for (const id of ['gemini-4-argon-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium']) {
+        const model = models.find(m => m.id === id);
+        expect(model.default).toBeUndefined();
+      }
+      const argon = models.find(m => m.id === 'gemini-4-argon-high');
       expect(argon.tier).toBe('thorough');
-      expect(argon.badge).toBe('Ultra Plan');
-      expect(argon.description).toMatch(/Ultra/);
+      expect(argon.badge).toBe('Paid Plan');
+      expect(argon.description).toMatch(/Pro, Ultra/);
     });
 
     it('should drop the retired 3.1 Pro ids without aliasing them onto another model', () => {
@@ -117,26 +120,33 @@ describe('AntigravityProvider', () => {
       expect(new AntigravityProvider()._resolveCliModel('gemini-3.1-pro-low')).toBe('gemini-3.1-pro-low');
     });
 
-    it('should return the 4 built-in models with expected ids', () => {
+    it('should return the 7 built-in models with expected ids', () => {
       const models = AntigravityProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(4);
+      expect(models.length).toBe(7);
 
       const modelIds = models.map(m => m.id);
       // Ordered thorough -> balanced -> fast, matching the other providers.
       expect(modelIds).toEqual([
         'gemini-3.8-flash-high',
-        'gemini-4-argon',
+        'gemini-4-hydrogen-xhigh',
+        'gemini-4-hydrogen-high',
+        'gemini-4-argon-high',
         'gemini-3.8-flash-medium',
+        'gemini-4-hydrogen-medium',
         'gemini-3.8-flash-low'
       ]);
     });
 
-    it('should lead the thorough tier with a model every plan can run, not plan-gated Argon', () => {
-      // Provider-switch paths map a thorough selection onto a tier's first
-      // entry; landing on Argon would fail every analysis off the Ultra plan.
-      const firstThorough = AntigravityProvider.getModels().find(m => m.tier === 'thorough');
-      expect(firstThorough.id).toBe('gemini-3.8-flash-high');
+    it('should lead every tier with a 3.8 Flash model that every plan can run', () => {
+      // Provider-switch paths map a selection onto a tier's first entry, and
+      // getFastTierModel() takes the first fast entry; landing on a plan-gated
+      // or rolling-out model would fail analyses on accounts without access.
+      const models = AntigravityProvider.getModels();
+      const leader = tier => models.find(m => m.tier === tier).id;
+      expect(leader('thorough')).toBe('gemini-3.8-flash-high');
+      expect(leader('balanced')).toBe('gemini-3.8-flash-medium');
+      expect(leader('fast')).toBe('gemini-3.8-flash-low');
     });
 
     it('should map each model to the correct tier', () => {
@@ -145,7 +155,10 @@ describe('AntigravityProvider', () => {
       expect(tierMap['gemini-3.8-flash-low']).toBe('fast');
       expect(tierMap['gemini-3.8-flash-high']).toBe('thorough');
       expect(tierMap['gemini-3.8-flash-medium']).toBe('balanced');
-      expect(tierMap['gemini-4-argon']).toBe('thorough');
+      expect(tierMap['gemini-4-argon-high']).toBe('thorough');
+      expect(tierMap['gemini-4-hydrogen-xhigh']).toBe('thorough');
+      expect(tierMap['gemini-4-hydrogen-high']).toBe('thorough');
+      expect(tierMap['gemini-4-hydrogen-medium']).toBe('balanced');
     });
 
     it('should keep gemini-3.8-flash-low as the only fast-tier (extraction) model', () => {
@@ -160,9 +173,28 @@ describe('AntigravityProvider', () => {
       expect(cliNameMap['gemini-3.8-flash-low']).toBe('Gemini 3.8 Flash (Low)');
       expect(cliNameMap['gemini-3.8-flash-high']).toBe('Gemini 3.8 Flash (High)');
       expect(cliNameMap['gemini-3.8-flash-medium']).toBe('Gemini 3.8 Flash (Medium)');
-      // agy recognizes Argon only by its bare display name (effort-suffixed
-      // forms are "not recognized"); it runs at the server-default High effort.
-      expect(cliNameMap['gemini-4-argon']).toBe('Gemini 4 Argon');
+      expect(cliNameMap['gemini-4-hydrogen-xhigh']).toBe('Gemini 4 Hydrogen (XHigh)');
+      expect(cliNameMap['gemini-4-hydrogen-high']).toBe('Gemini 4 Hydrogen (High)');
+      expect(cliNameMap['gemini-4-hydrogen-medium']).toBe('Gemini 4 Hydrogen (Medium)');
+      expect(cliNameMap['gemini-4-argon-high']).toBe('Gemini 4 Argon (High)');
+    });
+
+    it('should never pass a bare effortless display name to agy', () => {
+      // agy 1.5.7 rejects bare display names ("Gemini 4 Argon" is "not
+      // recognized"), so every built-in cliName must carry an effort suffix.
+      for (const model of AntigravityProvider.getModels()) {
+        expect(model.cliName).toMatch(/ \((Low|Medium|High|XHigh)\)$/);
+      }
+    });
+
+    it('should resolve the original gemini-4-argon id to Argon at High effort', () => {
+      // agy 1.3.5 ran the bare `Gemini 4 Argon` at High; agy 1.5.7 rejects that
+      // string, so saved selections naming gemini-4-argon land on the High entry.
+      const provider = new AntigravityProvider();
+      const argon = AntigravityProvider.getModels().find(m => m.id === 'gemini-4-argon-high');
+      expect(argon.aliases).toEqual(['gemini-4-argon']);
+      expect(provider._resolveCliModel('gemini-4-argon')).toBe('Gemini 4 Argon (High)');
+      expect(AntigravityProvider.getModels().map(m => m.id)).not.toContain('gemini-4-argon');
     });
 
     it('should mark exactly one model (gemini-3.8-flash-high) as default', () => {
@@ -175,10 +207,12 @@ describe('AntigravityProvider', () => {
       expect(defaults[0].badgeClass).toBe('badge-recommended');
     });
 
-    it('should keep gemini-3.8-flash-medium as the only balanced-tier model', () => {
+    it('should offer 3.8 Flash and Hydrogen at medium effort in the balanced tier', () => {
       const balanced = AntigravityProvider.getModels().filter(m => m.tier === 'balanced');
-      expect(balanced.map(m => m.id)).toEqual(['gemini-3.8-flash-medium']);
-      expect(balanced[0].badgeClass).toBe('badge-balanced');
+      expect(balanced.map(m => m.id)).toEqual(['gemini-3.8-flash-medium', 'gemini-4-hydrogen-medium']);
+      for (const model of balanced) {
+        expect(model.badgeClass).toBe('badge-balanced');
+      }
     });
 
     it('should return install instructions with the antigravity install script', () => {
@@ -194,8 +228,8 @@ describe('AntigravityProvider', () => {
     });
 
     it('should create instance with a specified model', () => {
-      const provider = new AntigravityProvider('gemini-4-argon');
-      expect(provider.model).toBe('gemini-4-argon');
+      const provider = new AntigravityProvider('gemini-4-hydrogen-xhigh');
+      expect(provider.model).toBe('gemini-4-hydrogen-xhigh');
     });
 
     it('should use the default `agy` command with no shell', () => {
@@ -240,10 +274,10 @@ describe('AntigravityProvider', () => {
     });
 
     it('should merge model-specific env over provider env', () => {
-      const provider = new AntigravityProvider('gemini-4-argon', {
+      const provider = new AntigravityProvider('gemini-4-argon-high', {
         env: { VAR1: 'provider' },
         models: [
-          { id: 'gemini-4-argon', env: { VAR1: 'model', VAR2: 'extra' } }
+          { id: 'gemini-4-argon-high', env: { VAR1: 'model', VAR2: 'extra' } }
         ]
       });
       expect(provider.extraEnv.VAR1).toBe('model');
@@ -323,10 +357,10 @@ describe('AntigravityProvider', () => {
       // internal cliName. That exact string must reach `agy --model`.
       const provider = new AntigravityProvider('gemini-3.8-flash-medium', {
         models: [
-          { id: 'gemini-3.8-flash-medium', cli_model: 'Gemini 4 Argon' }
+          { id: 'gemini-3.8-flash-medium', cli_model: 'Gemini 4 Argon (High)' }
         ]
       });
-      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('Gemini 4 Argon');
+      expect(provider._resolveCliModel('gemini-3.8-flash-medium')).toBe('Gemini 4 Argon (High)');
     });
 
     it('should prefer `cli_model` over `cliName` when a config override sets both', () => {
@@ -809,9 +843,9 @@ describe('AntigravityProvider', () => {
     it('should resolve env for the EXTRACTION model, not the analysis model', () => {
       // getExtractionConfig(model) can receive a different fast-tier model than
       // this.model; env must follow the argument, not the constructor's model.
-      const provider = new AntigravityProvider('gemini-4-argon', {
+      const provider = new AntigravityProvider('gemini-4-argon-high', {
         models: [
-          { id: 'gemini-4-argon', env: { ANALYSIS_ONLY: 'a' } },
+          { id: 'gemini-4-argon-high', env: { ANALYSIS_ONLY: 'a' } },
           { id: 'gemini-3.8-flash-low', env: { EXTRACT_ONLY: 'e' } }
         ]
       });
