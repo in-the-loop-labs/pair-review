@@ -26,29 +26,28 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * in the constructor's base args; individual models can override this via extra_args
  * (e.g., Haiku uses adaptive thinking for efficiency).
  *
- * Effort support by model (newest CLIs): Fable 5.1, Fable 5, Opus 5.5, Opus 5,
- * and Sonnet 5 support low|medium|high|xhigh|max; Sonnet 4.6 supports
- * low|medium|high|max (no xhigh); Haiku has no effort levels.
- * The CLI's own default effort for Opus 5.5 is `medium` (and it ignores a
- * top-level `effortLevel` in user settings), so its entries rely on the env var,
- * which the CLI treats as an explicit choice at the top of its effort precedence.
+ * Effort support by model (newest CLIs): Fable 5.2, Fable 5.1, Fable 5,
+ * Opus 5.5, Opus 5, Sonnet 5.5, Sonnet 5, and Haiku 5.5 support
+ * low|medium|high|xhigh|max; Sonnet 4.6 supports low|medium|high|max (no xhigh);
+ * Haiku 4.5 has no effort levels.
+ * The CLI's own default effort for Fable 5.2, Opus 5.5, Sonnet 5.5, and Haiku 5.5
+ * is `medium` (and a top-level `effortLevel` in user settings does not apply to
+ * Opus 5.5 or later models), so their entries rely on the env var, which the CLI
+ * treats as an explicit choice at the top of its effort precedence.
+ *
+ * Thinking cannot be turned off on Fable (every generation), Opus 5.5,
+ * Sonnet 5.5, or Haiku 5.5, so those entries pin `--thinking adaptive`.
  */
 const CLAUDE_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
   {
-    id: 'fable-5.1-xhigh',
-    // The bare generation aliases ('fable' here, 'opus' on opus-5.5-xhigh) track
-    // the newest generation at XHigh: a config, council, or --model naming the
-    // alias moves up a generation on each update without losing effort. Older
-    // generations stay reachable by their explicit ids. The provider DEFAULT
-    // (opus-5.5-high) is a separate setting, chosen by the `default: true` flag.
-    aliases: ['fable'],
-    cli_model: 'claude-fable-5-1',
+    id: 'fable-5.2-xhigh',
+    cli_model: 'claude-fable-5-2',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
-    name: 'Fable 5.1 XHigh',
+    name: 'Fable 5.2 XHigh',
     tier: 'thorough',
     tagline: 'Newest Fable',
-    description: 'Fable 5.1 (newest, most capable tier) with extra-high effort',
+    description: 'Fable 5.2 (newest, most capable tier) with extra-high effort',
     badge: 'Extra-High Effort',
     badgeClass: 'badge-power',
     // Every Fable generation is adaptive-thinking-only: an explicit
@@ -57,12 +56,44 @@ const CLAUDE_MODELS = [
     extra_args: ['--thinking', 'adaptive']
   },
   {
+    id: 'fable-5.2-high',
+    // The bare generation aliases track the newest generation at a fixed effort:
+    // 'fable' here at High, 'opus' on opus-5.5-xhigh at XHigh. A config, council,
+    // or --model naming the alias moves up a generation on each update while
+    // keeping that effort. Older generations stay reachable by their explicit
+    // ids. The provider DEFAULT (opus-5.5-high) is a separate setting, chosen by
+    // the `default: true` flag.
+    aliases: ['fable'],
+    cli_model: 'claude-fable-5-2',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Fable 5.2 High',
+    tier: 'thorough',
+    tagline: 'Newest Fable',
+    description: 'Fable 5.2 with high effort — quicker than XHigh',
+    badge: 'High Effort',
+    badgeClass: 'badge-power',
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
+    id: 'fable-5.1-xhigh',
+    cli_model: 'claude-fable-5-1',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Fable 5.1 XHigh',
+    tier: 'thorough',
+    tagline: 'Previous Fable',
+    description: 'Fable 5.1 (previous Fable) with extra-high effort',
+    badge: 'Extra-High Effort',
+    badgeClass: 'badge-power',
+    // Adaptive-thinking-only, as with Fable 5.2 above.
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
     id: 'fable-5.1-high',
     cli_model: 'claude-fable-5-1',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Fable 5.1 High',
     tier: 'thorough',
-    tagline: 'Newest Fable',
+    tagline: 'Previous Fable',
     description: 'Fable 5.1 with high effort — quicker than XHigh',
     badge: 'High Effort',
     badgeClass: 'badge-power',
@@ -74,11 +105,11 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Fable 5 XHigh',
     tier: 'thorough',
-    tagline: 'Previous Fable',
-    description: 'Fable 5 (previous Fable) with extra-high effort',
+    tagline: 'Older Fable',
+    description: 'Fable 5 (older Fable) with extra-high effort',
     badge: 'Extra-High Effort',
     badgeClass: 'badge-power',
-    // Adaptive-thinking-only, as with Fable 5.1 above.
+    // Adaptive-thinking-only, as with Fable 5.2 above.
     extra_args: ['--thinking', 'adaptive']
   },
   {
@@ -87,7 +118,7 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Fable 5 High',
     tier: 'thorough',
-    tagline: 'Previous Fable',
+    tagline: 'Older Fable',
     description: 'Fable 5 with high effort — quicker than XHigh',
     badge: 'High Effort',
     badgeClass: 'badge-power',
@@ -95,7 +126,7 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'opus-5.5-xhigh',
-    // Generation alias; see fable-5.1-xhigh above. The Opus 4.x entries were
+    // Generation alias; see fable-5.2-high above. The Opus 4.x entries were
     // dropped; their ids resolve to the Opus 5.5 entry at the matching effort so
     // saved configs, councils, and --model flags keep working.
     aliases: ['opus', 'opus-4.8-xhigh', 'opus-4.7-xhigh'],
@@ -150,15 +181,41 @@ const CLAUDE_MODELS = [
   },
   // ── Balanced tier ───────────────────────────────────────────────────────
   {
+    id: 'sonnet-5.5-xhigh',
+    cli_model: 'claude-sonnet-5-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
+    name: 'Sonnet 5.5 XHigh',
+    tier: 'balanced',
+    tagline: 'Best Balance',
+    description: 'Sonnet 5.5 (newest) with extra-high effort — recommended for most reviews',
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended',
+    // Thinking cannot be turned off on Sonnet 5.5 (unlike Sonnet 5), so pin
+    // adaptive as with Opus 5.5 and Fable.
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
+    id: 'sonnet-5.5-high',
+    cli_model: 'claude-sonnet-5-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Sonnet 5.5 High',
+    tier: 'balanced',
+    tagline: 'Faster',
+    description: 'Sonnet 5.5 with high effort — quicker than XHigh, still sharp',
+    badge: 'Quick & Sharp',
+    badgeClass: 'badge-speed',
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
     id: 'sonnet-5-xhigh',
     cli_model: 'claude-sonnet-5',
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'xhigh' },
     name: 'Sonnet 5 XHigh',
     tier: 'balanced',
-    tagline: 'Best Balance',
-    description: 'Sonnet 5 (newest) with extra-high effort — recommended for most reviews',
-    badge: 'Recommended',
-    badgeClass: 'badge-recommended'
+    tagline: 'Previous Sonnet',
+    description: 'Sonnet 5 (previous Sonnet) with extra-high effort',
+    badge: 'Extra-High Effort',
+    badgeClass: 'badge-balanced'
   },
   {
     id: 'sonnet-5-high',
@@ -166,10 +223,10 @@ const CLAUDE_MODELS = [
     env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
     name: 'Sonnet 5 High',
     tier: 'balanced',
-    tagline: 'Faster',
-    description: 'Sonnet 5 with high effort — quicker than XHigh, still sharp',
-    badge: 'Quick & Sharp',
-    badgeClass: 'badge-speed'
+    tagline: 'Previous Sonnet',
+    description: 'Sonnet 5 with high effort — quicker than XHigh',
+    badge: 'High Effort',
+    badgeClass: 'badge-balanced'
   },
   {
     id: 'opus-5.5-medium',
@@ -196,19 +253,37 @@ const CLAUDE_MODELS = [
   },
   // ── Fast tier ───────────────────────────────────────────────────────────
   {
+    // First fast-tier entry: getFastTierModel() picks it for JSON extraction and
+    // hunk summaries. Haiku 5.5 is newer and far cheaper than Haiku 4.5, and runs
+    // at medium effort (its own default) so extraction keeps its accuracy.
+    id: 'haiku-5.5-medium',
+    cli_model: 'claude-haiku-5-5',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
+    name: 'Haiku 5.5 Medium',
+    tier: 'fast',
+    tagline: 'Lightning Fast',
+    description: 'Haiku 5.5 (newest) with medium effort — quick analysis for simple changes',
+    badge: 'Fastest',
+    badgeClass: 'badge-speed',
+    // Thinking cannot be turned off on Haiku 5.5.
+    extra_args: ['--thinking', 'adaptive']
+  },
+  {
+    // 'haiku' stays pinned to Haiku 4.5: it is a canonical id, not a generation
+    // alias, so configs naming it keep the model they were written against.
     id: 'haiku',
     cli_model: 'claude-haiku-4-5-20251001',
     name: 'Haiku 4.5',
     tier: 'fast',
-    tagline: 'Lightning Fast',
-    description: 'Quick analysis for simple changes',
-    badge: 'Fastest',
+    tagline: 'Previous Haiku',
+    description: 'Haiku 4.5 (previous Haiku) — quick analysis for simple changes',
+    badge: 'Previous Gen',
     badgeClass: 'badge-speed',
     extra_args: ['--thinking', 'adaptive']
   },
   {
-    // Kept after haiku: getFastTierModel() takes the first fast-tier entry for
-    // extraction and hunk summaries, which should stay on Haiku.
+    // Kept after the Haiku entries: getFastTierModel() takes the first fast-tier
+    // entry for extraction and hunk summaries, which should stay on Haiku.
     id: 'opus-5.5-low',
     aliases: ['opus-4.6-low'],
     cli_model: 'claude-opus-5-5',

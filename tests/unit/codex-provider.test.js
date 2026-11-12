@@ -72,7 +72,7 @@ describe('CodexProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(15);
+      expect(models.length).toBe(14);
 
       // Check that we have the expected model IDs, ordered thorough → balanced → fast
       const modelIds = models.map(m => m.id);
@@ -85,22 +85,21 @@ describe('CodexProvider', () => {
         'gpt-6-sol-xhigh',
         'gpt-5.6-sol-high',
         'gpt-5.6-sol-xhigh',
-        'gpt-5.5-high',
-        'gpt-5.5-xhigh',
         'gpt-5.6-terra-xhigh',
+        'gpt-6.1-terra-xhigh',
         'gpt-5.6-luna-max',
         'gpt-6-luna-max',
         'gpt-5.6-luna-low',
         'gpt-6-luna-low'
       ]);
-      // Bare GPT-6.1 / GPT-6 / GPT-5.6 / gpt-5.5 (unspecified reasoning effort) are not
+      // Bare GPT-6.1 / GPT-6 / GPT-5.6 (unspecified reasoning effort) are not
       // exposed as picker entries — users pick an explicit reasoning variant
       // instead.
       expect(modelIds).not.toContain('gpt-6.1-sol');
+      expect(modelIds).not.toContain('gpt-6.1-terra');
       expect(modelIds).not.toContain('gpt-6-astra');
       expect(modelIds).not.toContain('gpt-6-sol');
       expect(modelIds).not.toContain('gpt-6-luna');
-      expect(modelIds).not.toContain('gpt-5.5');
       expect(modelIds).not.toContain('gpt-5.6-sol');
       expect(modelIds).not.toContain('gpt-5.6-terra');
       expect(modelIds).not.toContain('gpt-5.6-luna');
@@ -111,7 +110,9 @@ describe('CodexProvider', () => {
       // gpt-5.4-mini followed on 2026-08-31 for ChatGPT sign-in (still valid for
       // API keys); OpenAI names gpt-6-luna as its replacement, but a different
       // model line at a different price is never an alias target.
-      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-xhigh', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini']) {
+      // gpt-5.5 followed on 2026-10-14 for ChatGPT sign-in (API keys unaffected);
+      // its successor GPT-6.1 Sol is a different line and price, so no alias.
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-xhigh', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-high', 'gpt-5.5-xhigh']) {
         expect(modelIds, `${retired} should be removed`).not.toContain(retired);
         expect(models.some(m => m.aliases?.includes(retired)), `${retired} should not be aliased`).toBe(false);
       }
@@ -208,14 +209,16 @@ describe('CodexProvider', () => {
         expect(model.description, model.id).toContain('Requires GPT-6.1 Sol access');
         expect(model.description, model.id).toContain('Enterprise and Edu administrators must enable it');
       }
+      expect(models.find(m => m.id === 'gpt-6.1-terra-xhigh')).toMatchObject({
+        name: 'GPT-6.1 Terra XHigh',
+        tier: 'balanced',
+        badge: 'Newest',
+        badgeClass: 'badge-balanced'
+      });
+      expect(models.find(m => m.id === 'gpt-6.1-terra-xhigh').description).toContain('Requires GPT-6.1 Terra access');
       expect(models.find(m => m.id === 'gpt-6-sol-high').badge).toBe('Previous Gen');
       expect(models.find(m => m.id === 'gpt-6-sol-high').description).toContain('Previous generation workhorse model');
       expect(models.find(m => m.id === 'gpt-5.6-sol-high').description).toContain('Older generation workhorse model');
-
-      // GPT-5.5 leaves Codex on 2026-10-14; its copy says so
-      for (const id of ['gpt-5.5-high', 'gpt-5.5-xhigh']) {
-        expect(models.find(m => m.id === id).description).toContain('2026-10-14');
-      }
     });
 
     it('the first balanced and fast entries do not need GPT-6 or GPT-6.1 access', () => {
@@ -258,8 +261,7 @@ describe('CodexProvider', () => {
         { id: 'gpt-5.6-luna-low', cliModel: 'gpt-5.6-luna', effort: 'low', tier: 'fast' },
         { id: 'gpt-6-astra-high', cliModel: 'gpt-6-astra', effort: 'high', tier: 'thorough' },
         { id: 'gpt-6-astra-xhigh', cliModel: 'gpt-6-astra', effort: 'xhigh', tier: 'thorough' },
-        { id: 'gpt-5.5-high', cliModel: 'gpt-5.5', effort: 'high', tier: 'thorough' },
-        { id: 'gpt-5.5-xhigh', cliModel: 'gpt-5.5', effort: 'xhigh', tier: 'thorough' }
+        { id: 'gpt-6.1-terra-xhigh', cliModel: 'gpt-6.1-terra', effort: 'xhigh', tier: 'balanced' }
       ];
       for (const v of variants) {
         const model = models.find(m => m.id === v.id);
@@ -373,20 +375,6 @@ describe('CodexProvider', () => {
         expect(provider.args[effortIdx - 1]).toBe('-c');
       });
 
-      it('should pass gpt-5.5 as base model for gpt-5.5-high variant', () => {
-        const provider = new CodexProvider('gpt-5.5-high');
-        const mIdx = provider.args.indexOf('-m');
-        expect(provider.args[mIdx + 1]).toBe('gpt-5.5');
-        expect(provider.args).toContain('model_reasoning_effort="high"');
-      });
-
-      it('should pass gpt-5.5 as base model for gpt-5.5-xhigh variant', () => {
-        const provider = new CodexProvider('gpt-5.5-xhigh');
-        const mIdx = provider.args.indexOf('-m');
-        expect(provider.args[mIdx + 1]).toBe('gpt-5.5');
-        expect(provider.args).toContain('model_reasoning_effort="xhigh"');
-      });
-
       it.each([
         ['gpt-6.1-sol-high', 'gpt-6.1-sol', 'high'],
         ['gpt-6.1-sol-xhigh', 'gpt-6.1-sol', 'xhigh'],
@@ -397,6 +385,7 @@ describe('CodexProvider', () => {
         ['gpt-5.6-sol-high', 'gpt-5.6-sol', 'high'],
         ['gpt-5.6-sol-xhigh', 'gpt-5.6-sol', 'xhigh'],
         ['gpt-5.6-terra-xhigh', 'gpt-5.6-terra', 'xhigh'],
+        ['gpt-6.1-terra-xhigh', 'gpt-6.1-terra', 'xhigh'],
         ['gpt-5.6-luna-max', 'gpt-5.6-luna', 'max'],
         ['gpt-5.6-luna-low', 'gpt-5.6-luna', 'low']
       ])('should resolve %s to base model %s with %s reasoning effort', (modelId, cliModel, effort) => {
@@ -444,9 +433,9 @@ describe('CodexProvider', () => {
 
       it('getExtractionConfig should also apply cli_model + reasoning effort', () => {
         const provider = new CodexProvider();
-        const config = provider.getExtractionConfig('gpt-5.5-xhigh');
+        const config = provider.getExtractionConfig('gpt-6-astra-xhigh');
         const mIdx = config.args.indexOf('-m');
-        expect(config.args[mIdx + 1]).toBe('gpt-5.5');
+        expect(config.args[mIdx + 1]).toBe('gpt-6-astra');
         expect(config.args).toContain('model_reasoning_effort="xhigh"');
         // stdin marker stays at the very end
         expect(config.args[config.args.length - 1]).toBe('-');
@@ -922,11 +911,11 @@ describe('CodexProvider', () => {
       expect(args[args.length - 1]).toBe('-');
     });
 
-    it('should pass retired ids (gpt-5.4, gpt-5.4-high, gpt-5.4-nano, gpt-5.3-codex, gpt-5.4-mini) through unaliased', () => {
+    it('should pass retired ids (gpt-5.4, gpt-5.4-high, gpt-5.4-nano, gpt-5.3-codex, gpt-5.4-mini, gpt-5.5, gpt-5.5-high, gpt-5.5-xhigh) through unaliased', () => {
       // Retired models are deliberately not aliased: the id goes to `-m`
       // verbatim with no reasoning-effort override, so Codex fails loudly.
       const provider = new CodexProvider();
-      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini']) {
+      for (const retired of ['gpt-5.4', 'gpt-5.4-high', 'gpt-5.4-nano', 'gpt-5.3-codex', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-high', 'gpt-5.5-xhigh']) {
         const args = provider.buildArgsForModel(retired);
         const mIdx = args.indexOf('-m');
         expect(args[mIdx + 1], retired).toBe(retired);
