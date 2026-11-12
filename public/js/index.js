@@ -22,16 +22,23 @@
 
   // ─── Help Modal ─────────────────────────────────────────────────────────────
 
+  /** Element that had focus before the help modal opened, refocused on close */
+  let helpModalReturnFocus = null;
+
   function openHelpModal() {
     const overlay = document.getElementById('help-modal-overlay');
+    helpModalReturnFocus = document.activeElement;
     overlay.classList.add('visible');
     document.body.style.overflow = 'hidden';
+    document.getElementById('help-modal-close').focus();
   }
 
   function closeHelpModal() {
     const overlay = document.getElementById('help-modal-overlay');
     overlay.classList.remove('visible');
     document.body.style.overflow = '';
+    if (helpModalReturnFocus) helpModalReturnFocus.focus();
+    helpModalReturnFocus = null;
   }
 
   // Set up help button
@@ -2471,6 +2478,27 @@
 
   // ─── DOMContentLoaded Initialization ────────────────────────────────────────
 
+  /** Start-review input to focus on load, keyed by tab pane id */
+  const TAB_AUTOFOCUS_INPUT_IDS = {
+    'pr-tab': 'pr-url-input',
+    'local-tab': 'local-path-input'
+  };
+
+  /**
+   * Focus the restored tab's start-review input so a review can be started by
+   * pasting and pressing Enter. Leaves focus alone if the user already moved
+   * it while the page was loading.
+   * @param {string} tabId - Tab pane id restored on load
+   */
+  function focusRestoredTabInput(tabId) {
+    const inputId = TAB_AUTOFOCUS_INPUT_IDS[tabId];
+    if (!inputId) return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+
+    const input = document.getElementById(inputId);
+    if (input) input.focus();
+  }
+
   document.addEventListener('DOMContentLoaded', async function () {
     // Load config and update command examples based on npx detection.
     // Await so that window.__pairReview.enableGraphite (and other config
@@ -2487,6 +2515,7 @@
         switchTab(tabBar, targetBtn);
       }
     }
+    focusRestoredTabInput(savedTab);
 
     // Always load PR reviews (they show on initial load). This is the only
     // caller that opens the help modal for an empty list.

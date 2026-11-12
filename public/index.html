@@ -278,6 +278,9 @@
         .help-modal-overlay.visible {
             opacity: 1;
             visibility: visible;
+            /* Become visible immediately on open so the close button can take
+               focus; the base rule still delays hiding until the fade-out ends. */
+            transition: opacity var(--transition-default), visibility 0s;
         }
 
         [data-theme="dark"] .help-modal-overlay {
