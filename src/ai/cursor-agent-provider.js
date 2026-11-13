@@ -16,7 +16,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs, modelMatches } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -146,24 +146,21 @@ class CursorAgentProvider extends AIProvider {
     const permissionArgs = configOverrides.yolo
       ? ['--yolo']
       : ['--trust', '--sandbox', 'enabled'];
-    const baseArgs = ['-p', '--output-format', 'stream-json', '--stream-partial-output', '--model', model, ...permissionArgs];
-    const providerArgs = configOverrides.extra_args || [];
-    const modelConfig = configOverrides.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    // Alias-aware: `--model` gets the canonical id and the override is matched on
+    // the union of selector, canonical id and aliases (see _resolveModelConfig).
+    const { cliModel, extraArgs, env } = this._resolveModelConfig(model);
+    const baseArgs = ['-p', '--output-format', 'stream-json', '--stream-partial-output', '--model', cliModel, ...permissionArgs];
 
     // Merge env: provider env + model env
-    this.extraEnv = {
-      ...(configOverrides.env || {}),
-      ...(modelConfig?.env || {})
-    };
+    this.extraEnv = env;
 
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${agentCmd} ${quoteShellArgs([...baseArgs, ...providerArgs, ...modelArgs]).join(' ')}`;
+      this.command = `${agentCmd} ${quoteShellArgs([...baseArgs, ...extraArgs]).join(' ')}`;
       this.args = [];
     } else {
       this.command = agentCmd;
-      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
+      this.args = [...baseArgs, ...extraArgs];
     }
   }
 
@@ -674,16 +671,13 @@ class CursorAgentProvider extends AIProvider {
    * @returns {string[]} Complete args array for the CLI
    */
   buildArgsForModel(model) {
+    // Provider extra_args + model extra_args, resolved alias-aware
+    const { cliModel, extraArgs } = this._resolveModelConfig(model);
     // Base args for extraction (text output, no tools needed)
     // --trust needed to auto-approve the working directory without interactive prompt
-    const baseArgs = ['-p', '--output-format', 'text', '--trust', '--model', model];
-    // Provider-level extra_args (from configOverrides)
-    const providerArgs = this.configOverrides?.extra_args || [];
-    // Model-specific extra_args (from the model config for the given model)
-    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    const baseArgs = ['-p', '--output-format', 'text', '--trust', '--model', cliModel];
 
-    return [...baseArgs, ...providerArgs, ...modelArgs];
+    return [...baseArgs, ...extraArgs];
   }
 
   /**
@@ -695,11 +689,46 @@ class CursorAgentProvider extends AIProvider {
    * @returns {Object} Env vars to merge into the child environment
    */
   _resolveEnvForModel(model) {
-    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
-    return {
-      ...(this.configOverrides?.env || {}),
-      ...(modelConfig?.env || {})
+    return this._resolveModelConfig(model).env;
+  }
+
+  /**
+   * Single id-or-alias resolution shared by the analysis constructor, the
+   * extraction args, and the extraction env, so the same selector always runs
+   * the same model with the same override.
+   *
+   * - The built-in entry matches by canonical id or alias (`composer-2` →
+   *   `composer-2.5`).
+   * - A `providers.cursor-agent.models` override matches on the union of the
+   *   selector, the built-in's canonical id, and its aliases, or by one of the
+   *   override's own aliases. `applyConfigOverrides()` stores alias-keyed
+   *   overrides under the canonical id, so an exact-id match would miss them.
+   * - `--model` gets the canonical id. Unknown ids pass through verbatim, so
+   *   any model the account enables can still be named directly.
+   *
+   * @param {string} modelId - Selector (canonical id, alias, or any Cursor id)
+   * @returns {{ builtIn: Object|undefined, configModel: Object|undefined, cliModel: string, extraArgs: string[], env: Object }}
+   * @private
+   */
+  _resolveModelConfig(modelId) {
+    const configOverrides = this.configOverrides || {};
+
+    const builtIn = CURSOR_AGENT_MODELS.find(m => modelMatches(m, modelId));
+    const modelKeys = new Set([modelId, builtIn?.id, ...(builtIn?.aliases || [])].filter(Boolean));
+    const configModel = configOverrides.models?.find(
+      m => modelKeys.has(m.id) || (m.aliases || []).some(a => modelKeys.has(a))
+    );
+
+    const cliModel = builtIn?.id || configModel?.id || modelId;
+
+    // Merge: provider config → per-model config (built-ins carry no args/env)
+    const extraArgs = [...(configOverrides.extra_args || []), ...(configModel?.extra_args || [])];
+    const env = {
+      ...(configOverrides.env || {}),
+      ...(configModel?.env || {})
     };
+
+    return { builtIn, configModel, cliModel, extraArgs, env };
   }
 
   /**
