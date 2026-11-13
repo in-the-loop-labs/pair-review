@@ -233,6 +233,83 @@ describe('CursorAgentProvider', () => {
       expect(provider.extraEnv.VAR2).toBe('extra');
     });
 
+    describe('alias resolution (composer-2 → composer-2.5)', () => {
+      const { applyConfigOverrides, createProvider } = require('../../src/ai/provider');
+
+      afterEach(() => {
+        applyConfigOverrides({});
+      });
+
+      const modelArg = (args) => args[args.indexOf('--model') + 1];
+
+      it('passes the canonical id to --model for analysis and extraction', () => {
+        const provider = new CursorAgentProvider('composer-2');
+        expect(modelArg(provider.args)).toBe('composer-2.5');
+        expect(provider.args).not.toContain('composer-2');
+        expect(modelArg(provider.getExtractionConfig('composer-2').args)).toBe('composer-2.5');
+      });
+
+      it('applies an override keyed by the canonical id when the selector is the alias', () => {
+        const provider = new CursorAgentProvider('composer-2', {
+          env: { PROVIDER_VAR: 'p' },
+          models: [{ id: 'composer-2.5', env: { MODEL_VAR: 'm' }, extra_args: ['--canon-flag'] }]
+        });
+        expect(provider.args).toContain('--canon-flag');
+        expect(provider.extraEnv).toEqual({ PROVIDER_VAR: 'p', MODEL_VAR: 'm' });
+
+        const extraction = provider.getExtractionConfig('composer-2');
+        expect(modelArg(extraction.args)).toBe('composer-2.5');
+        expect(extraction.args).toContain('--canon-flag');
+        expect(extraction.env).toEqual({ PROVIDER_VAR: 'p', MODEL_VAR: 'm' });
+      });
+
+      it('applies an override keyed by the alias when the selector is the canonical id', () => {
+        const provider = new CursorAgentProvider('composer-2.5', {
+          models: [{ id: 'composer-2', env: { MODEL_VAR: 'm' }, extra_args: ['--alias-flag'] }]
+        });
+        expect(modelArg(provider.args)).toBe('composer-2.5');
+        expect(provider.args).toContain('--alias-flag');
+        expect(provider.extraEnv).toEqual({ MODEL_VAR: 'm' });
+      });
+
+      it('resolves an alias-keyed override through applyConfigOverrides and createProvider', () => {
+        // applyConfigOverrides stores this override under the canonical id; the
+        // provider must still find it when the run names the alias.
+        applyConfigOverrides({
+          providers: {
+            'cursor-agent': {
+              models: [{ id: 'composer-2', tier: 'balanced', env: { MODEL_VAR: 'm' }, extra_args: ['--alias-flag'] }]
+            }
+          }
+        });
+        const provider = createProvider('cursor-agent', 'composer-2');
+        expect(modelArg(provider.args)).toBe('composer-2.5');
+        expect(provider.args).toContain('--alias-flag');
+        expect(provider.extraEnv).toMatchObject({ MODEL_VAR: 'm' });
+
+        const extraction = provider.getExtractionConfig('composer-2');
+        expect(modelArg(extraction.args)).toBe('composer-2.5');
+        expect(extraction.args).toContain('--alias-flag');
+        expect(extraction.env).toMatchObject({ MODEL_VAR: 'm' });
+      });
+
+      it('passes an unknown id through verbatim and does not borrow another model\'s override', () => {
+        const provider = new CursorAgentProvider('some-new-cursor-model', {
+          models: [{ id: 'composer-2.5', extra_args: ['--canon-flag'] }]
+        });
+        expect(modelArg(provider.args)).toBe('some-new-cursor-model');
+        expect(provider.args).not.toContain('--canon-flag');
+      });
+
+      it('resolves a config-only model by one of its own aliases', () => {
+        const provider = new CursorAgentProvider('short-name', {
+          models: [{ id: 'custom-model', aliases: ['short-name'], extra_args: ['--custom'] }]
+        });
+        expect(modelArg(provider.args)).toBe('custom-model');
+        expect(provider.args).toContain('--custom');
+      });
+    });
+
     describe('yolo mode', () => {
       it('should include --trust and sandbox enabled by default', () => {
         const provider = new CursorAgentProvider('gemini-3-flash');
