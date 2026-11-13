@@ -358,6 +358,96 @@ async function seedAISuggestions(page, {
   }
 }
 
+/**
+ * `page.waitForResponse` that cannot take the whole worker down.
+ *
+ * `waitForResponse` is registered BEFORE the action that triggers it, so there
+ * is always a window between creating the promise and awaiting it. If anything
+ * in that window fails (a click that times out, an assertion, the test
+ * deadline), the still-pending promise rejects with nobody awaiting it. An
+ * unhandled rejection does not merely fail the test: Playwright reports
+ * `worker process exited unexpectedly (code=1)`, every remaining test in the
+ * file fails at 0 ms, and the run's failure set reshuffles by which worker
+ * died. Observed on main at comment-crud.spec.js "Comment Persistence".
+ *
+ * Attaching a no-op catch marks the rejection handled. Awaiting the SAME
+ * promise afterwards still observes it, so a genuinely missing response still
+ * fails the test at the await site. Nothing is swallowed.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string|RegExp|Function} urlOrPredicate - as passed to page.waitForResponse
+ * @param {Object} [options] - as passed to page.waitForResponse
+ * @returns {Promise<import('@playwright/test').Response>}
+ */
+function expectResponse(page, urlOrPredicate, options) {
+  const promise = page.waitForResponse(urlOrPredicate, options);
+  promise.catch(() => {});
+  return promise;
+}
+
+/**
+ * `page.waitForRequest` with the same guard as {@link expectResponse}: it has
+ * the identical register-then-await shape.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string|RegExp|Function} urlOrPredicate
+ * @param {Object} [options]
+ * @returns {Promise<import('@playwright/test').Request>}
+ */
+function expectRequest(page, urlOrPredicate, options) {
+  const promise = page.waitForRequest(urlOrPredicate, options);
+  promise.catch(() => {});
+  return promise;
+}
+
+/**
+ * Retire every user comment on one review through the API.
+ *
+ * The per-worker test database is shared by every spec file that worker runs,
+ * so a comment left behind by one test is rendered by the next page load of
+ * any later test. DELETE is a soft delete (status becomes 'inactive'), which is
+ * enough: the comments GET leaves inactive rows out unless asked for them.
+ *
+ * Best-effort by design (errors are swallowed): this mostly runs in afterEach,
+ * where a page left mid-navigation by a failing test must not turn one failure
+ * into two.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {number} [reviewId] - Review to clean. Defaults to the page's active
+ *   review (`window.prManager.currentPR.id`).
+ */
+async function cleanupComments(page, reviewId) {
+  await page.evaluate(async (rid) => {
+    try {
+      const id = rid ?? window.prManager?.currentPR?.id;
+      if (!id) return;
+      const data = await (await fetch(`/api/reviews/${id}/comments?includeDismissed=true`)).json();
+      for (const c of (data.comments || [])) {
+        await fetch(`/api/reviews/${id}/comments/${c.id}`, { method: 'DELETE' });
+      }
+    } catch { /* best-effort */ }
+  }, reviewId ?? null);
+}
+
+/**
+ * Retire every user comment AND drop every AI suggestion on review 1 (the PR
+ * mode fixture review). A sibling spec's analysis run leaves source='ai' rows
+ * on that review, and a later page load renders them as extra annotations.
+ * Clearing both gives a test a known-empty review to start from.
+ *
+ * @param {import('@playwright/test').Page} page
+ */
+async function cleanupAllComments(page) {
+  await page.evaluate(async () => {
+    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
+    const data = await commentsResponse.json();
+    for (const comment of (data.comments || [])) {
+      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
+    }
+    await fetch('/api/reviews/1/ai-suggestions', { method: 'DELETE' }).catch(() => {});
+  });
+}
+
 module.exports = {
   waitForDiffToRender,
   hoverDiffLine,
@@ -369,5 +459,9 @@ module.exports = {
   openSplitCommentForm,
   expectAnnotationInSplitColumn,
   dismissProgressModalIfVisible,
-  seedAISuggestions
+  seedAISuggestions,
+  expectResponse,
+  expectRequest,
+  cleanupComments,
+  cleanupAllComments
 };

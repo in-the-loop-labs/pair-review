@@ -12,7 +12,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions } from './helpers.js';
+import { waitForDiffToRender, seedAISuggestions, expectResponse } from './helpers.js';
 
 // Helper to handle modals when triggering analysis
 async function handleAnalysisModals(page) {
@@ -210,7 +210,7 @@ test.describe('API Integration', () => {
     await waitForDiffToRender(page);
 
     // Set up response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/api/pr/test-owner/test-repo/1/analyses') && response.status() === 200,
       { timeout: 10000 }
     );
@@ -231,7 +231,7 @@ test.describe('API Integration', () => {
     await waitForDiffToRender(page);
 
     // Set up response listener for suggestions endpoint
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/suggestions') && !response.url().includes('/check') && response.status() === 200,
       { timeout: 10000 }
     );

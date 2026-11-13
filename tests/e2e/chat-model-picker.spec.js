@@ -35,7 +35,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 /** localStorage flag written by "Don't ask again" (ChatPanel.MODEL_SWITCH_ACK_KEY). */
 const ACK_KEY = 'pair-review:chat-model-switch-ack';
@@ -252,7 +252,7 @@ for (const mode of MODES) {
       await expect(reopened).toBeHidden();
 
       // Send the first message. POST /api/chat/session is the REAL route.
-      const sessionPost = page.waitForRequest(
+      const sessionPost = expectRequest(page,
         (r) => r.url().endsWith('/api/chat/session') && r.method() === 'POST'
       );
       await sendMessage(page, 'Model picker marker: which model am I?');

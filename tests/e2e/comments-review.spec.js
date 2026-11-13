@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
+import { waitForDiffToRender, hoverDiffLine, expectResponse } from './helpers.js';
 
 test.describe('Comment Creation', () => {
   test('should show comment form when add comment button is clicked', async ({ page }) => {
@@ -146,7 +146,7 @@ test.describe('Review Modal', () => {
 test.describe('API Integration', () => {
   test('should fetch PR data from API on page load', async ({ page }) => {
     // Set up response listener before navigation
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/api/pr/') && response.status() === 200
     );
 
@@ -159,7 +159,7 @@ test.describe('API Integration', () => {
 
   test('should fetch diff data from API', async ({ page }) => {
     // Set up response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/diff') && response.status() === 200,
       { timeout: 15000 }
     );

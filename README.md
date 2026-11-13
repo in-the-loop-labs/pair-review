@@ -1202,6 +1202,10 @@ pnpm run test:e2e
 # Run E2E tests with visible browser
 pnpm run test:e2e:headed
 
+# Run the vendor contract suite: the real @pierre/diffs bundle in headless
+# Chromium, with no application server (see tests/CONVENTIONS.md)
+pnpm run test:contract
+
 # Start development server
 pnpm run dev
 ```

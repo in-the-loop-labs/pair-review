@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 test.describe('Stale PR Badge', () => {
   test('badge is hidden when PR is not stale', async ({ page }) => {
@@ -86,7 +86,7 @@ test.describe('Stale PR Badge', () => {
       });
     });
 
-    const refreshPromise = page.waitForRequest("**/api/pr/test-owner/test-repo/1/refresh");
+    const refreshPromise = expectRequest(page, "**/api/pr/test-owner/test-repo/1/refresh");
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
     await refreshPromise;

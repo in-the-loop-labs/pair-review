@@ -10,7 +10,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectResponse } from './helpers.js';
 
 // Helper: seed a council via API and return its id
 async function seedCouncil(page, { name, type, config }) {
@@ -101,7 +101,7 @@ test.describe('Council Save Button', () => {
     await footerSave.waitFor({ state: 'visible', timeout: 3000 });
 
     // Set up response listener for PUT (update existing) BEFORE clicking
-    const putPromise = page.waitForResponse(
+    const putPromise = expectResponse(page,
       response => response.url().includes(`/api/councils/${councilId}`) && response.request().method() === 'PUT',
       { timeout: 5000 }
     );
@@ -142,7 +142,7 @@ test.describe('Council Save Button', () => {
     await footerSave.waitFor({ state: 'visible', timeout: 3000 });
 
     // Set up response listener for PUT
-    const putPromise = page.waitForResponse(
+    const putPromise = expectResponse(page,
       response => response.url().includes(`/api/councils/${councilId}`) && response.request().method() === 'PUT',
       { timeout: 5000 }
     );

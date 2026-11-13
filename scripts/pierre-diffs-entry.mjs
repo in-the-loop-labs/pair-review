@@ -8,10 +8,16 @@ export {
   FileDiff,
   File,
 
+  // Virtualized multi-file viewer. Not read by production code yet: the vendor
+  // contract suite (tests/contract) drives it, and the CodeView migration
+  // (plans/codeview-virtualized-diff.md) wires it into the app.
+  CodeView,
+
   // Patch/diff parsing
   parsePatchFiles,
   getSingularPatch,
   parseDiffFromFile,
+  hydratePartialDiff,
   trimPatchContext,
 
   // Highlighter management

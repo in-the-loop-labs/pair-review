@@ -26,4 +26,5 @@ public/js/vendor/pierre-diffs.js
 public/js/vendor/pierre-diffs.js.map
 public/js/vendor/pierre-diffs-worker.js
 public/js/vendor/pierre-diffs-worker.js.map
+tests/.cache/
 .pair-loop/
