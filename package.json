@@ -32,6 +32,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:debug": "playwright test --debug",
+    "test:contract": "playwright test --config playwright.contract.config.js",
     "build:diffs": "node scripts/build-pierre-diffs.mjs",
     "prepare": "node scripts/build-pierre-diffs.mjs",
     "generate:skill-prompts": "node scripts/generate-skill-prompts.js",

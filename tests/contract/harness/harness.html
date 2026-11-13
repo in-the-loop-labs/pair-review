@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 -->
+<!--
+  Page for the vendor contract suite (tests/contract). It is never served by the
+  app: tests/contract/harness/contract-test.js fulfils requests for a virtual
+  origin from files on disk, so no port is bound.
+
+  Layout mirrors what the app will use: a column whose last child, #root, is the
+  scroll container handed to CodeView.setup().
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>CodeView contract harness</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #toolbar { flex: 0 0 40px; background: #eee; display: flex; align-items: center; padding: 0 8px; font-size: 12px; }
+  #root { flex: 1 1 auto; min-height: 0; overflow: auto; position: relative; }
+  .ph { display: flex; align-items: center; gap: 8px; height: 40px; box-sizing: border-box; padding: 0 12px; background: #f6f8fa; border: 1px solid #d0d7de; font-size: 13px; }
+  .ph .path { font-family: ui-monospace, monospace; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ann { border: 1px solid #d0d7de; border-radius: 6px; margin: 6px 12px; padding: 8px; background: #fff; font-size: 13px; box-sizing: border-box; }
+  .ann textarea { display: block; width: 100%; box-sizing: border-box; font: inherit; }
+  /* Positioned like the app's .pierre-gutter-buttons (pr.css): the vendor's slot
+     wrapper is absolutely positioned inside the hovered gutter cell, and without a
+     z-index the line-number content of that cell is on top of slotted content. */
+  .gut { display: flex; gap: 2px; position: absolute; right: -12px; top: 50%; transform: translateY(-50%); z-index: 20; pointer-events: auto; }
+  .gut button { width: 18px; height: 18px; padding: 0; font-size: 11px; line-height: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">CodeView contract harness</div>
+  <div id="root"></div>
+</div>
+<script src="/harness.js"></script>
+</body>
+</html>

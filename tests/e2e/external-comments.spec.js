@@ -38,7 +38,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expectRequest } from './helpers.js';
 
 // ---------------------------------------------------------------------
 // Fixture data
@@ -433,7 +433,7 @@ test.describe('External comments: manual refresh', () => {
 
     // Click the refresh button. Use a request-wait to confirm the new sync
     // POST is fired by the click itself.
-    const syncReq = page.waitForRequest(
+    const syncReq = expectRequest(page,
       (req) => /\/api\/reviews\/[^/]+\/external-comments\/sync/.test(req.url())
                && req.method() === 'POST',
       { timeout: 5000 }

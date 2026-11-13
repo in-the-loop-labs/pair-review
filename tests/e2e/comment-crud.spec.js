@@ -14,7 +14,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, openCommentFormOnLine, hoverDiffLine } from './helpers.js';
+import { waitForDiffToRender, openCommentFormOnLine, hoverDiffLine, expectResponse } from './helpers.js';
 
 // Helper to clean up all user comments (call via API to ensure clean state)
 async function cleanupAllComments(page) {
@@ -208,7 +208,7 @@ test.describe('Comment Editing', () => {
     await editTextarea.fill('Edited comment text');
 
     // Wait for API call to complete
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -274,7 +274,7 @@ test.describe('Comment Editing', () => {
     await editTextarea.fill(textWithQuotes);
 
     // Wait for API call to complete
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -323,7 +323,7 @@ test.describe('Comment Editing', () => {
     const textWithQuotes = "It's important to check the value's type";
     await editTextarea.fill(textWithQuotes);
 
-    const saveResponsePromise = page.waitForResponse(
+    const saveResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
@@ -379,7 +379,7 @@ test.describe('Comment Deletion', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener before deletion
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -555,7 +555,7 @@ test.describe('Comment API Integration', () => {
     await waitForDiffToRender(page);
 
     // Set up API response listener
-    const responsePromise = page.waitForResponse(
+    const responsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
@@ -586,7 +586,7 @@ test.describe('Comment API Integration', () => {
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
 
     // Set up delete API listener
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -610,7 +610,7 @@ test.describe('Comment API Integration', () => {
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
 
     // Set up update API listener
-    const updateResponsePromise = page.waitForResponse(
+    const updateResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 

@@ -13,7 +13,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, openCommentFormOnLine } from './helpers.js';
+import { waitForDiffToRender, openCommentFormOnLine, expectResponse } from './helpers.js';
 
 // Helper to clean up all user comments (call via API to ensure clean state)
 async function cleanupAllComments(page) {
@@ -40,7 +40,7 @@ async function setShowDismissed(page, checked) {
   await funnel.click();
   const option = page.getByRole('checkbox', { name: 'Show dismissed' });
   await expect(option).toBeVisible();
-  const reload = page.waitForResponse(
+  const reload = expectResponse(page,
     response => /\/api\/reviews\/\d+\/comments(\?|$)/.test(response.url()) && response.request().method() === 'GET' && response.status() === 200,
     { timeout: 10000 }
   );
@@ -120,7 +120,7 @@ test.describe('Dismissed Comment Persistence', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener for delete (which dismisses the comment)
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -221,7 +221,7 @@ test.describe('Comment Restore', () => {
     const commentId = await commentRow.getAttribute('data-comment-id');
 
     // Set up API listener for delete
-    const deleteResponsePromise = page.waitForResponse(
+    const deleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
@@ -269,7 +269,7 @@ test.describe('Comment Restore', () => {
     await expect(restoreBtn).toBeVisible({ timeout: 3000 });
 
     // Set up API listener for restore
-    const restoreResponsePromise = page.waitForResponse(
+    const restoreResponsePromise = expectResponse(page,
       response => response.url().includes('/restore') && response.request().method() === 'PUT'
     );
 
@@ -365,7 +365,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(confirmBtn).toBeVisible();
 
     // Set up API listener for bulk delete
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
@@ -422,7 +422,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     // Confirm the deletion
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
@@ -504,7 +504,7 @@ test.describe('Bulk Deletion via Clear All', () => {
 
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
-    const bulkDeleteResponsePromise = page.waitForResponse(
+    const bulkDeleteResponsePromise = expectResponse(page,
       response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
