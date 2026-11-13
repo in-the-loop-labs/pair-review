@@ -674,6 +674,61 @@ describe('CouncilProgressModal', () => {
     });
   });
 
+  describe('_refreshAllVoiceHeaders', () => {
+    // Build a voice container whose level children map to _voiceStates entries
+    function setupVoice(modal, modalContainer, voiceKey, childStates) {
+      const header = createMockElement('div');
+      const iconEl = { id: 'icon' };
+      const statusEl = { id: 'status' };
+      header.querySelector = vi.fn((sel) => {
+        if (sel === '.council-level-icon') return iconEl;
+        if (sel === '.council-level-status') return statusEl;
+        return null;
+      });
+      const levelEls = Object.entries(childStates).map(([level, state]) => {
+        modal._voiceStates[`${voiceKey}:${level}`] = state;
+        return { dataset: { vcLevel: level } };
+      });
+      const container = {
+        dataset: { voiceKey },
+        querySelector: vi.fn(() => header),
+        querySelectorAll: vi.fn(() => levelEls)
+      };
+      modalContainer.querySelectorAll = vi.fn(() => [container]);
+      return { iconEl, statusEl };
+    }
+
+    it('derives "completed" when levels completed and per-voice consolidation was skipped', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+      const { iconEl, statusEl } = setupVoice(modal, modalContainer, 'claude-opus', { 3: 'completed', 4: 'skipped' });
+
+      modal._refreshAllVoiceHeaders();
+
+      expect(renderSpy).toHaveBeenCalledWith(iconEl, statusEl, 'completed', 'council-level');
+    });
+
+    it('stays "running" while a level is still running even if consolidation is skipped', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+      const { iconEl, statusEl } = setupVoice(modal, modalContainer, 'claude-opus', { 3: 'running', 4: 'skipped' });
+
+      modal._refreshAllVoiceHeaders();
+
+      expect(renderSpy).toHaveBeenCalledWith(iconEl, statusEl, 'running', 'council-level');
+    });
+
+    it('derives "failed" when a level failed and consolidation was skipped', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+      const { iconEl, statusEl } = setupVoice(modal, modalContainer, 'claude-opus', { 1: 'failed', 3: 'completed', 4: 'skipped' });
+
+      modal._refreshAllVoiceHeaders();
+
+      expect(renderSpy).toHaveBeenCalledWith(iconEl, statusEl, 'failed', 'council-level');
+    });
+  });
+
   describe('_rebuildBodyVoiceCentric', () => {
     it('renders reviewer sections for voice-centric config with boolean levels', () => {
       const { modal, modalContainer } = createTestCouncilProgressModal();

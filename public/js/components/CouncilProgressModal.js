@@ -736,7 +736,9 @@ class CouncilProgressModal {
         return this._voiceStates[key] || 'pending';
       });
 
-      const allComplete = states.every(s => s === 'completed');
+      // A skipped child (e.g. per-reviewer consolidation with a single level) is
+      // finished work, so it must not keep the reviewer header spinning
+      const allComplete = states.every(s => s === 'completed' || s === 'skipped');
       const anyRunning = states.some(s => s === 'running');
       const anyFailed = states.some(s => s === 'failed');
       const allCancelled = states.every(s => s === 'cancelled');
