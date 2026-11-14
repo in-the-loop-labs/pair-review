@@ -42,7 +42,8 @@ function buildZone(fileName = 'src/a.js') {
 function makeFileCommentManager(zone) {
   const fcm = Object.create(FileCommentManager.prototype);
   fcm.prManager = { currentPR: { id: 'review-1' } };
-  fcm.findZoneForFile = vi.fn(() => zone);
+  // Zones are found through the registry, never in the document.
+  fcm._registerZone(zone, zone.dataset.fileName, false);
   fcm.displayAISuggestion = vi.fn();
   fcm.displayUserComment = vi.fn();
   fcm.updateCommentCount = vi.fn();

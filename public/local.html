@@ -454,9 +454,12 @@
                         </button>
                     </div>
                 </div>
-                <div id="diff-container" class="diff-container">
+                <!-- Loading, error and empty messages. PRManager._setDiffStatus is its only writer. -->
+                <div id="diff-status" class="diff-container diff-status">
                     <div class="loading">Loading changes...</div>
                 </div>
+                <!-- The diff. Its children belong to the diff renderer; nothing else writes markup here. -->
+                <div id="diff-container" class="diff-container" hidden></div>
             </main>
 
             <!-- Right Panel Group (AI Panel + Chat) -->

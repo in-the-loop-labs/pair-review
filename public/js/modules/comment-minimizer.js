@@ -391,7 +391,12 @@ class CommentMinimizer {
    * Scan all file-comments-zones and inject indicator buttons into file headers.
    */
   _refreshFileIndicators() {
-    const zones = document.querySelectorAll('.file-comments-zone');
+    // Zones come from the page's registry (PRManager.forEachFileCommentsZone),
+    // which also holds zones that are not attached to the document. A zone
+    // without a header in the document gets no indicator here; its header's
+    // indicator is injected by the refresh that follows the header's return.
+    const zones = [];
+    window.prManager?.forEachFileCommentsZone?.(zone => zones.push(zone));
     for (const zone of zones) {
       const cards = zone.querySelectorAll('.file-comment-card');
       if (cards.length === 0) continue;

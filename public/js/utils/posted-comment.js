@@ -189,17 +189,89 @@ function syncEditedSincePosted(element, comment) {
   const html = getEditedSincePostedHtml(comment);
   const body = element.querySelector('.user-comment-body');
   if (html && body) body.insertAdjacentHTML('afterend', html);
+  applyUpdateBusy(element, comment?.id);
 }
 
-/** Every rendered element for a comment id, across the three diff renderers. */
+/**
+ * What the edited-since-posted note of a comment shows, as one string: empty
+ * when there is no note. Two equal signatures mean the note needs no change.
+ */
+function editedNoteSignature(comment) {
+  if (!canUpdateOnHost(comment)) return '';
+  const error = getUpdateError(comment.id);
+  return JSON.stringify([String(comment.id), hostName(), error?.message || null, error?.review_url || null]);
+}
+
+/**
+ * Bring a rendered comment (row, card or annotation) in line with its data:
+ * status and publication stamps, hidden-as-posted, the edited-since-posted
+ * note and an update in flight. Idempotent, and it leaves the note's DOM
+ * alone when the note already says what the data says, so it is safe to call
+ * every time the element is drawn. The comment's text is not re-rendered:
+ * the edit flow writes it to the element itself.
+ * @param {HTMLElement} element - Element carrying data-comment-id
+ * @param {Object} comment
+ */
+function syncCommentElement(element, comment) {
+  if (!element || !comment) return;
+  stampCommentStatus(element, comment);
+  const signature = editedNoteSignature(comment);
+  const notes = element.querySelectorAll('.posted-comment-edited');
+  const current = notes.length === 1 ? (notes[0].dataset.noteSignature ?? null) : (notes.length === 0 ? '' : null);
+  if (current !== signature) {
+    syncEditedSincePosted(element, comment);
+    const note = element.querySelector('.posted-comment-edited');
+    if (note) note.dataset.noteSignature = signature;
+  }
+  applyUpdateBusy(element, comment.id);
+}
+
+/**
+ * Every rendered element for a comment id, across the diff renderers. The
+ * line comment's card comes from the page's own resolver when there is one
+ * (PRManager.findCommentCard), which also knows a card the diff has built
+ * and not attached; file-level cards and rows are found in the document and
+ * in the file-comment zones the page holds.
+ */
 function findRenderedComments(commentId) {
   if (typeof document === 'undefined') return [];
   const id = String(commentId).replace(/["\\]/g, '\\$&');
-  return [...document.querySelectorAll(`.user-comment-row[data-comment-id="${id}"], .file-comment-card[data-comment-id="${id}"]`)];
+  const selector = `.user-comment-row[data-comment-id="${id}"], .file-comment-card[data-comment-id="${id}"]`;
+  const found = new Set(document.querySelectorAll(selector));
+  const manager = typeof window !== 'undefined' ? window.prManager : null;
+  const card = manager?.findCommentCard?.(commentId);
+  if (card) found.add(card);
+  manager?.forEachFileCommentsZone?.((zone) => {
+    zone.querySelectorAll(selector).forEach(element => found.add(element));
+  });
+  return [...found];
+}
+
+// Comments with a host update in flight. Kept as data so a card that is
+// drawn (or drawn again) while the update runs shows it too.
+const updatesBusy = new Set();
+
+function isUpdateBusy(commentId) {
+  return updatesBusy.has(String(commentId));
+}
+
+function applyUpdateBusy(element, commentId) {
+  if (!element || commentId == null) return;
+  const busy = isUpdateBusy(commentId);
+  element.querySelectorAll('.btn-update-on-host').forEach(button => {
+    // A button that was never busy carries no aria-busy; leave it as built.
+    const showsBusy = button.disabled || button.getAttribute('aria-busy') === 'true';
+    if (showsBusy === busy) return;
+    button.disabled = busy;
+    button.setAttribute('aria-busy', String(busy));
+    button.textContent = busy ? 'Updating…' : `Update on ${hostName()}`;
+  });
 }
 
 /** Show or clear busy state on every "Update on GitHub" button for a comment. */
 function setUpdateBusy(commentId, busy) {
+  if (busy) updatesBusy.add(String(commentId));
+  else updatesBusy.delete(String(commentId));
   findRenderedComments(commentId).forEach(element => {
     element.querySelectorAll('.btn-update-on-host').forEach(button => {
       button.disabled = busy;
@@ -307,8 +379,10 @@ const PostedComment = {
   setUpdateError,
   getEditedSincePostedHtml,
   syncEditedSincePosted,
+  syncCommentElement,
   findRenderedComments,
   setUpdateBusy,
+  isUpdateBusy,
   requestHostUpdate,
   escapeHtml,
   safeUrl,

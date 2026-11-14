@@ -4,9 +4,11 @@
 /**
  * Unit tests for SuggestionNavigator's async navigation path.
  *
- * The suggestion's diff row only exists once its (lazily rendered) file body
- * is in the DOM, so `goToSuggestion` awaits `ensureSuggestionVisible` before
- * highlighting/scrolling. These tests lock in:
+ * The suggestion's card only exists once its (lazily rendered) file body is
+ * in the DOM, so `goToSuggestion` goes through the page's one navigation
+ * helper, `PRManager.revealInDiff` (the production one here, on a page
+ * manager from tests/utils/page-manager.js), before highlighting. These
+ * tests lock in:
  *   - the render-before-lookup ordering (the bug being fixed),
  *   - that a collapsed file is expanded vs. a rendered-but-collapsed body,
  *   - the early returns when there's no file / no prManager,
@@ -17,13 +19,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const SuggestionNavigator = require('../../public/js/components/SuggestionNavigator.js');
+const { makePageManager } = require('../utils/page-manager.js');
 
 /** Build a navigator with the list-rendering DOM stubbed out. */
 function makeNavigator() {
   const nav = new SuggestionNavigator();
   // Isolate goToSuggestion's await ordering from real DOM highlight/scroll.
   vi.spyOn(nav, 'highlightCurrentSuggestion').mockImplementation(() => {});
-  vi.spyOn(nav, 'scrollToSuggestion').mockImplementation(() => {});
   return nav;
 }
 
@@ -74,151 +76,191 @@ describe('SuggestionNavigator.updateSuggestions selection', () => {
   });
 });
 
-describe('SuggestionNavigator.scrollToSuggestion', () => {
+/** A suggestion card attached to the document, as the table renderer leaves one. */
+function addCard(id) {
+  const target = document.createElement('div');
+  target.className = 'ai-suggestion';
+  target.dataset.suggestionId = id;
+  target.scrollIntoView = vi.fn();
+  document.body.appendChild(target);
+  return target;
+}
+
+describe('SuggestionNavigator.goToSuggestion: reveal and report', () => {
   afterEach(() => {
     delete window.toast;
   });
 
-  it('scrolls to the rendered suggestion without an error toast', () => {
+  it('scrolls to the suggestion\'s card through revealInDiff without an error toast', async () => {
     window.toast = { showError: vi.fn() };
+    window.prManager = makePageManager();
+    const reveal = vi.spyOn(window.prManager, 'revealInDiff');
     const nav = new SuggestionNavigator();
-    nav.suggestions = [{ id: 'shown' }];
-    nav.currentSuggestionIndex = 0;
-    const target = document.createElement('div');
-    target.dataset.suggestionId = 'shown';
-    target.scrollIntoView = vi.fn();
-    document.body.appendChild(target);
+    nav.suggestions = [{ id: 'shown', file: 'a.js' }];
+    const target = addCard('shown');
 
-    nav.scrollToSuggestion();
+    await nav.goToSuggestion(0);
 
-    expect(target.scrollIntoView).toHaveBeenCalled();
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0][0]).toMatchObject({
+      file: 'a.js',
+      annotationId: 'suggestion-shown',
+      zoneCardSelector: '.ai-suggestion[data-suggestion-id="shown"]',
+      scroll: { behavior: 'smooth', block: 'start', inline: 'nearest' },
+    });
+    // The lines are not revealed here: displaying the suggestions did that.
+    expect(reveal.mock.calls[0][0].line_start).toBeUndefined();
+    expect(target.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+    expect(target.classList.contains('current-suggestion')).toBe(true);
     expect(window.toast.showError).not.toHaveBeenCalled();
   });
 
-  it('shows the display error when the suggestion has no card in the diff', () => {
+  it('shows the display error when the suggestion has no card in the diff', async () => {
     window.toast = { showError: vi.fn() };
+    window.prManager = makePageManager();
     const nav = new SuggestionNavigator();
     nav.suggestions = [{ id: 'missing', _displayError: 'Line 9 (RIGHT) not found in diff for file "a.js"' }];
-    nav.currentSuggestionIndex = 0;
 
-    nav.scrollToSuggestion();
+    await nav.goToSuggestion(0);
 
     expect(window.toast.showError).toHaveBeenCalledWith('Line 9 (RIGHT) not found in diff for file "a.js"');
   });
 
-  it('shows no error while suggestions are being redisplayed', () => {
+  it('reports a card that exists and is not attached to the document as not revealed', async () => {
+    // The bridge holds a card for the suggestion's annotation, and the diff
+    // never attaches it (its line is not shown). That is a miss.
+    window.toast = { showError: vi.fn() };
+    const detached = document.createElement('div');
+    detached.className = 'ai-suggestion';
+    window.prManager = makePageManager({
+      pierreBridge: {
+        findAnnotationFile: () => 'a.js',
+        whenAnnotationRendered: vi.fn(async () => null),
+        findAnnotationByData: () => ({ fileName: 'a.js', annotation: { metadata: { id: 'suggestion-7' } } }),
+        getAnnotationElement: () => detached,
+      },
+    });
+    const nav = new SuggestionNavigator();
+    nav.suggestions = [{ id: 7, file: 'a.js' }];
+
+    await nav.goToSuggestion(0);
+
+    expect(window.prManager.pierreBridge.whenAnnotationRendered).toHaveBeenCalledWith(
+      'a.js', 'suggestion-7', expect.objectContaining({ isCancelled: expect.any(Function) }));
+    expect(window.toast.showError).toHaveBeenCalledWith('Could not reveal this finding');
+  });
+
+  it('shows no error while suggestions are being redisplayed', async () => {
     // displayAISuggestions removes every card first and re-adds them when it
     // ends, so a lookup miss during a display is not an error.
     window.toast = { showError: vi.fn() };
-    window.prManager = { suggestionManager: { _isDisplayingSuggestions: true } };
+    window.prManager = makePageManager({ suggestionManager: { _isDisplayingSuggestions: true } });
     const nav = new SuggestionNavigator();
     nav.suggestions = [{ id: 'reloading' }];
-    nav.currentSuggestionIndex = 0;
 
-    nav.scrollToSuggestion();
+    await nav.goToSuggestion(0);
     expect(window.toast.showError).not.toHaveBeenCalled();
 
     // Once the display has ended a miss is reported again.
     window.prManager.suggestionManager._isDisplayingSuggestions = false;
-    nav.scrollToSuggestion();
+    await nav.goToSuggestion(0);
     expect(window.toast.showError).toHaveBeenCalledWith('Could not reveal this finding');
   });
 
-  it('falls back to a generic message without a display error', () => {
+  it('falls back to a generic message without a display error', async () => {
     window.toast = { showError: vi.fn() };
+    window.prManager = makePageManager();
     const nav = new SuggestionNavigator();
     nav.suggestions = [{ id: 'missing' }];
-    nav.currentSuggestionIndex = 0;
 
-    nav.scrollToSuggestion();
+    await nav.goToSuggestion(0);
 
     expect(window.toast.showError).toHaveBeenCalledWith('Could not reveal this finding');
   });
 
-  it('does nothing when there is no selection or no toast', () => {
-    window.toast = { showError: vi.fn() };
+  it('does not throw without a toast, and survives a failing navigation', async () => {
+    window.prManager = makePageManager({
+      revealInDiff: vi.fn(async () => { throw new Error('boom'); }),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const nav = new SuggestionNavigator();
-    nav.suggestions = [{ id: 'missing' }];
-    nav.currentSuggestionIndex = -1;
-    nav.scrollToSuggestion();
-    expect(window.toast.showError).not.toHaveBeenCalled();
+    nav.suggestions = [{ id: 'missing', file: 'a.js' }];
 
-    delete window.toast;
-    nav.currentSuggestionIndex = 0;
-    expect(() => nav.scrollToSuggestion()).not.toThrow();
-  });
-
-  it('does nothing when the selected index is past the end of the list', () => {
-    window.toast = { showError: vi.fn() };
-    const nav = new SuggestionNavigator();
-    nav.suggestions = [];
-    nav.currentSuggestionIndex = 3;
-    expect(() => nav.scrollToSuggestion()).not.toThrow();
-    expect(window.toast.showError).not.toHaveBeenCalled();
+    await expect(nav.goToSuggestion(0)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    expect(nav.currentSuggestionIndex).toBe(0);
   });
 });
 
 describe('SuggestionNavigator.goToSuggestion', () => {
-  it('expands a collapsed file before highlight/scroll', async () => {
+  /** A file wrapper in the document, collapsed or not. */
+  function addWrapper(fileName, { collapsed = false } = {}) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper collapsed';
-    wrapper.dataset.fileName = 'a.js';
+    wrapper.className = `d2h-file-wrapper${collapsed ? ' collapsed' : ''}`;
+    wrapper.dataset.fileName = fileName;
+    document.body.appendChild(wrapper);
+    return wrapper;
+  }
+
+  it('expands a collapsed file before the card is resolved and highlighted', async () => {
+    const wrapper = addWrapper('a.js', { collapsed: true });
     const order = [];
-    window.prManager = {
+    window.prManager = makePageManager({
       findFileElement: vi.fn(() => wrapper),
-      toggleFileCollapse: vi.fn(async () => order.push('toggle')),
-      ensureFileBodyRendered: vi.fn(async () => order.push('render'))
-    };
+      ensureFileBodyRendered: vi.fn(async () => { order.push('render'); }),
+    });
+    const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed');
     const nav = makeNavigator();
     nav.highlightCurrentSuggestion.mockImplementation(() => order.push('highlight'));
-    nav.scrollToSuggestion.mockImplementation(() => order.push('scroll'));
     nav.suggestions = [{ id: 's1', file: 'a.js' }];
+    const card = addCard('s1');
+    card.scrollIntoView.mockImplementation(() => order.push('scroll'));
 
     await nav.goToSuggestion(0);
 
-    expect(window.prManager.toggleFileCollapse).toHaveBeenCalledWith('a.js');
-    expect(window.prManager.ensureFileBodyRendered).not.toHaveBeenCalled();
-    // Highlight/scroll run strictly after the expand await resolves.
-    expect(order).toEqual(['toggle', 'highlight', 'scroll']);
+    // Through the page's one collapse writer, to "expanded".
+    expect(setCollapsed).toHaveBeenCalledWith('a.js', false);
+    expect(wrapper.classList.contains('collapsed')).toBe(false);
+    // The body renders (inside the expand, then for the reveal itself)
+    // strictly before the scroll and the highlight.
+    expect(order).toEqual(['render', 'render', 'scroll', 'highlight']);
   });
 
   it('renders the lazy body for a non-collapsed file', async () => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper';
-    wrapper.dataset.fileName = 'a.js';
-    window.prManager = {
+    const wrapper = addWrapper('a.js');
+    window.prManager = makePageManager({
       findFileElement: vi.fn(() => wrapper),
-      toggleFileCollapse: vi.fn(async () => {}),
-      ensureFileBodyRendered: vi.fn(async () => {})
-    };
+      ensureFileBodyRendered: vi.fn(async () => {}),
+    });
+    const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed');
     const nav = makeNavigator();
     nav.suggestions = [{ id: 's1', file: 'a.js' }];
+    const card = addCard('s1');
 
     await nav.goToSuggestion(0);
 
     expect(window.prManager.ensureFileBodyRendered).toHaveBeenCalledWith('a.js');
-    expect(window.prManager.toggleFileCollapse).not.toHaveBeenCalled();
+    expect(setCollapsed).not.toHaveBeenCalled();
     expect(nav.highlightCurrentSuggestion).toHaveBeenCalled();
-    expect(nav.scrollToSuggestion).toHaveBeenCalled();
+    expect(card.scrollIntoView).toHaveBeenCalled();
   });
 
   it('does nothing for an out-of-range index', async () => {
-    window.prManager = { findFileElement: vi.fn(), ensureFileBodyRendered: vi.fn() };
+    window.prManager = makePageManager({ revealInDiff: vi.fn() });
     const nav = makeNavigator();
     nav.suggestions = [{ id: 's1', file: 'a.js' }];
 
     await nav.goToSuggestion(5);
 
-    expect(window.prManager.findFileElement).not.toHaveBeenCalled();
+    expect(window.prManager.revealInDiff).not.toHaveBeenCalled();
     expect(nav.highlightCurrentSuggestion).not.toHaveBeenCalled();
   });
 
   it('skips file prep when the suggestion has no file', async () => {
-    window.prManager = {
+    window.prManager = makePageManager({
       findFileElement: vi.fn(),
-      toggleFileCollapse: vi.fn(),
-      ensureFileBodyRendered: vi.fn()
-    };
+      ensureFileBodyRendered: vi.fn(),
+    });
     const nav = makeNavigator();
     nav.suggestions = [{ id: 's1' }]; // no file
 
@@ -237,27 +279,28 @@ describe('SuggestionNavigator.goToSuggestion', () => {
 
     await nav.goToSuggestion(0);
 
+    expect(nav.currentSuggestionIndex).toBe(0);
     expect(nav.highlightCurrentSuggestion).toHaveBeenCalled();
-    expect(nav.scrollToSuggestion).toHaveBeenCalled();
   });
 
   it('lets a newer goToSuggestion supersede an older in-flight one', async () => {
     // Each ensureFileBodyRendered call hands back a resolver we control, so we
     // can interleave two goToSuggestion calls across their awaits.
     const resolvers = [];
-    window.prManager = {
+    window.prManager = makePageManager({
       findFileElement: vi.fn(() => {
         const w = document.createElement('div');
         w.className = 'd2h-file-wrapper';
         return w;
       }),
-      toggleFileCollapse: vi.fn(),
-      ensureFileBodyRendered: vi.fn(() => new Promise((res) => resolvers.push(res)))
-    };
+      ensureFileBodyRendered: vi.fn(() => new Promise((res) => resolvers.push(res))),
+    });
     const nav = makeNavigator();
     const highlighted = [];
     nav.highlightCurrentSuggestion.mockImplementation(() => highlighted.push(nav.currentSuggestionIndex));
     nav.suggestions = [{ id: 's1', file: 'a.js' }, { id: 's2', file: 'b.js' }];
+    const first = addCard('s1');
+    const second = addCard('s2');
 
     const pA = nav.goToSuggestion(0); // _navGen = 1, awaits resolvers[0]
     const pB = nav.goToSuggestion(1); // _navGen = 2, awaits resolvers[1]
@@ -267,22 +310,26 @@ describe('SuggestionNavigator.goToSuggestion', () => {
     resolvers[1]();
     await Promise.all([pA, pB]);
 
-    // Only the latest call highlights, and it sees its own (latest) index.
+    // Only the latest call scrolls and highlights, and it sees its own
+    // (latest) index.
     expect(highlighted).toEqual([1]);
     expect(nav.currentSuggestionIndex).toBe(1);
+    expect(first.scrollIntoView).not.toHaveBeenCalled();
+    expect(second.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the selected suggestion when suggestions refresh during a pending jump', async () => {
     let release;
-    window.prManager = {
-      findFileElement: vi.fn(() => null),
-      ensureFileBodyRendered: vi.fn(() => new Promise(resolve => { release = resolve; }))
-    };
+    window.prManager = makePageManager({
+      ensureFileBodyRendered: vi.fn(() => new Promise(resolve => { release = resolve; })),
+    });
     const nav = makeNavigator();
     const highlighted = [];
     nav.highlightCurrentSuggestion.mockImplementation(() => highlighted.push(nav.currentSuggestionIndex));
     nav.suggestions = [{ id: 'first', file: 'a.js', line_start: 20 },
       { id: 'selected', file: 'a.js', line_start: 40 }];
+    const card = addCard('selected');
+    const other = addCard('first');
 
     const pending = nav.goToSuggestion(1);
     // A refresh lands while the file body is still rendering and moves the
@@ -294,6 +341,8 @@ describe('SuggestionNavigator.goToSuggestion', () => {
 
     expect(nav.currentSuggestionIndex).toBe(0);
     expect(highlighted).toEqual([0]);
-    expect(nav.scrollToSuggestion).toHaveBeenCalled();
+    // The suggestion that was asked for is the one scrolled to.
+    expect(card.scrollIntoView).toHaveBeenCalled();
+    expect(other.scrollIntoView).not.toHaveBeenCalled();
   });
 });

@@ -683,8 +683,9 @@ describe('PRManager Suggestion Status', () => {
 
       await prManager.deleteUserComment(commentId);
 
-      // Verify document.querySelector was called to find the row
-      expect(document.querySelector).toHaveBeenCalledWith(`[data-comment-id="${commentId}"]`);
+      // Verify the row was looked up through the card resolver (a line
+      // comment's row, then the file-level card)
+      expect(document.querySelector).toHaveBeenCalledWith(`.user-comment-row[data-comment-id="${commentId}"]`);
 
       // Comment row should ALWAYS be removed from diff view (design decision)
       expect(mockRowWithChild.remove).toHaveBeenCalled();

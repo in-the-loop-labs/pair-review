@@ -258,35 +258,52 @@ class SuggestionNavigator {
     // lookups below — otherwise both silently miss on the first attempt.
     // A collapsed file is expanded first so the row is actually visible.
     const myGen = ++this._navGen;
-    await this.ensureSuggestionVisible(this.suggestions[index]);
+    const suggestion = this.suggestions[index];
+    // Expand the file, render its body, resolve the card and scroll to it:
+    // the page's one navigation helper. The lines are not revealed here: a
+    // suggestion's card is on the diff only once the suggestions have been
+    // displayed, and displaying them reveals their lines.
+    const pm = window.prManager;
+    let card = null;
+    if (pm?.revealInDiff && suggestion) {
+      try {
+        const result = await pm.revealInDiff({
+          file: suggestion.file,
+          annotationId: `suggestion-${suggestion.id}`,
+          zoneCardSelector: `.ai-suggestion[data-suggestion-id="${suggestion.id}"]`,
+          findElement: () => this._findSuggestionCard(suggestion),
+          scroll: { behavior: 'smooth', block: 'start', inline: 'nearest' },
+          isCancelled: () => myGen !== this._navGen
+        });
+        card = result.element;
+      } catch (err) {
+        console.warn('[SuggestionNavigator] could not reveal suggestion', suggestion?.id, err);
+      }
+    }
     // A newer goToSuggestion ran while we awaited and moved
-    // this.currentSuggestionIndex — let it own the highlight/scroll.
+    // this.currentSuggestionIndex — let it own the highlight.
     if (myGen !== this._navGen) return;
     this.highlightCurrentSuggestion();
-    this.scrollToSuggestion();
+    if (!card && suggestion && !pm?.suggestionManager?._isDisplayingSuggestions) {
+      // The finding has no card in the diff (file or line not shown).
+      // Say so instead of silently doing nothing. Not while suggestions
+      // are being redisplayed: every card is removed first and re-added
+      // when the display ends, so a miss then is not an error.
+      window.toast?.showError?.(suggestion._displayError || 'Could not reveal this finding');
+    }
   }
 
   /**
-   * Make sure a suggestion's file is expanded and its lazy diff body is
-   * rendered so the suggestion row exists in the DOM. Best effort: any
-   * failure falls through to the old lookup-miss behavior.
+   * A suggestion's card, through the page's card resolver (which also knows
+   * a card the diff has built and not attached), else the document.
    * @param {Object} suggestion
+   * @returns {HTMLElement|null}
+   * @private
    */
-  async ensureSuggestionVisible(suggestion) {
-    const file = suggestion?.file;
-    const pm = window.prManager;
-    if (!file || !pm) return;
-    try {
-      const wrapper = pm.findFileElement?.(file);
-      if (wrapper?.classList.contains('collapsed') && pm.toggleFileCollapse) {
-        // Renders the lazy body and removes `collapsed`.
-        await pm.toggleFileCollapse(wrapper.dataset.fileName || file);
-      } else if (pm.ensureFileBodyRendered) {
-        await pm.ensureFileBodyRendered(file);
-      }
-    } catch (err) {
-      console.warn('[SuggestionNavigator] could not prepare suggestion file', file, err);
-    }
+  _findSuggestionCard(suggestion) {
+    if (!suggestion || suggestion.id == null) return null;
+    return window.prManager?.findSuggestionCard?.(suggestion.id)
+      || document.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
   }
 
   /**
@@ -388,7 +405,7 @@ class SuggestionNavigator {
 
     if (this.currentSuggestionIndex >= 0) {
       const currentSuggestion = this.suggestions[this.currentSuggestionIndex];
-      const suggestionEl = document.querySelector(`[data-suggestion-id="${currentSuggestion.id}"]`);
+      const suggestionEl = this._findSuggestionCard(currentSuggestion);
       
       if (suggestionEl) {
         suggestionEl.classList.add('current-suggestion');
@@ -397,44 +414,6 @@ class SuggestionNavigator {
         setTimeout(() => {
           suggestionEl.style.animation = '';
         }, 2000);
-      }
-    }
-  }
-
-  /**
-   * Scroll to current suggestion in diff view
-   */
-  scrollToSuggestion() {
-    if (this.currentSuggestionIndex >= 0) {
-      const currentSuggestion = this.suggestions[this.currentSuggestionIndex];
-      if (!currentSuggestion) return;
-      const suggestionEl = document.querySelector(`[data-suggestion-id="${currentSuggestion.id}"]`);
-      
-      if (suggestionEl) {
-        const minimizer = window.prManager?.commentMinimizer;
-        let scrollTarget = suggestionEl;
-        if (minimizer?.active) {
-          // Expand file-level comments so the target becomes visible
-          minimizer.expandForElement(suggestionEl);
-          // Comments are minimized — scroll to the parent diff line instead
-          scrollTarget = minimizer.findDiffRowFor(suggestionEl) || suggestionEl;
-        }
-        // Land the target at the top of the diff panel (scroll-margin-top in
-        // pr.css offsets it below the sticky toolbar + file header).
-        const options = { behavior: 'smooth', block: 'start', inline: 'nearest' };
-        // Stable variant re-corrects after lazy file bodies render
-        // mid-scroll and shift the layout. Fire-and-forget.
-        if (window.ScrollUtils?.scrollIntoViewStable) {
-          window.ScrollUtils.scrollIntoViewStable(scrollTarget, options);
-        } else {
-          scrollTarget.scrollIntoView(options);
-        }
-      } else if (!window.prManager?.suggestionManager?._isDisplayingSuggestions) {
-        // The finding has no card in the diff (file or line not shown).
-        // Say so instead of silently doing nothing. Not while suggestions
-        // are being redisplayed: every card is removed first and re-added
-        // when the display ends, so a miss then is not an error.
-        window.toast?.showError?.(currentSuggestion._displayError || 'Could not reveal this finding');
       }
     }
   }

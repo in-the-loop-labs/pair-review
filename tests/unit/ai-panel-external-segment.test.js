@@ -60,6 +60,7 @@ global.localStorage = {
 global.CustomEvent = class CustomEvent {};
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
+const { makePageManager } = require('../utils/page-manager.js');
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -654,7 +655,11 @@ describe('AIPanel.scrollToExternalThread', () => {
       classList: focusedClass,
       scrollIntoView: vi.fn(),
       closest: vi.fn(() => null),
+      isConnected: true,
     };
+    // The panel navigates through the page's one helper: the production
+    // PRManager.revealInDiff, on a page manager with nothing to prepare.
+    global.window.prManager = makePageManager();
 
     global.document = {
       ...originalDocument,
@@ -668,23 +673,47 @@ describe('AIPanel.scrollToExternalThread', () => {
     return { row, focusedClass };
   }
 
-  it('finds the row by (threadId, source) and scrolls it into view', () => {
+  it('finds the row by (threadId, source) and scrolls it into view', async () => {
     const { row } = setupDocumentWithRow({ threadId: '42', source: 'github' });
     const panel = createTestPanel();
-    panel.expandFileIfCollapsed = vi.fn(() => false);
+    panel._navGen = 0;
 
-    panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
+    await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
 
     expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
   });
 
-  it('adds a transient .external-comment-row--focused class', () => {
+  it('asks the external comment manager for the thread\'s card and annotation first', async () => {
+    const { row } = setupDocumentWithRow({ threadId: 'elsewhere' });
+    const card = { classList: { add: vi.fn(), remove: vi.fn() }, scrollIntoView: vi.fn(), isConnected: true };
+    global.window.externalCommentManager = {
+      threadAnnotationId: vi.fn(() => null),
+      findThreadCard: vi.fn(() => card),
+    };
+    const reveal = vi.spyOn(global.window.prManager, 'revealInDiff');
+    const panel = createTestPanel();
+    panel._navGen = 0;
+
+    try {
+      await panel.scrollToExternalThread('42', 'github', 'src/utils.js', 5);
+    } finally {
+      delete global.window.externalCommentManager;
+    }
+
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0][0].file).toBe('src/utils.js');
+    expect(card.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(card.classList.add).toHaveBeenCalledWith('external-comment-row--focused');
+    expect(row.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('adds a transient .external-comment-row--focused class', async () => {
     vi.useFakeTimers();
     const { focusedClass } = setupDocumentWithRow({ threadId: '7' });
     const panel = createTestPanel();
-    panel.expandFileIfCollapsed = vi.fn(() => false);
+    panel._navGen = 0;
 
-    panel.scrollToExternalThread('7', 'github', 'src/x.js', 1);
+    await panel.scrollToExternalThread('7', 'github', 'src/x.js', 1);
     expect(focusedClass.add).toHaveBeenCalledWith('external-comment-row--focused');
 
     vi.advanceTimersByTime(2000);
@@ -693,15 +722,16 @@ describe('AIPanel.scrollToExternalThread', () => {
     vi.useRealTimers();
   });
 
-  it('is a no-op when no matching row is in the DOM', () => {
+  it('is a no-op when no matching row is in the DOM', async () => {
     global.document = {
       ...originalDocument,
       querySelector: vi.fn(() => null),
       querySelectorAll: vi.fn(() => []),
     };
+    global.window.prManager = makePageManager();
     const panel = createTestPanel();
-    panel.expandFileIfCollapsed = vi.fn(() => false);
-    expect(() => panel.scrollToExternalThread('999', 'github', 'src/x.js', 1)).not.toThrow();
+    panel._navGen = 0;
+    await expect(panel.scrollToExternalThread('999', 'github', 'src/x.js', 1)).resolves.toBeUndefined();
   });
 });
 

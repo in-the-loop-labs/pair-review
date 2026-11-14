@@ -62,7 +62,10 @@ function makeManager() {
   manager.commentManager = new CommentManager(manager);
   manager.commentManager.isLineInDiffHunk = () => true;
   manager.fileCommentManager = new FileCommentManager(manager);
-  manager.fileCommentManager.findZoneForFile = () => document.querySelector('.file-comments-zone');
+  // Zones are found through the registry, never in the document.
+  const zone = document.querySelector('.file-comments-zone');
+  manager.fileCommentManager._registerZone(zone, zone.dataset.fileName || 'src/b.js', false);
+  manager.fileCommentManager.findZoneForFile = () => zone;
   manager.splitButton = { updateCommentCount: vi.fn() };
   manager.updatePendingDraftIndicator = vi.fn();
   window.prManager = manager;

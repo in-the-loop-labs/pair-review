@@ -162,8 +162,11 @@
    * @param {number|string} suggestionId - The suggestion ID that was dismissed
    */
   function updateDismissedSuggestionUI(suggestionId) {
-    // Find the suggestion in the diff view
-    const suggestionDiv = document.querySelector(`.ai-suggestion[data-suggestion-id="${suggestionId}"]`);
+    // Find the suggestion's card through the page's card resolver (which
+    // also knows a card that is not attached to the document), else in the
+    // document.
+    const suggestionDiv = window.prManager?.findSuggestionCard?.(suggestionId)
+      || document.querySelector(`.ai-suggestion[data-suggestion-id="${suggestionId}"]`);
     if (suggestionDiv) {
       // Collapse the suggestion
       suggestionDiv.classList.add('collapsed');

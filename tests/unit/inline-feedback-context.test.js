@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setImmediate } from 'node:timers';
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
+const { makePageManager } = require('../utils/page-manager.js');
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
 const PierreBridge = require('../../public/js/modules/pierre-bridge.js');
 const PierreContext = require('../../public/js/modules/pierre-context.js');
@@ -24,18 +25,19 @@ describe.each([
     const inst = Object.create(AIPanel.prototype);
     inst._navGen = 0;
     inst[collection] = [{ id: 1, line_start: 10, line_end: 50, side }];
-    inst.expandFileIfCollapsed = vi.fn();
-    inst._scrollDiffTarget = vi.fn();
     const card = document.createElement('div');
     card.className = 'ai-suggestion user-comment-row';
     card.dataset.suggestionId = '1';
     card.dataset.commentId = '1';
+    card.scrollIntoView = vi.fn();
     let reveal;
-    window.prManager = {
+    // The production navigation helper (PRManager.revealInDiff); the line
+    // reveal is the stub.
+    window.prManager = makePageManager({
       ensureLinesVisible: vi.fn(() => new Promise(resolve => {
         reveal = () => { document.body.appendChild(card); resolve(); };
       })),
-    };
+    });
 
     let completed = false;
     const navigation = inst[method]('1', 'a.js', '10').then(() => { completed = true; });
@@ -43,22 +45,21 @@ describe.each([
     // stays pending until the test releases it, independent of elapsed time.
     await new Promise(setImmediate);
     expect(completed).toBe(false);
-    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(card.scrollIntoView).not.toHaveBeenCalled();
     reveal();
     await navigation;
 
     expect(window.prManager.ensureLinesVisible).toHaveBeenCalledWith([
       { file: 'a.js', line_start: 10, line_end: 50, side },
     ]);
-    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(card);
+    expect(card.scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the supplied line when the item is absent', async () => {
     const inst = Object.create(AIPanel.prototype);
     inst._navGen = 0;
     inst[collection] = [];
-    inst.expandFileIfCollapsed = vi.fn();
-    window.prManager = { ensureLinesVisible: vi.fn(async () => {}) };
+    window.prManager = makePageManager({ ensureLinesVisible: vi.fn(async () => {}) });
 
     await inst[method]('missing', 'a.js', '30');
 
