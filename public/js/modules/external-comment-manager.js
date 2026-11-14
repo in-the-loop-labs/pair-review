@@ -304,7 +304,15 @@ class ExternalCommentManager {
       }
     }
 
-    const rows = document.querySelectorAll('.external-comment-row');
+    const rows = new Set(document.querySelectorAll('.external-comment-row'));
+    // File-level and fallback cards live in file-comment zones, which need
+    // not be attached to the document.
+    const prManager = (typeof window !== 'undefined' && window.prManager) || null;
+    if (prManager && typeof prManager.forEachFileCommentsZone === 'function') {
+      prManager.forEachFileCommentsZone((zone) => {
+        zone.querySelectorAll('.external-comment-row').forEach((row) => rows.add(row));
+      });
+    }
     rows.forEach((row) => row.remove());
   }
 
@@ -550,18 +558,6 @@ class ExternalCommentManager {
   }
 
   /**
-   * The light-DOM container a pierre file's annotations are slotted into,
-   * or null.
-   * @param {string} file
-   * @returns {HTMLElement|null}
-   * @private
-   */
-  _pierreContainer(file) {
-    const fileState = this._pierreBridge()?.files?.get?.(file);
-    return (fileState && fileState.container) || null;
-  }
-
-  /**
    * Register the `'external-comment'` custom annotation renderer on the shared
    * PierreBridge once. The bridge re-invokes this callback whenever it (re)slots
    * an external-comment annotation — including after worker rebuilds / content
@@ -578,28 +574,60 @@ class ExternalCommentManager {
   }
 
   /**
-   * Re-query the live slotted `<div class="external-comment-row">` for a
-   * thread in a pierre file. The element is rebuilt on every FileDiff
-   * rerender, so cached references go stale — resolve fresh before use.
-   * @param {string} file
-   * @param {Object} thread
-   * @returns {HTMLElement|null}
-   * @private
+   * The annotation id of a thread that is anchored on a line of the diff, or
+   * null when the thread is not an annotation (it was rendered at file level,
+   * or not at all). For navigation, which waits on the annotation's card.
+   * @param {string|number} threadId
+   * @param {string} [source]
+   * @returns {string|null}
    */
-  _queryPierreRow(file, thread) {
-    const container = this._pierreContainer(file);
-    if (!container) return null;
-    const idAttr = thread && thread.id != null ? String(thread.id) : '';
-    let selector;
-    try {
-      const esc = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-        ? globalThis.CSS.escape(idAttr)
-        : idAttr;
-      selector = `.external-comment-row[data-thread-id="${esc}"]`;
-    } catch {
-      selector = `.external-comment-row[data-thread-id="${idAttr}"]`;
+  threadAnnotationId(threadId, source) {
+    if (threadId == null) return null;
+    const id = String(threadId);
+    const bridge = this._pierreBridge();
+    if (!bridge || typeof bridge.findAnnotationByData !== 'function') return null;
+    const hit = bridge.findAnnotationByData('external-comment', (data) =>
+      data && String(data.id) === id && (!source || !data.source || String(data.source) === String(source)));
+    return hit ? hit.annotation.metadata.id : null;
+  }
+
+  /**
+   * The card of a thread wherever it was rendered: on its anchor line (a
+   * pierre annotation), else in a file-comment zone (file-level threads and
+   * unanchorable ones), else a row of the table renderer. The one lookup for
+   * "the element of thread X"; used by navigation.
+   * @param {string|number} threadId
+   * @param {string} [source]
+   * @returns {HTMLElement|null}
+   */
+  findThreadCard(threadId, source) {
+    if (threadId == null || typeof document === 'undefined') return null;
+    const id = String(threadId);
+    const matches = (data) => data && String(data.id) === id && (!source || !data.source || String(data.source) === String(source));
+    const bridge = this._pierreBridge();
+    const hit = bridge && typeof bridge.findAnnotationByData === 'function'
+      ? bridge.findAnnotationByData('external-comment', matches)
+      : null;
+    if (hit) {
+      const card = bridge.getAnnotationElement(hit.fileName, hit.annotation.metadata.id, { create: true });
+      if (card) return card;
     }
-    return container.querySelector(selector) || null;
+    const esc = (value) => ((typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
+      ? globalThis.CSS.escape(String(value))
+      : String(value));
+    const selectors = [];
+    if (source) selectors.push(`.external-comment-row[data-thread-id="${esc(id)}"][data-source="${esc(source)}"]`);
+    selectors.push(`.external-comment-row[data-thread-id="${esc(id)}"]`);
+    const prManager = (typeof window !== 'undefined' && window.prManager) || null;
+    for (const selector of selectors) {
+      let card = null;
+      if (prManager && typeof prManager.forEachFileCommentsZone === 'function') {
+        prManager.forEachFileCommentsZone((zone) => { card = card || zone.querySelector(selector); });
+      }
+      card = card || document.querySelector(selector);
+      if (card) return card;
+    }
+    return null;
   }
 
   /**
@@ -633,24 +661,43 @@ class ExternalCommentManager {
 
     this._ensurePierreRendererRegistered(bridge);
 
-    const id = this._pierreAnnotationId(thread);
+    // Decide from the diff's data whether the anchor line is one the diff
+    // shows. Never from the DOM: the card of an annotation that was just
+    // added is not in the document while the file's new diff is still
+    // awaiting display (a content upgrade whose highlight result has not
+    // come back), although its line is in that diff. Reading that as "line
+    // not rendered" left the thread in the file's comment zone for good.
+    // An unanchorable (e.g. destroyed-upstream) discussion goes to a
+    // file-level card so it stays discoverable rather than vanishing.
+    if (!this._isPierreLineVisible(bridge, anchor)) {
+      this._renderPierreFileFallback(thread, anchor.file);
+      return;
+    }
+
     bridge.addAnnotation(anchor.file, {
       lineNumber: anchor.line,
       side: anchor.side,
       type: 'external-comment',
-      id,
+      id: this._pierreAnnotationId(thread),
       data: thread,
     });
+  }
 
-    // addAnnotation rerenders synchronously; verify the row actually slotted.
-    // If the anchor line still isn't rendered, roll back and fall back to a
-    // file-level card so an unanchorable (e.g. destroyed-upstream) discussion
-    // stays discoverable rather than silently vanishing.
-    if (!this._queryPierreRow(anchor.file, thread)) {
-      if (typeof bridge.removeAnnotation === 'function') {
-        try { bridge.removeAnnotation(anchor.file, id); } catch { /* best effort */ }
+  /**
+   * Whether the diff shows the anchor line of a thread, by the bridge's
+   * visibility oracle (hunks of the file's current diff plus revealed and
+   * expanded context; false for a collapsed file).
+   * @private
+   */
+  _isPierreLineVisible(bridge, anchor) {
+    if (!bridge || typeof bridge.isLineVisible !== 'function') return false;
+    try {
+      return bridge.isLineVisible(anchor.file, anchor.line, anchor.side) === true;
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[ExternalCommentManager] isLineVisible threw, treating the line as not shown', err);
       }
-      this._renderPierreFileFallback(thread, anchor.file);
+      return false;
     }
   }
 
@@ -729,33 +776,18 @@ class ExternalCommentManager {
   }
 
   /**
-   * Resolve a file's `.file-comments-zone` element. Prefers
-   * FileCommentManager's own resolver (DiffRenderer-aware) when present, then
-   * falls back to the file wrapper lookup and a direct attribute selector.
+   * Resolve a file's comment zone through the page's one resolver
+   * (PRManager.getFileCommentsZone), which answers from the zone registry
+   * and so also finds a zone that is not attached to the document.
    * @param {string} file
    * @returns {HTMLElement|null}
    * @private
    */
   _resolveFileCommentsZone(file) {
     if (typeof document === 'undefined' || !file) return null;
-    const fcm = (typeof window !== 'undefined' && window.prManager && window.prManager.fileCommentManager) || null;
-    if (fcm && typeof fcm.findZoneForFile === 'function') {
-      const zone = fcm.findZoneForFile(file);
-      if (zone) return zone;
-    }
-    const wrapper = this._findFileWrapper(file);
-    if (wrapper) {
-      const zone = wrapper.querySelector('.file-comments-zone');
-      if (zone) return zone;
-    }
-    try {
-      const esc = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-        ? globalThis.CSS.escape(file)
-        : file;
-      return document.querySelector(`.file-comments-zone[data-file-name="${esc}"]`);
-    } catch {
-      return null;
-    }
+    const prManager = (typeof window !== 'undefined' && window.prManager) || null;
+    if (!prManager || typeof prManager.getFileCommentsZone !== 'function') return null;
+    return prManager.getFileCommentsZone(file) || null;
   }
 
   /**

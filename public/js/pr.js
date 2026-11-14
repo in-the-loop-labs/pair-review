@@ -1104,8 +1104,11 @@ class PRManager {
    * Re-render every overlay (AI suggestions, user comments, external comments)
    * after the underlying diff DOM has been rebuilt.
    *
-   * Used by anything that destroys and re-mounts the diff (refreshPR, the
-   * whitespace toggle, pre-analysis refresh). Centralizing keeps the three
+   * Used by anything that destroys and re-mounts the diff: refreshPR, the
+   * whitespace toggle and the pre-analysis refresh in PR mode, and in local
+   * mode (local.js) the whitespace toggle, the refresh and the scope change.
+   * The local base-branch change does not call it (main's behaviour, kept
+   * and characterized). Centralizing keeps the three
    * renderers from drifting: each one has its own clear()/append cycle and
    * forgetting any of them produces hard-to-spot bugs like "comments
    * disappeared after refresh".
@@ -1122,6 +1125,10 @@ class PRManager {
   async _rerenderAllOverlays({ analysisRunId, syncExternal = false } = {}) {
     await this.loadUserComments();
     await this.loadAISuggestions(null, analysisRunId);
+    // External sources require a real pull request: nothing to re-anchor in
+    // local mode, whose re-render paths (whitespace, refresh, scope) share
+    // this helper. Same guard as _loadExternalComments.
+    if (typeof window !== 'undefined' && window.PAIR_REVIEW_LOCAL_MODE) return;
     // Skip external-comment re-rendering entirely when the feature is off.
     // The manager is never populated with rows in that case, so there's
     // nothing to re-anchor.
@@ -2820,17 +2827,11 @@ class PRManager {
         this._upgradeFilesWithContents(sortedFiles);
 
       } else {
-        const diffContainer = document.getElementById('diff-container');
-        if (diffContainer) {
-          diffContainer.innerHTML = '<div class="no-diff">Failed to load changes</div>';
-        }
+        this._setDiffStatus('<div class="no-diff">Failed to load changes</div>', { hideScroller: true });
       }
     } catch (error) {
       console.error('Error loading files:', error);
-      const diffContainer = document.getElementById('diff-container');
-      if (diffContainer) {
-        diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
-      }
+      this._setDiffStatus('<div class="no-diff">Error loading changes</div>', { hideScroller: true });
     }
   }
 
@@ -4008,8 +4009,10 @@ class PRManager {
     if (this.pierreBridge) {
       this.pierreBridge.destroyAll();
     }
-
-    diffContainer.innerHTML = '';
+    // Every file wrapper goes, and its file-comment zone with it. A loading
+    // or error message goes too: the diff is about to be there.
+    this._removeRenderedFiles(diffContainer);
+    this._setDiffStatus(null);
 
     // Reset hunk-summary tracking — `renderPatch` will populate this as it
     // walks each block, and we hash the records once render finishes.
@@ -4078,7 +4081,8 @@ class PRManager {
         // targets below it (scroll-margin-top in pr.css).
         this._measureFileHeaderHeight();
       } else {
-        diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
+        // The container stays: context files are rendered into it.
+        this._setDiffStatus('<div class="no-diff">No files changed</div>', { hideScroller: false });
       }
 
       // Load context files after diff is rendered
@@ -5139,37 +5143,148 @@ class PRManager {
   }
 
   /**
+   * Whether a path is a file of the diff pane (a changed file, or a context
+   * file), decided from data. `findFileElement` returning null does not
+   * answer this: an element is what is on screen, and a file of the pane
+   * need not have one. Tolerates the path variants findFileElement accepts.
+   * @param {string} filePath
+   * @returns {boolean}
+   */
+  isFileInDiffPane(filePath) {
+    if (!filePath) return false;
+    const paths = [
+      ...(this.changedFilesByPath ? this.changedFilesByPath.keys() : []),
+      ...(this.contextFiles || []).map(contextFile => contextFile.file)
+    ];
+    if (paths.includes(filePath)) return true;
+    const DiffRenderer = window.DiffRenderer;
+    const normalized = DiffRenderer?.normalizeFilePath?.(filePath);
+    if (normalized && paths.includes(normalized)) return true;
+    return typeof DiffRenderer?.pathsMatch === 'function'
+      && paths.some(path => DiffRenderer.pathsMatch(path, filePath));
+  }
+
+  /**
    * Toggle collapse state of a file diff
    * @param {string} filePath - Path of the file
    */
   async toggleFileCollapse(filePath) {
-    const wrapper = this.findFileElement(filePath);
-    if (!wrapper) return;
+    const collapsed = this.isFileCollapsed(filePath);
+    if (collapsed === null) return;
+    await this.setFileCollapsed(filePath, !collapsed);
+  }
 
-    const isCollapsed = wrapper.classList.contains('collapsed');
-    const header = wrapper.querySelector('.d2h-file-header');
+  /**
+   * The path the diff pane knows a file by, for any form of that path a
+   * caller holds. `collapsedFiles`, the bridge's file records, the lazy
+   * bodies and a wrapper's data-file-name are all keyed by a changed file's
+   * `file.file`; a finding, an external thread or a chat link may carry the
+   * path as a model or a host wrote it ('./src/a.js', '/src/a.js', git
+   * rename syntax). Tolerates the variants findFileElement accepts.
+   *
+   * Every function that keys state by path resolves its argument here
+   * first, so the state, the wrapper and the engine are always addressed by
+   * the same path.
+   * @param {string} filePath
+   * @returns {string|null} null when the path names no file of the pane
+   */
+  _canonicalFilePath(filePath) {
+    if (!filePath || typeof filePath !== 'string') return null;
+    const changed = this.changedFilesByPath;
+    if (changed?.has(filePath)) return filePath;
+    // What is on screen: a changed file's wrapper, else a context file's.
+    const rendered = this.findFileElement(filePath)?.dataset?.fileName;
+    if (rendered) return rendered;
+    if (!changed) return null;
+    const DiffRenderer = window.DiffRenderer;
+    const normalized = DiffRenderer?.normalizeFilePath?.(filePath);
+    if (normalized && changed.has(normalized)) return normalized;
+    if (typeof DiffRenderer?.pathsMatch === 'function') {
+      for (const path of changed.keys()) {
+        if (DiffRenderer.pathsMatch(path, filePath)) return path;
+      }
+    }
+    return null;
+  }
 
-    if (isCollapsed) {
+  /**
+   * Whether a changed file is collapsed. The one place that answers it, so
+   * no caller reads the `collapsed` class of a wrapper it looked up itself.
+   * @param {string} filePath - Path of the file, in any form
+   *   _canonicalFilePath accepts
+   * @returns {boolean|null} null when the path is not a file of the diff
+   */
+  isFileCollapsed(filePath) {
+    const path = this._canonicalFilePath(filePath);
+    if (!path) return null;
+    // A file is collapsed for one of three reasons (generated, viewed, or the
+    // reader collapsed it) and the reader can expand it whatever the reason,
+    // so on this engine the state lives on the file's wrapper, which exists
+    // for every file of the diff from renderDiff on.
+    const wrapper = this.findFileElement(path);
+    if (wrapper) return wrapper.classList.contains('collapsed');
+    return this.changedFilesByPath?.has(path) ? this.collapsedFiles.has(path) : null;
+  }
+
+  /**
+   * Collapse or expand a changed file. The single writer of a file's
+   * collapsed state: `collapsedFiles`, the wrapper's class, the header's
+   * chevron and the diff engine are updated here and nowhere else.
+   *
+   * Callers: toggleFileCollapse (header chevron and click, toggleGeneratedFile,
+   * the tour's restore on exit), toggleFileViewed, revealInDiff (navigation
+   * from the review panel, the suggestion navigator), TourRenderer when a
+   * stop is in a collapsed file.
+   *
+   * The path is resolved to the file's canonical path once, and that one
+   * path addresses all four. Navigation passes the path a finding or a
+   * thread carries, which need not be the canonical form; written under the
+   * caller's form, `collapsedFiles` and the engine would keep the file
+   * collapsed while its wrapper showed it expanded.
+   *
+   * Expanding renders the file's body first, which is asynchronous. A second
+   * request for the same file made meanwhile supersedes this one: only the
+   * latest request for a path is applied once its body has rendered.
+   * @param {string} filePath - Path of the file, in any form
+   *   _canonicalFilePath accepts
+   * @param {boolean} collapsed - The state to set
+   * @returns {Promise<boolean>} true when the file is in the requested state
+   *   on return; false when the path is not a file of the diff or a later
+   *   request for it took over
+   */
+  async setFileCollapsed(filePath, collapsed) {
+    const path = this._canonicalFilePath(filePath);
+    if (!path || this.isFileCollapsed(path) === null) return false;
+    collapsed = !!collapsed;
+
+    if (!this._collapseRequests) this._collapseRequests = new Map();
+    const request = (this._collapseRequests.get(path) || 0) + 1;
+    this._collapseRequests.set(path, request);
+
+    if (!collapsed) {
       // Render the body before revealing it (lazy bodies are empty until now).
-      await this.ensureFileBodyRendered(filePath);
-      wrapper.classList.remove('collapsed');
-      this.collapsedFiles.delete(filePath);
-    } else {
-      window.HeaderAnchor.keepHeaderInPlace(header, () => {
-        wrapper.classList.add('collapsed');
-        this.collapsedFiles.add(filePath);
-      });
+      await this.ensureFileBodyRendered(path);
+      if (this._collapseRequests.get(path) !== request) return false;
     }
 
-    // Update header state
-    if (header) {
-      window.DiffRenderer.updateFileHeaderState(header, !wrapper.classList.contains('collapsed'));
+    if (collapsed) this.collapsedFiles.add(path);
+    else this.collapsedFiles.delete(path);
+
+    // Looked up after the await: a re-render replaces the wrapper.
+    const wrapper = this.findFileElement(path);
+    if (wrapper) {
+      wrapper.classList.toggle('collapsed', collapsed);
+      const header = wrapper.querySelector('.d2h-file-header');
+      if (header) {
+        window.DiffRenderer.updateFileHeaderState(header, !collapsed);
+      }
     }
 
     // Sync collapsed state with @pierre/diffs instance
-    if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
-      this.pierreBridge.setCollapsed(filePath, wrapper.classList.contains('collapsed'));
+    if (this.pierreBridge && this.pierreBridge.files.has(path)) {
+      this.pierreBridge.setCollapsed(path, collapsed);
     }
+    return true;
   }
 
   /**
@@ -5178,41 +5293,17 @@ class PRManager {
    * @param {boolean} isViewed - Whether the file is now viewed
    */
   async toggleFileViewed(filePath, isViewed) {
-    const wrapper = this.findFileElement(filePath);
-
     if (isViewed) {
       this.viewedFiles.add(filePath);
       // Auto-collapse when marking as viewed
-      if (wrapper && !wrapper.classList.contains('collapsed')) {
-        const header = wrapper.querySelector('.d2h-file-header');
-        window.HeaderAnchor.keepHeaderInPlace(header, () => {
-          wrapper.classList.add('collapsed');
-          this.collapsedFiles.add(filePath);
-        });
-        if (header) {
-          window.DiffRenderer.updateFileHeaderState(header, false);
-        }
-        // Sync with @pierre/diffs
-        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
-          this.pierreBridge.setCollapsed(filePath, true);
-        }
+      if (this.isFileCollapsed(filePath) === false) {
+        await this.setFileCollapsed(filePath, true);
       }
     } else {
       this.viewedFiles.delete(filePath);
       // Auto-expand when unchecking viewed (match GitHub behavior)
-      if (wrapper && wrapper.classList.contains('collapsed')) {
-        // Render the body before revealing it (lazy bodies are empty until now).
-        await this.ensureFileBodyRendered(filePath);
-        wrapper.classList.remove('collapsed');
-        this.collapsedFiles.delete(filePath);
-        const header = wrapper.querySelector('.d2h-file-header');
-        if (header) {
-          window.DiffRenderer.updateFileHeaderState(header, true);
-        }
-        // Sync with @pierre/diffs
-        if (this.pierreBridge && this.pierreBridge.files.has(filePath)) {
-          this.pierreBridge.setCollapsed(filePath, false);
-        }
+      if (this.isFileCollapsed(filePath) === true) {
+        await this.setFileCollapsed(filePath, false);
       }
     }
 
@@ -5221,6 +5312,198 @@ class PRManager {
 
     // Persist viewed state
     this.saveViewedState();
+  }
+
+  /**
+   * Bring a place in the diff into view: a card on a line of a file, a card
+   * in a file's comment zone, or a line.
+   *
+   * The one navigation helper. Its callers are the review panel (a finding, a
+   * comment, an external thread; the review history jumps through the
+   * comment path), the suggestion navigator and the tour. Each of them used
+   * to carry its own copy of this sequence and its own DOM lookups; here the
+   * order is fixed and the card is resolved through the bridge and the zone
+   * registry, so a card that is not attached to the document is still found:
+   *
+   *   1. Expand the file if it is collapsed (setFileCollapsed).
+   *   2. Render the file's body (on this engine nothing of an unrendered
+   *      file is in the DOM).
+   *   3. Reveal the line range if it is hidden (ensureLinesVisible).
+   *   4. Resolve the card: the annotation with `annotationId` (waiting until
+   *      the diff has attached it), else the card matching
+   *      `zoneCardSelector` in the file's comment zone, else `findElement()`.
+   *   5. Scroll it into view with ScrollUtils.scrollIntoViewStable, after
+   *      expanding it when comments are minimized.
+   *
+   * After every await the caller's `isCancelled` is asked, so a newer
+   * navigation wins. Nothing is held across an await: the card is resolved
+   * after the last one.
+   *
+   * @param {Object} target
+   * @param {string} target.file - File path
+   * @param {number} [target.line_start] - With line_end: the range to reveal
+   * @param {number} [target.line_end]
+   * @param {string} [target.side='RIGHT']
+   * @param {string} [target.annotationId] - Bridge annotation id of the card
+   * @param {string} [target.zoneCardSelector] - Selector of a card inside
+   *   the file's comment zone (any file's zone when the file is unknown)
+   * @param {Function} [target.findElement] - () => Element|null; last resort
+   *   for cards the bridge and the zones do not hold (rows of the table
+   *   renderer in context files)
+   * @param {Function} [target.prepare] - (element) => void; runs on the
+   *   resolved card before it is scrolled to
+   * @param {Function} [target.isCancelled] - () => boolean
+   * @param {Object|false} [target.scroll] - scrollIntoView options; false to
+   *   only resolve the card. Default { behavior: 'smooth', block: 'start' }
+   * @param {boolean} [target.expandMinimized=true] - In minimize mode, expand
+   *   the card's line and scroll to that line instead of the hidden card
+   * @returns {Promise<{element: HTMLElement|null, cancelled: boolean}>}
+   */
+  async revealInDiff({
+    file, line_start, line_end, side, annotationId, zoneCardSelector, findElement,
+    prepare, isCancelled, scroll, expandMinimized = true
+  } = {}) {
+    const cancelled = () => typeof isCancelled === 'function' && isCancelled() === true;
+    const stop = { element: null, cancelled: true };
+
+    if (file) {
+      try {
+        if (this.isFileCollapsed(file) === true) {
+          await this.setFileCollapsed(file, false);
+        }
+        // Always: an expanded file that has not been near the viewport has
+        // no rows and no cards either.
+        await this.ensureFileBodyRendered(file);
+      } catch (error) {
+        console.warn('[revealInDiff] could not prepare the file', file, error);
+      }
+      if (cancelled()) return stop;
+
+      if (line_start != null && line_start !== '' && typeof this.ensureLinesVisible === 'function') {
+        const start = parseInt(line_start, 10);
+        const end = line_end != null && line_end !== '' ? parseInt(line_end, 10) : start;
+        if (Number.isFinite(start)) {
+          await this.ensureLinesVisible([{
+            file, line_start: start, line_end: Number.isFinite(end) ? end : start, side: side || 'RIGHT'
+          }]);
+          if (cancelled()) return stop;
+        }
+      }
+    }
+
+    let element = null;
+    const bridge = this.pierreBridge;
+    const annotationFile = annotationId != null && bridge?.findAnnotationFile
+      ? bridge.findAnnotationFile(annotationId, file)
+      : null;
+    if (annotationFile) {
+      element = await bridge.whenAnnotationRendered(annotationFile, annotationId, { isCancelled: cancelled });
+      if (cancelled()) return stop;
+    }
+    if (!element && zoneCardSelector) {
+      const zone = file ? this.getFileCommentsZone(file) : null;
+      element = zone?.querySelector(zoneCardSelector) || null;
+      if (!element) {
+        this.forEachFileCommentsZone((other) => {
+          element = element || other.querySelector(zoneCardSelector);
+        });
+      }
+    }
+    if (!element && typeof findElement === 'function') {
+      element = findElement() || null;
+    }
+    // On this engine a card that is still not attached after the wait has no
+    // place on screen (its line is not in the diff): nothing to scroll to.
+    if (!element || !element.isConnected) return { element: null, cancelled: false };
+    if (typeof prepare === 'function') prepare(element);
+
+    if (scroll !== false) {
+      let scrollTarget = element;
+      const minimizer = this.commentMinimizer;
+      if (expandMinimized && minimizer?.active) {
+        // Expand file-level comments so the target becomes visible; a line
+        // card stays minimized and its diff line is scrolled to instead.
+        minimizer.expandForElement(element);
+        scrollTarget = minimizer.findDiffRowFor(element) || element;
+      }
+      // Land the target at the top of the diff panel (scroll-margin-top in
+      // pr.css offsets it below the sticky toolbar + file header). The
+      // stable variant re-corrects after lazy file bodies render mid-scroll
+      // and shift the layout. Fire-and-forget.
+      const options = scroll && typeof scroll === 'object' ? scroll : { behavior: 'smooth', block: 'start' };
+      if (window.ScrollUtils?.scrollIntoViewStable) {
+        window.ScrollUtils.scrollIntoViewStable(scrollTarget, options);
+      } else {
+        scrollTarget.scrollIntoView(options);
+      }
+    }
+    return { element, cancelled: false };
+  }
+
+  /**
+   * Show a message in place of, or above, the diff: loading, an error, an
+   * empty diff. The only writer of the diff pane's status element
+   * (`#diff-status`, a sibling of `#diff-container`), and the only code that
+   * hides or shows the diff's container. Nothing writes markup into
+   * `#diff-container` itself: its children belong to the diff renderer.
+   *
+   * Idempotent. Each call returns a token; `_clearDiffStatus(token)` clears
+   * the message only if no later call replaced it, so a handler that put up
+   * a "loading" message can take down its own and never one that a newer
+   * render or a newer request put there.
+   *
+   * @param {string|null} html - Inner markup of the message; null clears it
+   *   and shows the diff
+   * @param {Object} [options]
+   * @param {boolean} [options.hideScroller=false] - Hide the diff while the
+   *   message shows (loading, error). An empty diff keeps it, so context
+   *   files stay visible under the message.
+   * @returns {number} token for _clearDiffStatus
+   */
+  _setDiffStatus(html, { hideScroller = false } = {}) {
+    this._diffStatusToken = (this._diffStatusToken || 0) + 1;
+    const container = document.getElementById('diff-container');
+    let status = document.getElementById('diff-status');
+    const show = html != null && html !== '';
+    if (!status && show && container?.parentNode) {
+      // A page that predates the element: create it where it belongs.
+      status = document.createElement('div');
+      status.id = 'diff-status';
+      status.className = 'diff-container diff-status';
+      container.parentNode.insertBefore(status, container);
+    }
+    if (status) {
+      status.innerHTML = show ? html : '';
+      status.hidden = !show;
+      status.classList.toggle('diff-status--with-diff', show && !hideScroller);
+    }
+    if (container) container.hidden = show && !!hideScroller;
+    return this._diffStatusToken;
+  }
+
+  /**
+   * Take down the message a `_setDiffStatus` call put up, unless a later
+   * call has replaced it.
+   * @param {number} token - What that `_setDiffStatus` call returned
+   * @returns {boolean} true when the message was cleared
+   */
+  _clearDiffStatus(token) {
+    if (token !== this._diffStatusToken) return false;
+    this._setDiffStatus(null);
+    return true;
+  }
+
+  /**
+   * Remove every rendered file from the diff's container, and forget their
+   * file-comment zones with them. On this engine each file is a wrapper
+   * element of the container, so this is the renderer's own teardown; it is
+   * the only code that empties the container.
+   * @param {HTMLElement|null} [container]
+   */
+  _removeRenderedFiles(container = document.getElementById('diff-container')) {
+    this.fileCommentManager?.releaseAllZones?.();
+    if (!container) return;
+    while (container.firstChild) container.removeChild(container.firstChild);
   }
 
   /**
@@ -6153,9 +6436,9 @@ class PRManager {
         // CommentManager.saveComment.
         this.lineTracker?.clearRangeSelection();
         if (result.commentId != null && this.commentMinimizer) {
-          const newRow = document.querySelector(
-            `[data-comment-id="${result.commentId}"]`
-          );
+          // Resolved after the reload has settled, through the one card
+          // resolver: the card may not be attached yet.
+          const newRow = this.findCommentCard(result.commentId);
           if (newRow) this.commentMinimizer.expandForElement(newRow);
         }
         window.chatPanel?.queueUserActionHint(
@@ -6205,7 +6488,7 @@ class PRManager {
    */
   async editUserComment(commentId) {
     try {
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = this.findCommentCard(commentId);
       if (!commentRow) return;
 
       const commentDiv = commentRow.querySelector('.user-comment');
@@ -6258,7 +6541,7 @@ class PRManager {
       bodyDiv.insertAdjacentHTML('afterend', editFormHTML);
 
       const editForm = commentDiv.querySelector('.user-comment-edit-form');
-      const textarea = document.getElementById(`edit-comment-${commentId}`);
+      const textarea = this._findCommentEditTextarea(commentId, commentRow);
       const suggestionBtn = editForm.querySelector('.suggestion-btn');
       const saveBtn = editForm.querySelector('.save-edit-btn');
       const cancelBtn = editForm.querySelector('.cancel-edit-btn');
@@ -6294,7 +6577,7 @@ class PRManager {
    */
   async saveEditedUserComment(commentId) {
     // Prevent duplicate saves from rapid clicks or Cmd+Enter
-    const editForm = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
+    const editForm = this._findCommentEditTextarea(commentId)?.closest('.user-comment-edit-form');
     const saveBtn = editForm?.querySelector('.save-edit-btn');
     if (saveBtn?.dataset.saving === 'true') {
       return;
@@ -6303,7 +6586,7 @@ class PRManager {
     if (saveBtn) saveBtn.disabled = true;
 
     try {
-      const textarea = document.getElementById(`edit-comment-${commentId}`);
+      const textarea = this._findCommentEditTextarea(commentId);
       const editedText = textarea.value.trim();
 
       if (!editedText) {
@@ -6324,7 +6607,8 @@ class PRManager {
 
       if (!response.ok) throw new Error('Failed to update comment');
 
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      // Resolved again after the await: the card can have been rebuilt.
+      const commentRow = this.findCommentCard(commentId);
       const commentDiv = commentRow.querySelector('.user-comment');
       let bodyDiv = commentDiv.querySelector('.user-comment-body');
       const editFormEl = commentDiv.querySelector('.user-comment-edit-form');
@@ -6359,7 +6643,7 @@ class PRManager {
    * Cancel editing user comment
    */
   cancelEditUserComment(commentId) {
-    const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+    const commentRow = this.findCommentCard(commentId);
     if (!commentRow) return;
 
     const commentDiv = commentRow.querySelector('.user-comment');
@@ -6389,13 +6673,13 @@ class PRManager {
       const apiResult = await response.json();
 
       // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = this.findCommentCard(commentId);
       if (commentRow) {
         commentRow.remove();
       }
 
       // Also handle file-level comment cards
-      const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+      const fileCommentCard = this.findCommentCard(commentId, { fileLevel: true });
       if (fileCommentCard) {
         const zone = fileCommentCard.closest('.file-comments-zone');
         fileCommentCard.remove();
@@ -6405,7 +6689,9 @@ class PRManager {
       }
 
       // Updates the counts, the minimizer, and the AI panel (dismissed styling
-      // when it shows dismissed comments, otherwise removed)
+      // when it shows dismissed comments, otherwise removed). Also removes the
+      // comment from the list its file is re-rendered from, so a later
+      // re-render of the file cannot draw the dismissed comment again.
       this.patchUserComment(commentId, { status: 'inactive' });
 
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
@@ -6418,10 +6704,11 @@ class PRManager {
         // Clear hiddenForAdoption so that restoring the suggestion takes the API code path
         // instead of the toggle-only shortcut. Without this, restoring a previously-adopted
         // suggestion would only toggle visibility without updating its status.
-        const suggestionDiv = document.querySelector(`[data-suggestion-id="${apiResult.dismissedSuggestionId}"]`);
+        const suggestionDiv = this.findSuggestionCard(apiResult.dismissedSuggestionId);
         if (suggestionDiv) {
           delete suggestionDiv.dataset.hiddenForAdoption;
         }
+        this._setSuggestionStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
 
       // Show success toast
@@ -6527,6 +6814,7 @@ class PRManager {
       if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0) {
         for (const suggestionId of result.dismissedSuggestionIds) {
           this.updateDismissedSuggestionUI(suggestionId);
+          this._setSuggestionStatus(suggestionId, 'dismissed');
         }
       }
 
@@ -6743,10 +7031,15 @@ class PRManager {
     const { shouldHidePostedComment } = window.PostedComment;
     const filter = this.getCommentFilterState();
     const hidePosted = !filter.showPosted;
-    document.querySelectorAll('[data-comment-status]').forEach(element => {
+    const applyTo = (root) => root.querySelectorAll('[data-comment-status]').forEach(element => {
       element.classList.toggle('posted-comment-hidden',
         shouldHidePostedComment({ status: element.dataset.commentStatus, publication: element.dataset.commentPublication === 'none' ? null : { state: element.dataset.commentPublication } }, hidePosted));
     });
+    applyTo(document);
+    // Zones that are not attached to the document hold cards too. Line
+    // comments need no sweep: their cards are stamped from data every time
+    // the diff draws them (PostedComment.syncCommentElement).
+    this.forEachFileCommentsZone((zone) => { if (!zone.isConnected) applyTo(zone); });
     window.aiPanel?.setHiddenCommentCounts?.(this.getHiddenCommentCounts(filter));
     window.aiPanel?.setComments?.((this.userComments || []).filter(c =>
       (c.status !== 'inactive' || filter.includeDismissed) &&
@@ -6757,13 +7050,34 @@ class PRManager {
     // the minimize-mode indicators. The minimizer's observer watches childList
     // only, so a class toggle needs an explicit refresh.
     if (this.fileCommentManager) {
-      document.querySelectorAll('.file-comments-zone').forEach(zone => {
+      this.forEachFileCommentsZone((zone) => {
         if (zone.querySelector('.file-comments-container')) {
           this.fileCommentManager.updateCommentCount(zone);
         }
       });
     }
     this.commentMinimizer?.refreshIndicators();
+  }
+
+  /**
+   * The file-comment zone of a file: the element that holds its file-level
+   * comment cards, AI cards and forms. The only way to get one. It answers
+   * from FileCommentManager's registry, so it finds a zone whether or not
+   * the zone is attached to the document.
+   * @param {string} filePath
+   * @returns {HTMLElement|null}
+   */
+  getFileCommentsZone(filePath) {
+    return this.fileCommentManager?.getZone?.(filePath) || null;
+  }
+
+  /**
+   * Visit every file-comment zone of the diff pane, attached or not. The
+   * only sweep over zones.
+   * @param {Function} fn - (zone, filePath) => void
+   */
+  forEachFileCommentsZone(fn) {
+    this.fileCommentManager?.forEachZone?.(fn);
   }
 
   /**
@@ -6879,7 +7193,7 @@ class PRManager {
   collapseSuggestionForAdoption(suggestionRow, suggestionId) {
     const targetDiv = suggestionRow
       ? suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`)
-      : document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      : this.findSuggestionCard(suggestionId);
     if (!targetDiv) return;
     targetDiv.classList.add('collapsed');
     window.SuggestionUI?.setCollapsedStateTooltip?.(targetDiv, 'Adopted');
@@ -6995,6 +7309,9 @@ class PRManager {
    */
   _notifyAdoption(suggestionId, newComment) {
     this.registerUserComment(newComment);
+    // After the comment is registered: an adopted suggestion's status is
+    // also derived from the comment that adopted it.
+    this._setSuggestionStatus(suggestionId, 'adopted');
 
     if (this.suggestionNavigator?.suggestions) {
       const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
@@ -7014,7 +7331,7 @@ class PRManager {
    */
   async editAndAdoptSuggestion(suggestionId) {
     try {
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionDiv = this.findSuggestionCard(suggestionId);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
       const { suggestionText, formattedBody, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
@@ -7022,7 +7339,7 @@ class PRManager {
 
       if (isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        const zone = this.getFileCommentsZone(fileName);
         if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
 
         const suggestion = {
@@ -7152,14 +7469,14 @@ class PRManager {
    */
   async adoptSuggestion(suggestionId) {
     try {
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionDiv = this.findSuggestionCard(suggestionId);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
       const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
 
       if (result.isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
+        const zone = this.getFileCommentsZone(result.fileName);
         if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
 
         const suggestion = {
@@ -7190,7 +7507,7 @@ class PRManager {
    */
   async dismissSuggestion(suggestionId) {
     try {
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionDiv = this.findSuggestionCard(suggestionId);
 
       // If this suggestion was adopted, only toggle visibility - don't change status
       // The adoption still exists (there's a user comment linked to this suggestion)
@@ -7228,6 +7545,7 @@ class PRManager {
           if (btnText) btnText.textContent = 'Show';
         }
       }
+      this._setSuggestionStatus(suggestionId, 'dismissed');
 
       if (this.suggestionNavigator?.suggestions) {
         const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
@@ -7257,7 +7575,7 @@ class PRManager {
    */
   async restoreSuggestion(suggestionId) {
     try {
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionDiv = this.findSuggestionCard(suggestionId);
 
       if (suggestionDiv?.dataset?.hiddenForAdoption === 'true') {
         // Use suggestionDiv (found by ID) not suggestionRow.querySelector('.ai-suggestion')
@@ -7293,6 +7611,7 @@ class PRManager {
         // refetch rescues this card.
         window.SuggestionUI?.clearDismissalReasonUI?.(suggestionDiv);
       }
+      this._setSuggestionStatus(suggestionId, 'active');
 
       if (this.suggestionNavigator?.suggestions) {
         const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
@@ -7321,12 +7640,12 @@ class PRManager {
    * Toggle original suggestion visibility
    */
   toggleOriginalSuggestion(parentId, commentId) {
-    const suggestionRow = document.querySelector(`[data-suggestion-id="${parentId}"]`);
+    const suggestionRow = this.findSuggestionCard(parentId);
     if (!suggestionRow) return;
 
     if (suggestionRow.style.display === 'none') {
       suggestionRow.style.display = '';
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = this.findCommentCard(commentId);
       const eyeButton = commentRow?.querySelector('.btn-toggle-original');
       if (eyeButton) {
         eyeButton.classList.add('showing-original');
@@ -7334,7 +7653,7 @@ class PRManager {
       }
     } else {
       suggestionRow.style.display = 'none';
-      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentRow = this.findCommentCard(commentId);
       const eyeButton = commentRow?.querySelector('.btn-toggle-original');
       if (eyeButton) {
         eyeButton.classList.remove('showing-original');
@@ -7517,6 +7836,7 @@ class PRManager {
   patchUserComment(commentId, updates) {
     const before = (this.userComments || []).find(c => c.id === commentId);
     this.userComments = (this.userComments || []).map(c => c.id === commentId ? { ...c, ...updates } : c);
+    this._patchCommentAnnotation(before, commentId, updates);
     // Editing a posted comment changes whether it differs from what was
     // posted; only the server knows the posted text, so ask it.
     if (updates.body !== undefined && before && window.PostedComment?.isPostedComment(before)) {
@@ -7534,6 +7854,131 @@ class PRManager {
     }
     this.updateCommentCount();
     this.commentMinimizer?.refreshIndicators();
+  }
+
+  /**
+   * Keep the diff's own record of a line comment in step with the cache.
+   *
+   * The diff re-renders a file from its annotation list, and each comment
+   * annotation carries the comment it was built from. An edit is written to
+   * that object, so a card built later says what the cache says. A dismissal
+   * removes the annotation: a dismissed comment is never shown in the diff,
+   * and leaving it in the list would draw it again on the file's next
+   * re-render.
+   * @param {Object|undefined} before - The cached comment before the change
+   * @param {number} commentId
+   * @param {Object} updates
+   * @private
+   */
+  _patchCommentAnnotation(before, commentId, updates) {
+    const bridge = this.pierreBridge;
+    if (!bridge?.findAnnotationByData) return;
+    const hit = (before?.file && bridge.hasAnnotation?.(before.file, `comment-${commentId}`))
+      ? { fileName: before.file, annotation: bridge.getAnnotations(before.file, 'comment').find(a => a.metadata.id === `comment-${commentId}`) }
+      : bridge.findAnnotationByData('comment', data => data?.id === commentId);
+    if (!hit?.annotation) return;
+    if (updates.status === 'inactive') {
+      bridge.removeAnnotation(hit.fileName, hit.annotation.metadata.id);
+      return;
+    }
+    if (hit.annotation.metadata.data) Object.assign(hit.annotation.metadata.data, updates);
+  }
+
+  /**
+   * The card of a user comment: the line comment's card in the diff, else
+   * the file-level card in its file's comment zone, else a row of the table
+   * renderer (context files).
+   *
+   * This is the one way to get a comment's card. The diff's card comes from
+   * the bridge, which hands back the element it built for the comment whether
+   * or not it is attached to the document right now, and builds it when it
+   * has not been built yet; the file-level card comes from the zone registry,
+   * which also holds zones that are not attached.
+   * @param {number|string} commentId
+   * @param {Object} [options]
+   * @param {boolean} [options.fileLevel] - true: only the file-level card;
+   *   false: only a line comment's card; omitted: whichever exists
+   * @returns {HTMLElement|null}
+   */
+  findCommentCard(commentId, { fileLevel } = {}) {
+    if (commentId == null || commentId === '') return null;
+    const id = String(commentId);
+    const escaped = id.replace(/["\\]/g, '\\$&');
+    if (fileLevel !== true) {
+      const bridge = this.pierreBridge;
+      const cached = (this.userComments || []).find(c => String(c.id) === id);
+      const annotationId = `comment-${id}`;
+      const fileName = (cached?.file && bridge?.hasAnnotation?.(cached.file, annotationId))
+        ? cached.file
+        : bridge?.findAnnotationByData?.('comment', data => String(data?.id) === id)?.fileName;
+      const card = fileName ? bridge.getAnnotationElement(fileName, annotationId, { create: true }) : null;
+      if (card) return card;
+      const row = document.querySelector(`.user-comment-row[data-comment-id="${escaped}"]`);
+      if (row || fileLevel === false) return row;
+    }
+    let card = null;
+    this.forEachFileCommentsZone((zone) => {
+      card = card || zone.querySelector(`.file-comment-card[data-comment-id="${escaped}"]`);
+    });
+    return card || document.querySelector(`.file-comment-card[data-comment-id="${escaped}"]`);
+  }
+
+  /**
+   * The textarea of a comment's open edit form, looked up inside the
+   * comment's card (the card may not be attached to the document).
+   * @private
+   */
+  _findCommentEditTextarea(commentId, card = this.findCommentCard(commentId)) {
+    const selector = `#edit-comment-${String(commentId).replace(/[^\w-]/g, '\\$&')}`;
+    return card?.querySelector(selector) || document.querySelector(selector);
+  }
+
+  /**
+   * The card of an AI suggestion: the line suggestion's card in the diff,
+   * else the file-level card in its file's comment zone, else a row of the
+   * table renderer. The one way to get a suggestion's card; see
+   * findCommentCard for why the document is not asked first.
+   * @param {number|string} suggestionId
+   * @returns {HTMLElement|null}
+   */
+  findSuggestionCard(suggestionId) {
+    if (suggestionId == null || suggestionId === '') return null;
+    const id = String(suggestionId);
+    const escaped = id.replace(/["\\]/g, '\\$&');
+    const bridge = this.pierreBridge;
+    const hit = bridge?.findAnnotationByData?.('suggestion', data => String(data?.id) === id);
+    if (hit) {
+      const element = bridge.getAnnotationElement(hit.fileName, hit.annotation.metadata.id, { create: true });
+      const card = element?.matches?.('.ai-suggestion') ? element : element?.querySelector?.('.ai-suggestion');
+      if (card) return card;
+    }
+    let card = null;
+    this.forEachFileCommentsZone((zone) => {
+      card = card || zone.querySelector(`.ai-suggestion[data-suggestion-id="${escaped}"]`);
+    });
+    return card || document.querySelector(`.ai-suggestion[data-suggestion-id="${escaped}"]`)
+      || document.querySelector(`[data-suggestion-id="${escaped}"]`);
+  }
+
+  /**
+   * Write a suggestion's new status to the suggestion object its card is
+   * built from, so a card built or drawn later shows it. Call it after the
+   * flow has updated the card that exists: the card is then recorded as up
+   * to date and the next draw leaves it alone.
+   * @param {number|string} suggestionId
+   * @param {'active'|'adopted'|'dismissed'} status
+   * @private
+   */
+  _setSuggestionStatus(suggestionId, status) {
+    if (suggestionId == null) return;
+    const id = String(suggestionId);
+    const hit = this.pierreBridge?.findAnnotationByData?.('suggestion', data => String(data?.id) === id);
+    const suggestion = hit?.annotation?.metadata?.data;
+    if (!suggestion) return;
+    suggestion.status = status;
+    const element = this.pierreBridge.getAnnotationElement(hit.fileName, hit.annotation.metadata.id);
+    const card = element?.matches?.('.ai-suggestion') ? element : element?.querySelector?.('.ai-suggestion');
+    this.suggestionManager?.markSuggestionSynced?.(card, suggestion);
   }
 
   /**
@@ -7587,15 +8032,16 @@ class PRManager {
     const run = (async () => {
       PostedComment.setUpdateBusy(id, true);
       const result = await PostedComment.requestHostUpdate(reviewId, id);
+      // The update is over. "Busy" is data (a card drawn while the update
+      // runs shows it too), so it is cleared here and not left to the note's
+      // re-render below.
+      PostedComment.setUpdateBusy(id, false);
       PostedComment.setUpdateError(id, result.ok ? null : result.error);
       const comment = result.ok ? result.comment
         : (this.userComments || []).find(c => c.id === id);
-      // Re-rendering the note also clears the busy state
       if (comment) {
         if (result.ok) this.applyServerComment(comment);
         else PostedComment.findRenderedComments(id).forEach(el => PostedComment.syncEditedSincePosted(el, comment));
-      } else {
-        PostedComment.setUpdateBusy(id, false);
       }
       return result;
     })();
@@ -8905,11 +9351,12 @@ class PRManager {
       refreshBtn.disabled = true;
     }
 
-    // Show loading state in diff container
-    const diffContainer = document.getElementById('diff-container');
-    if (diffContainer) {
-      diffContainer.innerHTML = '<div class="loading">Refreshing pull request...</div>';
-    }
+    // Show loading state in place of the diff. The diff itself is left
+    // alone until the refreshed one is rendered (renderDiff clears the
+    // message); should the refresh end without a render, the message is
+    // taken down again below and the diff that was there is back.
+    const refreshStatus = this._setDiffStatus(
+      '<div class="loading">Refreshing pull request...</div>', { hideScroller: true });
 
     const oldHeadSha = this.currentPR?.head_sha;
 
@@ -8990,6 +9437,8 @@ class PRManager {
         refreshBtn.classList.remove('refreshing');
         refreshBtn.disabled = false;
       }
+      // Only this refresh's own message, and only if nothing replaced it.
+      this._clearDiffStatus(refreshStatus);
     }
   }
 
@@ -9024,6 +9473,7 @@ class PRManager {
           if (!el) continue;
           if (el.classList.contains('context-file')) {
             // Standalone wrapper (legacy) — remove entirely
+            this.fileCommentManager?.releaseZone(el._fileCommentsZone);
             el.remove();
           } else {
             // Chunk tbody within a merged wrapper
@@ -9039,6 +9489,7 @@ class PRManager {
             el.remove();
             // If no more chunks remain, remove the wrapper too
             if (wrapper && !wrapper.querySelector('.context-chunk')) {
+              this.fileCommentManager?.releaseZone(wrapper._fileCommentsZone);
               wrapper.remove();
             }
           }
@@ -9306,7 +9757,7 @@ class PRManager {
 
     // File comment button
     if (this.fileCommentManager) {
-      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file);
+      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file, { context: true });
       wrapper._fileCommentsZone = fileCommentsZone;
 
       const fileCommentBtn = document.createElement('button');
@@ -9594,7 +10045,10 @@ class PRManager {
             const staleWrapper = document.querySelector(
               `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(staleFile)}"]`
             );
-            if (staleWrapper) staleWrapper.remove();
+            if (staleWrapper) {
+              this.fileCommentManager?.releaseZone(staleWrapper._fileCommentsZone);
+              staleWrapper.remove();
+            }
 
             await this.loadContextFiles();
             const updated = this.contextFiles?.find(cf => cf.id === overlapping.id);

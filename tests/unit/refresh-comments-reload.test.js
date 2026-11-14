@@ -205,7 +205,7 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
    * for both normal refreshes and HEAD-change updates.
    */
 
-  it('should verify local.js _applyRefreshedDiff calls loadUserComments and loadAISuggestions after loadLocalDiff', async () => {
+  it('should verify local.js _applyRefreshedDiff re-anchors through the shared _rerenderAllOverlays after loadLocalDiff', async () => {
     // Read the source to confirm the fix is present
     const fs = require('fs');
     const path = require('path');
@@ -226,14 +226,19 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     // Verify loadLocalDiff is called
     expect(applyBody).toContain('await this.loadLocalDiff()');
 
-    // Verify loadUserComments is called AFTER loadLocalDiff
+    // The comments and the suggestions are put back by the helper every
+    // whole-diff re-render shares, AFTER loadLocalDiff, pinned to the
+    // selected analysis run. No copy of the sequence is left in local.js.
     const loadDiffIdx = applyBody.indexOf('await this.loadLocalDiff()');
-    const loadCommentsIdx = applyBody.indexOf('await manager.loadUserComments(');
-    const loadSuggestionsIdx = applyBody.indexOf('await manager.loadAISuggestions(null, manager.selectedRunId)');
+    const rerenderIdx = applyBody.indexOf('await manager._rerenderAllOverlays({ analysisRunId: manager.selectedRunId })');
 
-    expect(loadCommentsIdx).toBeGreaterThan(loadDiffIdx);
-    expect(loadSuggestionsIdx).toBeGreaterThan(loadDiffIdx);
-    expect(loadSuggestionsIdx).toBeGreaterThan(loadCommentsIdx);
+    expect(rerenderIdx).toBeGreaterThan(loadDiffIdx);
+    expect(applyBody).not.toContain('await manager.loadUserComments(');
+    expect(applyBody).not.toContain('await manager.loadAISuggestions(');
+
+    // The three local re-render paths (whitespace, refresh, scope) call the
+    // helper; the base-branch change keeps main's behaviour and does not.
+    expect(localSource.match(/await manager\._rerenderAllOverlays\(\{ analysisRunId: manager\.selectedRunId \}\)/g)).toHaveLength(3);
 
     // Verify refreshDiff() calls _applyRefreshedDiff
     const refreshDiffMatch = localSource.match(
@@ -258,8 +263,9 @@ describe('Local mode: refreshDiff() reloads comments after diff refresh', () => 
     expect(applyMatch).toBeTruthy();
     const applyBody = applyMatch[0];
 
-    // loadUserComments reads the comment panel's filters itself
-    expect(applyBody).toContain('await manager.loadUserComments()');
+    // loadUserComments (reached through _rerenderAllOverlays) reads the
+    // comment panel's filters itself
+    expect(applyBody).toContain('await manager._rerenderAllOverlays(');
     expect(applyBody).not.toContain('showDismissedComments');
   });
 });

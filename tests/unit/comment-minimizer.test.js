@@ -48,6 +48,10 @@ function diffContainer() {
  * a file header + file-comments-zone, appended to #diff-container.
  * @returns {{wrapper: Element, host: Element, header: Element, zone: Element}}
  */
+// The minimizer gets file-comment zones from the page's registry
+// (PRManager.forEachFileCommentsZone), never from the document.
+const registeredZones = [];
+
 function makeFile(fileName, { withZone = false } = {}) {
   const wrapper = document.createElement('div');
   wrapper.className = 'd2h-file-wrapper';
@@ -64,6 +68,7 @@ function makeFile(fileName, { withZone = false } = {}) {
   if (withZone) {
     zone = document.createElement('div');
     zone.className = 'file-comments-zone';
+    registeredZones.push(zone);
     zone.dataset.fileName = fileName;
     wrapper.appendChild(zone);
   }
@@ -155,7 +160,10 @@ function lineIndicators() {
 let RealMutationObserver;
 beforeEach(() => {
   document.body.innerHTML = '';
-  window.prManager = undefined;
+  registeredZones.length = 0;
+  window.prManager = {
+    forEachFileCommentsZone(fn) { [...registeredZones].forEach(zone => fn(zone, zone.dataset.fileName)); }
+  };
   RealMutationObserver = global.MutationObserver;
   global.MutationObserver = class {
     observe() {}
@@ -575,6 +583,20 @@ describe('CommentMinimizer — file-level indicators', () => {
   function fileIndicator() {
     return document.querySelector('.d2h-file-header .file-comment-indicator');
   }
+
+  it('skips a registered zone that is not attached to the document, and does not throw without a registry', () => {
+    const detached = document.createElement('div');
+    detached.className = 'file-comments-zone';
+    fileCommentCard(detached, 'user-comment');
+    registeredZones.push(detached);
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    expect(fileIndicator()).toBeNull();
+
+    window.prManager = undefined;
+    expect(() => cm.refreshIndicators()).not.toThrow();
+  });
 
   it('injects a file-header indicator for a zone with user comments', () => {
     const { zone } = makeFile('a.js', { withZone: true });

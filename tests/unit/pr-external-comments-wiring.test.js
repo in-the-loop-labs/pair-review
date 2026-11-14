@@ -551,4 +551,26 @@ describe('PRManager._rerenderAllOverlays', () => {
     expect(prManager.loadUserComments).toHaveBeenCalledTimes(1);
     expect(prManager.loadAISuggestions).toHaveBeenCalled();
   });
+
+  it('in local mode re-renders comments and suggestions and never touches external comments', async () => {
+    // Local mode's whitespace toggle, refresh and scope change share this
+    // helper. External sources need a real pull request, so neither the
+    // GET-only path nor the sync path may run there.
+    const prManager = createTestPRManager();
+    prManager.loadUserComments = vi.fn().mockResolvedValue(undefined);
+    prManager.loadAISuggestions = vi.fn().mockResolvedValue(undefined);
+    window.PAIR_REVIEW_LOCAL_MODE = true;
+    try {
+      await prManager._rerenderAllOverlays({ analysisRunId: 'run-3' });
+      await prManager._rerenderAllOverlays({ analysisRunId: 'run-3', syncExternal: true });
+    } finally {
+      delete window.PAIR_REVIEW_LOCAL_MODE;
+    }
+
+    expect(prManager.loadUserComments).toHaveBeenCalledTimes(2);
+    expect(prManager.loadAISuggestions).toHaveBeenCalledWith(null, 'run-3');
+    expect(externalCommentManagerStub.loadAndRender).not.toHaveBeenCalled();
+    expect(externalCommentManagerStub.syncAndRender).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
 });

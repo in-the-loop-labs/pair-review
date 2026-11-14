@@ -18,7 +18,7 @@ import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender } from './helpers.js';
 import { allCorpora, checkRows, customCorpus, routeDiff } from './fixtures/diffs.js';
 import {
-  filesInPane, fileWrapper, dumpFile, rowCount, scrollFileIntoView, waitForFileRendered,
+  filesInPane, diffStatus, fileWrapper, dumpFile, rowCount, scrollFileIntoView, waitForFileRendered,
   waitForFileSettled, waitForContentUpgrade, wrapInfo, syntaxTokens, assertNoOrphanHosts
 } from './diff-dom.js';
 
@@ -237,7 +237,7 @@ for (const mode of MODES) {
       await routeDiff(page, customCorpus({ name: 'empty', diff: '', files: {} }));
       await page.goto(mode.path);
       // Characterization: each mode has its own wording.
-      await expect(page.locator('#diff-container')).toContainText(
+      await expect(diffStatus(page)).toContainText(
         mode.local ? /No changes in .+ scope/ : 'No files changed'
       );
       expect(await filesInPane(page)).toEqual([]);

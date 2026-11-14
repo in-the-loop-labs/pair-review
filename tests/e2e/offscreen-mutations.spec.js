@@ -380,6 +380,66 @@ for (const mode of MODES) {
       await expect(targetComments(page)).toHaveCount(0);
     });
 
+    test('an adopted suggestion shown again stays open when its adopting comment is deleted, also after its file is re-rendered', async ({ page }) => {
+      const [id] = await seedSuggestions(page, mode.reviewId, [
+        { file: TARGET, line_start: LINE_A, title: 'Adopt, show again, then delete', body: 'Suggestion body the reader keeps open' }
+      ]);
+      const card = inlineSuggestion(page, id);
+      const restoreLabel = card.locator('.btn-restore .btn-text');
+      await expect(card).toBeVisible();
+
+      await card.locator('.ai-action-adopt').click();
+      const adopted = fileWrapper(page, TARGET).locator('.user-comment-row', { hasText: 'Suggestion body the reader keeps open' });
+      await expect(adopted).toBeVisible();
+      await expect(card).toHaveClass(/collapsed/);
+      await expect(restoreLabel).toHaveText('Show');
+      await expectPendingCount(page, 1);
+
+      // "Show": the reader opens the adopted suggestion again.
+      await card.locator('.btn-restore').click();
+      await expect(card).not.toHaveClass(/collapsed/);
+      await expect(restoreLabel).toHaveText('Hide');
+      await expect(card.locator('.ai-suggestion-body')).toBeVisible();
+
+      // Deleting the adopting comment dismisses the suggestion in the data
+      // and in the review panel. The card the reader opened is left open.
+      const commentId = await adopted.getAttribute('data-comment-id');
+      const deleted = expectResponse(page, (r) => r.url().includes(`/comments/${commentId}`) && r.request().method() === 'DELETE');
+      await adopted.locator('.btn-delete-comment').click();
+      await deleted;
+      await expect(targetComments(page)).toHaveCount(0);
+      await expectPendingCount(page, 0);
+      await expect(page.locator(`.finding-item[data-id="${id}"]`)).toHaveClass(/finding-dismissed/);
+      const expectLeftOpen = async () => {
+        await expect(card).toHaveCount(1);
+        await expect(card).not.toHaveClass(/collapsed/);
+        await expect(restoreLabel).toHaveText('Hide');
+        await expect(card.locator('.ai-suggestion-body')).toBeVisible();
+        await expect(card).not.toHaveAttribute('data-hidden-for-adoption', /.*/);
+      };
+      await expectLeftOpen();
+
+      // Revealing hidden lines replaces the file's diff and draws every card of it again.
+      await revealOffHunkLine(page, TARGET, HIDDEN_LINE);
+      await expect.poll(() => isLineVisible(page, TARGET, HIDDEN_LINE)).toBe(true);
+      await expect(lineNumberCell(fileWrapper(page, TARGET), HIDDEN_LINE, { side: 'additions' }).first()).toBeAttached();
+      await expectLeftOpen();
+      if (DELETED_COMMENT_RETURNS_ON_RERENDER) {
+        // The defect of main the test above characterizes: the re-render
+        // draws the deleted comment again until the comments are reloaded.
+        await expect(targetComments(page)).toHaveCount(1);
+        await reloadComments(page);
+      }
+      await expect(targetComments(page)).toHaveCount(0);
+      await expectLeftOpen();
+
+      // Going away and coming back draws it once more.
+      await leave(page);
+      await comeBack(page);
+      await expectLeftOpen();
+      await expect(page.locator('.toast-error')).toHaveCount(0);
+    });
+
     test('a comment saved while a comment reload is in flight is kept, and nothing is drawn twice', async ({ page }) => {
       const existing = await seedComment(page, mode.reviewId, { file: TARGET, line: LINE_A, body: 'There before the reload' });
       await reloadComments(page);

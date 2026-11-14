@@ -338,9 +338,9 @@ class TourRenderer {
     const startGen = this.prManager?._tourGen;
     const isStale = () => this.prManager?._tourGen !== startGen;
 
-    // Idempotent remount: if the annotation is still live in the DOM, reuse
-    // it. If it went missing (the file was re-rendered from scratch, dropping
-    // its annotations), fall through and re-add.
+    // Idempotent remount: if the file still has the annotation, reuse its
+    // element. If it went missing (the file was re-rendered from scratch,
+    // dropping its annotations), fall through and re-add.
     if (this._pierreMounts.has(index)) {
       const existing = this._queryPierreRow(filePath, index);
       if (existing) {
@@ -364,10 +364,6 @@ class TourRenderer {
           break;
         }
       }
-    } else {
-      // Bridge without visibility probing — fall back to line_end and let the
-      // post-add DOM query decide whether it actually mounted.
-      anchorLine = lineEnd;
     }
     if (anchorLine == null) {
       console.warn(
@@ -409,9 +405,10 @@ class TourRenderer {
     }
 
     // Ensure the 'tour-stop' renderer is registered on the bridge, then add
-    // the annotation. addAnnotation triggers a synchronous rerender that
-    // invokes our renderer and slots the `<div class="tour-annotation-row">`
-    // into the file's light DOM.
+    // the annotation. The anchor line was chosen from the bridge's visibility
+    // oracle, so the annotation has a line to sit under; whether its element
+    // is in the document yet is not asked (it is not while a new diff of the
+    // file is still awaiting display).
     this._ensureTourStopRendererRegistered();
     const id = this._pierreAnnotationId(index);
     // Record BEFORE adding so the renderer callback (fired synchronously by
@@ -429,14 +426,14 @@ class TourRenderer {
 
     const row = this._queryPierreRow(filePath, index);
     if (!row) {
-      // The bridge accepted the annotation but nothing slotted (line not
-      // actually rendered). Roll back so we don't leave a phantom mount.
+      // The bridge did not take the annotation (it has no such file) or the
+      // stop could not be built. Roll back so we don't leave a phantom mount.
       this._pierreMounts.delete(index);
       if (typeof bridge.removeAnnotation === 'function') {
         try { bridge.removeAnnotation(filePath, id); } catch (_) { /* best effort */ }
       }
       console.warn(
-        `[TourRenderer] pierre annotation did not slot for ${filePath}:${anchorLine} (${side}); ` +
+        `[TourRenderer] pierre annotation was not created for ${filePath}:${anchorLine} (${side}); ` +
         'stop will be skipped'
       );
       return null;
@@ -577,30 +574,20 @@ class TourRenderer {
   }
 
   /**
-   * The light-DOM container (`.pierre-diff-body`) a pierre file's annotations
-   * are slotted into, or null.
-   * @param {string} filePath
-   * @returns {HTMLElement|null}
-   */
-  _pierreContainer(filePath) {
-    const fileState = this.prManager?.pierreBridge?.files?.get?.(filePath);
-    return (fileState && fileState.container) || null;
-  }
-
-  /**
-   * Re-query the live slotted annotation element for a pierre stop. The
-   * element is rebuilt on every FileDiff rerender, so cached references go
-   * stale — always resolve fresh before operating on it.
+   * The annotation element of a pierre stop, by annotation id, through the
+   * bridge. The bridge hands back the element it built for the stop whether
+   * or not the diff has it on screen right now, and builds it when it has not
+   * been built yet, so an element that is not attached to the document is
+   * still the stop's element. null means the file no longer has the
+   * annotation (the file was re-rendered from scratch).
    * @param {string} filePath
    * @param {number} index
    * @returns {HTMLElement|null}
    */
   _queryPierreRow(filePath, index) {
-    const container = this._pierreContainer(filePath);
-    if (!container) return null;
-    return container.querySelector(
-      `.tour-annotation-row[data-stop-index="${index}"]`
-    ) || null;
+    const bridge = this.prManager?.pierreBridge;
+    if (!bridge || typeof bridge.getAnnotationElement !== 'function') return null;
+    return bridge.getAnnotationElement(filePath, this._pierreAnnotationId(index), { create: true }) || null;
   }
 
   /**
@@ -776,29 +763,55 @@ class TourRenderer {
 
   /**
    * Smoothly scroll the mounted row for `index` into view, centering it.
-   * No-op if the row isn't mounted.
+   * No-op if the stop isn't mounted.
+   *
+   * Goes through the page's one navigation helper (PRManager.revealInDiff),
+   * which resolves the stop's element through the bridge by annotation id,
+   * waits until the diff has attached it (it is not while a new diff of the
+   * file is still awaiting display) and scrolls with the stable variant:
+   * lazy bodies between the viewport and the stop render as the scroll
+   * passes them, shifting layout so a plain scrollIntoView lands off target.
+   * Fire-and-forget for the caller; cancelled when the tour is left or
+   * reopened, and it bails on its own if the user scrolls.
    * @param {number} index
+   * @returns {Promise<void>|undefined}
    */
   scrollToStop(index) {
-    // Resolve the live element (pierre annotations are rebuilt on rerender,
-    // so the cached reference can be stale). The slotted pierre `<div>` and
-    // the legacy `<tr>` both have layout, so scrollIntoView works on either.
-    const row = this._resolveRow(index);
-    if (!row || !row.isConnected) return;
     const options = {
       behavior: this._reduceMotion ? 'auto' : 'smooth',
       block: 'center'
     };
-    // Lazy bodies between the viewport and the stop render as the scroll
-    // passes them, shifting layout so a plain scrollIntoView lands off
-    // target. The stable variant re-corrects once the scroll settles.
-    // Fire-and-forget: it bails on its own if the row unmounts (tour exit)
-    // or the user scrolls.
+    const manager = this.prManager;
+    if (manager && typeof manager.revealInDiff === 'function') {
+      const pierre = this._pierreMounts.get(index);
+      if (!pierre && !this._mounted.has(index)) return undefined;
+      const gen = manager._tourGen;
+      return manager.revealInDiff({
+        file: pierre ? pierre.filePath : this._stops[index]?.file_path,
+        annotationId: pierre ? pierre.id : undefined,
+        // Legacy (table-rendered) stops are rows this renderer holds.
+        findElement: () => (pierre ? null : this._resolveRow(index)),
+        scroll: options,
+        // A stop is never minimized: scroll to the stop itself.
+        expandMinimized: false,
+        isCancelled: () => manager._tourGen !== gen
+      }).then(({ element }) => {
+        if (element && pierre && this._pierreMounts.get(index) === pierre) {
+          this._mounted.set(index, element);
+        }
+      }).catch((err) => {
+        console.warn('[TourRenderer] could not scroll to stop', index, err);
+      });
+    }
+    // No page manager to navigate through: scroll the element we hold.
+    const row = this._resolveRow(index);
+    if (!row || !row.isConnected) return undefined;
     if (window.ScrollUtils?.scrollIntoViewStable) {
       window.ScrollUtils.scrollIntoViewStable(row, options);
     } else {
       row.scrollIntoView(options);
     }
+    return undefined;
   }
 
   /**

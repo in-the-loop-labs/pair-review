@@ -608,6 +608,16 @@ function allFileWrappers(page) {
  * The files in the diff pane, top to bottom, as the user sees them.
  * @returns {Promise<Array<{file: string, kind: 'diff'|'context', top: number}>>}
  */
+/**
+ * The diff pane's message: loading, an error, an empty diff. It is shown in
+ * place of the diff, or above it when the diff is empty (context files stay
+ * under it). A spec asks for the message here and never names where the
+ * application puts it.
+ */
+function diffStatus(page) {
+  return page.locator('#diff-status');
+}
+
 async function filesInPane(page) {
   return inPage(page, (D) => D.wrappers()
     .map((w) => ({
@@ -1458,15 +1468,17 @@ const LAYOUT_TOGGLE_KEEPS = 'scroll-offset';
 const UPGRADE_WAITS_FOR_FOCUS = false;
 
 /**
- * A defect on main, characterized as it is: deleting a comment through its
- * card removes the card element and leaves the comment in the annotation
- * list the file is re-rendered from, so the next re-render of that file (a
- * reveal of hidden lines, a content upgrade) draws the deleted comment again
- * until the comments are reloaded. Phase 3 of the migration removes the
- * annotation on delete; this becomes `false` there and
- * offscreen-mutations.spec.js then asserts the comment stays gone.
+ * Whether a comment deleted through its card is drawn again by the next
+ * re-render of its file (a reveal of hidden lines, a content upgrade).
+ *
+ *   true   it is, until the comments are reloaded: a defect main has.
+ *          Deleting removed the card element and left the comment in the
+ *          annotation list the file is re-rendered from.
+ *   false  it stays gone. Since phase 3 of the migration, which removes the
+ *          annotation with the comment (PRManager.patchUserComment);
+ *          offscreen-mutations.spec.js asserts it.
  */
-const DELETED_COMMENT_RETURNS_ON_RERENDER = true;
+const DELETED_COMMENT_RETURNS_ON_RERENDER = false;
 
 /**
  * Two defects of chat file links on main, characterized as they are
@@ -1500,21 +1512,22 @@ const REVEALED_LINE_KEEPS_FLASH = false;
  *   'file-level'  in the file's comment zone, styled as a thread that could
  *                 not be anchored, and it stays there when the new diff is
  *                 displayed: nothing draws the threads again until the next
- *                 thread reload. A defect of main, characterized as it is
- *                 (ledger H60). `ExternalCommentManager._renderThreadPierre`
- *                 adds the annotation and looks for its card in the same
- *                 task; while a new diff awaits display the engine goes on
- *                 drawing the old diff with the annotations it was last
- *                 drawn with, so the card is not there, and the manager takes
- *                 that to mean the line is not in the diff.
- *   'line'        under its line, once, as soon as the new diff is displayed
+ *                 thread reload. A defect main has (ledger H60).
+ *                 `ExternalCommentManager._renderThreadPierre` added the
+ *                 annotation and looked for its card in the same task; while
+ *                 a new diff awaits display the engine goes on drawing the
+ *                 old diff with the annotations it was last drawn with, so
+ *                 the card was not there, and the manager took that to mean
+ *                 the line is not in the diff.
+ *   'line'        under its line, once, as soon as the new diff is displayed.
+ *                 Since phase 3 of the migration: the manager decides from
+ *                 the engine's visibility oracle and does not look for the
+ *                 card.
  *
  * On an ordinary page load the window is one worker round trip wide and the
  * thread list usually misses it; rerender-overlays.spec.js holds it open.
- * Phase 3 of the migration stops the manager from reading "no card in the
- * DOM" as "line not rendered" and flips this to 'line'.
  */
-const THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY = 'file-level';
+const THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY = 'line';
 
 /**
  * Whether the gutter button of the last hovered row is still showing after
@@ -1681,6 +1694,7 @@ module.exports = {
   contextFile,
   allFileWrappers,
   filesInPane,
+  diffStatus,
   waitForDiffToRender,
   waitForFileRendered,
   rowCount,

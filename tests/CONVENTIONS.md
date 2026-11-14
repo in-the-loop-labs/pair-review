@@ -210,7 +210,20 @@ because violating it produced a real, observed flake or measurable waste.
   `THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY`,
   `GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS`), with both outcomes
   written in the spec. The phase that changes the behaviour flips the
-  constant; the spec is not edited.
+  constant; the spec is not edited. (Phase 3 flipped
+  `DELETED_COMMENT_RETURNS_ON_RERENDER` and
+  `THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY`.)
+- **A card is asked for by what it is, never by where it is in the document.**
+  The application resolves cards through `PRManager.findCommentCard`,
+  `findSuggestionCard`, `ExternalCommentManager.findThreadCard` and
+  `PierreBridge.getAnnotationElement`, which also know a card that is built
+  and not attached. A lookup hands the card back as it is: only the engine's
+  draw brings a built card in line with its data, so a flow that looks a card
+  up and then updates it sees what the reader left (a test of such a flow
+  draws with `bridge._renderAnnotation`, never by looking the card up). The
+  diff pane's message is `diffStatus(page)` in
+  `diff-dom.js` (the application shows it in `#diff-status`, a sibling of
+  `#diff-container`, and nothing writes markup into `#diff-container`).
 - **"Settled" includes the highlight worker pool.** A file that rendered
   before the pool was ready is rebuilt from scratch a frame after the pool
   reports ready: new rows, and every range the application revealed applied
@@ -301,6 +314,25 @@ because violating it produced a real, observed flake or measurable waste.
   belief about the vendor, and stays green when the vendor changes. The
   previous CodeView attempt had 181 such tests pass against a bridge that
   rendered zero annotations on the real component.
+- **A module that talks to the bridge is unit-tested against the real bridge
+  without the vendor, not against a bridge that draws.**
+  `tests/utils/pierre-bridge-harness.js` builds the production `PierreBridge`
+  with file records whose vendor instance is a spy: the annotation list, the
+  visibility oracle (`isLineVisible`, from the hunks a test gives a file) and
+  the element cache (`getAnnotationElement`) are real, and nothing is ever
+  attached to the document. That is the point: `ExternalCommentManager`,
+  `TourRenderer` and the page's card resolvers must decide from data, and a
+  test that needs a card to appear in the document to pass is testing a
+  belief about the vendor. The fake bridges that "slotted" a `<div>` on
+  `addAnnotation` were removed for that reason (they kept the external-thread
+  demotion of ledger H60 green).
+- **A module that navigates or resolves elements through the page is
+  unit-tested against the production `PRManager` methods.**
+  `tests/utils/page-manager.js` gives a `PRManager` without running its
+  constructor; a test stubs only what reaches outside the unit (the lazy body
+  render, the line reveal, the file-element lookup). `revealInDiff`,
+  `setFileCollapsed`, `findCommentCard` and the zone resolvers are never
+  re-implemented in a test.
 - **Every contract test names what depends on it** (a comment naming the bridge
   function), and a test that pins a vendor *bug* says so in its title. When one
   of those fails after a version bump, the bug may be fixed: re-read the fact

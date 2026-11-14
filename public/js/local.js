@@ -538,9 +538,10 @@ class LocalManager {
       // Re-fetch and re-render the diff (loadLocalDiff reads hideWhitespace)
       await self.loadLocalDiff();
 
-      // Re-anchor comments and suggestions on the fresh DOM
-      await manager.loadUserComments();
-      await manager.loadAISuggestions(null, manager.selectedRunId);
+      // Re-anchor comments and suggestions on the fresh DOM, through the
+      // helper every whole-diff re-render shares (external comments are a
+      // no-op in local mode).
+      await manager._rerenderAllOverlays({ analysisRunId: manager.selectedRunId });
 
       // Restore scroll position after the DOM settles
       requestAnimationFrame(() => {
@@ -939,12 +940,12 @@ class LocalManager {
     await this.loadLocalDiff();
 
     // Re-render comments and AI suggestions on the fresh DOM
-    // (renderDiff clears the diff container, so we must re-populate)
-    await manager.loadUserComments();
+    // (renderDiff clears the diff container, so we must re-populate), through
+    // the helper every whole-diff re-render shares.
     // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
     // (because the manager triggers loadAISuggestions via onSelectionChange on init),
     // refresh must call unconditionally since the manager won't re-fire its callback.
-    await manager.loadAISuggestions(null, manager.selectedRunId);
+    await manager._rerenderAllOverlays({ analysisRunId: manager.selectedRunId });
 
     // Update branchAvailable on the scope selector if the backend sent an updated value
     if (result.branchAvailable !== undefined && manager.diffOptionsDropdown) {
@@ -1501,6 +1502,8 @@ class LocalManager {
       if (!diffContent) {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
+          // Whatever was rendered before is not this diff's.
+          manager._removeRenderedFiles(diffContainer);
           const reviewData = this.localData;
           const branchInfo = reviewData?.branchInfo;
           const LS = window.LocalScope;
@@ -1509,10 +1512,10 @@ class LocalManager {
           // Show scope-aware empty message
           if (!hasBranch && branchInfo) {
             const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
-            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope.</div>`;
+            manager._setDiffStatus(`<div class="no-diff">No changes in ${scopeLabel} scope.</div>`, { hideScroller: false });
           } else {
             const scopeLabel = LS ? LS.scopeLabel(this.scopeStart, this.scopeEnd) : 'current scope';
-            diffContainer.innerHTML = `<div class="no-diff">No changes in ${scopeLabel} scope. Change <strong>Diff scope</strong> or make some changes and click <strong>Refresh</strong> to reload.</div>`;
+            manager._setDiffStatus(`<div class="no-diff">No changes in ${scopeLabel} scope. Change <strong>Diff scope</strong> or make some changes and click <strong>Refresh</strong> to reload.</div>`, { hideScroller: false });
           }
 
           // If branch has commits ahead and branch is not in scope, offer to expand
@@ -1616,10 +1619,7 @@ class LocalManager {
 
     } catch (error) {
       console.error('Error loading local diff:', error);
-      const diffContainer = document.getElementById('diff-container');
-      if (diffContainer) {
-        diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
-      }
+      manager._setDiffStatus('<div class="no-diff">Error loading changes</div>', { hideScroller: true });
     }
   }
 
@@ -1687,9 +1687,9 @@ class LocalManager {
     this.updateLocalHeader(this.localData);
     await this.loadLocalDiff();
 
-    // Re-anchor comments and suggestions
-    await manager.loadUserComments();
-    await manager.loadAISuggestions(null, manager.selectedRunId);
+    // Re-anchor comments and suggestions, through the helper every
+    // whole-diff re-render shares
+    await manager._rerenderAllOverlays({ analysisRunId: manager.selectedRunId });
 
     // Only update dropdown if user hasn't clicked again since this request started
     if (manager?.diffOptionsDropdown) {

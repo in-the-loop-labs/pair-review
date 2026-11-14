@@ -182,6 +182,11 @@ for (const mode of MODES) {
      * position is final.
      */
     async function readThroughThenReturn(page) {
+      // Two passes over 60 files are processor-bound: about 8 s alone, 17 to
+      // 19 s in a full eight-worker run, and once 31 s when the machine was
+      // busier still, which is the whole default budget (ledger, phase 3).
+      // The budget is about time, not about what the test asserts.
+      test.slow();
       await scrollThroughDiff(page);
       await scrollThroughDiff(page);
       await scrollDiffToEdge(page, 'top');

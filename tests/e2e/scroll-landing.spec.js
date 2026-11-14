@@ -19,8 +19,8 @@ import {
 } from './helpers.js';
 import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 import {
-  fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, scrollDiffTo,
-  scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts,
+  fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, rowCount, scrollDiffTo,
+  scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts, clickExpandControl,
   scrollThroughDiff, LAYOUT_TOGGLE_KEEPS
 } from './diff-dom.js';
 
@@ -112,6 +112,9 @@ for (const mode of MODES) {
 
     test('file positions and the scroll extent do not change between one scroll pass and the next', async ({ page }) => {
       // The first pass renders everything; from then on nothing may wander.
+      // Three passes over 60 files are processor-bound (19 s of the default
+      // 30 in a full eight-worker run): see chat-file-links.spec.js.
+      test.slow();
       await scrollThroughDiff(page);
       await scrollThroughDiff(page);
       const topsA = await fileTops(page);
@@ -173,6 +176,51 @@ for (const mode of MODES) {
       await page.locator(`.finding-item[data-id="${id}"]`).click();
       await expect(fileWrapper(page, middle)).not.toHaveClass(/collapsed/);
       await expect(inlineSuggestion(page, id)).toBeInViewport();
+    });
+
+    test('an AI-panel click on a finding that names its file in another form expands the collapsed file completely', async ({ page }) => {
+      // The server keeps a finding's path as the model wrote it and accepts
+      // './<path>' for <path>. Such a finding has no card in the diff; its
+      // click still opens the file, and must open all of it: the code, and
+      // the state behind the header's chevron.
+      const line = changedLines(MANY, middle).additions[0];
+      const [id] = await seedSuggestions(page, mode.reviewId, [
+        { file: `./${middle}`, line_start: line, title: 'Finding that names its file with a leading dot', body: 'Body.' }
+      ]);
+      await sidebarItem(page, middle).click();
+      await expectHeaderFlush(page, middle);
+      await waitForFileRendered(page, middle);
+      const rowsShown = await rowCount(page, middle);
+      expect(rowsShown).toBeGreaterThan(0);
+      const toggle = fileWrapper(page, middle).locator('.file-collapse-toggle');
+      await toggle.click();
+      await expect(fileWrapper(page, middle)).toHaveClass(/collapsed/);
+      await expect.poll(() => rowCount(page, middle)).toBe(0);
+      await scrollDiffToEdge(page, 'top');
+
+      await page.evaluate(() => window.aiPanel?.expand());
+      await page.locator(`.finding-item[data-id="${id}"]`).click();
+      await expect(fileWrapper(page, middle)).not.toHaveClass(/collapsed/);
+      await expect.poll(() => rowCount(page, middle)).toBe(rowsShown);
+      await expect(toggle).toHaveAttribute('title', 'Collapse file');
+
+      // The file is open for the diff engine too, not only in the page's
+      // markup: the next re-render of the file (here the reader expands a
+      // gap) draws its code, with the lines of the gap added. An engine
+      // still told "collapsed" draws no line at all.
+      await waitForFileSettled(page, middle);
+      await clickExpandControl(page, middle, 0);
+      await expect.poll(() => rowCount(page, middle)).toBeGreaterThan(rowsShown);
+      const rowsExpanded = await rowCount(page, middle);
+
+      // And the header agrees with what is shown: one click collapses the
+      // file, and the next one shows its code again.
+      await toggle.click();
+      await expect(fileWrapper(page, middle)).toHaveClass(/collapsed/);
+      await expect.poll(() => rowCount(page, middle)).toBe(0);
+      await toggle.click();
+      await expect(fileWrapper(page, middle)).not.toHaveClass(/collapsed/);
+      await expect.poll(() => rowCount(page, middle)).toBe(rowsExpanded);
     });
 
     test('switching between unified and split keeps the reader\'s place', async ({ page }) => {

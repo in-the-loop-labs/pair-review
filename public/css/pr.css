@@ -7383,6 +7383,31 @@ body:not([data-theme="dark"]) .theme-icon-light {
   overflow: visible; /* Must be visible so sticky file headers work relative to .diff-view */
 }
 
+/* The diff pane's status message (#diff-status: loading, error, empty diff)
+   is a sibling of #diff-container with the same box, so a message looks the
+   way it did when it was written into the container itself. Either can be
+   hidden; the class rules above set no display, the attribute must win. */
+.diff-container[hidden],
+.diff-status[hidden] {
+  display: none;
+}
+
+/* An empty diff keeps the container (context files render into it): the
+   message sits on top of it and the two read as one box. */
+.main-layout .diff-status.diff-status--with-diff {
+  flex: 0 0 auto;
+  padding-bottom: 0;
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.main-layout .diff-status.diff-status--with-diff + .diff-container {
+  border-top: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 /* --------------------------------------------------------------------------
    AI Analysis Panel (Right)
    -------------------------------------------------------------------------- */

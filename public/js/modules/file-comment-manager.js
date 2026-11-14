@@ -127,7 +127,7 @@ class FileCommentManager {
    * @param {string} fileName - The file path
    * @returns {HTMLElement} The file comments zone element
    */
-  createFileCommentsZone(fileName) {
+  createFileCommentsZone(fileName, { context = false } = {}) {
     const zone = document.createElement('div');
     zone.className = 'file-comments-zone';
     zone.dataset.fileName = fileName;
@@ -138,7 +138,85 @@ class FileCommentManager {
 
     zone.appendChild(container);
 
+    this._registerZone(zone, fileName, context);
     return zone;
+  }
+
+  // ─── Zone registry ────────────────────────────────────────────────
+  //
+  // Every file-comment zone is created here and held here until the file it
+  // belongs to leaves the diff pane. The registry, not the document, is how a
+  // zone is found: a zone holds open forms and in-place edit state, and it
+  // need not be attached to the document for its cards to be loaded, counted
+  // or cleared. `getZone` and `forEachZone` are the only lookups; nothing
+  // else may query the document for `.file-comments-zone`.
+
+  /** @private */
+  _zoneKey(fileName, context) {
+    return `${context ? 'context' : 'diff'}:${fileName}`;
+  }
+
+  /** @private */
+  _registerZone(zone, fileName, context) {
+    if (!this._zones) this._zones = new Map();
+    this._zones.set(this._zoneKey(fileName, context), { zone, fileName, context: !!context });
+  }
+
+  /**
+   * The file-comment zone of a file, attached to the document or not.
+   * Resolves the path the way DiffRenderer.findFileElement does: the exact
+   * path, then its normalized form, then a tolerant path match; a changed
+   * file's zone wins over a context entry's zone for the same path.
+   * @param {string} fileName - The file path
+   * @returns {HTMLElement|null}
+   */
+  getZone(fileName) {
+    if (!fileName || !this._zones || this._zones.size === 0) return null;
+    const DiffRenderer = window.DiffRenderer;
+    const candidates = [fileName];
+    const normalized = DiffRenderer?.normalizeFilePath?.(fileName);
+    if (normalized && normalized !== fileName) candidates.push(normalized);
+    for (const candidate of candidates) {
+      const entry = this._zones.get(this._zoneKey(candidate, false));
+      if (entry) return entry.zone;
+    }
+    if (typeof DiffRenderer?.pathsMatch !== 'function') {
+      return this._zones.get(this._zoneKey(fileName, true))?.zone || null;
+    }
+    let contextMatch = null;
+    for (const entry of this._zones.values()) {
+      if (!DiffRenderer.pathsMatch(entry.fileName, fileName)) continue;
+      if (!entry.context) return entry.zone;
+      if (!contextMatch) contextMatch = entry.zone;
+    }
+    return contextMatch;
+  }
+
+  /**
+   * Visit every file-comment zone, in the order the zones were created
+   * (which is the order of the files in the diff pane).
+   * @param {Function} fn - (zone, fileName) => void
+   */
+  forEachZone(fn) {
+    if (typeof fn !== 'function' || !this._zones) return;
+    for (const entry of [...this._zones.values()]) fn(entry.zone, entry.fileName);
+  }
+
+  /**
+   * Forget a zone whose file has left the diff pane (a context file that was
+   * dismissed or removed).
+   * @param {HTMLElement|null} zone
+   */
+  releaseZone(zone) {
+    if (!zone || !this._zones) return;
+    for (const [key, entry] of this._zones) {
+      if (entry.zone === zone) this._zones.delete(key);
+    }
+  }
+
+  /** Forget every zone: the diff pane is being rendered from scratch. */
+  releaseAllZones() {
+    this._zones?.clear();
   }
 
 
@@ -1181,8 +1259,9 @@ class FileCommentManager {
       }
     }
 
-    // Find all file comment zones and populate them
-    const zones = document.querySelectorAll('.file-comments-zone');
+    // Populate every file comment zone, attached to the document or not
+    const zones = [];
+    this.forEachZone(zone => zones.push(zone));
     for (const zone of zones) {
       const container = zone.querySelector('.file-comments-container');
 
@@ -1233,20 +1312,7 @@ class FileCommentManager {
    * @returns {HTMLElement|null} The zone element or null
    */
   findZoneForFile(fileName) {
-    const fileWrapper = window.DiffRenderer?.findFileElement
-      ? window.DiffRenderer.findFileElement(fileName)
-      : null;
-
-    if (fileWrapper) {
-      return fileWrapper.querySelector('.file-comments-zone');
-    }
-
-    try {
-      const escaped = globalThis.CSS?.escape ? CSS.escape(fileName) : fileName;
-      return document.querySelector(`.file-comments-zone[data-file-name="${escaped}"]`);
-    } catch {
-      return null;
-    }
+    return this.getZone(fileName);
   }
 
   /**

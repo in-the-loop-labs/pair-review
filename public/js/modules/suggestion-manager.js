@@ -211,6 +211,84 @@ class SuggestionManager {
   }
 
   /**
+   * The status a suggestion's card shows, from data: 'adopted' when a live
+   * user comment was adopted from it or its own status says so, 'dismissed',
+   * else 'active'. The same rule createSuggestionRow builds a card from.
+   * @param {Object} suggestion
+   * @returns {'adopted'|'dismissed'|'active'}
+   */
+  effectiveSuggestionStatus(suggestion) {
+    if (!suggestion) return 'active';
+    const idNum = parseInt(suggestion.id);
+    const adoptedByComment = (this.prManager?.userComments || []).some(comment =>
+      comment.status !== 'inactive' && comment.parent_id &&
+        (comment.parent_id === suggestion.id || comment.parent_id === idNum)
+    );
+    if (adoptedByComment || suggestion.status === 'adopted') return 'adopted';
+    return suggestion.status === 'dismissed' ? 'dismissed' : 'active';
+  }
+
+  /**
+   * Record that a card shows its suggestion's current status. The adopt,
+   * dismiss and restore flows call this after they have updated the card
+   * themselves, so syncSuggestionElement leaves what they did alone (for
+   * example an adopted suggestion the reader has chosen to show again).
+   * @param {HTMLElement|null} card - The `.ai-suggestion` element
+   * @param {Object} suggestion
+   */
+  markSuggestionSynced(card, suggestion) {
+    if (!card || !suggestion) return;
+    if (!this._syncedSuggestionStatus) this._syncedSuggestionStatus = new WeakMap();
+    this._syncedSuggestionStatus.set(card, this.effectiveSuggestionStatus(suggestion));
+  }
+
+  /**
+   * Bring a suggestion card in line with its suggestion's status. Runs every
+   * time the diff draws the card. A card whose status has not changed since
+   * it was built or last brought in line is not touched; one that missed a
+   * status change (it was not on screen when the change was made) is given
+   * the collapsed state, tooltip and Show/Hide label of the new status.
+   * @param {HTMLElement} element - The `.ai-suggestion` element (or a wrapper of it)
+   * @param {Object} suggestion
+   */
+  syncSuggestionElement(element, suggestion) {
+    if (!element || !suggestion) return;
+    const card = element.matches?.('.ai-suggestion') ? element : element.querySelector?.('.ai-suggestion');
+    if (!card) return;
+    if (!this._syncedSuggestionStatus) this._syncedSuggestionStatus = new WeakMap();
+    const status = this.effectiveSuggestionStatus(suggestion);
+    const shown = this._syncedSuggestionStatus.get(card);
+    this._syncedSuggestionStatus.set(card, status);
+    // Just built: createSuggestionRow rendered it from this same data.
+    if (shown === undefined || shown === status) return;
+
+    const SuggestionUI = window.SuggestionUI;
+    const setRestoreLabel = (collapsed) => {
+      const button = card.querySelector('.btn-restore');
+      if (!button) return;
+      button.title = collapsed ? 'Show suggestion' : 'Hide suggestion';
+      const text = button.querySelector('.btn-text');
+      if (text) text.textContent = collapsed ? 'Show' : 'Hide';
+    };
+    if (status === 'adopted') {
+      card.classList.add('collapsed');
+      card.dataset.hiddenForAdoption = 'true';
+      SuggestionUI?.setCollapsedStateTooltip?.(card, 'Adopted');
+      setRestoreLabel(true);
+    } else if (status === 'dismissed') {
+      card.classList.add('collapsed');
+      card.dataset.hiddenForAdoption = 'false';
+      SuggestionUI?.setCollapsedStateTooltip?.(card, 'Dismissed');
+      setRestoreLabel(true);
+    } else {
+      card.classList.remove('collapsed');
+      delete card.dataset.hiddenForAdoption;
+      SuggestionUI?.setCollapsedStateTooltip?.(card, '');
+      SuggestionUI?.clearDismissalReasonUI?.(card);
+    }
+  }
+
+  /**
    * Remove every rendered AI suggestion card: inline rows (legacy renderer),
    * Pierre `suggestion` annotations and file-level AI cards. User comment
    * cards are untouched. The navigator list is left alone; see
@@ -478,9 +556,19 @@ class SuggestionManager {
         const fileElement = this.findFileElement(file);
 
         if (!fileElement) {
+          // No element is not "not in the diff": that is asked of the data.
+          // A file of the pane without an element has nowhere to put a row,
+          // and nothing to report.
+          if (this.prManager?.isFileInDiffPane?.(file)) {
+            console.warn(`[UI] No rendered element for "${file}"; its suggestions are not shown inline`);
+            return;
+          }
           // This can happen when AI suggests a file path that doesn't exist in the diff
           // Common with level 3 (codebase context) analysis which may reference files outside the PR
-          const availableFiles = Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.dataset.fileName);
+          const availableFiles = [
+            ...(this.prManager?.changedFilesByPath ? this.prManager.changedFilesByPath.keys() : []),
+            ...(this.prManager?.contextFiles || []).map(contextFile => contextFile.file)
+          ];
           console.warn(`[UI] File not found in diff: "${file}". This suggestion may reference a file outside the PR or an incorrectly analyzed path. Available files:`, availableFiles);
           // Mark these suggestions as needing attention - they'll appear in the navigator but not inline
           locationSuggestions.forEach(s => {

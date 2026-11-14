@@ -11,7 +11,8 @@
  * call is still awaiting a slow render, the older call must NOT scroll when
  * its await finally resolves — otherwise it snaps the viewport back to the
  * stale target. A monotonic `_navGen` token (bumped at the top of each
- * method, re-checked before doScroll) enforces latest-wins at the consumer.
+ * method, handed to PRManager.revealInDiff as its cancel check) enforces
+ * latest-wins at the consumer.
  *
  * We bypass AIPanel's heavy DOM constructor with Object.create and set
  * `_navGen = 0` to mirror what the real constructor does.
@@ -20,6 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
+const { makePageManager } = require('../utils/page-manager.js');
 
 /** Create a deferred promise we can resolve on demand. */
 function deferred() {
@@ -33,20 +35,28 @@ function makeInstance() {
   // Mirror the real constructor: latest-wins token starts at 0 so the first
   // ++this._navGen yields 1 (not NaN from ++undefined).
   inst._navGen = 0;
-  inst.expandFileIfCollapsed = vi.fn(() => undefined);
-  inst._scrollDiffTarget = vi.fn();
   inst.comments = [];
   return inst;
 }
 
+// Every element scrolled into view, in order. The panel navigates through
+// the page's one helper (the production PRManager.revealInDiff, on a page
+// manager from tests/utils/page-manager.js), which ends in scrollIntoView.
+let scrolls;
+let originalScrollIntoView;
+
 beforeEach(() => {
   document.body.innerHTML = '';
   window.prManager = undefined;
+  scrolls = [];
+  originalScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function scrollIntoView() { scrolls.push(this); };
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete window.prManager;
+  Element.prototype.scrollIntoView = originalScrollIntoView;
 });
 
 describe('AIPanel scroll-to latest-wins race', () => {
@@ -56,11 +66,11 @@ describe('AIPanel scroll-to latest-wins race', () => {
   ])('%s ignores a stale target after waiting for range expansion', async (method, className, idKey) => {
     const oldGate = deferred();
     const newGate = deferred();
-    window.prManager = {
+    window.prManager = makePageManager({
       ensureLinesVisible: vi.fn()
         .mockImplementationOnce(() => oldGate.promise)
         .mockImplementationOnce(() => newGate.promise),
-    };
+    });
     const inst = makeInstance();
     const cards = ['A', 'B'].map(id => {
       const card = document.createElement('div');
@@ -70,32 +80,35 @@ describe('AIPanel scroll-to latest-wins race', () => {
       return card;
     });
 
+    // The older navigation is parked on its line reveal when the newer one
+    // starts, and the newer one parks on its own.
     const older = inst[method]('A', 'a.js', '10');
+    await vi.waitFor(() => expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(1));
     const newer = inst[method]('B', 'b.js', '20');
-    expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(2));
 
     oldGate.resolve();
     await older;
-    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(scrolls).toEqual([]);
     expect(cards[0].classList.contains('current-suggestion')).toBe(false);
     expect(cards[0].classList.contains('highlight-flash')).toBe(false);
 
     newGate.resolve();
     await newer;
-    expect(inst._scrollDiffTarget.mock.calls).toEqual([[cards[1]]]);
+    expect(scrolls).toEqual([cards[1]]);
   });
 
   it('scrollToFinding: an older call bails after a newer call supersedes it', async () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
-    window.prManager = {
+    window.prManager = makePageManager({
       ensureFileBodyRendered: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
         return gate.promise;
       })
-    };
+    });
 
     const inst = makeInstance();
 
@@ -116,26 +129,25 @@ describe('AIPanel scroll-to latest-wins race', () => {
     oldGate.resolve();
     await olderP;
     // Older call must have bailed — no scroll.
-    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(scrolls).toEqual([]);
 
     // Now let the newer call finish — it owns the scroll.
     newGate.resolve();
     await newerP;
-    expect(inst._scrollDiffTarget).toHaveBeenCalledTimes(1);
-    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(findingB);
+    expect(scrolls).toEqual([findingB]);
   });
 
   it('scrollToComment: an older call bails after a newer call supersedes it', async () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
-    window.prManager = {
+    window.prManager = makePageManager({
       ensureFileBodyRendered: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
         return gate.promise;
       })
-    };
+    });
 
     const inst = makeInstance();
 
@@ -154,25 +166,24 @@ describe('AIPanel scroll-to latest-wins race', () => {
 
     oldGate.resolve();
     await olderP;
-    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(scrolls).toEqual([]);
 
     newGate.resolve();
     await newerP;
-    expect(inst._scrollDiffTarget).toHaveBeenCalledTimes(1);
-    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(rowB);
+    expect(scrolls).toEqual([rowB]);
   });
 
   it('scrollToExternalThread: an older call bails after a newer call supersedes it', async () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
-    window.prManager = {
+    window.prManager = makePageManager({
       ensureFileBodyRendered: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
         return gate.promise;
       })
-    };
+    });
 
     const inst = makeInstance();
 
@@ -191,21 +202,20 @@ describe('AIPanel scroll-to latest-wins race', () => {
 
     oldGate.resolve();
     await olderP;
-    expect(inst._scrollDiffTarget).not.toHaveBeenCalled();
+    expect(scrolls).toEqual([]);
 
     newGate.resolve();
     await newerP;
-    expect(inst._scrollDiffTarget).toHaveBeenCalledTimes(1);
-    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(rowB);
+    expect(scrolls).toEqual([rowB]);
   });
 
   it('single scrollToFinding call still scrolls (no false bail with _navGen = 0)', async () => {
     // With _navGen initialized to 0 (as the constructor does), a lone call
     // bumps it to 1 and 1 === 1, so it must NOT bail. This guards against the
     // ++undefined -> NaN bug, where NaN !== NaN would wrongly skip the scroll.
-    window.prManager = {
+    window.prManager = makePageManager({
       ensureFileBodyRendered: vi.fn(() => Promise.resolve())
-    };
+    });
     const inst = makeInstance();
 
     const finding = document.createElement('div');
@@ -215,7 +225,6 @@ describe('AIPanel scroll-to latest-wins race', () => {
 
     await inst.scrollToFinding('F1', 'a.js', null);
 
-    expect(inst._scrollDiffTarget).toHaveBeenCalledTimes(1);
-    expect(inst._scrollDiffTarget).toHaveBeenCalledWith(finding);
+    expect(scrolls).toEqual([finding]);
   });
 });

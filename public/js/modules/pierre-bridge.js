@@ -1547,6 +1547,156 @@ class PierreBridge {
   }
 
   /**
+   * Whether a file has an annotation with this id. Decided from the
+   * annotation list, never from the DOM.
+   * @param {string} fileName
+   * @param {string} annotationId
+   * @returns {boolean}
+   */
+  hasAnnotation(fileName, annotationId) {
+    return !!this._findAnnotation(fileName, annotationId);
+  }
+
+  /**
+   * Find the file and annotation for an annotation id of a given type whose
+   * data matches a predicate, across every file. For callers that know an
+   * item (a suggestion id, a thread id) and not the file it is anchored in.
+   * @param {string} type - Annotation type
+   * @param {Function} predicate - (data, annotation) => boolean
+   * @returns {{fileName: string, annotation: Object}|null}
+   */
+  findAnnotationByData(type, predicate) {
+    if (typeof predicate !== 'function') return null;
+    for (const [fileName, fileState] of this.files) {
+      for (const annotation of fileState.annotations) {
+        if (annotation.metadata.type !== type) continue;
+        if (predicate(annotation.metadata.data, annotation)) return { fileName, annotation };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The file that holds the annotation with this id, or null. Annotation
+   * ids are unique across files (`comment-<id>`, `suggestion-<id>`, ...).
+   * @param {string} annotationId
+   * @param {string} [preferredFile] - Tried first
+   * @returns {string|null}
+   */
+  findAnnotationFile(annotationId, preferredFile) {
+    if (annotationId == null) return null;
+    if (preferredFile && this._findAnnotation(preferredFile, annotationId)) return preferredFile;
+    for (const [fileName, fileState] of this.files) {
+      if (fileState.annotations.some(a => a.metadata.id === annotationId)) return fileName;
+    }
+    return null;
+  }
+
+  /** @private */
+  _findAnnotation(fileName, annotationId) {
+    const fileState = this.files.get(fileName);
+    if (!fileState || annotationId == null) return null;
+    return fileState.annotations.find(a => a.metadata.id === annotationId) || null;
+  }
+
+  /**
+   * The element of an annotation, whether or not the diff has it on screen.
+   *
+   * This is the one way to get an annotation's card. A card is not in the
+   * document when the engine has not drawn it yet (a new diff of the file is
+   * still awaiting display, the file is collapsed), so "no card in the DOM"
+   * never means "no such annotation" or "line not rendered"; ask
+   * isLineVisible() for the latter.
+   *
+   * With `create`, a card that has not been built yet is built through the
+   * same path the engine's render callback uses and cached, so the engine
+   * later hands out this same element.
+   *
+   * A lookup never changes a card that exists. Only a draw by the engine
+   * brings a built card in line with its data (_syncAnnotationElement). The
+   * flows that call this (adopt, dismiss, restore, delete, edit) are about to
+   * update the card themselves, and some of them leave it deliberately
+   * different from what the data alone says: an adopted suggestion the
+   * reader chose to show again stays open when its adopting comment is
+   * deleted. A sync here would undo that before the flow has run.
+   *
+   * @param {string} fileName
+   * @param {string} annotationId
+   * @param {Object} [options]
+   * @param {boolean} [options.create=false] - Build the element if needed
+   * @returns {HTMLElement|null} null when the file has no such annotation,
+   *   or when it has not been built and `create` is false
+   */
+  getAnnotationElement(fileName, annotationId, { create = false } = {}) {
+    const fileState = this.files.get(fileName);
+    const annotation = this._findAnnotation(fileName, annotationId);
+    if (!fileState || !annotation) return null;
+    const { metadata, lineNumber, side } = annotation;
+    if (metadata.type === 'comment-form') {
+      const form = fileState.formElements.get(metadata.id);
+      if (form || !create) return form || null;
+    } else {
+      const cached = this._renderedAnnotations.get(metadata);
+      if (cached && cached.lineNumber === lineNumber && cached.side === side) {
+        return cached.element || null;
+      }
+      if (!create) return null;
+    }
+    // Not built yet (or built for another line): build it as the engine would.
+    return this._renderAnnotation(annotation, fileName, fileState.formElements) || null;
+  }
+
+  /**
+   * Wait until an annotation's element is attached to the document.
+   *
+   * An annotation's card is attached in the same task as the call that added
+   * it, except while a new diff of the file is still awaiting display (the
+   * engine goes on drawing the old diff with the annotations it was last
+   * drawn with) or while the file is collapsed. Navigation waits here before
+   * it scrolls to a card. The wait is time-based because a pending diff takes
+   * a worker round trip (about a second for a very large file).
+   *
+   * "Attached" is all that is asked: a card that minimize mode hides has no
+   * box, and it is still the right element to hand to the caller.
+   *
+   * There is nothing to wait for when the diff does not show the
+   * annotation's line (isLineVisible: the line is in no hunk and no revealed
+   * range, or the file is collapsed): the engine will not attach that card,
+   * and the answer is null at once.
+   *
+   * @param {string} fileName
+   * @param {string} annotationId
+   * @param {Object} [options]
+   * @param {number} [options.timeoutMs=4000]
+   * @param {Function} [options.isCancelled] - () => boolean; checked each frame
+   * @returns {Promise<HTMLElement|null>} the attached element; null when the
+   *   annotation is gone, its line is not shown, the wait was cancelled, or
+   *   the time ran out
+   */
+  whenAnnotationRendered(fileName, annotationId, { timeoutMs = 4000, isCancelled } = {}) {
+    const resolveNow = () => {
+      const element = this.getAnnotationElement(fileName, annotationId, { create: true });
+      if (!element || element.isConnected) return { element, done: true };
+      const annotation = this._findAnnotation(fileName, annotationId);
+      const shown = !!annotation && this.isLineVisible(fileName, annotation.lineNumber, annotation.side);
+      return shown ? { element, done: false } : { element: null, done: true };
+    };
+    const first = resolveNow();
+    if (first.done) return Promise.resolve(first.element);
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve) => {
+      const tick = () => {
+        if (typeof isCancelled === 'function' && isCancelled()) return resolve(null);
+        const { element, done } = resolveNow();
+        if (done) return resolve(element);
+        if (Date.now() >= deadline) return resolve(null);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  /**
    * Update annotations on the FileDiff instance.
    * @private
    */
@@ -1872,13 +2022,42 @@ class PierreBridge {
     // the same card: hand back the element already built for it.
     const cached = this._renderedAnnotations.get(metadata);
     if (cached && cached.lineNumber === lineNumber && cached.side === side) {
+      this._syncAnnotationElement(annotation, cached.element, fileName);
       return cached.element;
     }
     const element = this._renderAnnotationContent(annotation, fileName, formElements);
     if (element) {
       this._renderedAnnotations.set(metadata, { element, lineNumber, side });
+      this._syncAnnotationElement(annotation, element, fileName);
     }
     return element;
+  }
+
+  /**
+   * Bring a built card in line with its annotation's data. Runs on every
+   * render of the annotation (_renderAnnotation), for a card just built and
+   * for one the engine is handed back from the cache, so whatever changed in
+   * the data while the card was not on screen (posted status and visibility,
+   * the edited-since-posted note, an update in flight, a suggestion's
+   * status) is right when it is shown. Never run by a lookup of a card that
+   * exists (getAnnotationElement). Idempotent: a card that already matches
+   * its data is not touched.
+   * @private
+   */
+  _syncAnnotationElement(annotation, element, fileName) {
+    if (!element) return;
+    const { type, data, id } = annotation.metadata;
+    try {
+      if (type === 'comment') {
+        window.PostedComment?.syncCommentElement?.(element, data);
+      } else if (type === 'suggestion') {
+        window.prManager?.suggestionManager?.syncSuggestionElement?.(element, data);
+      } else {
+        this._annotationSyncers?.get(type)?.(element, data, id, fileName);
+      }
+    } catch (err) {
+      console.error(`[PierreBridge] sync of "${type}" annotation failed:`, err);
+    }
   }
 
   /**
@@ -1918,12 +2097,22 @@ class PierreBridge {
    * (data, id, fileName) and must return a DOM element (or null to skip).
    * Elements are slotted into the light DOM below their anchor line, so page
    * CSS and inline event handlers work as they do for comments/suggestions.
+   *
+   * The element is built once per annotation and reused. An optional `sync`
+   * runs on every render of the annotation (after the build, and each time
+   * the cached element is handed back) and must be idempotent: it re-stamps
+   * what can change in `data` while the card is not on screen.
    * @param {string} type - Annotation type (e.g. 'tour-stop', 'hunk-summary')
    * @param {Function} renderFn - (data, id, fileName) => Element|null
+   * @param {Object} [options]
+   * @param {Function} [options.sync] - (element, data, id, fileName) => void
    */
-  registerAnnotationRenderer(type, renderFn) {
+  registerAnnotationRenderer(type, renderFn, { sync } = {}) {
     if (!this._annotationRenderers) this._annotationRenderers = new Map();
+    if (!this._annotationSyncers) this._annotationSyncers = new Map();
     this._annotationRenderers.set(type, renderFn);
+    if (typeof sync === 'function') this._annotationSyncers.set(type, sync);
+    else this._annotationSyncers.delete(type);
   }
 
   /**
@@ -1932,6 +2121,7 @@ class PierreBridge {
    */
   unregisterAnnotationRenderer(type) {
     this._annotationRenderers?.delete(type);
+    this._annotationSyncers?.delete(type);
   }
 
   /**
