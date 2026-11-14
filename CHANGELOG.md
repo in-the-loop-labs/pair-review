@@ -1,5 +1,59 @@
 # Changelog
 
+## 5.4.2
+
+### Patch Changes
+
+- 7a8f7d4: Add Gemini 4 Hydrogen to the Antigravity provider (XHigh and High in the thorough tier, Medium in the balanced tier), and fix Gemini 4 Argon, which current agy releases rejected as "not recognized". Argon is now `gemini-4-argon-high` and runs at High effort; the old `gemini-4-argon` id still works as an alias. Argon's description now reflects that it is available on paid Google AI Pro plans as well as Ultra and Enterprise. Gemini 3.8 Flash (High) remains the default.
+- fc39b51: The home page now focuses the PR URL input on load (or the directory path input when the Local Reviews tab is restored), so you can paste and press Enter without clicking the field first. Focus is left alone if you have already clicked into something else while the page loads. The help modal now takes focus when it opens and returns it to where it was when it closes, so first-time users no longer type into the input hidden behind it.
+- 7a8f7d4: Add Claude Fable 5.2, Sonnet 5.5, and Haiku 5.5 models
+
+  - Fable 5.2 (`fable-5.2-xhigh`, `fable-5.2-high`) joins the thorough tier. The bare
+    `fable` alias now resolves to Fable 5.2 High (was Fable 5.1 XHigh), so any config,
+    council, `--model`, or saved default that names `fable` moves to the new generation
+    at High effort. To keep the previous behavior, name `fable-5.1-xhigh` explicitly, or
+    `fable-5.2-xhigh` for the new generation at XHigh.
+  - The bare `opus` alias now resolves to Opus 5.5 High (was Opus 5.5 XHigh), the same
+    effort as the default. Configs and councils that name `opus` now run at High effort;
+    name `opus-5.5-xhigh` explicitly to keep XHigh. Fable 5.2 costs less
+    than Fable 5.1 ($8/$40 vs $10/$50 per million tokens) but twice Opus 5.5, so the
+    default stays `opus-5.5-high`.
+  - Sonnet 5.5 (`sonnet-5.5-xhigh`, `sonnet-5.5-high`) leads the balanced tier, at the
+    same price as Sonnet 5. Sonnet 5 stays available by its explicit ids.
+  - Haiku 5.5 (`haiku-5.5-medium`) leads the fast tier, so JSON extraction and hunk
+    summaries now run on Haiku 5.5 unless `summaries.model` names another model. It is
+    about a tenth of Haiku 4.5's per-token price for prompts up to 100K tokens. `haiku` stays
+    pinned to Haiku 4.5.
+
+  Requires a Claude Code CLI that recognizes the new model IDs (v2.1.321 or later for
+  Fable 5.2). Use a per-model `cli_model` override if you need a different ID.
+
+- 7a8f7d4: Add GPT-6.1 Terra XHigh as an explicit balanced choice in the Codex provider, and remove GPT-5.5 High and XHigh, which Codex retired for ChatGPT sign-in on 2026-10-14. Saved configs that name `gpt-5.5-high` or `gpt-5.5-xhigh` now fail with Codex's unknown-model error instead of silently running another model; API-key users can still name `gpt-5.5` directly. GPT-5.6 Sol High stays the recommended default while GPT-6.1 access rolls out.
+- 7a8f7d4: Refresh GitHub Copilot built-in models: Claude 5.5 and GPT-5.6
+
+  - New built-ins: `claude-haiku-5.5` and `gpt-5.6-luna` (fast), `claude-sonnet-5.5`
+    (new default) and `gpt-5.6-terra` (balanced), `claude-opus-5.5` and `gpt-5.6-sol`
+    (thorough). JSON extraction and hunk summaries now run on Claude Haiku 5.5.
+  - Removed retired ids: `claude-sonnet-4.6`, `claude-opus-4.5`, `claude-opus-4.6`,
+    `claude-opus-4.6-fast`, `gpt-5.4`, `gpt-5.4-mini`, and `claude-haiku-4.6`.
+    `gpt-5.3-codex` is no longer a built-in either. None of these ids is aliased to a
+    new model. Copilot still accepts any model id it supports through `--model` or
+    `providers.copilot.models`.
+  - The new ids need a recent Copilot CLI. Run `copilot update` if a model is rejected.
+
+- 7a8f7d4: Refresh Cursor Agent built-in models around Composer 2.5
+
+  - `composer-2.5` is the new default (balanced) and `composer-2.5-fast` the fast-tier
+    model used for JSON extraction and hunk summaries. `gpt-5.3-codex-high` stays
+    the thorough-tier model.
+  - `composer-2` is now an alias of `composer-2.5`: same model line and same price.
+  - Removed superseded ids: `composer-1.5` (the previous default), `composer-2-fast`,
+    `gpt-5.3-codex-fast`, `gpt-5.3-codex-xhigh`, `gpt-5.4-high`, `gpt-5.4-medium`,
+    `sonnet-4.5-thinking`, `sonnet-4.6-thinking`, `opus-4.5-thinking`,
+    `opus-4.6-thinking`, `gemini-3-flash`, and `gemini-3.1-pro`. Any model your Cursor
+    account enables can still be named through `--model` or
+    `providers.cursor-agent.models` (see `cursor-agent --list-models`).
+
 ## 5.4.1
 
 ### Patch Changes
