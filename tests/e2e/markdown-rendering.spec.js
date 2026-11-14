@@ -18,20 +18,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, openCommentFormOnLine } from './helpers.js';
-
-// Helper to clean up all user comments (call via API to ensure clean state).
-// Mirrors the cleanupAllComments pattern in comment-crud.spec.js.
-async function cleanupAllComments(page) {
-  await page.evaluate(async () => {
-    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
-    for (const comment of comments) {
-      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
-    }
-  });
-}
+import { waitForDiffToRender, openCommentFormOnLine, cleanupAllComments } from './helpers.js';
 
 // Create a user comment on the first diff line with the given body and return
 // the rendered comment body locator (the element produced by renderMarkdown).

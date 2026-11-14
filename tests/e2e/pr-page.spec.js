@@ -8,6 +8,15 @@
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import {
+  fileWrapper, lineNumberCells, rowsOfType, separators, expandableSeparators, expandControls,
+  waitForContentUpgrade, clickExpandControl, headerLanding, scrollState
+} from './diff-dom.js';
+
+const DIFF_MODES = [
+  { name: 'PR mode', path: '/pr/test-owner/test-repo/1' },
+  { name: 'Local mode', path: '/local/2' }
+];
 
 test.describe('PR Page', () => {
   test.describe('Page Load', () => {
@@ -65,187 +74,151 @@ test.describe('PR Page', () => {
     });
   });
 
-  test.describe('Diff Display', () => {
-    test('should render diff content', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
+  // The diff itself is the same component in both modes; run its display and
+  // hunk-expansion checks against PR mode and Local mode.
+  for (const mode of DIFF_MODES) {
+    test.describe(`Diff Display (${mode.name})`, () => {
+      test('should render diff content', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
 
-      // Should have diff file sections
-      const diffFiles = page.locator('[data-file-name]');
-      const count = await diffFiles.count();
-      expect(count).toBeGreaterThan(0);
+        // Should have diff file sections
+        const diffFiles = page.locator('[data-file-name]');
+        const count = await diffFiles.count();
+        expect(count).toBeGreaterThan(0);
+      });
+
+      test('should display line numbers', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        // One line-number cell per row and side (old/new line numbers).
+        expect(await lineNumberCells(page).count()).toBeGreaterThan(0);
+      });
+
+      test('should show added lines with correct styling', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        expect(await rowsOfType(page, 'addition').count()).toBeGreaterThan(0);
+      });
+
+      test('should show removed lines with correct styling', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        expect(await rowsOfType(page, 'deletion').count()).toBeGreaterThan(0);
+      });
+
+      test('should show context lines', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        // Patch context, or context expanded on demand.
+        expect(await rowsOfType(page, 'anyContext').count()).toBeGreaterThan(0);
+      });
+
+      test('should display diff hunks with headers', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        expect(await separators(page).count()).toBeGreaterThan(0);
+      });
+
+      test('should show expandable gap section between hunks', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        // Expand controls only render once full file contents finish loading
+        // (see `upgradeFileContents` flow in public/js/pr.js), which is
+        // scheduled after initial render. Poll so the test isn't racing that
+        // fetch.
+        await expect
+          .poll(async () => expandableSeparators(page).count(), { timeout: 5000 })
+          .toBeGreaterThan(0);
+      });
+
+      test('should expand context and show correct line numbers with offset', async ({ page }) => {
+        // This test verifies that when context is expanded between hunks,
+        // new context lines become visible and the rendered line-number cell count grows.
+        //
+        // NOTE: Precise OLD=9 / NEW=12 line-number verification is covered by the
+        // pierre-context.js unit tests (see convertOldToNew). We verify
+        // expansion behavior structurally here.
+
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        const utilsSection = fileWrapper(page, 'src/utils.js');
+        await expect(utilsSection).toBeVisible();
+
+        // Find a separator that actually has expand controls. Expand buttons
+        // only appear after full file contents finish loading (see upgradeFileContents),
+        // so poll for their presence instead of racing the fetch.
+        const expandable = expandableSeparators(utilsSection);
+        await expect
+          .poll(async () => expandable.count(), { timeout: 5000 })
+          .toBeGreaterThan(0);
+
+        // Record the pre-expansion count of rendered line-number cells in this file.
+        const numberCells = lineNumberCells(utilsSection);
+        const cellsBefore = await numberCells.count();
+
+        // Click an expand control (prefer expand-up on the target separator).
+        const targetSeparator = expandable.first();
+        const expandUp = expandControls(targetSeparator, 'up');
+        const expandBtn = (await expandUp.count()) > 0
+          ? expandUp.first()
+          : expandControls(targetSeparator, 'any').first();
+        await expandBtn.click();
+
+        // Poll until context-expanded lines are present AND line-number cell count grew.
+        await expect
+          .poll(async () => rowsOfType(utilsSection, 'expanded').count(), { timeout: 3000 })
+          .toBeGreaterThan(0);
+        await expect
+          .poll(async () => numberCells.count(), { timeout: 3000 })
+          .toBeGreaterThan(cellsBefore);
+      });
+
+      test('should reveal unmodified context when a hunk separator expand button is clicked', async ({ page }) => {
+        // Inter-hunk separators are labelled with text like "N unmodified
+        // lines". Expand buttons on those separators reveal previously-hidden
+        // context.
+
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+
+        const utilsSection = fileWrapper(page, 'src/utils.js');
+        await expect(utilsSection).toBeVisible();
+
+        // Wait for expand controls before interacting — they only render after
+        // full file contents load via upgradeFileContents.
+        await expect
+          .poll(async () => expandableSeparators(utilsSection).count(), { timeout: 5000 })
+          .toBeGreaterThan(0);
+
+        // The controls exist once the upgraded diff is what is displayed;
+        // wait for that before counting rows or clicking (the upgrade
+        // re-creates every row of the file).
+        await waitForContentUpgrade(page, 'src/utils.js');
+
+        // Pick an expand button that is actually visible: the directional
+        // controls are what a user clicks ("expand all" is hidden by default).
+        const visibleExpandBtn = expandControls(separators(utilsSection), 'directional').first();
+        await expect(visibleExpandBtn).toBeVisible();
+
+        const contextExpandedBefore = await rowsOfType(utilsSection, 'expanded').count();
+
+        await clickExpandControl(page, 'src/utils.js', 0);
+
+        // Expansion is async — poll until additional context lines appear.
+        await expect
+          .poll(async () => rowsOfType(utilsSection, 'expanded').count(), { timeout: 3000 })
+          .toBeGreaterThan(contextExpandedBefore);
+      });
     });
-
-    test('should display line numbers', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Pierre emits a cell per side with [data-column-number] (old/new line numbers).
-      // Playwright's CSS engine pierces the <diffs-container> shadow root by default.
-      const lineNumbers = page.locator('[data-column-number]');
-      const count = await lineNumbers.count();
-      expect(count).toBeGreaterThan(0);
-    });
-
-    test('should show added lines with correct styling', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Pierre tags inserted lines with data-line-type="change-addition"
-      const addedLines = page.locator('[data-line-type="change-addition"]');
-      const count = await addedLines.count();
-      expect(count).toBeGreaterThan(0);
-    });
-
-    test('should show removed lines with correct styling', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Pierre tags deleted lines with data-line-type="change-deletion"
-      const removedLines = page.locator('[data-line-type="change-deletion"]');
-      const count = await removedLines.count();
-      expect(count).toBeGreaterThan(0);
-    });
-
-    test('should show context lines', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Pierre tags context lines with data-line-type="context"
-      // (expanded-on-demand context uses "context-expanded").
-      const contextLines = page.locator('[data-line-type="context"], [data-line-type="context-expanded"]');
-      const count = await contextLines.count();
-      expect(count).toBeGreaterThan(0);
-    });
-
-    test('should display diff hunks with headers', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Pierre emits hunk separators as elements carrying the [data-separator] attribute.
-      const hunkHeaders = page.locator('[data-separator]');
-      const count = await hunkHeaders.count();
-      expect(count).toBeGreaterThan(0);
-    });
-
-    test('should show expandable gap section between hunks', async ({ page }) => {
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // In pierre, expandable gaps are [data-separator] elements that contain
-      // a [data-expand-button] descendant. Expand controls only render once
-      // full file contents finish loading (see `upgradeFileContents` flow in
-      // public/js/pr.js), which is scheduled via requestIdleCallback after
-      // initial render. Poll so the test isn't racing that fetch.
-      await expect
-        .poll(
-          async () => page.locator('[data-separator]:has([data-expand-button])').count(),
-          { timeout: 5000 }
-        )
-        .toBeGreaterThan(0);
-    });
-
-    test('should expand context and show correct line numbers with offset', async ({ page }) => {
-      // This test verifies that when context is expanded between hunks,
-      // new context lines become visible and the rendered line-number cell count grows.
-      //
-      // NOTE: Precise OLD=9 / NEW=12 line-number verification is covered by the
-      // pierre-context.js unit tests (see convertOldToNew). Pierre does not expose
-      // old/new numbers via dedicated old-vs-new line-number classes, so we verify
-      // expansion behavior structurally here.
-
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Scope to the main diff wrapper. There are multiple elements carrying
-      // data-file-name="src/utils.js" (e.g. .file-comments-zone); filter to the
-      // one that hosts the pierre diff body.
-      const utilsSection = page
-        .locator('[data-file-name="src/utils.js"]')
-        .filter({ has: page.locator('.pierre-diff-body') });
-      await expect(utilsSection).toBeVisible();
-
-      // Find a separator that actually has expand controls. Expand buttons
-      // only appear after full file contents finish loading (see upgradeFileContents),
-      // so poll for their presence instead of racing the idle-callback fetch.
-      const expandableSeparators = utilsSection.locator('[data-separator]:has([data-expand-button])');
-      await expect
-        .poll(async () => expandableSeparators.count(), { timeout: 5000 })
-        .toBeGreaterThan(0);
-
-      // Record the pre-expansion count of rendered line-number cells in this file.
-      const lineNumberCells = utilsSection.locator('[data-column-number]');
-      const cellsBefore = await lineNumberCells.count();
-
-      // Click an expand control (prefer expand-up on the target separator).
-      const targetSeparator = expandableSeparators.first();
-      const expandUp = targetSeparator.locator('[data-expand-up]');
-      const expandBtn = (await expandUp.count()) > 0
-        ? expandUp.first()
-        : targetSeparator.locator('[data-expand-button]').first();
-      await expandBtn.click();
-
-      // Poll until context-expanded lines are present AND line-number cell count grew.
-      await expect
-        .poll(async () => utilsSection.locator('[data-line-type="context-expanded"]').count(), { timeout: 3000 })
-        .toBeGreaterThan(0);
-      await expect
-        .poll(async () => lineNumberCells.count(), { timeout: 3000 })
-        .toBeGreaterThan(cellsBefore);
-    });
-
-    test('should reveal unmodified context when a hunk separator expand button is clicked', async ({ page }) => {
-      // Pierre labels inter-hunk separators with text like "N unmodified lines"
-      // (see createSeparator.js in node_modules/@pierre/diffs). Expand buttons
-      // on those separators reveal previously-hidden context. The legacy
-      // "function context appears in the hunk header" concept (from diff2html)
-      // doesn't exist in pierre — the function-context string is not surfaced
-      // separately, so we test expansion structurally instead.
-      //
-      // See public/js/modules/pierre-bridge.js for the expansion code path
-      // that feeds additional context back into the component.
-
-      await page.goto('/pr/test-owner/test-repo/1');
-      await waitForDiffToRender(page);
-
-      // Scope to the main diff wrapper, filtering out the sibling
-      // .file-comments-zone that also carries data-file-name.
-      const utilsSection = page
-        .locator('[data-file-name="src/utils.js"]')
-        .filter({ has: page.locator('.pierre-diff-body') });
-      await expect(utilsSection).toBeVisible();
-
-      // Wait for expand controls before interacting — they only render after
-      // full file contents load via upgradeFileContents.
-      await expect
-        .poll(
-          async () => utilsSection.locator('[data-separator]:has([data-expand-button])').count(),
-          { timeout: 5000 }
-        )
-        .toBeGreaterThan(0);
-
-      // Pick an expand button that is actually visible. Pierre hides
-      // [data-expand-all-button] via CSS by default; real-user "expand more"
-      // interactions go through the directional expand-up / expand-down
-      // buttons (or the separator label).
-      const visibleExpandBtn = utilsSection
-        .locator('[data-separator] [data-expand-up], [data-separator] [data-expand-down], [data-separator] [data-expand-both]')
-        .first();
-      await expect(visibleExpandBtn).toBeVisible();
-
-      const contextExpandedBefore = await utilsSection.locator('[data-line-type="context-expanded"]').count();
-
-      await visibleExpandBtn.click();
-
-      // Expansion is async — poll until additional context lines appear.
-      await expect
-        .poll(
-          async () => utilsSection.locator('[data-line-type="context-expanded"]').count(),
-          { timeout: 3000 }
-        )
-        .toBeGreaterThan(contextExpandedBefore);
-    });
-  });
+  }
 
   test.describe('File Navigation', () => {
     test('should highlight file when clicked in file list', async ({ page }) => {
@@ -267,22 +240,39 @@ test.describe('PR Page', () => {
       await page.goto('/pr/test-owner/test-repo/1');
       await waitForDiffToRender(page);
 
-      // Get file list items
-      const fileItems = page.locator('.file-item');
-      const count = await fileItems.count();
+      // The second sidebar entry is the fixture's second file. Its header
+      // starts well below the toolbar pinned above the diff.
+      const secondEntry = page.locator('.file-item').nth(1);
+      await expect(secondEntry).toHaveAttribute('data-path', 'src/utils.js');
+      const before = await headerLanding(page, 'src/utils.js');
+      expect(before.belowPinned).toBeGreaterThan(2);
+      expect((await scrollState(page)).top).toBe(0);
 
-      if (count > 1) {
-        // Get the second file's name to verify we scroll to it
-        const secondFileName = await fileItems.nth(1).textContent();
+      await secondEntry.click();
 
-        // Click second file to trigger scroll
-        await fileItems.nth(1).click();
-
-        // Wait for the second file to be visible in viewport (replaces fixed timeout)
-        // The file section matching the clicked file should be in view
-        const targetFileSection = page.locator(`[data-file-name]`).nth(1);
-        await expect(targetFileSection).toBeInViewport({ timeout: 2000 });
-      }
+      // The diff scrolls to the clicked file and stops with its header flush
+      // under the toolbar, or, when the diff ends first (the fixture's last
+      // file is shorter than the pane), at the end of the scroll range with
+      // the header on screen. The scroll is smooth, so this is polled until
+      // it has arrived.
+      //
+      // The assertion is about the file that was clicked. An earlier version
+      // looked at the second `[data-file-name]` element of the page, which is
+      // the FIRST file's comment zone; the scroll moves that out of the
+      // viewport about 100 ms after the click, so the test passed only when
+      // its first poll was quicker than the scroll.
+      await expect.poll(async () => {
+        const landing = await headerLanding(page, 'src/utils.js');
+        const scroll = await scrollState(page);
+        const atEnd = scroll.top >= scroll.height - scroll.client - 1;
+        return {
+          arrived: Math.abs(landing.belowPinned) < 2 || atEnd,
+          headerInViewport: landing.inViewport,
+          scrolled: scroll.top > 0
+        };
+      }).toEqual({ arrived: true, headerInViewport: true, scrolled: true });
+      await expect(secondEntry).toHaveClass(/active/);
+      await expect(page.locator('.file-item').first()).not.toHaveClass(/active/);
     });
   });
 
@@ -404,11 +394,9 @@ test.describe('Comment Interaction', () => {
     await waitForDiffToRender(page);
 
     // Hover over a line-number cell to trigger comment button visibility.
-    // Pierre emits line-number cells with [data-column-number].
-    const lineNumberCell = page.locator('[data-column-number]').first();
-    await lineNumberCell.hover();
+    await lineNumberCells(page).first().hover();
 
-    // Pierre's comment gutter button uses the .pierre-comment-btn class.
+    // The gutter comment button.
     const addCommentBtn = page.locator('.pierre-comment-btn');
     // It may be visible or in the DOM structure
     const count = await addCommentBtn.count();

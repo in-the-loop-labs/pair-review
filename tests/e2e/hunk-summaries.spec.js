@@ -18,6 +18,7 @@
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import { waitForFileRendered } from './diff-dom.js';
 
 const PR_REVIEW_ID = 1;
 const PR_PATH = '/pr/test-owner/test-repo/1';
@@ -54,24 +55,26 @@ async function enableSummariesConfig(page) {
 
 /**
  * Read the canonical content hash of a file's FIRST hunk, waiting until the
- * Pierre hunk anchors have been wired for that file.
+ * hunk anchors have been wired for that file.
  *
- * With @pierre/diffs there is no legacy `tr[data-hunk-start]` anchor row to
- * read the hash from — the file renders into a shadow-DOM `<diffs-container>`.
- * Instead the hash comes from the server-computed `hunk_hashes` (canonical,
+ * The hash comes from the server-computed `hunk_hashes` (canonical,
  * whitespace-stable), which `_registerPierreHunkAnchorsForFile` records in
- * `prManager._summaryAnchorsByHash` in hunk order. The first key is the first
- * hunk's hash — the value a `review:hunk_summaries_ready` event carries as
- * `content_hash` to mount a summary against that hunk.
+ * `prManager._summaryAnchorsByHash` in hunk order when the file's body is
+ * rendered. The first key is the first hunk's hash — the value a
+ * `review:hunk_summaries_ready` event carries as `content_hash` to mount a
+ * summary against that hunk.
  * @param {import('@playwright/test').Page} page
  * @param {string} fileName
  */
 async function readFirstHunkHash(page, fileName) {
+  // The file's body is rendered (what the spec waited for before the diff
+  // helpers existed, by asking the engine whether it had the file)...
+  await waitForFileRendered(page, fileName);
+  // ...and its anchors are registered.
   await page.waitForFunction(
     (file) => {
       const pm = window.prManager;
-      if (!pm || !pm.pierreBridge || !pm.pierreBridge.files.has(file)) return false;
-      const anchors = pm._summaryAnchorsByHash && pm._summaryAnchorsByHash.get(file);
+      const anchors = pm && pm._summaryAnchorsByHash && pm._summaryAnchorsByHash.get(file);
       return !!(anchors && anchors.size > 0);
     },
     fileName,

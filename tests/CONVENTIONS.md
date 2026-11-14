@@ -134,24 +134,157 @@ because violating it produced a real, observed flake or measurable waste.
   re-wraps lines and moves everything below, so geometry is measured only after
   the width has stopped changing. An init script cannot append to
   `document.head` or `document.documentElement`: both are null when it runs.
-- **The E2E file-contents endpoint answers for ANY path.**
-  `tests/e2e/test-server.js` serves `src/utils.js` verbatim and falls back to a
-  generic 40-line body for every other file name. So the idle content upgrade
-  fires for every non-binary file in a mocked diff and re-renders it: a
-  300-line patch *shrinks* to 40 lines. Any test that measures geometry (scroll
-  extent, item tops, element positions) must first wait for the upgrade to land
-  (`pierreBridge.files.get(file).baseMetadata` is set) **and** for the extent to
-  settle. Measuring across the upgrade reports churn as signal.
-- **The shared fixture diff is not a well-formed unified diff** (its first hunk
-  declares 5/8 lines and holds 4/7; it has blank lines without the leading
-  space). The vendor parser reports that on every page load; those exact
-  messages are in `ALLOWED`. Do not copy the fixture as a model for a new diff:
-  generate one whose hunk counts match its lines.
+- **`tests/e2e/diff-dom.js` is the only E2E file that knows vendor DOM.** A
+  spec never names `diffs-container`, a shadow root, `.pierre-diff-body`, a
+  vendor row attribute (`data-line`, `data-column-number`, `data-separator`,
+  `data-expand-*`, `data-additions`, `data-diff-type`,
+  `data-annotation-slot`, ...), `prManager.pierreBridge` or
+  `window.PierreDiffs`; it asks `diff-dom.js` (`rows`, `lineNumberCell`,
+  `fileLayout`, `selectLineRange`, `contextFileState`, ...).
+  `tests/unit/e2e-vendor-dom-boundary.test.js` fails otherwise, comments
+  included. The same specs must run unchanged against two diff engines; when
+  the engine changes, that one file changes. A spec may name what the
+  application owns on both engines: `.d2h-file-wrapper[data-file-name]`,
+  `.d2h-file-header`, card classes, `.pierre-comment-btn`, `#diff-container`.
+  The same test forbids `inPage` / `waitInPage` and the fields of the bridge's
+  file record (`baseMetadata`, `fileDiff`, `getRenderedDiff`) outside
+  `diff-dom.js`: a callback handed the page-side adapter reads engine state
+  under another name. A spec that needs a new question asked of the engine
+  gets a named helper in `diff-dom.js` (`contentsApplied`,
+  `upgradeAwaitingDisplay`, `firstFileBelowToolbar`).
+- **A diff a test serves comes with the contents it was taken from.** The
+  frontend fetches a file's full contents after rendering its patch and
+  upgrades the diff with them. Contents that do not belong to the patch
+  re-lay the file out with a different diff and make the vendor log a mismatch
+  (which fails the test). Use a corpus from `tests/e2e/fixtures/diffs.js`
+  (`evictionDiff`, `manyFilesDiff`, `edgeFilesDiff`: generated, with truthful
+  contents the test server answers from a registry) and `routeDiff(page,
+  corpus)`, which serves it in both modes. For verbatim `git diff` output a
+  builder cannot produce, `customCorpus({ diff, files })` takes the contents
+  alongside. An unregistered path still gets a generic 40-line pair from the
+  test server; `E2E_CONTENTS_LOG=<file>` lists the paths that hit it (a full
+  run: none).
+- **"Upgraded" is not "displayed".** The upgraded diff is shown a worker round
+  trip after the data says it is there, and every row of the file is re-created
+  when it lands. Rows are re-created again whenever the file's annotations
+  change (comments and suggestions arrive after the diff). Before measuring
+  geometry or holding a row, `await waitForContentUpgrade(page, file)`
+  (it waits for the display, not the data), and do not keep an element handle
+  across an action that reloads comments. A locator re-resolves; a handle or a
+  measured box does not.
+- **Clean up strictly.** `cleanupAllComments(page, reviewId)` and
+  `cleanupAISuggestions(page, reviewId)` check every response; `fetch` resolves
+  on a 500, and a cleanup that fails silently makes a later, unrelated test
+  fail. (`cleanupComments` is the best-effort variant for an `afterEach` on a
+  page a failing test may have left mid-navigation.) Wait for a save you
+  triggered before navigating away: a reload aborts it, the app logs the
+  rejection, and the guard fails the test.
+- **The context-files API is mocked in `context-files.spec.js`**, statefully,
+  because the real POST route requires the file to exist in the review's
+  working directory and the fixture reviews have none.
 - **Assert the positive sentinel before the negative.** After a remount or any
   rebuild from data, assert the row that must still be there *first*; that is
   the proof the rebuild finished. Only then assert that the removed row is
   absent. Reversed, the absence check passes against a view that has not been
   rebuilt yet.
+
+- **Point at a row only once the diff has settled.** After a load, each
+  file's contents arrive and re-create its rows, and a file that grows moves
+  every file below it. `hoverDiffLine`, `openCommentFormOnLine` and
+  `openLineCommentForm` wait for `waitForDiffSettled` themselves; a spec that
+  hovers or clicks a row on its own calls it (or `waitForContentUpgrade` for
+  the file) first.
+- **A pointer gesture whose target was replaced is made again, and only the
+  gesture.** Rows are also re-created whenever a file's annotations change,
+  and nothing signals the last of those after a load. `selectLineRange`,
+  `clickExpandControl`, `openLineCommentForm` and the selection gestures of
+  `text-selection.spec.js` wrap the gesture and the check of its result in
+  one `expect(...).toPass()`; the final action of an attempt is the click
+  itself, so it cannot happen twice. Do not retry an assertion about what
+  the application did.
+- **A behaviour the migration changes on purpose, or a defect main has, is
+  asserted through a named constant in `diff-dom.js`** (`CONTEXT_FILE_PLACEMENT`,
+  `LAYOUT_TOGGLE_KEEPS`, `UPGRADE_WAITS_FOR_FOCUS`,
+  `DELETED_COMMENT_RETURNS_ON_RERENDER`, `CHAT_LINK_REACHES_UNRENDERED_FILE`,
+  `REVEALED_LINE_KEEPS_FLASH`, `BASE_CHANGE_KEEPS_CARDS`,
+  `THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY`,
+  `GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS`), with both outcomes
+  written in the spec. The phase that changes the behaviour flips the
+  constant; the spec is not edited.
+- **"Settled" includes the highlight worker pool.** A file that rendered
+  before the pool was ready is rebuilt from scratch a frame after the pool
+  reports ready: new rows, and every range the application revealed applied
+  again. Alone that happens within 40 ms of the first rows; in a full run it
+  can happen hundreds of milliseconds into a test. `waitForContentUpgrade`,
+  `waitForFileSettled` and `waitForDiffSettled` wait for it, and the two
+  helpers that change what a file displays by hand (`redisplayBaseDiff`,
+  `expandHunkBy`) wait themselves: a manual expansion lives in the vendor
+  instance on the current engine and is lost with it at the rebuild. A spec
+  that holds a row does so only after one of the waits.
+- **When two answers race, the test decides the order.** Two requests the
+  application makes independently (a diff's file contents and a list of
+  threads; a comment reload and a save) arrive in either order, and a
+  scenario that leaves the order to chance asserts one of two behaviours at
+  random. Hold one answer until the state the scenario is about has been
+  reached (`mockExternalComments(...).holdLists()`, a gated `page.route`),
+  assert that state, then release. Say in the test which order it pins and
+  why. A race does not need a second action to exist: one ordinary page load
+  already has the diff, each file's contents, the worker's highlight results,
+  the comments, the suggestions and the external threads arriving
+  independently. A scenario that asserts where an external thread is drawn
+  holds the thread list until `waitForDiffSettled` (on main a list answered
+  while a file's upgraded diff awaits display demotes that file's thread to
+  its comment zone, 3 of 120 plain loads at eight workers;
+  `rerender-overlays.spec.js` holds that window open and asserts it).
+- **Assert the element the action was about, by name.** "The second
+  `[data-file-name]` on the page" is whatever the page puts second (it was
+  the first file's comment zone, not the second file). Locate a file by its
+  path (`fileWrapper(page, 'src/utils.js')`, `headerLanding(page, path)`), a
+  card by its id, a sidebar entry by `data-path`. And an assertion about
+  where a scroll ended is made about the end: poll for the settled landing
+  (`headerLanding`, `scrollState`), never `toBeInViewport` on something that
+  was in the viewport before the scroll started.
+- **Never click a point of something taller than the viewport.** A click
+  that misses once ("element is not stable" while a panel settles) is
+  retried by Playwright with forced scroll alignments of the target: end,
+  centre, start. On `#diff-container` with the eviction or many-files corpus
+  (tens of thousands of pixels) each of those puts the point off screen or
+  under the pinned toolbar, so after one transient miss the click can never
+  succeed and the test spends its whole timeout. To give the page keyboard
+  focus on the diff side, click a small fixed element
+  (`page.locator('.diff-toolbar').click({ position: { x: 5, y: 5 } })`).
+- **Optional features are switched on through the server's own config
+  answer**: `mockAppConfig(page, { summaries: { enabled: true } })` replaces
+  the named keys of `GET /api/config` and nothing else. `mockHunkSummaries`,
+  `mockTour` and `mockExternalComments` stand in for endpoints the test
+  server does not mount; a server push is the DOM event the WebSocket client
+  dispatches for it (`pushHunkSummaries`, `review:context_files_changed`).
+- **Seed real rows.** `seedComment` and `seedSuggestions` write through the
+  API and the test server, on any file and line of a routed corpus. A
+  suggestion that exists only in a routed response cannot be adopted (the
+  adopted comment's `parent_id` is a foreign key).
+- **A comment on a file of a routed diff leaves a context file on the
+  server** (the server does not find that file in the review's stored diff;
+  in Local mode that is every comment, because the fixture review has no
+  stored diff the route can read). `cleanupAllComments` removes context files
+  too, through `page.request`, so a routed context-files API cannot hide
+  them. In a `beforeEach` that runs after the page has loaded, also have the
+  page load comments and suggestions again, or it still shows what it drew.
+- **What a test draws on the two fixture reviews does not outlive it.** The
+  fixture (`fixtureReviewsLeftClean` in `tests/e2e/fixtures.js`) retires
+  every user comment, deletes every AI suggestion and analysis run, and
+  removes every context file of reviews 1 and 2 after every test, once the
+  page is closed, and fails the test if rows remain. A worker's database is
+  shared by whichever spec files Playwright gives that worker, so anything
+  left on a fixture review is drawn by an unrelated spec's next page load,
+  differently in every run. A describe's own `afterEach` cleanup is therefore
+  not what isolation rests on (one was lost in a rewrite and nothing noticed;
+  a census found thirteen describes leaving comments and fourteen leaving
+  suggestions). The suite's old "known flake", a gutter button left showing,
+  was a test for a clean review meeting an analysis an earlier spec had left
+  (`GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS`). A spec still cleans up, itself, whatever
+  else it creates: another review, a setting, viewed state it did not mock,
+  `localStorage`. And a test must not count on rows an earlier test left.
 
 ## Vendor contract suite (`tests/contract`)
 

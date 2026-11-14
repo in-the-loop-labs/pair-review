@@ -51,25 +51,47 @@ describe('ALLOWED', () => {
 });
 
 describe('findAllowance', () => {
-  it('allows the messages the shared fixture diff provokes, exactly', () => {
-    expect(findAllowance('parsePatchContent: hunk line count mismatch: "@@ -1,5 +1,8 @@", declared old/new 5/8, parsed old/new 4/7')).not.toBeNull();
-    expect(findAllowance('processFile: invalid rawLine: ')).not.toBeNull();
-    expect(findAllowance('parseLineType: Invalid firstChar: " ", full line: " "')).not.toBeNull();
+  it('allows no vendor parser or renderer message', () => {
+    // The shared fixture diff was malformed and provoked these on every page
+    // load; it was fixed, and the allowances went with it. A malformed patch
+    // or mismatched contents must fail the test that produced them.
+    expect(findAllowance('parsePatchContent: hunk line count mismatch: "@@ -1,5 +1,8 @@", declared old/new 5/8, parsed old/new 4/7', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance('parsePatchContent: hunk line count mismatch: "@@ -3,7 +3,9 @@", declared old/new 7/9, parsed old/new 6/9', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance('processFile: invalid rawLine: ', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance('parseLineType: Invalid firstChar: " ", full line: " "', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance('DiffHunksRenderer.processDiffResult: deletionLine and additionLine are null, something is wrong {file: q.sql}', null, ALLOWED, 'console.error')).toBeNull();
   });
 
-  it('does not allow the same vendor message for any other hunk', () => {
-    // A malformed patch produced by application code must still fail a test.
-    expect(findAllowance('parsePatchContent: hunk line count mismatch: "@@ -3,7 +3,9 @@", declared old/new 7/9, parsed old/new 6/9')).toBeNull();
-    expect(findAllowance('parseLineType: Invalid firstChar: "x", full line: "x = 1"')).toBeNull();
+  it('allows an interrupted fetch only as a console.error from a named loader', () => {
+    const logged = (prefix) => `${prefix}: TypeError: Failed to fetch\n    at window.fetch (http://localhost:4001/js/pr.js:1:1)`;
+    expect(findAllowance(logged('Error loading user comments'), null, ALLOWED, 'console.error')).not.toBeNull();
+    expect(findAllowance(logged('Failed to fetch file contents for src/main.js'), null, ALLOWED, 'console.error')).not.toBeNull();
+    expect(findAllowance('Error loading context files: TypeError: Failed to fetch', null, ALLOWED, 'console.error')).not.toBeNull();
+    // An uncaught rejection is a different thing from a logged one.
+    expect(findAllowance('TypeError: Failed to fetch', null, ALLOWED, 'pageerror')).toBeNull();
+    expect(findAllowance(logged('Error loading user comments'), null, ALLOWED, 'pageerror')).toBeNull();
+    // A bare message, or one from a loader nobody has looked at.
+    expect(findAllowance('TypeError: Failed to fetch', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance(logged('Error loading the vendor bundle'), null, ALLOWED, 'console.error')).toBeNull();
+    // The words in the middle of some other message.
+    expect(findAllowance('[PierreBridge] worker init failed: TypeError: Failed to fetch', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance('Error loading user comments: TypeError: Failed to fetchSomethingElse', null, ALLOWED, 'console.error')).toBeNull();
+  });
+
+  it('applies an entry that names a kind to that kind only', () => {
+    const list = [{ pattern: /^boom$/, kind: 'console.error', reason: 'test' }];
+    expect(findAllowance('boom', null, list, 'console.error')).toBe(list[0]);
+    expect(findAllowance('boom', null, list, 'pageerror')).toBeNull();
+    expect(findAllowance('boom', null, list)).toBeNull();
   });
 
   it('matches "Failed to load resource" only together with its URL', () => {
     expect(findAllowance(NOT_FOUND, 'http://localhost:4003/api/pr/test-owner/test-repo/999')).not.toBeNull();
     expect(findAllowance(NOT_FOUND, 'http://localhost:4003/api/analyses/test-analysis-1794537864300/status')).not.toBeNull();
-    expect(findAllowance(SERVER_ERROR, 'http://localhost:4001/api/local/2/refresh')).not.toBeNull();
     // Same text, a request nobody expects to fail.
     expect(findAllowance(NOT_FOUND, 'http://localhost:4003/js/vendor/pierre-diffs.js')).toBeNull();
     expect(findAllowance(SERVER_ERROR, 'http://localhost:4003/api/reviews/1/comments')).toBeNull();
+    expect(findAllowance(SERVER_ERROR, 'http://localhost:4001/api/local/2/refresh')).toBeNull();
     // No URL at all: cannot be attributed, so not allowed.
     expect(findAllowance(NOT_FOUND)).toBeNull();
     expect(findAllowance(NOT_FOUND, null)).toBeNull();

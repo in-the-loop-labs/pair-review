@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, hoverDiffLine } from './helpers.js';
+import { MODES, waitForDiffToRender, hoverDiffLine, openCommentFormOnLine, cleanupAllComments } from './helpers.js';
 
 /**
  * Enable chat in the test environment (Pi is not available in E2E).
@@ -33,219 +33,197 @@ async function disableChat(page) {
   });
 }
 
-// Helper to clean up all user comments
-async function cleanupAllComments(page) {
-  await page.evaluate(async () => {
-    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
-    for (const comment of comments) {
-      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
-    }
+for (const mode of MODES) {
+  test.describe(`Gutter chat button (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+    });
+
+    test('should be visible on line hover when chat is enabled', async ({ page }) => {
+      await enableChat(page);
+
+      // Hover over a line number cell to reveal gutter buttons
+      await hoverDiffLine(page, 0);
+
+      // The chat button should be visible (opacity controlled by CSS tr:hover)
+      const chatBtn = page.locator('.pierre-chat-btn').first();
+      await expect(chatBtn).toBeAttached();
+    });
+
+    test('should be hidden when data-chat is disabled', async ({ page }) => {
+      await disableChat(page);
+
+      // Hover over a line number cell
+      await hoverDiffLine(page, 0);
+
+      // The chat button should exist in DOM but be hidden via CSS
+      const chatBtn = page.locator('.pierre-chat-btn').first();
+      await expect(chatBtn).toBeHidden();
+    });
+
+    test('click opens chat panel with context card', async ({ page }) => {
+      await enableChat(page);
+
+      // Open the chat panel first so it initializes
+      const chatToggle = page.locator('#chat-toggle-btn');
+      await chatToggle.click();
+      await expect(page.locator('.chat-panel')).toBeVisible();
+
+      // Close chat panel to test that the gutter button re-opens it
+      const chatCloseBtn = page.locator('.chat-panel__close-btn');
+      await chatCloseBtn.click();
+      await expect(page.locator('.chat-panel')).not.toBeVisible();
+
+      // Hover over a line to reveal the chat button
+      await hoverDiffLine(page, 0);
+
+      // Click the gutter chat button
+      const chatBtn = page.locator('.pierre-chat-btn').first();
+      await chatBtn.click({ force: true });
+
+      // Chat panel should open
+      await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
+
+      // A context card should be rendered (not prefilled text in textarea)
+      const contextCard = page.locator('.chat-panel__context-card[data-context-index]');
+      await expect(contextCard).toBeVisible({ timeout: 3000 });
+
+      // Textarea should be empty (no prefillText)
+      const textarea = page.locator('.chat-panel__input');
+      const value = await textarea.inputValue();
+      expect(value).toBe('');
+    });
+  });
+
+  test.describe(`Comment form Chat button (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+      await cleanupAllComments(page, mode.reviewId);
+    });
+
+    test('opens chat with context card containing comment text', async ({ page }) => {
+      await enableChat(page);
+
+      // Initialize chat panel
+      const chatToggle = page.locator('#chat-toggle-btn');
+      await chatToggle.click();
+      await expect(page.locator('.chat-panel')).toBeVisible();
+      const chatCloseBtn = page.locator('.chat-panel__close-btn');
+      await chatCloseBtn.click();
+
+      // Open a comment form by hovering and clicking the + button
+      await openCommentFormOnLine(page, 0);
+      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+      // Type some text in the comment form
+      const commentTextarea = page.locator('.user-comment-form textarea');
+      await commentTextarea.fill('This is my question about this code');
+
+      // Click the Chat button in the comment form
+      const chatFromCommentBtn = page.locator('.comment-form-actions .btn-chat-from-comment');
+      await expect(chatFromCommentBtn).toBeVisible();
+      await chatFromCommentBtn.click();
+
+      // Comment form should close
+      await expect(page.locator('.user-comment-form')).not.toBeVisible({ timeout: 5000 });
+
+      // Chat panel should open
+      await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
+
+      // A context card should be rendered with the comment text
+      const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
+      await expect(contextCard).toBeVisible({ timeout: 3000 });
+      const contextTitle = contextCard.locator('.chat-panel__context-title');
+      await expect(contextTitle).toContainText('This is my question about this code');
+
+      // Textarea should be empty (context is in the card, not prefilled)
+      const chatInput = page.locator('.chat-panel__input');
+      const value = await chatInput.inputValue();
+      expect(value).toBe('');
+    });
+
+    test('Chat button is hidden when data-chat is disabled', async ({ page }) => {
+      await disableChat(page);
+
+      // Open a comment form
+      await openCommentFormOnLine(page, 0);
+      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+      // The Chat button in the comment form should be hidden
+      const chatFromCommentBtn = page.locator('.comment-form-actions .btn-chat-from-comment');
+      await expect(chatFromCommentBtn).toBeHidden();
+    });
+  });
+
+  test.describe(`Review panel comment chat button (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+      await cleanupAllComments(page, mode.reviewId);
+    });
+
+    test('opens chat from a user-created review panel entry', async ({ page }) => {
+      await enableChat(page);
+
+      await openCommentFormOnLine(page, 0);
+      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+      const commentText = 'Panel chat should use this user comment';
+      const commentTextarea = page.locator('.user-comment-form textarea');
+      await commentTextarea.fill(commentText);
+      await page.locator('.save-comment-btn').click();
+
+      await expect(page.locator('.user-comment-row')).toContainText(commentText);
+
+      await page.locator('#ai-panel-toggle').click();
+      await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
+
+      await page.locator('.segment-btn[data-segment="comments"]').click();
+
+      const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
+      await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
+
+      const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
+      await expect(panelChatBtn).toBeAttached({ timeout: 5000 });
+      await panelChatBtn.click({ force: true });
+
+      await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
+      const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
+      await expect(contextCard).toBeVisible({ timeout: 3000 });
+      await expect(contextCard.locator('.chat-panel__context-title')).toContainText(commentText);
+    });
+
+    test('review-panel chat button is hidden when chat is disabled', async ({ page }) => {
+      await disableChat(page);
+
+      await openCommentFormOnLine(page, 0);
+      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+      const commentText = 'Review panel chat should stay hidden';
+      const commentTextarea = page.locator('.user-comment-form textarea');
+      await commentTextarea.fill(commentText);
+      await page.locator('.save-comment-btn').click();
+
+      await expect(page.locator('.user-comment-row')).toContainText(commentText);
+
+      await page.locator('#ai-panel-toggle').click();
+      await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
+
+      await page.locator('.segment-btn[data-segment="comments"]').click();
+
+      const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
+      await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
+
+      const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
+      await expect(panelChatBtn).toBeHidden();
+    });
   });
 }
-
-test.describe('Gutter chat button', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-  });
-
-  test('should be visible on line hover when chat is enabled', async ({ page }) => {
-    await enableChat(page);
-
-    // Hover over a line number cell to reveal gutter buttons
-    await hoverDiffLine(page, 0);
-
-    // The chat button should be visible (opacity controlled by CSS tr:hover)
-    const chatBtn = page.locator('.pierre-chat-btn').first();
-    await expect(chatBtn).toBeAttached();
-  });
-
-  test('should be hidden when data-chat is disabled', async ({ page }) => {
-    await disableChat(page);
-
-    // Hover over a line number cell
-    await hoverDiffLine(page, 0);
-
-    // The chat button should exist in DOM but be hidden via CSS
-    const chatBtn = page.locator('.pierre-chat-btn').first();
-    await expect(chatBtn).toBeHidden();
-  });
-
-  test('click opens chat panel with context card', async ({ page }) => {
-    await enableChat(page);
-
-    // Open the chat panel first so it initializes
-    const chatToggle = page.locator('#chat-toggle-btn');
-    await chatToggle.click();
-    await expect(page.locator('.chat-panel')).toBeVisible();
-
-    // Close chat panel to test that the gutter button re-opens it
-    const chatCloseBtn = page.locator('.chat-panel__close-btn');
-    await chatCloseBtn.click();
-    await expect(page.locator('.chat-panel')).not.toBeVisible();
-
-    // Hover over a line to reveal the chat button
-    await hoverDiffLine(page, 0);
-
-    // Click the gutter chat button
-    const chatBtn = page.locator('.pierre-chat-btn').first();
-    await chatBtn.click({ force: true });
-
-    // Chat panel should open
-    await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
-
-    // A context card should be rendered (not prefilled text in textarea)
-    const contextCard = page.locator('.chat-panel__context-card[data-context-index]');
-    await expect(contextCard).toBeVisible({ timeout: 3000 });
-
-    // Textarea should be empty (no prefillText)
-    const textarea = page.locator('.chat-panel__input');
-    const value = await textarea.inputValue();
-    expect(value).toBe('');
-  });
-});
-
-test.describe('Comment form Chat button', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    await cleanupAllComments(page);
-  });
-
-  test('opens chat with context card containing comment text', async ({ page }) => {
-    await enableChat(page);
-
-    // Initialize chat panel
-    const chatToggle = page.locator('#chat-toggle-btn');
-    await chatToggle.click();
-    await expect(page.locator('.chat-panel')).toBeVisible();
-    const chatCloseBtn = page.locator('.chat-panel__close-btn');
-    await chatCloseBtn.click();
-
-    // Open a comment form by hovering and clicking the + button
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
-
-    // Type some text in the comment form
-    const commentTextarea = page.locator('.user-comment-form textarea');
-    await commentTextarea.fill('This is my question about this code');
-
-    // Click the Chat button in the comment form
-    const chatFromCommentBtn = page.locator('.comment-form-actions .btn-chat-from-comment');
-    await expect(chatFromCommentBtn).toBeVisible();
-    await chatFromCommentBtn.click();
-
-    // Comment form should close
-    await expect(page.locator('.user-comment-form')).not.toBeVisible({ timeout: 5000 });
-
-    // Chat panel should open
-    await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
-
-    // A context card should be rendered with the comment text
-    const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
-    await expect(contextCard).toBeVisible({ timeout: 3000 });
-    const contextTitle = contextCard.locator('.chat-panel__context-title');
-    await expect(contextTitle).toContainText('This is my question about this code');
-
-    // Textarea should be empty (context is in the card, not prefilled)
-    const chatInput = page.locator('.chat-panel__input');
-    const value = await chatInput.inputValue();
-    expect(value).toBe('');
-  });
-
-  test('Chat button is hidden when data-chat is disabled', async ({ page }) => {
-    await disableChat(page);
-
-    // Open a comment form
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
-
-    // The Chat button in the comment form should be hidden
-    const chatFromCommentBtn = page.locator('.comment-form-actions .btn-chat-from-comment');
-    await expect(chatFromCommentBtn).toBeHidden();
-  });
-});
-
-test.describe('Review panel comment chat button', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-  });
-
-  test.afterEach(async ({ page }) => {
-    await cleanupAllComments(page);
-  });
-
-  test('opens chat from a user-created review panel entry', async ({ page }) => {
-    await enableChat(page);
-
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
-
-    const commentText = 'Panel chat should use this user comment';
-    const commentTextarea = page.locator('.user-comment-form textarea');
-    await commentTextarea.fill(commentText);
-    await page.locator('.save-comment-btn').click();
-
-    await expect(page.locator('.user-comment-row')).toContainText(commentText);
-
-    await page.locator('#ai-panel-toggle').click();
-    await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
-
-    await page.locator('.segment-btn[data-segment="comments"]').click();
-
-    const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
-    await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
-
-    const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
-    await expect(panelChatBtn).toBeAttached({ timeout: 5000 });
-    await panelChatBtn.click({ force: true });
-
-    await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
-    const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
-    await expect(contextCard).toBeVisible({ timeout: 3000 });
-    await expect(contextCard.locator('.chat-panel__context-title')).toContainText(commentText);
-  });
-
-  test('review-panel chat button is hidden when chat is disabled', async ({ page }) => {
-    await disableChat(page);
-
-    await hoverDiffLine(page, 0);
-    const addCommentBtn = page.locator('.pierre-comment-btn').first();
-    await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await addCommentBtn.click();
-    await page.waitForSelector('.user-comment-form', { timeout: 5000 });
-
-    const commentText = 'Review panel chat should stay hidden';
-    const commentTextarea = page.locator('.user-comment-form textarea');
-    await commentTextarea.fill(commentText);
-    await page.locator('.save-comment-btn').click();
-
-    await expect(page.locator('.user-comment-row')).toContainText(commentText);
-
-    await page.locator('#ai-panel-toggle').click();
-    await expect(page.locator('#ai-panel')).not.toHaveClass(/collapsed/);
-
-    await page.locator('.segment-btn[data-segment="comments"]').click();
-
-    const commentPanelItem = page.locator('.finding-item-wrapper', { hasText: commentText });
-    await expect(commentPanelItem).toBeAttached({ timeout: 5000 });
-
-    const panelChatBtn = commentPanelItem.locator('.quick-action-chat[data-comment-id]');
-    await expect(panelChatBtn).toBeHidden();
-  });
-});

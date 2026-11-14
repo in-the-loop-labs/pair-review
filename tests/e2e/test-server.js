@@ -11,6 +11,53 @@ const path = require('path');
 const fs = require('fs');
 const { createTestDatabase } = require('../utils/schema');
 const { installGitHubReviewMock } = require('../utils/github-review-mock');
+const { defaultFixture, fileContentsFor, fileLinesFor } = require('./fixtures/diffs');
+
+// ---------------------------------------------------------------------------
+// Work a route does after it has answered
+// ---------------------------------------------------------------------------
+//
+// `POST /api/reviews/:id/comments` answers and THEN adds a context file for a
+// comment on a file outside the diff (`ensureContextFileForComment`, "fire and
+// forget"). For the Local fixture review that first runs git in a directory
+// which does not exist, so the row is written a child-process failure after
+// the answer. Nothing orders that against the test, which is told "saved" by
+// the browser in the same event loop this server runs in. Measured at four
+// workers the row was always there by then (16 of 16); a cleanup that ran
+// before it would remove nothing and hand the row to the worker's next test.
+//
+// The call is wrapped here, before any route module is loaded (the route
+// takes the function when it is required), only to know when it has finished.
+// `whenBackgroundWorkDone()` is what the fixture's reset waits for
+// (tests/e2e/fixtures.js). fixture-isolation.spec.js reads
+// `backgroundWorkStarted()` and fails if a comment save no longer comes
+// through the wrapper.
+const autoContext = require('../../src/utils/auto-context');
+const backgroundWork = new Set();
+let backgroundWorkCount = 0;
+if (!autoContext.ensureContextFileForComment.e2eTracked) {
+  const real = autoContext.ensureContextFileForComment;
+  const tracked = (...args) => {
+    const work = Promise.resolve(real(...args));
+    backgroundWorkCount++;
+    backgroundWork.add(work);
+    const done = () => backgroundWork.delete(work);
+    work.then(done, done);
+    return work;
+  };
+  tracked.e2eTracked = true;
+  autoContext.ensureContextFileForComment = tracked;
+}
+
+/** How many pieces of after-the-answer work this process has started. */
+const backgroundWorkStarted = () => backgroundWorkCount;
+
+/** Resolves once every piece of after-the-answer work started so far has finished. */
+async function whenBackgroundWorkDone() {
+  while (backgroundWork.size > 0) {
+    await Promise.allSettled([...backgroundWork]);
+  }
+}
 
 // Mock analysis timing - how long the simulated AI analysis takes
 const MOCK_ANALYSIS_DURATION_MS = 50;
@@ -136,45 +183,11 @@ const mockAISuggestions = [
 ];
 
 const mockWorktreeResponses = {
-  // This diff tests the line number offset scenario:
-  // - utils.js: First hunk at line 1-8 has +3 net change (adds 4, removes 1)
-  // - utils.js: Second hunk at OLD line 50, NEW line 53 (offset = +3)
-  //   The gap between hunks (lines 9-49 in OLD) should map to (lines 12-52 in NEW)
-  // - The second hunk header includes function context "function exportSection()"
-  //   which is defined at line 30 in the gap, for testing function context visibility
-  generateUnifiedDiff: `diff --git a/src/utils.js b/src/utils.js
---- a/src/utils.js
-+++ b/src/utils.js
-@@ -1,5 +1,8 @@
- // Utility functions
-+
- function helper() {
--  return null;
-+  // Improved implementation
-+  const result = computeValue();
-+  return result;
- }
-@@ -50,4 +53,4 @@ function exportSection()
- // Another section of code
- function exportData() {
--  return data;
-+  return JSON.stringify(data);
- }
-
-diff --git a/src/main.js b/src/main.js
---- a/src/main.js
-+++ b/src/main.js
-@@ -10,6 +10,10 @@
- const config = loadConfig();
-
-+// New feature: logging
-+function log(message) {
-+  console.log('[App]', message);
-+}
-+
- function initialize() {
-   console.log('Starting app');
- }`,
+  // The shared two-file fixture diff. Its shape (hunk positions, the hidden
+  // gap in utils.js, the function context on the second hunk header) and the
+  // full contents that belong to it are documented where they are built:
+  // defaultFixture() in tests/e2e/fixtures/diffs.js.
+  generateUnifiedDiff: defaultFixture().diff,
   getWorktreePath: '/tmp/worktree/e2e-test',
   getChangedFiles: [
     { file: 'src/utils.js', additions: 5, deletions: 2 },
@@ -350,6 +363,77 @@ async function startTestServer(port) {
   let analysisId = null;
   let analysisHasRun = false;
 
+  /**
+   * What the mock analysis endpoints do for a review: record a completed
+   * analysis run and insert the deterministic mock suggestions. Shared by the
+   * PR-mode and Local-mode endpoints so both modes get the same rows.
+   */
+  function recordMockAnalysis(reviewId, requestInstructions) {
+    const aiRunId = `test-run-${Date.now()}`;
+    const now = new Date().toISOString();
+
+    // Insert into analysis_runs table (required for AnalysisHistoryManager)
+    db.prepare(`
+      INSERT INTO analysis_runs (
+        id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+        head_sha, status, total_suggestions, files_analyzed, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      aiRunId,
+      reviewId,
+      'claude',
+      'sonnet',
+      requestInstructions || null,
+      'Repository default instructions for testing',
+      requestInstructions || 'Test custom instructions',
+      'def456head',
+      'completed',
+      mockAISuggestions.length,
+      2,
+      now,
+      now
+    );
+
+    // Insert mock AI suggestions into the database for this review
+    const insertStmt = db.prepare(`
+      INSERT INTO comments (
+        review_id, source, ai_run_id, ai_level, file, line_start, line_end,
+        type, title, body, reasoning, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const suggestion of mockAISuggestions) {
+      insertStmt.run(
+        reviewId,
+        'ai',
+        aiRunId,
+        suggestion.ai_level,
+        suggestion.file,
+        suggestion.line_start,
+        suggestion.line_end,
+        suggestion.type,
+        suggestion.title,
+        suggestion.body,
+        suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
+        suggestion.status,
+        now,
+        now
+      );
+    }
+    return aiRunId;
+  }
+
+  /** Answer "analysis started" and let the status endpoint report completion a moment later. */
+  function respondAnalysisStarted(res) {
+    res.json({
+      analysisId,
+      status: 'started',
+      message: 'AI analysis started in background'
+    });
+    setTimeout(() => {
+      analysisRunning = false;
+    }, MOCK_ANALYSIS_DURATION_MS);
+  }
+
   // Mock AI analysis endpoint - responds with mock suggestions
   app.post('/api/pr/:owner/:repo/:number/analyses', (req, res) => {
     const { owner, repo, number } = req.params;
@@ -361,7 +445,7 @@ async function startTestServer(port) {
     const prNumber = parseInt(number);
 
     // Get review record (which is what AnalysisHistoryManager uses)
-    let review = db.prepare('SELECT id FROM reviews WHERE pr_number = ? AND repository = ?')
+    const review = db.prepare('SELECT id FROM reviews WHERE pr_number = ? AND repository = ?')
       .get(prNumber, repository);
 
     // Get PR metadata for updating last_ai_run_id
@@ -369,76 +453,31 @@ async function startTestServer(port) {
       .get(prNumber, repository);
 
     if (review && prMetadata) {
-      const aiRunId = `test-run-${Date.now()}`;
-      const now = new Date().toISOString();
-
-      // Extract custom instructions from request body
       const { customInstructions: requestInstructions } = req.body || {};
-
+      const aiRunId = recordMockAnalysis(review.id, requestInstructions);
       // Update last_ai_run_id to mark that analysis has been run
       db.prepare('UPDATE pr_metadata SET last_ai_run_id = ? WHERE id = ?')
         .run(aiRunId, prMetadata.id);
-
-      // Insert into analysis_runs table (required for AnalysisHistoryManager)
-      db.prepare(`
-        INSERT INTO analysis_runs (
-          id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-          head_sha, status, total_suggestions, files_analyzed, started_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        aiRunId,
-        review.id,
-        'claude',
-        'sonnet',
-        requestInstructions || null,
-        'Repository default instructions for testing',
-        requestInstructions || 'Test custom instructions',
-        'def456head',
-        'completed',
-        mockAISuggestions.length,
-        2,
-        now,
-        now
-      );
-
-      // Insert mock AI suggestions into the database using review.id
-      const insertStmt = db.prepare(`
-        INSERT INTO comments (
-          review_id, source, ai_run_id, ai_level, file, line_start, line_end,
-          type, title, body, reasoning, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const suggestion of mockAISuggestions) {
-        insertStmt.run(
-          review.id,
-          'ai',
-          aiRunId,
-          suggestion.ai_level,
-          suggestion.file,
-          suggestion.line_start,
-          suggestion.line_end,
-          suggestion.type,
-          suggestion.title,
-          suggestion.body,
-          suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
-          suggestion.status,
-          now,
-          now
-        );
-      }
     }
 
-    // Return immediately (analysis "started")
-    res.json({
-      analysisId,
-      status: 'started',
-      message: 'AI analysis started in background'
-    });
+    respondAnalysisStarted(res);
+  });
 
-    // Simulate analysis completion after configured duration
-    setTimeout(() => {
-      analysisRunning = false;
-    }, MOCK_ANALYSIS_DURATION_MS);
+  // The same mock for Local mode (the endpoint the Local page's Analyze button
+  // posts to). Without it the request would reach the real route and start a
+  // real analysis of a working directory the fixture review does not have.
+  app.post('/api/local/:reviewId/analyses', (req, res) => {
+    const reviewId = parseInt(req.params.reviewId, 10);
+    const review = db.prepare("SELECT id FROM reviews WHERE id = ? AND review_type = 'local'").get(reviewId);
+    if (!review) {
+      return res.status(404).json({ error: `Local review #${reviewId} not found` });
+    }
+    analysisId = `test-analysis-${Date.now()}`;
+    analysisRunning = true;
+    analysisHasRun = true;
+    const { customInstructions: requestInstructions } = req.body || {};
+    recordMockAnalysis(review.id, requestInstructions);
+    respondAnalysisStarted(res);
   });
 
   // Test-only endpoint: seed a dismissed AI suggestion carrying a status_reason.
@@ -490,6 +529,51 @@ async function startTestServer(port) {
     );
 
     res.json({ id: Number(info.lastInsertRowid), reviewId: review.id });
+  });
+
+  // Test-only endpoint: seed AI suggestions a scenario describes itself (a
+  // file of a routed corpus, a hidden line, a file-level finding), under one
+  // completed analysis run, as real rows. Real rows matter: adopting a
+  // suggestion saves a user comment whose parent_id is a foreign key to it,
+  // and the status route updates the row. Returns the new ids in order.
+  app.post('/test/seed-suggestions', (req, res) => {
+    const { reviewId, suggestions = [] } = req.body || {};
+    const review = db.prepare('SELECT id FROM reviews WHERE id = ?').get(parseInt(reviewId, 10));
+    if (!review) {
+      return res.status(404).json({ error: 'review not found' });
+    }
+    const now = new Date().toISOString();
+    const aiRunId = `test-seeded-run-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    const seed = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO analysis_runs (
+          id, review_id, provider, model, head_sha, status, total_suggestions, files_analyzed, started_at, completed_at
+        ) VALUES (?, ?, 'claude', 'sonnet', 'def456head', 'completed', ?, ?, ?, ?)
+      `).run(aiRunId, review.id, suggestions.length, new Set(suggestions.map((s) => s.file)).size, now, now);
+      const insert = db.prepare(`
+        INSERT INTO comments (
+          review_id, source, ai_run_id, ai_level, file, line_start, line_end, side,
+          type, title, body, status, is_file_level, created_at, updated_at
+        ) VALUES (?, 'ai', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      return suggestions.map((s) => Number(insert.run(
+        review.id,
+        aiRunId,
+        s.file,
+        s.is_file_level ? null : s.line_start,
+        s.is_file_level ? null : (s.line_end ?? s.line_start),
+        s.side || 'RIGHT',
+        s.type || 'improvement',
+        s.title || 'Seeded finding',
+        s.body || 'Body of the seeded finding.',
+        s.status || 'active',
+        s.is_file_level ? 1 : 0,
+        now,
+        now
+      ).lastInsertRowid));
+    });
+    analysisHasRun = true;
+    res.json({ ids: seed(), aiRunId, reviewId: review.id });
   });
 
   // Mock SSE endpoint for analysis progress
@@ -629,15 +713,41 @@ async function startTestServer(port) {
   // source='user'). A describe block that seeds AI suggestions uses this so it
   // can tear down symmetrically and not leak AI rows into later tests that
   // revisit the same review on the shared per-worker DB.
+  //
+  // An adopted suggestion leaves a user comment whose `parent_id` points at the
+  // AI row, and the user-comment DELETE route only soft-deletes (the row stays,
+  // status 'inactive'). `comments.parent_id` is a foreign key without an
+  // ON DELETE action, so deleting the AI row while such a child exists fails
+  // with "FOREIGN KEY constraint failed". That made this route answer 500 for
+  // the rest of a worker's life once any earlier test had adopted a suggestion
+  // on the review. The children are detached first, in the same transaction.
+  // `adopted_as_id` points the other way (AI row to user comment) and goes
+  // with the AI row.
   app.delete('/api/reviews/:reviewId/ai-suggestions', (req, res) => {
     const reviewId = parseInt(req.params.reviewId, 10);
     try {
-      const info = db.prepare("DELETE FROM comments WHERE review_id = ? AND source = 'ai'").run(reviewId);
-      db.prepare('DELETE FROM analysis_runs WHERE review_id = ?').run(reviewId);
-      res.json({ success: true, deleted: info.changes });
+      const sweep = db.transaction(() => {
+        db.prepare(`
+          UPDATE comments SET parent_id = NULL
+          WHERE parent_id IN (SELECT id FROM comments WHERE review_id = ? AND source = 'ai')
+        `).run(reviewId);
+        const info = db.prepare("DELETE FROM comments WHERE review_id = ? AND source = 'ai'").run(reviewId);
+        db.prepare('DELETE FROM analysis_runs WHERE review_id = ?').run(reviewId);
+        return info.changes;
+      });
+      res.json({ success: true, deleted: sweep() });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // A Local review is never stale in tests either. The fixture review points
+  // at a directory that does not exist, so the real route reports "stale",
+  // the page then refreshes its diff on load, and that refresh fails (it
+  // cannot run git there): an error toast on every Local page load. A spec
+  // that is about staleness routes this endpoint itself.
+  app.get('/api/local/:reviewId/check-stale', (req, res) => {
+    res.json({ isStale: false });
   });
 
   // Mock check-stale endpoint (PR is never stale in tests)
@@ -663,28 +773,15 @@ async function startTestServer(port) {
     res.json({ threads: [] });
   });
 
-  // Mock file-content-original endpoint for context expansion tests
+  // Mock file-content-original endpoint for context expansion tests.
+  // Corpus paths get their real lines; anything else 30 generic lines.
   app.get('/api/file-content-original/:fileName(*)', (req, res) => {
     const fileName = decodeURIComponent(req.params.fileName);
 
-    if (fileName === 'src/utils.js') {
-      const lines = [];
-      for (let i = 1; i <= 60; i++) {
-        if (i === 30) {
-          lines.push('function exportSection() {');
-        } else if (i <= 8) {
-          lines.push(`// Line ${i} of utils.js`);
-        } else if (i >= 50) {
-          lines.push(`// Line ${i} of utils.js - export section`);
-        } else {
-          lines.push(`// Line ${i} - gap content`);
-        }
-      }
-      return res.json({
-        fileName,
-        lines,
-        totalLines: lines.length
-      });
+    // A corpus path (tests/e2e/fixtures/diffs.js) gets its real new-side lines.
+    const corpusLines = fileLinesFor(fileName);
+    if (corpusLines) {
+      return res.json({ fileName, lines: corpusLines, totalLines: corpusLines.length });
     }
 
     const lines = Array.from({ length: 30 }, (_, i) => `// Line ${i + 1} of ${fileName}`);
@@ -699,101 +796,44 @@ async function startTestServer(port) {
   app.get('/api/reviews/:reviewId/file-content/:fileName(*)', (req, res) => {
     const fileName = decodeURIComponent(req.params.fileName);
 
-    if (fileName === 'src/utils.js') {
-      const lines = [];
-      for (let i = 1; i <= 60; i++) {
-        if (i === 30) {
-          lines.push('function exportSection() {');
-        } else if (i <= 8) {
-          lines.push(`// Line ${i} of utils.js`);
-        } else if (i >= 50) {
-          lines.push(`// Line ${i} of utils.js - export section`);
-        } else {
-          lines.push(`// Line ${i} - gap content`);
-        }
-      }
-      return res.json({ fileName, lines, totalLines: lines.length });
+    // A corpus path (tests/e2e/fixtures/diffs.js) gets its real new-side lines.
+    const corpusLines = fileLinesFor(fileName);
+    if (corpusLines) {
+      return res.json({ fileName, lines: corpusLines, totalLines: corpusLines.length });
     }
 
     const lines = Array.from({ length: 30 }, (_, i) => `// Line ${i + 1} of ${fileName}`);
     res.json({ fileName, lines, totalLines: lines.length });
   });
 
-  // File-contents endpoint used by @pierre/diffs to enable hunk expansion.
-  // Returns { fileName, oldContents, newContents } as plain strings. The real
-  // route (src/routes/reviews.js) reads git blobs from a worktree, but E2E
-  // tests have no worktree so we synthesize content here.
+  // File-contents endpoint: the frontend fetches a file's full old and new
+  // contents after rendering its patch and upgrades the diff with them, which
+  // is what enables hunk expansion. The real route (src/routes/reviews.js)
+  // reads git blobs from a worktree; E2E has no worktree.
   //
-  // Pierre recomputes the diff from these contents when given full files, so
-  // the content must be constructed so the resulting diff matches the mock
-  // patch (two hunks with a large unchanged gap between them).
+  // Every path of the default fixture and of the corpora in
+  // tests/e2e/fixtures/diffs.js is answered with the contents its patch was
+  // generated from, so the upgraded diff is the diff the patch describes.
   //
-  // For utils.js:
-  //   - oldContents: 60 lines. Lines 1-5 are the "before" of hunk 1, lines
-  //     6-49 are a large unchanged gap (so pierre produces expandable context
-  //     between the hunks), lines 50-53 are the "before" of hunk 2, lines
-  //     54-60 are an unchanged tail.
-  //   - newContents: 63 lines (patch adds +3 net in hunk 1). Lines 1-8 are
-  //     the "after" of hunk 1, lines 9-52 match old lines 6-49 verbatim,
-  //     lines 53-56 are the "after" of hunk 2, lines 57-63 match old 54-60.
-  //     Line 49 (old) / 52 (new) is "function exportSection() {" so the
-  //     second hunk's function context can be resolved by pierre.
+  // Any other path gets a generic 40-line pair with one changed line. That is
+  // NOT truthful for whatever patch the test routed under that path: the
+  // upgrade then re-lays the file out with a different diff. A spec that
+  // routes its own diff and cares about what is rendered after the upgrade
+  // routes this endpoint too (see inline-feedback-context.spec.js).
+  // E2E_CONTENTS_LOG=<file> records the unregistered paths that were asked for.
   app.get('/api/reviews/:reviewId/file-contents/:fileName(*)', (req, res) => {
     const fileName = decodeURIComponent(req.params.fileName);
 
-    if (fileName === 'src/utils.js') {
-      const gap = [];
-      for (let i = 6; i <= 49; i++) {
-        // Put the function-context marker on the line just before hunk 2 so
-        // pierre can surface it on the second hunk header.
-        gap.push(i === 49 ? 'function exportSection()' : `// gap line ${i}`);
+    const registered = fileContentsFor(fileName);
+    if (registered) return res.json(registered);
+
+    if (process.env.E2E_CONTENTS_LOG) {
+      try {
+        fs.appendFileSync(process.env.E2E_CONTENTS_LOG, `${JSON.stringify({ fileName, query: req.query })}\n`);
+      } catch {
+        // A survey aid; failing to write it must not fail a request.
       }
-      const trailer = [];
-      for (let i = 54; i <= 60; i++) trailer.push(`// trailer line ${i}`);
-
-      // Hunk-1 "before" — 5 old lines. Matches the patch content exactly.
-      const hunk1Old = [
-        '// Utility functions',
-        'function helper() {',
-        '  return null;',
-        '}',
-        '',
-      ];
-      // Hunk-1 "after" — 8 new lines. Same two unchanged anchors (first and
-      // last) as the patch, with additions in between.
-      const hunk1New = [
-        '// Utility functions',
-        '',
-        'function helper() {',
-        '  // Improved implementation',
-        '  const result = computeValue();',
-        '  return result;',
-        '}',
-        '',
-      ];
-      // Hunk-2 "before" — 4 old lines.
-      const hunk2Old = [
-        '// Another section of code',
-        'function exportData() {',
-        '  return data;',
-        '}',
-      ];
-      // Hunk-2 "after" — 4 new lines (same shape, different body line).
-      const hunk2New = [
-        '// Another section of code',
-        'function exportData() {',
-        '  return JSON.stringify(data);',
-        '}',
-      ];
-
-      const oldContents = [...hunk1Old, ...gap, ...hunk2Old, ...trailer].join('\n') + '\n';
-      const newContents = [...hunk1New, ...gap, ...hunk2New, ...trailer].join('\n') + '\n';
-
-      return res.json({ fileName, oldContents, newContents });
     }
-
-    // Generic fallback: nearly identical files with a single small change so
-    // pierre still renders at least one hunk with expandable context.
     const base = Array.from({ length: 40 }, (_, i) => `// ${fileName} line ${i + 1}`);
     const oldContents = base.join('\n') + '\n';
     const newBase = base.slice();
@@ -928,7 +968,7 @@ async function startTestServer(port) {
 
   console.log(`E2E test server (worker) running on http://localhost:${port}`);
 
-  return { server, db, app, port };
+  return { server, db, app, port, whenBackgroundWorkDone, backgroundWorkStarted };
 }
 
 module.exports = { startTestServer };

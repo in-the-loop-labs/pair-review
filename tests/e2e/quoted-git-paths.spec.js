@@ -1,6 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import { lineNumberCells } from './diff-dom.js';
 
 // pair-review runs git with core.quotePath=false, but git still C-quotes a
 // header path containing `"`, `\` or a control character, and diffs cached by
@@ -120,7 +121,7 @@ for (const mode of MODES) {
       await expect(page.locator('.d2h-file-wrapper[data-file-name]')).toHaveCount(2);
       await expect(wrapper).toHaveCount(1);
       await expect(renamedWrapper).toHaveCount(1);
-      await expect(wrapper.locator('[data-column-number]').first()).toBeVisible();
+      await expect(lineNumberCells(wrapper).first()).toBeVisible();
 
       // Server feedback keyed by the decoded path anchors inline.
       await expect(wrapper.locator('.user-comment-row[data-comment-id="9401"]')).toBeVisible();
@@ -131,7 +132,7 @@ for (const mode of MODES) {
       expect(state.contentRequests.every(file => [FILE, RENAMED].includes(file))).toBe(true);
 
       // A comment written from the diff is saved against the decoded path.
-      await wrapper.locator('[data-column-number]').first().hover();
+      await lineNumberCells(wrapper).first().hover();
       const addCommentBtn = wrapper.locator('.pierre-comment-btn').first();
       await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
       await addCommentBtn.click();

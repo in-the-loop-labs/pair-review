@@ -3,7 +3,7 @@
 // tooltips aren't visible to Playwright, so the `title` attribute is asserted.
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions } from './helpers.js';
+import { MODES, waitForDiffToRender, seedAISuggestions } from './helpers.js';
 
 const FILE = 'src/utils.js';
 const headerSelector = `.d2h-file-wrapper[data-file-name="${FILE}"] .d2h-file-header`;
@@ -43,9 +43,10 @@ async function expectFrontTruncatedHeader(page) {
   await expect(fileName).toHaveAttribute('title', FILE);
 }
 
-test.describe('Smart truncation', () => {
+for (const mode of MODES) {
+test.describe(`Smart truncation (${mode.name})`, () => {
   test('file header stays a single line when the pane is narrow', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
+    await page.goto(mode.path);
     await waitForDiffToRender(page);
 
     const header = page.locator(headerSelector).first();
@@ -60,20 +61,14 @@ test.describe('Smart truncation', () => {
     expect(await fileName.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap');
   });
 
-  test('PR mode: long paths front-truncate and get a full-path title', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-    await expectFrontTruncatedHeader(page);
-  });
-
-  test('Local mode: long paths front-truncate and get a full-path title', async ({ page }) => {
-    await page.goto('/local/2');
+  test('long paths front-truncate and get a full-path title', async ({ page }) => {
+    await page.goto(mode.path);
     await waitForDiffToRender(page);
     await expectFrontTruncatedHeader(page);
   });
 
   test('no title when the path fits', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
+    await page.goto(mode.path);
     await waitForDiffToRender(page);
 
     const fileName = page.locator(fileNameSelector).first();
@@ -85,9 +80,9 @@ test.describe('Smart truncation', () => {
   });
 
   test('AI suggestion titles back-truncate and expose the full title on hover', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
+    await page.goto(mode.path);
     await waitForDiffToRender(page);
-    await seedAISuggestions(page);
+    await seedAISuggestions(page, { reviewId: mode.reviewId });
 
     const title = page.locator('.ai-suggestion:not(.collapsed) .ai-title.smart-truncate').first();
     await expect(title).toBeVisible();
@@ -106,9 +101,9 @@ test.describe('Smart truncation', () => {
   });
 
   test('badges keep their size while the suggestion title truncates', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
+    await page.goto(mode.path);
     await waitForDiffToRender(page);
-    await seedAISuggestions(page);
+    await seedAISuggestions(page, { reviewId: mode.reviewId });
     await expect(page.locator('.ai-suggestion:not(.collapsed) .praise-badge').first()).toBeVisible();
 
     const headers = await page.evaluate(() => {
@@ -141,3 +136,4 @@ test.describe('Smart truncation', () => {
     }
   });
 });
+}
