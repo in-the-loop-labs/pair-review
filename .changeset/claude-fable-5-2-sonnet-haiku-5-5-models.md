@@ -1,5 +1,5 @@
 ---
-"@in-the-loop-labs/pair-review": minor
+"@in-the-loop-labs/pair-review": patch
 ---
 
 Add Claude Fable 5.2, Sonnet 5.5, and Haiku 5.5 models
