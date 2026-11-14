@@ -1,6 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import {
+  inlineComment, inlineSuggestion, ensureContentUpgrade, expandHunkBy, hunkContaining,
+  isLineVisible, redisplayBaseDiff, holdWorkerResults
+} from './diff-dom.js';
 
 const FILE = 'src/main.js';
 const MODES = [
@@ -52,14 +56,6 @@ async function setup(page, mode, state) {
   await page.evaluate(() => window.prManager.loadAISuggestions());
 }
 
-function inlineComment(page, id) {
-  return page.locator(`.pierre-diff-body .user-comment-row[data-comment-id="${id}"]`);
-}
-
-function inlineSuggestion(page, id) {
-  return page.locator(`.pierre-diff-body .ai-suggestion[data-suggestion-id="${id}"]`);
-}
-
 for (const mode of MODES) {
   test.describe(`Inline feedback context (${mode.name})`, () => {
     test('off-hunk comments remain visible when suggestions are refreshed', async ({ page }) => {
@@ -81,14 +77,11 @@ for (const mode of MODES) {
     test('comments on manually expanded lines survive another off-hunk anchor', async ({ page }) => {
       const state = { comments: [], suggestions: [] };
       await setup(page, mode, state);
-      await page.evaluate(async file => {
-        await window.prManager._ensurePierreContentUpgrade(file);
-        const { instance } = window.prManager.pierreBridge.files.get(file);
-        instance.expandHunk(0, 'up', 85);
-        instance.rerender();
-      }, FILE);
-      await expect.poll(() => page.evaluate(file =>
-        window.prManager.pierreBridge.isLineVisible(file, 85, 'RIGHT'), FILE)).toBe(true);
+      // A manual expansion, as the expand control above the hunk makes it:
+      // reveal the 85 lines above line 97 down to line 12.
+      await ensureContentUpgrade(page, FILE);
+      await expandHunkBy(page, FILE, { hunkIndex: 0, direction: 'up', lines: 85 });
+      await expect.poll(() => isLineVisible(page, FILE, 85)).toBe(true);
 
       state.comments = [feedback(9102, 85), feedback(9103, 180)];
       await page.evaluate(() => window.prManager.loadUserComments());
@@ -99,18 +92,12 @@ for (const mode of MODES) {
     test('expanding a preceding gap does not hide a suggestion after the hunk', async ({ page }) => {
       const state = { comments: [], suggestions: [] };
       await setup(page, mode, state);
-      const target = await page.evaluate(async file => {
-        const manager = window.prManager;
-        await manager._ensurePierreContentUpgrade(file);
-        const instance = manager.pierreBridge.files.get(file).instance;
-        const index = instance.fileDiff.hunks.findIndex(hunk =>
-          hunk.additionStart <= 100 && hunk.additionStart + hunk.additionCount > 100);
-        const hunk = instance.fileDiff.hunks[index];
-        // Pierre's "down" direction reveals the END of the preceding gap.
-        // It must not make lines following this hunk count as already visible.
-        manager.pierreBridge.expandHunk(file, index, 'down', 5);
-        return hunk.additionStart + hunk.additionCount + 1;
-      }, FILE);
+      await ensureContentUpgrade(page, FILE);
+      const hunk = await hunkContaining(page, FILE, 100);
+      // The "down" direction reveals the END of the preceding gap. It must
+      // not make lines following this hunk count as already visible.
+      await expandHunkBy(page, FILE, { hunkIndex: hunk.index, direction: 'down', lines: 5 });
+      const target = hunk.additionStart + hunk.additionCount + 1;
 
       state.suggestions = [feedback(9203, target, 'ai')];
       await page.evaluate(() => window.prManager.loadAISuggestions());
@@ -125,18 +112,13 @@ for (const mode of MODES) {
       await setup(page, mode, state);
       const suggestion = inlineSuggestion(page, 9202);
       await expect(suggestion).toBeVisible();
-      await expect.poll(() => page.evaluate(file =>
-        window.prManager.pierreBridge.isLineVisible(file, 150, 'RIGHT'), FILE)).toBe(true);
+      await expect.poll(() => isLineVisible(page, FILE, 150)).toBe(true);
 
-      // Rebuild from base metadata while retaining the annotation and durable
-      // context ranges. Navigation must check the rows actually rendered.
-      await page.evaluate(file => {
-        const bridge = window.prManager.pierreBridge;
-        const fileState = bridge.files.get(file);
-        bridge._renderWithFileDiff(fileState, fileState.baseMetadata);
-      }, FILE);
-      await expect.poll(() => page.evaluate(file =>
-        window.prManager.pierreBridge.isLineVisible(file, 150, 'RIGHT'), FILE)).toBe(false);
+      // Put the base diff back on screen while the annotation and the record
+      // of revealed ranges stay. Navigation must check the rows actually
+      // rendered.
+      await redisplayBaseDiff(page, FILE);
+      await expect.poll(() => isLineVisible(page, FILE, 150)).toBe(false);
       await expect(suggestion).toBeHidden();
 
       // Collapse the file through the UI, then navigate to its range from
@@ -147,55 +129,95 @@ for (const mode of MODES) {
       await expect(suggestion).toBeHidden();
       // Use the actual sidebar click path to reveal the collapsed target again.
       await page.evaluate(() => window.aiPanel.expand());
-      await page.evaluate(() => {
-        const poolPrototype = window.PierreDiffs.WorkerPoolManager.prototype;
-        const handleMessage = poolPrototype.handleWorkerMessage;
+
+      // The invariant: navigation does not report completion (the scroll
+      // helper returning) while the card it navigates to is still not
+      // displayed. Revealing the range needs the diff worker when the result
+      // is not already cached, so worker results are held back to open that
+      // window, and a per-frame watcher records any frame in which the scroll
+      // had completed while the card had no box.
+      //
+      // The card can also be displayed without any held result being
+      // delivered (measured: 13 of 119 executions at four workers). Then there
+      // is no window to observe; the watcher still must not record a
+      // violation. An earlier form of this test asserted that the card stays
+      // hidden for as long as the worker is held, which is not something the
+      // application promises, and failed whenever that happened (about 2% of
+      // executions at one worker).
+      const hold = await holdWorkerResults(page);
+      await page.evaluate((cardSelector) => {
         const scroll = window.ScrollUtils.scrollIntoViewStable;
-        const queued = [];
-        let workerArrived;
-        let scrollStarted;
-        const workerReady = new Promise(resolve => { workerArrived = resolve; });
-        const scrollReady = new Promise(resolve => { scrollStarted = resolve; });
+        const cardDisplayed = () => {
+          const card = document.querySelector(cardSelector);
+          if (!card) return false;
+          const r = card.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
         const gate = window.inlineNavigationGate = {
+          started: false,
           completed: false,
-          // Advance beyond the scroll helper's three-frame stability window
-          // while the worker is blocked. This sentinel exposes an early finish
-          // without relying on a machine-dependent delay.
-          frames: Promise.all([workerReady, scrollReady]).then(async () => {
-            for (let frame = 0; frame < 8; frame++) {
-              await new Promise(requestAnimationFrame);
-            }
-          }),
-          release() {
-            poolPrototype.handleWorkerMessage = handleMessage;
+          violation: false,
+          stopped: false,
+          cardDisplayed,
+          restore() {
+            gate.stopped = true;
             window.ScrollUtils.scrollIntoViewStable = scroll;
-            for (const deliver of queued.splice(0)) deliver();
           }
         };
-        poolPrototype.handleWorkerMessage = function(...args) {
-          queued.push(() => handleMessage.apply(this, args));
-          workerArrived();
-        };
         window.ScrollUtils.scrollIntoViewStable = async (...args) => {
-          scrollStarted();
+          gate.started = true;
           try {
             return await scroll(...args);
           } finally {
             gate.completed = true;
           }
         };
-      });
+        const watch = () => {
+          if (gate.stopped) return;
+          if (gate.completed && !cardDisplayed()) gate.violation = true;
+          requestAnimationFrame(watch);
+        };
+        requestAnimationFrame(watch);
+      }, `#diff-container .ai-suggestion[data-suggestion-id="9202"]`);
       try {
         await page.locator('.ai-panel .finding-item[data-id="9202"]').click();
         await expect(fileWrapper).not.toHaveClass(/collapsed/);
-        await page.evaluate(() => window.inlineNavigationGate.frames);
-        await expect(suggestion).toBeHidden();
-        expect(await page.evaluate(() => window.inlineNavigationGate.completed)).toBe(false);
-        await page.evaluate(() => window.inlineNavigationGate.release());
+
+        // Wait until either the card is displayed, or the
+        // worker has answered into the hold AND the scroll helper has started,
+        // then let the helper's three-frame stability window pass several
+        // times over. Frames, not a duration.
+        const heldWithCardHidden = await page.evaluate(async () => {
+          const gate = window.inlineNavigationGate;
+          const workerArrived = window.__diffWorkerHold.arrived.then(() => 'worker');
+          const displayed = new Promise((resolve) => {
+            const check = () => (gate.cardDisplayed() ? resolve('displayed') : requestAnimationFrame(check));
+            check();
+          });
+          if (await Promise.race([workerArrived, displayed]) === 'displayed') return false;
+          await new Promise((resolve) => {
+            const check = () => ((gate.started || gate.cardDisplayed()) ? resolve() : requestAnimationFrame(check));
+            check();
+          });
+          for (let frame = 0; frame < 8; frame++) {
+            await new Promise(requestAnimationFrame);
+          }
+          return !gate.cardDisplayed();
+        });
+        if (heldWithCardHidden) {
+          // The window is open: the card is not displayed, so navigation must
+          // still be in flight.
+          expect(await page.evaluate(() => window.inlineNavigationGate.completed)).toBe(false);
+        }
+        await hold.release();
         await expect(suggestion).toBeInViewport();
+        await expect.poll(() => page.evaluate(() => window.inlineNavigationGate.completed)).toBe(true);
+        expect(await page.evaluate(() => window.inlineNavigationGate.violation)).toBe(false);
       } finally {
+        await hold.release();
         await page.evaluate(() => {
-          window.inlineNavigationGate.release();
+          if (!window.inlineNavigationGate) return;
+          window.inlineNavigationGate.restore();
           delete window.inlineNavigationGate;
         });
       }

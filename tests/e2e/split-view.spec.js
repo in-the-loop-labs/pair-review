@@ -4,8 +4,8 @@
  *
  * Covers the diff-layout toggle built on top of @pierre/diffs:
  *   - Default layout is unified; the gear → "Diff view" segmented control
- *     switches to split, and the vendor `<pre>` reports the layout via
- *     data-diff-type ("single" = unified, "split" = side-by-side).
+ *     switches to split: one code column per file ("single") becomes two
+ *     ("split").  How a layout is detected is diff-dom.js's business.
  *   - The choice persists to localStorage (`pair-review-diff-view`) and
  *     survives reload; toggling back to unified works.
  *   - Annotations (user comments, AI suggestions) survive the toggle and, in
@@ -13,8 +13,8 @@
  *     deletions = LEFT) — this is @pierre/diffs' per-column design.
  *   - Comments can be created in split mode from either column.
  *
- * The core toggle/comment tests run in BOTH PR mode and Local mode
- * (CLAUDE.md parity requirement). AI-suggestion rendering is PR-mode only
+ * Every test runs in BOTH PR mode and Local mode (CLAUDE.md parity
+ * requirement), except AI-suggestion rendering, which is PR-mode only
  * because the E2E harness only mocks the PR analyses endpoint to seed
  * suggestions into the DB (see NOTE in the AI describe block).
  *
@@ -24,13 +24,10 @@
 
 import { test, expect } from './fixtures.js';
 import {
-  waitForDiffToRender,
-  waitForDiffType,
-  setDiffView,
-  openSplitCommentForm,
-  expectAnnotationInSplitColumn,
-  seedAISuggestions
+  waitForDiffToRender, waitForDiffType, setDiffView, openSplitCommentForm, expectAnnotationInSplitColumn, seedAISuggestions, cleanupAISuggestions, cleanupComments, cleanupAllComments
 } from './helpers.js';
+import { anyFileInSplitLayout, fileLayout, annotationCell, paintProbe } from './diff-dom.js';
+import { customCorpus, routeDiff } from './fixtures/diffs.js';
 
 const DIFF_VIEW_STORAGE_KEY = 'pair-review-diff-view';
 const FILE = 'src/utils.js';
@@ -56,33 +53,6 @@ async function seedComment(page, reviewId, { file = FILE, line = 3, side = 'RIGH
   }, { reviewId, file, line, side, body });
 }
 
-/** Delete every comment on a review so the shared worker DB stays clean. */
-async function cleanupComments(page, reviewId) {
-  await page.evaluate(async (rid) => {
-    try {
-      const resp = await fetch(`/api/reviews/${rid}/comments?includeDismissed=true`);
-      const data = await resp.json();
-      for (const c of (data.comments || [])) {
-        await fetch(`/api/reviews/${rid}/comments/${c.id}`, { method: 'DELETE' });
-      }
-    } catch { /* best-effort */ }
-  }, reviewId);
-}
-
-/**
- * Delete AI-seeded suggestions on a review so the shared worker DB stays clean.
- * The comment DELETE routes only touch user comments; AI rows (source='ai') need
- * the dedicated E2E cleanup hook served by tests/e2e/test-server.js.
- */
-async function cleanupAISuggestions(page, reviewId) {
-  await page.evaluate(async (rid) => {
-    // fetch does NOT throw on 404 — only on network errors — so we must
-    // inspect resp.ok ourselves, otherwise a missing route silently no-ops.
-    const resp = await fetch(`/api/reviews/${rid}/ai-suggestions`, { method: 'DELETE' });
-    if (!resp.ok) throw new Error(`AI cleanup failed: ${resp.status}`);
-  }, reviewId);
-}
-
 for (const mode of MODES) {
   test.describe(`Split diff view (${mode.name})`, () => {
     test.afterEach(async ({ page }) => {
@@ -93,29 +63,15 @@ for (const mode of MODES) {
       await page.goto(mode.path);
       await waitForDiffToRender(page);
 
-      // Default: the vendor stamps the unified layout as data-diff-type="single".
+      // Default: unified (one code column per file).
       await waitForDiffType(page, 'single');
-      const hasSplitInitially = await page.evaluate(() => {
-        return [...document.querySelectorAll('diffs-container')].some(
-          (h) => h.shadowRoot && h.shadowRoot.querySelector('pre[data-diff-type="split"]')
-        );
-      });
-      expect(hasSplitInitially).toBe(false);
+      expect(await anyFileInSplitLayout(page)).toBe(false);
 
       // Toggle to split.
       await setDiffView(page, 'split');
 
       // Both split columns are present for the file.
-      const columns = await page.evaluate((file) => {
-        const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-        const sr = wrapper?.querySelector('diffs-container')?.shadowRoot;
-        const pre = sr?.querySelector('pre');
-        return {
-          diffType: pre?.getAttribute('data-diff-type'),
-          hasAdditions: !!pre?.querySelector('code[data-additions]'),
-          hasDeletions: !!pre?.querySelector('code[data-deletions]')
-        };
-      }, FILE);
+      const columns = await fileLayout(page, FILE);
       expect(columns.diffType).toBe('split');
       expect(columns.hasAdditions).toBe(true);
       expect(columns.hasDeletions).toBe(true);
@@ -229,40 +185,25 @@ for (const mode of MODES) {
 /**
  * Full-width annotation cards in split. A lone card is stretched across both
  * columns by PierreBridge._syncSplitAnnotationLayout (.pr-annotation-fullwidth
- * + measured --pr-split-gutter-width). PR-mode only: the stretching runs in
- * the shared bridge render path, identical in Local mode (comment rendering
- * parity is already covered by the MODES loop above).
+ * + measured --pr-split-gutter-width).
  */
-test.describe('Split diff view — full-width annotation cards (PR mode)', () => {
-  const PR_PATH = '/pr/test-owner/test-repo/1';
+for (const mode of MODES) {
+test.describe(`Split diff view — full-width annotation cards (${mode.name})`, () => {
+  const PR_PATH = mode.path;
 
   test.afterEach(async ({ page }) => {
-    await cleanupComments(page, 1);
+    await cleanupComments(page, mode.reviewId);
   });
 
   /**
-   * Resolve the shadow annotation cell hosting the light-DOM card containing
-   * `text`, plus the geometry needed to prove it spans both columns.
+   * The cell hosting the card containing `text`, plus the geometry needed to
+   * prove it spans both columns. Null until the card is slotted in split.
    */
   async function cardMetrics(page, text) {
-    return page.evaluate(({ file, text }) => {
-      const wrapper = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-      const host = wrapper?.querySelector('diffs-container');
-      const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="split"]');
-      if (!host || !pre) return null;
-      const lightWrappers = [...host.querySelectorAll('[data-annotation-slot]')];
-      const target = lightWrappers.find((w) => w.textContent.includes(text));
-      const cell = target?.assignedSlot?.closest('[data-line-annotation]');
-      if (!cell) return null;
-      return {
-        hasFullwidthClass: cell.classList.contains('pr-annotation-fullwidth'),
-        cellWidth: cell.getBoundingClientRect().width,
-        contentTrackWidth:
-          pre.querySelector('code[data-additions] [data-content]')?.getBoundingClientRect().width || 0,
-        preWidth: pre.getBoundingClientRect().width,
-        gutterVar: pre.style.getPropertyValue('--pr-split-gutter-width')
-      };
-    }, { file: FILE, text });
+    const cell = await annotationCell(page, FILE, text);
+    if (!cell || cell.diffType !== 'split') return null;
+    const layout = await fileLayout(page, FILE);
+    return { ...cell, contentTrackWidth: layout?.additionsContent?.width || 0 };
   }
 
   for (const [column, line, side] of [['additions', 3, 'RIGHT'], ['deletions', 3, 'LEFT']]) {
@@ -271,7 +212,7 @@ test.describe('Split diff view — full-width annotation cards (PR mode)', () =>
       await waitForDiffToRender(page);
 
       const body = `Full width ${column} ${Date.now()}`;
-      await seedComment(page, 1, { line, side, body });
+      await seedComment(page, mode.reviewId, { line, side, body });
       await page.reload();
       await waitForDiffToRender(page);
       await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
@@ -284,29 +225,36 @@ test.describe('Split diff view — full-width annotation cards (PR mode)', () =>
         timeout: 5000
       }).toBe(true);
 
+      // Spans well past its own column (~2× a content track). The class is
+      // stamped first and the stretch laid out after it, and the content
+      // upgrade re-creates the rows: wait for the settled width.
+      await expect.poll(async () => {
+        const current = await cardMetrics(page, body);
+        return current && current.contentTrackWidth > 0 ? current.cellWidth / current.contentTrackWidth : 0;
+      }, { timeout: 5000 }).toBeGreaterThan(1.8);
+
       const metrics = await cardMetrics(page, body);
       // The measured middle-gutter width was published for the calc().
       expect(metrics.gutterVar).toMatch(/^\d+(\.\d+)?px$/);
-      // Spans well past its own column (~2× a content track) yet stays
-      // inside the pre.
-      expect(metrics.cellWidth).toBeGreaterThan(metrics.contentTrackWidth * 1.8);
+      // ... yet stays inside the pre.
       expect(metrics.cellWidth).toBeLessThanOrEqual(metrics.preWidth);
     });
   }
 });
+}
 
 /**
  * Readable prose measure on wide displays: annotation CARDS span the full
  * diff width (unified and split full-width layouts), but the prose blocks
  * inside them are capped at --annotation-prose-max (~80ch) so comment text
- * doesn't become one enormous line on wide monitors. PR-mode only: the CSS
- * is mode-independent (same classes in Local mode).
+ * doesn't become one enormous line on wide monitors.
  */
-test.describe('Annotation prose measure on wide displays (PR mode)', () => {
-  const PR_PATH = '/pr/test-owner/test-repo/1';
+for (const mode of MODES) {
+test.describe(`Annotation prose measure on wide displays (${mode.name})`, () => {
+  const PR_PATH = mode.path;
 
   test.afterEach(async ({ page }) => {
-    await cleanupComments(page, 1);
+    await cleanupComments(page, mode.reviewId);
   });
 
   test('caps comment prose width while the card spans the row (unified and split)', async ({ page }) => {
@@ -316,7 +264,7 @@ test.describe('Annotation prose measure on wide displays (PR mode)', () => {
 
     const longBody = 'Wide display readability check. ' +
       'This sentence repeats to guarantee the rendered markdown is long enough to hit the measure cap. '.repeat(4);
-    await seedComment(page, 1, { line: 3, side: 'RIGHT', body: longBody });
+    await seedComment(page, mode.reviewId, { line: 3, side: 'RIGHT', body: longBody });
     await page.reload();
     await waitForDiffToRender(page);
 
@@ -349,37 +297,42 @@ test.describe('Annotation prose measure on wide displays (PR mode)', () => {
     expect(split.bodyWidth).toBeLessThan(800);
   });
 });
+}
 
 /**
  * One-sided files (entirely added / entirely removed) in split view.
  *
- * @pierre/diffs renders a whole-file add or whole-file delete as a single
- * `<code>` column inside `<pre data-diff-type="single">` (two-sided files get
- * `data-diff-type="split"`). PierreBridge.ANNOTATION_CSS boxes that lone column
+ * A whole-file add or whole-file delete renders as a single code column even
+ * in split layout (its layout stays "single"; two-sided files become
+ * "split"). PierreBridge.ANNOTATION_CSS boxes that lone column
  * into one half of a 1fr/1fr grid — additions (a new file) in the RIGHT half,
  * deletions (a deleted file) in the LEFT half — and _applySplitAnnotationLayout
  * stretches lone annotation cards across both halves via .pr-annotation-fullwidth.
  *
- * PR-mode only: this exercises the shared PierreBridge render path + injected
- * shadow CSS, which is byte-for-byte identical in Local mode (the bridge does
- * not know or care which route supplied the diff). The two-sided comment/toggle
- * behaviour that DOES differ per mode is already covered by the MODES loop above.
- *
- * The default seeded diff has no whole-file add/delete, so these tests install a
- * per-page route override adding `src/added.js` (all additions) and
- * `src/removed.js` (all deletions) alongside a two-sided `src/utils.js`
- * reference. file-contents upgrades are stubbed out so the pure add/delete
- * patches are never re-diffed into two-sided modifications.
+ * The default seeded diff has no whole-file add/delete, so these tests route a
+ * diff with `src/added.js` (all additions) and `src/removed.js` (all
+ * deletions) alongside a two-sided `src/utils.js` reference, with the
+ * contents that belong to it.
  */
-test.describe('Split diff view — one-sided files (PR mode)', () => {
-  const PR_PATH = '/pr/test-owner/test-repo/1';
+for (const mode of MODES) {
+test.describe(`Split diff view — one-sided files (${mode.name})`, () => {
+  const PR_PATH = mode.path;
   const ADDED_FILE = 'src/added.js';
   const REMOVED_FILE = 'src/removed.js';
   // Two-sided file used only as the "split layout applied" gate (one-sided
-  // files stay data-diff-type="single" in split, so setDiffView()'s all-hosts
+  // files stay in "single" layout in split, so setDiffView()'s all-files
   // wait can never settle with them present).
   const REF_FILE = 'src/utils.js';
   const TOL = 2; // px tolerance for sub-pixel box edges
+
+  // Two tests below save a comment on src/added.js. The server does not find
+  // that file in the review's stored diff (the diff is routed), so it also
+  // adds the file as a context file. Left behind, the comments and the
+  // context file show up on every later page load of this review in the
+  // worker: a third file in the pane and a third sidebar entry.
+  test.afterEach(async ({ page }) => {
+    await cleanupAllComments(page, mode.reviewId);
+  });
 
   const ONE_SIDED_DIFF = [
     // Two-sided reference (has both - and + on one hunk → renders split).
@@ -416,27 +369,25 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
     ''
   ].join('\n');
 
-  const CHANGED_FILES = [
-    { file: 'src/utils.js', additions: 1, deletions: 1 },
-    { file: 'src/added.js', additions: 4, deletions: 0 },
-    { file: 'src/removed.js', additions: 0, deletions: 4 }
-  ];
+  // The contents these patches were taken from. With truthful contents the
+  // content upgrade keeps an added file all-additions and a removed file
+  // all-deletions, so the one-sided render under test is also what the file
+  // looks like after the upgrade.
+  const ONE_SIDED = customCorpus({
+    name: 'one-sided',
+    diff: ONE_SIDED_DIFF,
+    files: {
+      'src/utils.js': {
+        old: '// Utility functions\nconst old = 1;\nmodule.exports = {};\n',
+        new: '// Utility functions\nconst updated = 2;\nmodule.exports = {};\n'
+      },
+      'src/added.js': { old: null, new: '// Brand new module\nfunction created() {\n  return 42;\n}\n' },
+      'src/removed.js': { old: '// Old obsolete module\nfunction gone() {\n  return 0;\n}\n', new: null }
+    }
+  });
 
   async function mockOneSidedDiff(page) {
-    await page.route('**/api/pr/*/*/*/diff', (route) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ diff: ONE_SIDED_DIFF, changed_files: CHANGED_FILES })
-      })
-    );
-    // Suppress the full-contents Pierre upgrade for every file: the harness'
-    // generic file-contents fallback returns a near-identical old/new pair,
-    // which would re-diff a pure add/delete into a two-sided modification and
-    // defeat the one-sided render under test. `tooLarge` short-circuits the
-    // upgrade in pr.js, leaving the patch-only render intact.
-    await page.route('**/api/reviews/*/file-contents/**', (route) =>
-      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ tooLarge: true }) })
-    );
+    await routeDiff(page, ONE_SIDED);
   }
 
   /**
@@ -455,54 +406,17 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
     await waitForDiffType(page, 'split', 5000, { fileName: REF_FILE });
   }
 
-  /** Bounding boxes of a one-sided file's pre, code columns, and gutters. */
+  /** Bounding boxes of a one-sided file's diff, code columns, and gutters. */
   async function oneSidedGeometry(page, file) {
-    return page.evaluate((f) => {
-      const pre = document
-        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
-        ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
-      if (!pre) return null;
-      const box = (el) => {
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { left: r.left, right: r.right, width: r.width };
-      };
-      const additions = pre.querySelector('code[data-additions]');
-      const deletions = pre.querySelector('code[data-deletions]');
-      const pr = pre.getBoundingClientRect();
-      return {
-        diffType: pre.getAttribute('data-diff-type'),
-        pre: { left: pr.left, right: pr.right, width: pr.width, mid: pr.left + pr.width / 2 },
-        additions: box(additions),
-        deletions: box(deletions),
-        addGutter: box(additions?.querySelector('[data-gutter]')),
-        delGutter: box(deletions?.querySelector('[data-gutter]'))
-      };
-    }, file);
+    const layout = await fileLayout(page, file);
+    return layout && layout.diffType === 'single' ? layout : null;
   }
 
-  /** Full-width-card metrics for a lone card inside a one-sided (single) pre. */
+  /** Full-width-card metrics for a lone card inside a one-sided file. */
   async function singleCardMetrics(page, file, text) {
-    return page.evaluate(({ f, t }) => {
-      const host = document.querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`);
-      const pre = host?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
-      if (!host || !pre) return null;
-      const wrapper = [...host.querySelectorAll('[data-annotation-slot]')]
-        .find((w) => (w.textContent || '').includes(t));
-      const cell = wrapper?.assignedSlot?.closest('[data-line-annotation]');
-      if (!cell) return null;
-      return {
-        hasFullwidthClass: cell.classList.contains('pr-annotation-fullwidth'),
-        cellWidth: cell.getBoundingClientRect().width,
-        preWidth: pre.getBoundingClientRect().width,
-        gutterVar: pre.style.getPropertyValue('--pr-split-gutter-width')
-      };
-    }, { f: file, t: text });
+    const cell = await annotationCell(page, file, text);
+    return cell && cell.diffType === 'single' ? cell : null;
   }
-
-  test.afterEach(async ({ page }) => {
-    await cleanupComments(page, 1);
-  });
 
   test('renders an entirely-added file in the RIGHT half in split', async ({ page }) => {
     await mockOneSidedDiff(page);
@@ -574,7 +488,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
 
     const body = `One-sided full width ${Date.now()}`;
     // Line 2 of the added file is an addition (RIGHT side).
-    await seedComment(page, 1, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
+    await seedComment(page, mode.reviewId, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
     await page.reload();
     await waitForDiffToRender(page);
     await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
@@ -588,11 +502,18 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
       timeout: 5000
     }).toBe(true);
 
+    // Card spans (approximately) the full pre width. The class is stamped
+    // first and the stretch is laid out after it (and rows are re-created by
+    // the content upgrade), so wait for the settled width; never read once.
+    await expect.poll(async () => {
+      const metrics = await singleCardMetrics(page, ADDED_FILE, body);
+      return metrics ? metrics.cellWidth / metrics.preWidth : 0;
+    }, { timeout: 5000 }).toBeGreaterThan(0.9);
+
     const m = await singleCardMetrics(page, ADDED_FILE, body);
     // The measured gutter width was published for the stretch calc().
     expect(m.gutterVar).toMatch(/^\d+(\.\d+)?px$/);
-    // Card spans (approximately) the full pre width, never overflowing it.
-    expect(m.cellWidth / m.preWidth).toBeGreaterThan(0.9);
+    // ... and never overflows it.
     expect(m.cellWidth).toBeLessThanOrEqual(m.preWidth + TOL);
   });
 
@@ -610,36 +531,22 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
     }, { timeout: 5000 }).toBe(true);
 
     // Back to unified — every host reports "single", so setDiffView's gate is
-    // safe here. The file must render one full-width `code[data-unified]`
+    // safe here. The file must render one full-width unified
     // column with no half-width split leak.
     await setDiffView(page, 'unified');
 
     await expect.poll(async () => {
-      return page.evaluate((f) => {
-        const pre = document
-          .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
-          ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
-        if (!pre) return null;
-        const code = pre.querySelector('code[data-unified]');
-        if (!code) return null;
-        const cr = code.getBoundingClientRect();
-        const pr = pre.getBoundingClientRect();
-        return {
-          ratio: pr.width ? cr.width / pr.width : 0,
-          // No side-specific columns → no half-width grid boxing leaked in.
-          hasSideColumns: !!pre.querySelector('code[data-additions], code[data-deletions]')
-        };
-      }, ADDED_FILE);
+      const layout = await fileLayout(page, ADDED_FILE);
+      if (!layout || layout.diffType !== 'single' || !layout.unified) return null;
+      return {
+        ratio: layout.pre.width ? layout.unified.width / layout.pre.width : 0,
+        // No side-specific columns → no half-width grid boxing leaked in.
+        hasSideColumns: layout.hasAdditions || layout.hasDeletions
+      };
     }, { timeout: 5000 }).toEqual({ ratio: expect.any(Number), hasSideColumns: false });
 
-    const u = await page.evaluate((f) => {
-      const pre = document
-        .querySelector(`.d2h-file-wrapper[data-file-name="${f}"] diffs-container`)
-        ?.shadowRoot?.querySelector('pre[data-diff-type="single"]');
-      const code = pre?.querySelector('code[data-unified]');
-      return { ratio: code.getBoundingClientRect().width / pre.getBoundingClientRect().width };
-    }, ADDED_FILE);
-    expect(u.ratio).toBeGreaterThan(0.9);
+    const unifiedLayout = await fileLayout(page, ADDED_FILE);
+    expect(unifiedLayout.unified.width / unifiedLayout.pre.width).toBeGreaterThan(0.9);
   });
 
   /**
@@ -671,7 +578,7 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
 
     const body = `Paint check ${Date.now()} — this header and body must be visible.`;
     // Line 2 of the added file is an addition (RIGHT side).
-    await seedComment(page, 1, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
+    await seedComment(page, mode.reviewId, { file: ADDED_FILE, line: 2, side: 'RIGHT', body });
     await page.reload();
     await waitForDiffToRender(page);
     await expect(page.locator('.user-comment-body', { hasText: body })).toBeVisible();
@@ -683,83 +590,54 @@ test.describe('Split diff view — one-sided files (PR mode)', () => {
       timeout: 5000
     }).toBe(true);
 
-    // Shadow-piercing hit-test at the card's header-left and body text. Both sit
-    // in the LEFT portion of the stretched card — the region paint containment
-    // clipped — so a resolve to an element inside .user-comment proves paint.
-    const paint = await page.evaluate(async (file) => {
-      // Ensure a paint has occurred after the fullwidth class was applied.
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const pierce = (x, y) => {
-        let el = document.elementFromPoint(x, y);
-        while (el && el.shadowRoot) {
-          const inner = el.shadowRoot.elementFromPoint(x, y);
-          if (!inner || inner === el) break;
-          el = inner;
-        }
-        return el;
-      };
-      const scope = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-      const headerLeft = scope.querySelector('.user-comment-header-left');
-      const bodyEl = scope.querySelector('.user-comment-body');
-      const probe = (el) => {
-        const r = el.getBoundingClientRect();
-        // A few px in from the element's left edge, at its vertical centre.
-        const hit = pierce(r.left + 4, r.top + r.height / 2);
-        return {
-          insideComment: !!(hit && hit.closest && hit.closest('.user-comment')),
-          left: Math.round(r.left)
-        };
-      };
-      return {
-        header: probe(headerLeft),
-        body: probe(bodyEl)
-      };
-    }, ADDED_FILE);
+    // Hit-test at the card's header-left and body text. Both sit in the LEFT
+    // portion of the stretched card — the region paint containment clipped —
+    // so a resolve to an element inside .user-comment proves paint.
+    const paint = {
+      header: await paintProbe(page, ADDED_FILE, '.user-comment-header-left', '.user-comment'),
+      body: await paintProbe(page, ADDED_FILE, '.user-comment-body', '.user-comment')
+    };
 
     // Both the header text and the body must actually paint (be hit-testable),
     // even though they lie in the stretched card's left half, outside the code
     // column's own box. Under the paint-containment bug these points resolve to
     // an element outside .user-comment (the clipped-away region), failing here.
-    expect(paint.header.insideComment).toBe(true);
-    expect(paint.body.insideComment).toBe(true);
+    expect(paint.header.inside).toBe(true);
+    expect(paint.body.inside).toBe(true);
   });
 });
+}
 
 /**
- * AI suggestions in split. PR-mode only: the harness mocks
- * POST /api/pr/:owner/:repo/:number/analyses to insert mock suggestions into
- * the DB. There is no equivalent mock for the Local analyses route (it would
- * invoke the real AI pipeline), so seeded suggestions cannot be produced in
- * Local mode within this harness. The rendering path being exercised (per-side
- * annotation slotting) is identical to the comment path already covered in both
- * modes, so this PR-only test is sufficient for split coverage.
+ * AI suggestions in split, in both modes. tests/e2e/test-server.js mocks each
+ * mode's analyses endpoint to insert the same mock suggestions for the review.
  */
-test.describe('Split diff view — AI suggestions (PR mode)', () => {
-  const PR_PATH = '/pr/test-owner/test-repo/1';
+for (const mode of MODES) {
+  test.describe(`Split diff view — AI suggestions (${mode.name})`, () => {
+    // Symmetric teardown: this block seeds AI rows into the review. Without
+    // cleanup they leak into later tests that revisit it.
+    test.afterEach(async ({ page }) => {
+      await cleanupAISuggestions(page, mode.reviewId);
+    });
 
-  // Symmetric teardown: this block seeds AI rows into review 1 via the analyses
-  // route. Without cleanup they leak into later tests that revisit review 1.
-  test.afterEach(async ({ page }) => {
-    await cleanupAISuggestions(page, 1);
+    test('renders an AI suggestion in the additions column in split', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      // Original inline copy waited on '.ai-suggestion' only; keep that selector.
+      await seedAISuggestions(page, { suggestionSelector: '.ai-suggestion', reviewId: mode.reviewId });
+
+      // Mock suggestion 1001 ("Consider using const for immutable values") is a
+      // final (ai_level null) suggestion on utils.js line 3 — a RIGHT-side line.
+      const suggestionText = 'Consider using const for immutable values';
+      await expect(page.locator('.ai-suggestion', { hasText: suggestionText }).first())
+        .toBeVisible({ timeout: 5000 });
+
+      await setDiffView(page, 'split');
+
+      // Suggestion survives the toggle and renders in the additions column.
+      await expect(page.locator('.ai-suggestion', { hasText: suggestionText }).first())
+        .toBeVisible({ timeout: 5000 });
+      await expectAnnotationInSplitColumn(page, { text: suggestionText, column: 'additions' });
+    });
   });
-
-  test('renders an AI suggestion in the additions column in split', async ({ page }) => {
-    await page.goto(PR_PATH);
-    await waitForDiffToRender(page);
-    // Original inline copy waited on '.ai-suggestion' only; keep that selector.
-    await seedAISuggestions(page, { suggestionSelector: '.ai-suggestion' });
-
-    // Mock suggestion 1001 ("Consider using const for immutable values") is a
-    // final (ai_level null) suggestion on utils.js line 3 — a RIGHT-side line.
-    const suggestionText = 'Consider using const for immutable values';
-    await expect(page.locator('.ai-suggestion', { hasText: suggestionText }).first())
-      .toBeVisible({ timeout: 5000 });
-
-    await setDiffView(page, 'split');
-
-    // Suggestion survives the toggle and renders in the additions column.
-    await expect(page.locator('.ai-suggestion', { hasText: suggestionText }).first())
-      .toBeVisible({ timeout: 5000 });
-    await expectAnnotationInSplitColumn(page, { text: suggestionText, column: 'additions' });
-  });
-});
+}

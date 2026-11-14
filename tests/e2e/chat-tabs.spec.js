@@ -105,7 +105,13 @@ test.describe('Chat multi-tab UI', () => {
     }, { timeout: 5000 }).toBe(true);
 
     // Poll for the persisted entry to materialise with the expected shape
-    // rather than sleeping. The persistence write is debounced 100ms.
+    // rather than sleeping. The persistence write is debounced 100ms, and an
+    // entry is written after every change: the one with a single session id
+    // (the seeded session, written when the panel opened) already has this
+    // shape, so the poll asks for BOTH ids. Waiting for "an entry" and then
+    // reading the tab count once read the one-tab entry whenever the second
+    // write was still inside its debounce (expected 2, received 1, under
+    // full-suite load).
     await expect.poll(async () => {
       return page.evaluate(() => {
         const raw = localStorage.getItem('pair-review:chat-tabs:1');
@@ -114,7 +120,7 @@ test.describe('Chat multi-tab UI', () => {
       });
     }, { timeout: 5000 }).toMatchObject({
       version: 1,
-      tabs: expect.any(Array),
+      tabs: [expect.any(Number), expect.any(Number)],
       activeSessionId: expect.any(Number),
     });
 

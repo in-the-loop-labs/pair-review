@@ -30,7 +30,15 @@ const fs = require('fs');
  * message to (for "Failed to load resource" that is the failed request, and
  * the text alone does not say which one).
  *
- * @type {Array<{pattern: RegExp, url?: RegExp, reason: string}>}
+ * `kind`, when present, limits the entry to 'console.error' or 'pageerror'
+ * (an uncaught exception).
+ *
+ * Nothing here covers a vendor parser or renderer message. The shared fixture
+ * diff used to provoke four of them on every page load (it was malformed,
+ * ledger H36) and mismatched file contents a fifth (H37); both causes were
+ * removed, so any such message now fails the test that produced it.
+ *
+ * @type {Array<{pattern: RegExp, url?: RegExp, kind?: string, reason: string}>}
  */
 const ALLOWED = [
   // ---- the E2E environment ----
@@ -39,43 +47,26 @@ const ALLOWED = [
     reason: 'tests/e2e/test-server.js mounts no WebSocket endpoint, so every page load of ws-client.js fails its handshake and retries. Live updates are not under test in E2E.',
   },
   {
-    pattern: /TypeError: Failed to fetch/,
-    reason: 'An in-flight fetch aborted by a navigation, a reload or the page closing at the end of a test. The app logs the rejection of whatever was loading (comments, context files, file contents, viewed state). The test server is in-process and always up, so this is never a server failure.',
-  },
-  {
-    pattern: /^Failed to load resource: the server responded with a status of 500 \(Internal Server Error\)$/,
-    url: /\/api\/local\/\d+\/refresh$/,
-    reason: 'Local mode refreshes its diff on load. The fixture review points at a worktree path that does not exist, so the real route fails to run git and answers 500.',
-  },
-  {
-    pattern: /^Error refreshing diff: Error: Failed to refresh diff: Failed to generate scoped diff: spawnSync \/bin\/sh ENOENT/,
-    reason: 'The frontend log line for the Local-mode refresh failure described above.',
-  },
-
-  // ---- the shared fixture diff ----
-  {
-    pattern: /^parsePatchContent: hunk line count mismatch: "@@ -1,5 \+1,8 @@", declared old\/new 5\/8, parsed old\/new 4\/7$/,
-    reason: 'The fixture diff in tests/e2e/test-server.js is not a well-formed unified diff: the first hunk of src/utils.js declares 5/8 lines and contains 4/7. The vendor parser reports it and renders what it parsed. About 100 specs index rows of this fixture by position, so it is not changed here; see "Open items" in plans/codeview-virtualized-diff.md.',
-  },
-  {
-    pattern: /^parsePatchContent: hunk line count mismatch: "@@ -10,6 \+10,10 @@", declared old\/new 6\/10, parsed old\/new 4\/9$/,
-    reason: 'Same fixture: the src/main.js hunk declares 6/10 lines and contains 4/9 that the parser accepts.',
-  },
-  {
-    pattern: /^processFile: invalid rawLine:\s*$/,
-    reason: 'Same fixture: a blank context line without its leading space, and a blank line between the two file sections.',
-  },
-  {
-    pattern: /^parseLineType: Invalid firstChar: "\s*", full line: "\s*"$/,
-    reason: 'Same fixture: the vendor parser\'s report for the blank lines above.',
-  },
-  {
-    pattern: /^parsePatchContent: hunk line count mismatch: "@@ -1,1 \+1,20100 @@", declared old\/new 1\/20100, parsed old\/new 0\/20100$/,
-    reason: 'The generated large diff in lazy-diff.spec.js declares one old line and has none.',
-  },
-  {
-    pattern: /DiffHunksRenderer\.processDiffResult: deletionLine and additionLine are null, something is wrong/,
-    reason: 'The file-contents mock answers every unregistered path with a generic 40-line body. When the idle content upgrade re-renders a file with contents that do not belong to its patch, a highlight result for the old diff can meet the new one and the vendor reports the mismatch. Seen on q.sql in diff-header-lookalike-stats.spec.js. Goes away when the mock serves truthful contents per path.',
+    // Anchored on the application's own log prefix for each loader that a
+    // navigation can interrupt. A bare /TypeError: Failed to fetch/ would also
+    // allow an uncaught fetch rejection anywhere, a failed fetch of the vendor
+    // bundle or worker, and any new loader's failure: each of those must fail
+    // the test until it is looked at and named here.
+    kind: 'console.error',
+    pattern: new RegExp('^(?:' + [
+      'Error loading user comments',
+      'Error loading context files',
+      'Failed to fetch file contents for [^:]+',
+      'Failed to load viewed state from API',
+      'Error loading files',
+      'Error loading local diff',
+      'Error loading AI suggestions',
+      'Error checking running analysis',
+      'Error loading recent reviews',
+      'Error loading config',
+      'Error loading team-reviews',
+    ].join('|') + '): TypeError: Failed to fetch(?:$|\\s)'),
+    reason: 'An in-flight fetch aborted by a navigation, a reload or the page closing at the end of a test: the named loader logs the rejection of what it was loading. The test server is in-process and always up, so for these loaders this is never a server failure. Only console.error lines with one of these prefixes are covered; an uncaught "Failed to fetch" is not.',
   },
 
   // ---- failures a test provokes on purpose ----
@@ -110,9 +101,15 @@ const ALLOWED = [
  * @param {string} text
  * @param {string|null} [url]
  * @param {Array} [allowed]
+ * @param {string|null} [kind] - 'console.error' or 'pageerror'; an entry that
+ *   names a kind only matches that kind
  */
-function findAllowance(text, url = null, allowed = ALLOWED) {
-  return allowed.find((entry) => entry.pattern.test(text) && (!entry.url || (url != null && entry.url.test(url)))) || null;
+function findAllowance(text, url = null, allowed = ALLOWED, kind = null) {
+  return allowed.find((entry) =>
+    entry.pattern.test(text) &&
+    (!entry.url || (url != null && entry.url.test(url))) &&
+    (!entry.kind || entry.kind === kind)
+  ) || null;
 }
 
 /** One line for a failure message: bounded, single-line. */
@@ -133,7 +130,7 @@ function attachConsoleGuard(context, { title = '' } = {}) {
   const logFile = process.env.E2E_CONSOLE_LOG || null;
 
   const record = (kind, text, url) => {
-    const allowance = findAllowance(text, url || null);
+    const allowance = findAllowance(text, url || null, ALLOWED, kind);
     const entry = { kind, text, url: url || null, allowed: !!allowance };
     seen.push(entry);
     if (logFile) {

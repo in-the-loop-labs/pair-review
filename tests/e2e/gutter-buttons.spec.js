@@ -15,72 +15,67 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, setDiffView, hoverSplitDiffLine } from './helpers.js';
+import { waitForDiffToRender, setDiffView, hoverSplitDiffLine, waitForDiffType, analysesUrl } from './helpers.js';
+import {
+  gutterButtonsState, additionsContentPoint, scrollDiffUnderPointer, GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS
+} from './diff-dom.js';
 
 const FILE = 'src/utils.js';
 
-// The fallback gutter positioning lives in the shared PierreBridge/PRManager
-// render path, exercised identically by PR and Local mode. The per-worker test
+// Gutter buttons are positioned by the shared PierreBridge/PRManager render
+// path, exercised identically by PR and Local mode. The per-worker test
 // server seeds the SAME src/utils.js diff for review 1 (PR) and review 2
-// (Local) — see tests/e2e/global-setup.js — so the same line/side fixtures work
+// (Local) — see tests/e2e/test-server.js — so the same line/side fixtures work
 // in both. Run the whole suite against each mode for parity coverage.
 const MODES = [
-  { name: 'PR mode', path: '/pr/test-owner/test-repo/1' },
-  { name: 'Local mode', path: '/local/2' }
+  { name: 'PR mode', path: '/pr/test-owner/test-repo/1', reviewId: 1 },
+  { name: 'Local mode', path: '/local/2', reviewId: 2 }
 ];
 
-async function fallbackGutterState(page) {
-  return page.evaluate(() => {
-    const els = [...document.querySelectorAll('.pierre-gutter-buttons')];
-    return els.map((el) => {
-      const r = el.getBoundingClientRect();
-      return {
-        fallbackPositioned: el.dataset.fallbackPositioned !== undefined,
-        position: el.style.position || '',
-        visible: r.width > 0 && r.height > 0
-      };
-    });
-  });
+// Where the test last put the mouse (viewport coordinates), or null when it
+// is parked outside the diff. gutterButtonsState judges a visible button
+// against the row under this point.
+let pointer = null;
+
+async function movePointer(page, x, y) {
+  await page.mouse.move(x, y);
+  pointer = { x, y };
 }
 
-async function armFallbackButtons(page) {
+/** Hover a split-layout line and show the gutter buttons on it. */
+async function armGutterButtons(page) {
   await setDiffView(page, 'split');
-  await hoverSplitDiffLine(page, { fileName: FILE, line: 4, side: 'additions' });
+  const cell = await hoverSplitDiffLine(page, { fileName: FILE, line: 4, side: 'additions' });
+  const box = await cell.boundingBox();
+  pointer = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   await expect.poll(async () => {
-    const state = await fallbackGutterState(page);
-    return state.some((s) => s.fallbackPositioned && s.visible);
+    const state = await gutterButtonsState(page, pointer);
+    return state.some((s) => s.visible);
   }, { timeout: 5000 }).toBe(true);
 }
 
-async function expectNoStaleButtons(page) {
+/** No gutter button is showing anywhere. */
+async function expectNoButtons(page) {
   await expect.poll(async () => {
-    const state = await fallbackGutterState(page);
-    return state.every((s) => !s.fallbackPositioned && !s.visible);
+    const state = await gutterButtonsState(page, pointer);
+    return state.every((s) => !s.visible);
   }, { timeout: 5000 }).toBe(true);
 }
 
 /**
- * Assert no gutter container is still FALLBACK-positioned (position:fixed with
- * the fallbackPositioned marker). This is the precise regression signal for the
- * scroll and layout-toggle cases: the bug left FIXED-coordinate buttons floating
- * over unrelated content after the diff moved under them. A normal (slotted,
- * non-fixed) button legitimately re-hovered on the line still under the pointer
- * is NOT the bug — and whether that re-hover happens depends on the resulting
- * geometry (PR and Local mode lay the diff out at different heights / scroll
- * offsets), so asserting the whole gutter is hidden would be layout-coupled and
- * flaky. Asserting only "no fixed button remains" is the mode-independent
- * invariant. (The pointer-leave case parks the pointer clearly off the diff, so
- * it can use the stricter expectNoStaleButtons.)
+ * No gutter button is showing anywhere except on the row under the pointer.
+ * A button re-shown on the line the pointer is still over is correct; one
+ * left where the line used to be is the regression.
  */
-async function expectNoFallbackButtons(page) {
+async function expectNoStaleButtons(page) {
   await expect.poll(async () => {
-    const state = await fallbackGutterState(page);
-    return state.every((s) => !s.fallbackPositioned);
+    const state = await gutterButtonsState(page, pointer);
+    return state.every((s) => !s.stale);
   }, { timeout: 5000 }).toBe(true);
 }
 
 for (const mode of MODES) {
-  test.describe(`Gutter buttons — stale fallback positioning (${mode.name})`, () => {
+  test.describe(`Gutter buttons — no stale buttons (${mode.name})`, () => {
     test.beforeEach(async ({ page }) => {
       await page.setViewportSize({ width: 1600, height: 700 });
       await page.goto(mode.path);
@@ -88,85 +83,96 @@ for (const mode of MODES) {
     });
 
     test('clear when the pointer leaves the diff', async ({ page }) => {
-      await armFallbackButtons(page);
+      await armGutterButtons(page);
 
       // Park the pointer on the page header, well outside the file wrapper.
       await page.mouse.move(700, 20);
+      pointer = null;
       await expectNoStaleButtons(page);
     });
 
+    /**
+     * The same gesture on a review that holds the suggestions of an
+     * analysis when the page loads. On main the button then stays where it
+     * was (GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS in diff-dom.js has
+     * the measurements). The test above is the clean-review half of this
+     * pair; before the fixture reset the reviews between tests, that test
+     * met this state whenever an earlier spec of its worker had left an
+     * analysis behind, and was known as a flake.
+     */
+    test('after the pointer leaves the diff, with the suggestions of an analysis on the review', async ({ page }) => {
+      const started = await page.request.post(analysesUrl(mode.reviewId), { data: {} });
+      expect(started.ok()).toBe(true);
+      await expect.poll(async () => {
+        const status = await page.request.get(`/api/reviews/${mode.reviewId}/analyses/status`);
+        return (await status.json()).running;
+      }).toBe(false);
+      // The state under test is a page that LOADS with those rows.
+      await page.reload();
+      await waitForDiffToRender(page);
+      await expect(page.locator('.ai-suggestion').first()).toBeVisible();
+
+      await armGutterButtons(page);
+      await page.mouse.move(700, 20);
+      pointer = null;
+
+      if (!GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS) {
+        await expectNoStaleButtons(page);
+        return;
+      }
+      // Characterization of main: the button is left showing. Not for a
+      // frame or two: a second pointer move outside the diff and thirty
+      // painted frames later it is still there, alone.
+      await page.mouse.move(900, 30);
+      await page.evaluate(() => new Promise((resolve) => {
+        let frames = 0;
+        const tick = () => (++frames >= 30 ? resolve() : requestAnimationFrame(tick));
+        requestAnimationFrame(tick);
+      }));
+      const state = await gutterButtonsState(page, pointer);
+      expect(state.filter((s) => s.visible)).toEqual([{ visible: true, stale: true }]);
+    });
+
     test('clear when the page scrolls under a parked pointer', async ({ page }) => {
-      await armFallbackButtons(page);
+      await armGutterButtons(page);
 
-      // Park the pointer deep in the additions CONTENT track — X to the RIGHT of
-      // the gutter (between the line-number cell's right edge and the pre's right
-      // edge), any row. This matters for determinism: the fallback positioner
-      // re-arms ONLY when a synthetic pointermove (dispatched by the bridge's
-      // post-scroll hover re-derive) lands on a line-NUMBER cell. A point in the
-      // content track never resolves to a number cell regardless of how far the
-      // diff scrolls or what annotations are present, so no fixed button can
-      // re-arm. (Using the FIRST content cell's centre — as an earlier version
-      // did — is unsafe: the first added line is blank, so its cell is near-zero
-      // width and its centre sits over the gutter, which re-armed under some
-      // layouts and made this test flaky in the full suite.)
-      const park = await page.evaluate((file) => {
-        const sr = document
-          .querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`)
-          ?.querySelector('diffs-container')?.shadowRoot;
-        const pre = sr?.querySelector('pre[data-diff-type="split"]');
-        const numCell = sr?.querySelector('code[data-additions] [data-column-number]');
-        const contentCell = sr?.querySelector('code[data-additions] [data-content]');
-        if (!pre || !numCell || !contentCell) return null;
-        const preR = pre.getBoundingClientRect();
-        const numR = numCell.getBoundingClientRect();
-        const cR = contentCell.getBoundingClientRect();
-        return { x: (numR.right + preR.right) / 2, y: cR.y + Math.min(40, cR.height / 2) };
-      }, FILE);
+      // Park the pointer deep in the additions CONTENT track: X to the right of
+      // the line-number gutter, any row. This matters for determinism. After a
+      // scroll the application re-derives hover from the parked pointer; a
+      // point over a line-NUMBER cell would legitimately show a button on
+      // whatever row scrolled under it. A point in the content track never
+      // resolves to a number cell, so nothing can re-show. (The centre of the
+      // FIRST content cell is unsafe: the first added line is blank, its cell
+      // is near-zero width and its centre sits over the gutter.)
+      const park = await additionsContentPoint(page, FILE);
       expect(park, 'additions content track should be resolvable in split').not.toBeNull();
-      await page.mouse.move(park.x, park.y);
-      // Buttons survive the move (pointer still over the file, over content).
-      expect((await fallbackGutterState(page)).some((s) => s.fallbackPositioned)).toBe(true);
+      await movePointer(page, park.x, park.y);
 
-      // Scroll the diff's own scroll container WITHOUT moving the pointer. Driving
-      // the container directly (rather than a wheel gesture, whose delivery
-      // depends on what element is under the pointer being scrollable) fires the
-      // same window-level scroll event the bridge listens for, deterministically.
-      // Fixed-position buttons would otherwise stay glued to the viewport while
-      // the diff moves under them; the scroll must detach every fixed button.
-      // Scroll toward whichever direction has room — in the shared-DB full suite
-      // the container may already sit at the bottom (other specs' state makes the
-      // diff taller / pre-scrolled), so a fixed downward delta would be a no-op.
-      const scrolled = await page.evaluate((file) => {
-        let el = document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`);
-        while (el) {
-          const oy = getComputedStyle(el).overflowY;
-          if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 4) break;
-          el = el.parentElement;
-        }
-        if (!el) return false;
-        const maxScroll = el.scrollHeight - el.clientHeight;
-        const before = el.scrollTop;
-        el.scrollTop = before < maxScroll ? maxScroll : 0;
-        return el.scrollTop !== before;
-      }, FILE);
-      expect(scrolled, 'the diff container should have a scrollable ancestor that moved').toBe(true);
+      // Scroll the diff's own scroll container WITHOUT moving the pointer.
+      // Driving the container directly (rather than a wheel gesture, whose
+      // delivery depends on what is under the pointer being scrollable) fires
+      // the same scroll event deterministically. A button pinned to the
+      // viewport would stay where it was while the diff moves under it.
+      // Scroll toward whichever direction has room: in the shared-DB full
+      // suite the container may already sit at the bottom.
+      const scrolled = await scrollDiffUnderPointer(page);
+      expect(scrolled, 'the diff should have a scroll container that moved').toBe(true);
 
-      // A normal button re-hovered on the line still under the pointer is fine;
-      // the regression is a FIXED (fallback-positioned) button surviving the
-      // scroll (see expectNoFallbackButtons).
-      await expectNoFallbackButtons(page);
+      // A button re-shown on the line still under the pointer is fine; the
+      // regression is a button that stayed where the old line was.
+      await expectNoStaleButtons(page);
     });
 
     test('clear when the diff view toggles back to unified', async ({ page }) => {
-      await armFallbackButtons(page);
+      await armGutterButtons(page);
 
       // Toggle programmatically (no pointer movement) so this exercises the
-      // setDiffStyle clearing path itself, not the pointer-move sweep. The
-      // rerender must detach every fixed button; a normal button re-hovered on
-      // the line still under the pointer in the new layout is fine (see
-      // expectNoFallbackButtons).
+      // layout change itself, not a pointer-move sweep. The re-render must not
+      // leave a button where the split-layout line was; a button re-shown on
+      // the line under the pointer in the new layout is fine.
       await page.evaluate(() => window.prManager.handleDiffViewChange('unified'));
-      await expectNoFallbackButtons(page);
+      await waitForDiffType(page, 'single', 5000, { fileName: FILE });
+      await expectNoStaleButtons(page);
     });
   });
 }

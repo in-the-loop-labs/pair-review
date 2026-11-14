@@ -224,18 +224,15 @@
   const joinLines = (lines) => (lines.length ? `${lines.join('\n')}\n` : '');
 
   /**
-   * @param {Object} [options]
-   * @param {number} [options.seed]
-   * @returns {{
-   *   patch: string,
-   *   order: string[],
-   *   files: Object<string, {old: string|null, new: string|null, oldName?: string, hunks: number, additions: number, deletions: number}>,
-   *   plain: Array<{name: string, contents: string}>,
-   *   roles: Object<string, string>,
-   * }}
+   * The section writers `build` uses, exposed so other deterministic corpora
+   * (tests/e2e/fixtures/diffs.js) emit `git diff`-shaped sections the same way
+   * and keep the same guarantee: the patch applied to `files[path].old` gives
+   * `files[path].new`.
+   * @param {{next: Function, int: Function, word: Function}} rng
+   * @returns {{sections: Array<{path: string, text: string}>, files: Object,
+   *   modified: Function, added: Function, deleted: Function}}
    */
-  function build(options = {}) {
-    const rng = createRng(options.seed === undefined ? 1234567 : options.seed);
+  function createPatchBuilder(rng) {
     const sections = []; // { path, text }
     const files = {};
 
@@ -291,6 +288,25 @@
       sections.push({ path, text: `${header.join('\n')}\n@@ -${range(1, lines.length)} +0,0 @@\n${body}\n` });
       files[path] = { old: text, new: null, hunks: 1, additions: 0, deletions: lines.length };
     };
+
+    return { sections, files, modified, added, deleted };
+  }
+
+  /**
+   * @param {Object} [options]
+   * @param {number} [options.seed]
+   * @returns {{
+   *   patch: string,
+   *   order: string[],
+   *   files: Object<string, {old: string|null, new: string|null, oldName?: string, hunks: number, additions: number, deletions: number}>,
+   *   plain: Array<{name: string, contents: string}>,
+   *   roles: Object<string, string>,
+   * }}
+   */
+  function build(options = {}) {
+    const rng = createRng(options.seed === undefined ? 1234567 : options.seed);
+    const { sections, files, modified, added, deleted } = createPatchBuilder(rng);
+
 
     // ---- 50 modified files ----
     const exts = ['js', 'ts', 'py', 'css', 'md', 'json', 'js', 'ts'];
@@ -408,5 +424,5 @@
     };
   }
 
-  return { build, createRng, makeEdits, applyEdits, hunksFromEdits, CONTEXT };
+  return { build, createRng, makeLines, makeEdits, applyEdits, hunksFromEdits, createPatchBuilder, joinLines, CONTEXT };
 });

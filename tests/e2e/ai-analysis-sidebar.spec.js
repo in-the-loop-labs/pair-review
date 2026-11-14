@@ -12,7 +12,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions, expectResponse } from './helpers.js';
+import { MODES, analysesUrl, waitForDiffToRender, seedAISuggestions, expectResponse, cleanupAllComments } from './helpers.js';
 
 // Helper to handle modals when triggering analysis
 async function handleAnalysisModals(page) {
@@ -65,185 +65,196 @@ async function waitForProgressModalReady(page, timeout = 5000) {
   return progressModal;
 }
 
-test.describe('Level Filtering', () => {
-  test('should have level filter pills (if visible)', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Level filter may be hidden by default in current implementation
-    // Check if it exists in DOM (might be hidden)
-    const levelFilter = page.locator('#level-filter, .level-filter');
-    const exists = await levelFilter.count() > 0;
-
-    // If it exists, it should have level pills
-    if (exists) {
-      const pills = page.locator('.level-pill');
-      const pillCount = await pills.count();
-      expect(pillCount).toBeGreaterThanOrEqual(0);
-    } else {
-      // Level filter not present - this is acceptable as it may be hidden by design
-      expect(true).toBe(true);
-    }
-  });
+// Every test here seeds suggestions and several adopt them, on a review the
+// worker's other spec files open too. Leave both fixture reviews empty.
+test.afterEach(async ({ page }) => {
+  for (const { reviewId } of MODES) {
+    await cleanupAllComments(page, reviewId);
+  }
 });
 
-test.describe('SuggestionNavigator Sidebar', () => {
-  test('should have suggestion navigator component in DOM', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+for (const mode of MODES) {
+  test.describe(`Level Filtering (${mode.name})`, () => {
+    test('should have level filter pills (if visible)', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    // Seed AI suggestions
-    await seedAISuggestions(page);
+      // Level filter may be hidden by default in current implementation
+      // Check if it exists in DOM (might be hidden)
+      const levelFilter = page.locator('#level-filter, .level-filter');
+      const exists = await levelFilter.count() > 0;
 
-    // Navigator component should exist in DOM (may be visible or collapsed)
-    const navigator = page.locator('.suggestion-navigator');
-    const toggle = page.locator('.navigator-toggle-collapsed');
-
-    // Either navigator or toggle should be in DOM
-    const navigatorCount = await navigator.count();
-    const toggleCount = await toggle.count();
-
-    expect(navigatorCount + toggleCount).toBeGreaterThan(0);
+      // If it exists, it should have level pills
+      if (exists) {
+        const pills = page.locator('.level-pill');
+        const pillCount = await pills.count();
+        expect(pillCount).toBeGreaterThanOrEqual(0);
+      } else {
+        // Level filter not present - this is acceptable as it may be hidden by design
+        expect(true).toBe(true);
+      }
+    });
   });
 
-  test('should show level selector in navigator', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+  test.describe(`SuggestionNavigator Sidebar (${mode.name})`, () => {
+    test('should have suggestion navigator component in DOM', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    // Seed AI suggestions
-    await seedAISuggestions(page);
+      // Seed AI suggestions
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
 
-    // Try to expand navigator if collapsed
-    const toggle = page.locator('.navigator-toggle-collapsed');
-    if (await toggle.isVisible().catch(() => false)) {
-      await toggle.click();
-      await page.waitForTimeout(300);
-    }
+      // Navigator component should exist in DOM (may be visible or collapsed)
+      const navigator = page.locator('.suggestion-navigator');
+      const toggle = page.locator('.navigator-toggle-collapsed');
 
-    // Level selector should be visible in navigator (or in the main panel)
-    const levelSelector = page.locator('.level-selector, .level-option, .level-filter');
-    const count = await levelSelector.count();
-    expect(count).toBeGreaterThanOrEqual(0);  // May not always be visible
-  });
+      // Either navigator or toggle should be in DOM
+      const navigatorCount = await navigator.count();
+      const toggleCount = await toggle.count();
 
-  test('should have suggestion counter element', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+      expect(navigatorCount + toggleCount).toBeGreaterThan(0);
+    });
 
-    // Seed AI suggestions
-    await seedAISuggestions(page);
+    test('should show level selector in navigator', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    // Try to expand navigator if collapsed
-    const toggle = page.locator('.navigator-toggle-collapsed');
-    if (await toggle.isVisible().catch(() => false)) {
-      await toggle.click();
-      await page.waitForTimeout(300);
-    }
+      // Seed AI suggestions
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
 
-    // Counter element should exist (may be hidden or visible)
-    const counter = page.locator('.suggestion-counter, #total-suggestions, .findings-counter');
-    const count = await counter.count();
-    expect(count).toBeGreaterThan(0);
-  });
+      // Try to expand navigator if collapsed
+      const toggle = page.locator('.navigator-toggle-collapsed');
+      if (await toggle.isVisible().catch(() => false)) {
+        await toggle.click();
+        await page.waitForTimeout(300);
+      }
 
-  test('should list suggestions in navigator when expanded', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+      // Level selector should be visible in navigator (or in the main panel)
+      const levelSelector = page.locator('.level-selector, .level-option, .level-filter');
+      const count = await levelSelector.count();
+      expect(count).toBeGreaterThanOrEqual(0);  // May not always be visible
+    });
 
-    // Seed AI suggestions
-    await seedAISuggestions(page);
+    test('should have suggestion counter element', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    // Try to expand navigator if collapsed
-    const toggle = page.locator('.navigator-toggle-collapsed');
-    if (await toggle.isVisible().catch(() => false)) {
-      await toggle.click();
-      await page.waitForTimeout(300);
-    }
+      // Seed AI suggestions
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
 
-    // Check for suggestion items or finding items in the panel
-    const items = page.locator('.suggestions-list .suggestion-item, .finding-item');
-    const count = await items.count();
-    expect(count).toBeGreaterThan(0);
-  });
+      // Try to expand navigator if collapsed
+      const toggle = page.locator('.navigator-toggle-collapsed');
+      if (await toggle.isVisible().catch(() => false)) {
+        await toggle.click();
+        await page.waitForTimeout(300);
+      }
 
-  test('should have navigator toggle functionality', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+      // Counter element should exist (may be hidden or visible)
+      const counter = page.locator('.suggestion-counter, #total-suggestions, .findings-counter');
+      const count = await counter.count();
+      expect(count).toBeGreaterThan(0);
+    });
 
-    // Seed AI suggestions
-    await seedAISuggestions(page);
+    test('should list suggestions in navigator when expanded', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    await page.waitForTimeout(500);
+      // Seed AI suggestions
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
 
-    const navigator = page.locator('.suggestion-navigator');
-    const collapseToggle = page.locator('.navigator-toggle-collapsed');
+      // Try to expand navigator if collapsed
+      const toggle = page.locator('.navigator-toggle-collapsed');
+      if (await toggle.isVisible().catch(() => false)) {
+        await toggle.click();
+        await page.waitForTimeout(300);
+      }
 
-    const navigatorVisible = await navigator.isVisible().catch(() => false);
-    const toggleVisible = await collapseToggle.isVisible().catch(() => false);
+      // Check for suggestion items or finding items in the panel
+      const items = page.locator('.suggestions-list .suggestion-item, .finding-item');
+      const count = await items.count();
+      expect(count).toBeGreaterThan(0);
+    });
 
-    // Should have either navigator visible or a way to toggle it
-    if (navigatorVisible) {
-      // Click the collapse button inside navigator
-      const internalToggle = navigator.locator('.navigator-toggle');
-      if (await internalToggle.isVisible().catch(() => false)) {
-        await internalToggle.click();
+    test('should have navigator toggle functionality', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+
+      // Seed AI suggestions
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
+
+      await page.waitForTimeout(500);
+
+      const navigator = page.locator('.suggestion-navigator');
+      const collapseToggle = page.locator('.navigator-toggle-collapsed');
+
+      const navigatorVisible = await navigator.isVisible().catch(() => false);
+      const toggleVisible = await collapseToggle.isVisible().catch(() => false);
+
+      // Should have either navigator visible or a way to toggle it
+      if (navigatorVisible) {
+        // Click the collapse button inside navigator
+        const internalToggle = navigator.locator('.navigator-toggle');
+        if (await internalToggle.isVisible().catch(() => false)) {
+          await internalToggle.click();
+          await page.waitForTimeout(300);
+          // State should have changed
+          expect(true).toBe(true);
+        }
+      } else if (toggleVisible) {
+        // Click to expand
+        await collapseToggle.click();
         await page.waitForTimeout(300);
         // State should have changed
         expect(true).toBe(true);
+      } else {
+        // Navigator system exists but in different state
+        expect(true).toBe(true);
       }
-    } else if (toggleVisible) {
-      // Click to expand
-      await collapseToggle.click();
-      await page.waitForTimeout(300);
-      // State should have changed
-      expect(true).toBe(true);
-    } else {
-      // Navigator system exists but in different state
-      expect(true).toBe(true);
-    }
-  });
-});
-
-test.describe('API Integration', () => {
-  test('should call AI analysis endpoint when triggering analysis', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Set up response listener
-    const responsePromise = expectResponse(page,
-      response => response.url().includes('/api/pr/test-owner/test-repo/1/analyses') && response.status() === 200,
-      { timeout: 10000 }
-    );
-
-    // Trigger analysis
-    await page.locator('#analyze-btn, button:has-text("Analyze")').first().click();
-
-    // Handle config modal or confirm dialog
-    await handleAnalysisModals(page);
-
-    // Should have called the analysis endpoint
-    const response = await responsePromise;
-    expect(response.status()).toBe(200);
+    });
   });
 
-  test('should fetch AI suggestions from API after analysis', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
+  test.describe(`API Integration (${mode.name})`, () => {
+    test('should call AI analysis endpoint when triggering analysis', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
 
-    // Set up response listener for suggestions endpoint
-    const responsePromise = expectResponse(page,
-      response => response.url().includes('/suggestions') && !response.url().includes('/check') && response.status() === 200,
-      { timeout: 10000 }
-    );
+      // Set up response listener
+      const responsePromise = expectResponse(page,
+        response => response.url().includes(analysesUrl(mode.reviewId)) && response.status() === 200,
+        { timeout: 10000 }
+      );
 
-    // Seed AI suggestions (triggers reload of suggestions)
-    await seedAISuggestions(page);
+      // Trigger analysis
+      await page.locator('#analyze-btn, button:has-text("Analyze")').first().click();
 
-    // Should have called the suggestions endpoint
-    const response = await responsePromise;
-    expect(response.status()).toBe(200);
+      // Handle config modal or confirm dialog
+      await handleAnalysisModals(page);
+
+      // Should have called the analysis endpoint
+      const response = await responsePromise;
+      expect(response.status()).toBe(200);
+    });
+
+    test('should fetch AI suggestions from API after analysis', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+
+      // Set up response listener for suggestions endpoint
+      const responsePromise = expectResponse(page,
+        response => response.url().includes('/suggestions') && !response.url().includes('/check') && response.status() === 200,
+        { timeout: 10000 }
+      );
+
+      // Seed AI suggestions (triggers reload of suggestions)
+      await seedAISuggestions(page, { reviewId: mode.reviewId });
+
+      // Should have called the suggestions endpoint
+      const response = await responsePromise;
+      expect(response.status()).toBe(200);
+    });
   });
-});
+
+}
 
 test.describe('Error Handling', () => {
   test('should handle analysis on non-existent PR gracefully', async ({ page }) => {
