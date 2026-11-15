@@ -1703,26 +1703,9 @@ class PierreBridge {
   _updateAnnotations(fileName) {
     const fileState = this.files.get(fileName);
     if (!fileState || !fileState.instance) return;
-    // Sort so that at the same line, suggestions appear before comments.
-    // This matches the legacy rendering order where the suggestion row is
-    // inserted first, then the adopted comment row appears below it.
-    // Hunk summaries and tour stops describe the surrounding code, so they
-    // stack above suggestion/comment feedback anchored to the same line.
-    const typeOrder = {
-      'hunk-summary': -2,
-      'tour-stop': -1,
-      'suggestion': 0,
-      'comment-form': 1,
-      'comment': 2,
-      // External (host-synced) threads stack below user comments on the same
-      // line, mirroring the legacy insertion order (AI → user → external).
-      'external-comment': 3,
-    };
-    const sorted = [...fileState.annotations].sort((a, b) => {
-      if (a.lineNumber !== b.lineNumber) return a.lineNumber - b.lineNumber;
-      if (a.side !== b.side) return a.side < b.side ? -1 : 1;
-      return (typeOrder[a.metadata.type] ?? 1) - (typeOrder[b.metadata.type] ?? 1);
-    });
+    // Display order on one line (suggestion, form, comment, external thread;
+    // hunk summaries and tour stops above them) is the shared rule.
+    const sorted = PierreBridge._shared().annotations.sortAnnotations(fileState.annotations);
     fileState.instance.setLineAnnotations(sorted);
     // setLineAnnotations only stores data — rerender() is needed to
     // trigger the renderAnnotation callback and slot elements into the
@@ -1777,41 +1760,10 @@ class PierreBridge {
    * @private
    */
   _applySplitAnnotationLayout(fileName) {
-    if (this.diffStyle !== 'split') return;
     const fileState = this.files.get(fileName);
-    const shadowRoot = fileState?.shadowHost?.shadowRoot;
-    if (!shadowRoot) return;
-    const pre = shadowRoot.querySelector(
-      'pre[data-diff-type="split"], pre[data-diff-type="single"]'
+    PierreBridge._shared().annotations.applySplitAnnotationLayout(
+      fileState?.shadowHost?.shadowRoot || null, this.diffStyle
     );
-    if (!pre) return;
-
-    // Two-sided pre: measure the MIDDLE (additions) gutter track — it sits
-    // against the seam. One-sided pre: only one gutter exists; measure it.
-    const gutter = pre.getAttribute('data-diff-type') === 'split'
-      ? pre.querySelector('[data-additions] [data-gutter]')
-      : pre.querySelector('[data-gutter]');
-    const gutterWidth = gutter?.getBoundingClientRect?.().width || 0;
-    if (gutterWidth > 0) {
-      pre.style.setProperty('--pr-split-gutter-width', `${gutterWidth}px`);
-    }
-
-    // Paired cells share the same "hunkIndex,lineIndex" attribute value.
-    const byRow = new Map();
-    for (const cell of pre.querySelectorAll('[data-line-annotation]')) {
-      const key = cell.getAttribute('data-line-annotation');
-      if (!byRow.has(key)) byRow.set(key, []);
-      byRow.get(key).push(cell);
-    }
-    for (const cells of byRow.values()) {
-      const withContent = cells.filter((cell) => cell.querySelector('slot'));
-      for (const cell of cells) {
-        cell.classList.toggle(
-          'pr-annotation-fullwidth',
-          withContent.length === 1 && cell === withContent[0]
-        );
-      }
-    }
   }
 
   // ─── Gap Expansion ────────────────────────────────────────────────
@@ -2131,85 +2083,7 @@ class PierreBridge {
    * @private
    */
   _renderCommentAnnotation(comment, id) {
-    const escapeHtml = window.prManager?.escapeHtml?.bind(window.prManager) || ((s) => s);
-
-    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
-      ? `Lines ${comment.line_start}-${comment.line_end}`
-      : `Line ${comment.line_start}`;
-
-    // Build metadata display for adopted comments (praise badge + title)
-    let metadataHTML = '';
-    if (comment.parent_id && comment.type && comment.type !== 'comment') {
-      const badgeHTML = comment.type === 'praise'
-        ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-        : '';
-      metadataHTML = `
-        ${badgeHTML}
-        ${comment.title ? `<span class="adopted-title">${escapeHtml(comment.title)}</span>` : ''}
-      `;
-    }
-
-    // Icon based on origin (AI-adopted vs user-originated)
-    const commentIcon = comment.parent_id
-      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-         </svg>`
-      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-         </svg>`;
-
-    const baseClasses = ['user-comment'];
-    if (comment.parent_id) {
-      baseClasses.push('adopted-comment', 'comment-ai-origin');
-    } else {
-      baseClasses.push('comment-user-origin');
-    }
-
-    const container = document.createElement('div');
-    container.className = 'user-comment-row';
-    container.dataset.commentId = comment.id;
-    window.PostedComment?.stampCommentStatus(container, comment);
-    container.dataset.file = comment.file;
-    container.dataset.lineStart = comment.line_start;
-    container.dataset.lineEnd = comment.line_end || comment.line_start;
-    if (comment.side) container.dataset.side = comment.side;
-
-    container.innerHTML = `
-      <div class="${baseClasses.join(' ')}">
-        <div class="user-comment-header">
-          <div class="user-comment-header-left">
-            <span class="comment-origin-icon">${commentIcon}</span>
-            <span class="user-comment-line-info">${lineInfo}</span>
-            ${window.getPostedCommentIcon?.(comment, { link: true }) || ''}
-            ${metadataHTML}
-          </div>
-          <div class="user-comment-actions">
-            <button class="btn-chat-comment" title="Chat about comment"
-                    data-chat-comment-id="${comment.id}"
-                    data-chat-file="${escapeHtml(comment.file || '')}"
-                    data-chat-line-start="${comment.line_start ?? ''}"
-                    data-chat-line-end="${comment.line_end || comment.line_start || ''}"
-                    data-chat-parent-id="${comment.parent_id || ''}">
-              <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
-            </button>
-            <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
-              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
-                <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>
-              </svg>
-            </button>
-            <button class="btn-delete-comment" onclick="prManager.deleteUserComment(${comment.id})" title="Dismiss comment">
-              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
-                <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute ? window.escapeHtmlAttribute(comment.body) : ''}">${window.renderMarkdown ? window.renderMarkdown(comment.body || '') : escapeHtml(comment.body || '')}</div>
-        ${window.PostedComment?.getEditedSincePostedHtml(comment) || ''}
-      </div>
-    `;
-
-    return container;
+    return PierreBridge._shared().annotations.renderComment(comment, id, PierreBridge._pageEnv);
   }
 
   /**
@@ -2221,25 +2095,7 @@ class PierreBridge {
    * @private
    */
   _renderSuggestionAnnotation(suggestion, id) {
-    const suggestionManager = window.prManager?.suggestionManager;
-    if (suggestionManager) {
-      const targetInfo = {
-        fileName: suggestion.file || '',
-        lineNumber: suggestion.line_start || suggestion.line_end || '',
-        side: suggestion.side || 'RIGHT',
-        diffPosition: suggestion.diff_position || '',
-        isFileLevel: !suggestion.line_start && !suggestion.line_end,
-      };
-
-      const row = suggestionManager.createSuggestionRow([suggestion], targetInfo);
-      const suggestionDiv = row.querySelector('.ai-suggestion');
-      if (suggestionDiv) {
-        return suggestionDiv;
-      }
-    }
-
-    // Fallback: minimal rendering if SuggestionManager unavailable
-    return this._renderSuggestionFallback(suggestion, id);
+    return PierreBridge._shared().annotations.renderSuggestion(suggestion, id, PierreBridge._pageEnv);
   }
 
   /**
@@ -2247,28 +2103,7 @@ class PierreBridge {
    * @private
    */
   _renderSuggestionFallback(suggestion, id) {
-    const container = document.createElement('div');
-    container.className = `ai-suggestion ai-type-${suggestion.type || 'info'}`;
-    container.dataset.suggestionId = suggestion.id || '';
-
-    const escapeHtml = window.prManager?.escapeHtml?.bind(window.prManager) || ((s) => s);
-    const displayBody = suggestion.formattedBody || suggestion.body || '';
-    const bodyHTML = window.renderMarkdown ? window.renderMarkdown(displayBody) : escapeHtml(displayBody);
-
-    container.innerHTML = `
-      <div class="ai-suggestion-header">
-        <div class="ai-suggestion-header-left">
-          <span class="ai-suggestion-category">${escapeHtml(suggestion.type || '')}</span>
-          <span class="ai-title smart-truncate">${escapeHtml(suggestion.title || '')}</span>
-        </div>
-      </div>
-      <div class="ai-suggestion-body">${bodyHTML}</div>
-      <div class="ai-suggestion-actions">
-        <button class="ai-action ai-action-adopt" onclick="prManager.adoptSuggestion(${suggestion.id})">Adopt</button>
-        <button class="ai-action ai-action-dismiss" onclick="prManager.dismissSuggestion(${suggestion.id})">Dismiss</button>
-      </div>
-    `;
-    return container;
+    return PierreBridge._shared().annotations.renderSuggestionFallback(suggestion, id, PierreBridge._pageEnv);
   }
 
   /**
@@ -2276,13 +2111,13 @@ class PierreBridge {
    * Matches CommentManager.SUGGESTION_ICON_SVG.
    * @private
    */
-  static SUGGESTION_ICON_SVG = `<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V4.664a.25.25 0 0 0-.073-.177l-2.914-2.914a.25.25 0 0 0-.177-.073ZM8 3.25a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0V7h-1.5a.75.75 0 0 1 0-1.5h1.5V4A.75.75 0 0 1 8 3.25Zm-3 8a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"></path></svg>`;
+  static get SUGGESTION_ICON_SVG() { return PierreBridge._shared().annotations.SUGGESTION_ICON_SVG; }
 
   /**
    * Chat icon SVG for comment form (matches legacy CommentManager).
    * @private
    */
-  static CHAT_FORM_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
+  static get CHAT_FORM_SVG() { return PierreBridge._shared().annotations.CHAT_FORM_SVG; }
 
   /**
    * Render a comment form annotation.
@@ -2292,182 +2127,9 @@ class PierreBridge {
    * @private
    */
   _renderFormAnnotation(data, id, formElements, fileName) {
-    // Reuse existing form element to preserve textarea content
-    if (formElements.has(id)) {
-      return formElements.get(id);
-    }
-
-    const container = document.createElement('div');
-    container.className = 'pierre-annotation user-comment-form';
-    container.dataset.annotationId = id;
-
-    // Header — matches legacy comment form
-    const header = document.createElement('div');
-    header.className = 'comment-form-header';
-    const icon = document.createElement('span');
-    icon.className = 'comment-icon';
-    icon.textContent = '\uD83D\uDCAC'; // 💬
-    header.appendChild(icon);
-    const title = document.createElement('span');
-    title.className = 'comment-title';
-    title.textContent = data.headerTitle || 'Add comment';
-    header.appendChild(title);
-    if (data.lineStart && data.lineEnd && data.lineEnd !== data.lineStart) {
-      const rangeLabel = document.createElement('span');
-      rangeLabel.className = 'line-range-indicator';
-      rangeLabel.textContent = `Lines ${data.lineStart}-${data.lineEnd}`;
-      header.appendChild(rangeLabel);
-    }
-    container.appendChild(header);
-
-    // Suggestion toolbar — suggestionBtn is declared in the outer scope so
-    // the textarea input listener below can re-evaluate its disabled state.
-    let suggestionBtn = null;
-    if (data.showSuggestionBtn) {
-      const toolbar = document.createElement('div');
-      toolbar.className = 'comment-form-toolbar';
-      suggestionBtn = document.createElement('button');
-      suggestionBtn.type = 'button';
-      suggestionBtn.className = 'btn btn-sm suggestion-btn';
-      suggestionBtn.title = 'Insert a suggestion';
-      suggestionBtn.innerHTML = PierreBridge.SUGGESTION_ICON_SVG;
-      suggestionBtn.addEventListener('click', () => {
-        if (!suggestionBtn.disabled && this.options.onSuggestionInsert) {
-          this.options.onSuggestionInsert(textarea, suggestionBtn);
-        }
-      });
-      toolbar.appendChild(suggestionBtn);
-      container.appendChild(toolbar);
-    }
-
-    // Textarea
-    const textarea = document.createElement('textarea');
-    textarea.className = 'comment-textarea';
-    textarea.placeholder = 'Leave a comment... (Cmd/Ctrl+Enter to save)';
-    textarea.dataset.line = data.lineStart || '';
-    textarea.dataset.lineEnd = data.lineEnd || data.lineStart || '';
-    textarea.dataset.file = fileName;
-    textarea.dataset.diffPosition = data.diffPosition || '';
-    textarea.dataset.side = data.side || 'RIGHT';
-    if (data.initialValue) {
-      textarea.value = data.initialValue;
-    }
-    container.appendChild(textarea);
-
-    // Actions — order matches legacy: Save, Chat, Cancel
-    const actions = document.createElement('div');
-    actions.className = 'comment-form-actions';
-
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'btn btn-sm btn-primary save-comment-btn';
-    saveBtn.textContent = 'Save';
-    // Sync disabled state with initial textarea content — when `initialValue`
-    // is set programmatically above, the `input` event does not fire, so we
-    // must compute this here rather than relying on the listener.
-    saveBtn.disabled = !textarea.value.trim();
-    // Guard against duplicate submits from rapid clicks or repeated
-    // Cmd+Enter. Parity with CommentManager.saveComment which notes:
-    // "Prevent duplicate saves from rapid clicks or Cmd+Enter".
-    saveBtn.addEventListener('click', async () => {
-      if (saveBtn.dataset.saving === 'true') return;
-      if (!this.options.onCommentFormSubmit) return;
-      saveBtn.dataset.saving = 'true';
-      saveBtn.disabled = true;
-      try {
-        await this.options.onCommentFormSubmit(fileName, id, data, textarea.value);
-      } finally {
-        // On success the form annotation has been removed and the button
-        // is detached; only touch the button if it's still connected.
-        if (saveBtn.isConnected) {
-          saveBtn.dataset.saving = 'false';
-          saveBtn.disabled = !textarea.value.trim();
-        }
-      }
-    });
-    actions.appendChild(saveBtn);
-
-    const chatBtn = document.createElement('button');
-    chatBtn.className = 'ai-action ai-action-chat btn-chat-from-comment';
-    chatBtn.title = 'Chat about these lines';
-    chatBtn.innerHTML = PierreBridge.CHAT_FORM_SVG + ' Chat';
-    chatBtn.addEventListener('click', () => {
-      if (!window.chatPanel) return;
-      if (this.options.onCommentFormCancel) {
-        this.options.onCommentFormCancel(fileName, id, data);
-      }
-      window.chatPanel.open({
-        commentContext: {
-          type: 'line',
-          body: textarea.value.trim() || null,
-          file: fileName || '',
-          line_start: parseInt(textarea.dataset.line) || null,
-          line_end: parseInt(textarea.dataset.lineEnd) || parseInt(textarea.dataset.line) || null,
-          side: textarea.dataset.side || 'RIGHT',
-          source: 'user'
-        }
-      });
-    });
-    actions.appendChild(chatBtn);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn btn-sm btn-secondary cancel-comment-btn';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      if (this.options.onCommentFormCancel) {
-        this.options.onCommentFormCancel(fileName, id, data);
-      }
-    });
-    actions.appendChild(cancelBtn);
-
-    container.appendChild(actions);
-
-    // Enable/disable save button and re-evaluate suggestion button on input.
-    // Mirrors CommentManager.updateSuggestionButtonState so that manually
-    // deleting a ```suggestion block re-enables the toolbar button.
-    const hasSuggestionBlock = (text) => /^\s*(`{3,})suggestion\s*$/m.test(text);
-    textarea.addEventListener('input', () => {
-      saveBtn.disabled = !textarea.value.trim();
-      if (suggestionBtn) {
-        const hasSuggestion = hasSuggestionBlock(textarea.value);
-        suggestionBtn.disabled = hasSuggestion;
-        suggestionBtn.title = hasSuggestion
-          ? 'Only one suggestion per comment'
-          : 'Insert a suggestion';
-      }
-      // Auto-resize
-      textarea.style.height = 'auto';
-      textarea.style.height = textarea.scrollHeight + 'px';
-    });
-
-    // Keyboard shortcuts (Cmd/Ctrl+Enter, Escape) are handled by the
-    // delegated listener in PRManager.setupCommentFormDelegation() which
-    // matches .comment-textarea — no inline handler needed here.
-
-    // Cache form element for reuse
-    formElements.set(id, container);
-
-    // Focus textarea and attach emoji picker after it's in the DOM.
-    // Matches parity with legacy CommentManager.showCommentForm — emoji
-    // autocomplete (typing `:`) should work in Pierre-rendered forms too.
-    requestAnimationFrame(() => {
-      textarea.focus();
-      if (window.emojiPicker) window.emojiPicker.attach(textarea);
-      // Initial auto-resize for pre-filled content (input event doesn't
-      // fire for programmatic .value assignment).
-      if (data.initialValue) {
-        textarea.style.height = 'auto';
-        textarea.style.height = textarea.scrollHeight + 'px';
-        // Sync suggestion button disabled state with pre-filled content —
-        // the input event listener doesn't fire for programmatic .value.
-        if (suggestionBtn) {
-          const has = hasSuggestionBlock(textarea.value);
-          suggestionBtn.disabled = has;
-          if (has) suggestionBtn.title = 'Only one suggestion per comment';
-        }
-      }
-    });
-
-    return container;
+    return PierreBridge._shared().annotations.renderForm(
+      data, id, formElements, fileName, this.options, PierreBridge._pageEnv
+    );
   }
 
   // ─── Code Extraction ──────────────────────────────────────────────
@@ -2571,131 +2233,49 @@ class PierreBridge {
 
   // ─── CSS for Annotations ──────────────────────────────────────────
 
-  // Annotation CSS injected into Shadow DOM via unsafeCSS.
-  // Suggestions and comments use legacy classes (.ai-suggestion, .user-comment)
-  // styled by the page stylesheet. Only the comment form annotation lives
-  // entirely within the shadow DOM and needs styles here.
-  //
-  // Split layout: @pierre/diffs anchors each annotation to ONE code column —
-  // a 'deletions' annotation renders in the LEFT column, an 'additions'
-  // annotation in the RIGHT column — and emits an EMPTY paired cell in the
-  // opposite column on the same shared grid row (see getAnnotations()/
-  // pushLineWithAnnotation in DiffHunksRenderer). A lone card would only get
-  // half the width, so _syncSplitAnnotationLayout marks such cards with
-  // .pr-annotation-fullwidth and the rules below stretch them across both
-  // content tracks (the tracks are equal 1fr shares, so 200% + the measured
-  // middle-gutter width spans exactly to the far edge). min-width:0 lets
-  // unstretched cards (both sides annotated on one row) wrap inside their
-  // half-width cell rather than force horizontal overflow.
-  static ANNOTATION_CSS = `
-    .pierre-annotation {
-      padding: 8px 12px;
-      margin: 4px 0;
-      border-radius: 6px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-      font-size: 13px;
-      line-height: 1.5;
+  // Annotation CSS injected into Shadow DOM via unsafeCSS. The text lives in
+  // pierre-styles.js, shared with the CodeView bridge.
+  static get ANNOTATION_CSS() { return PierreBridge._shared().styles.ANNOTATION_CSS; }
+
+  // ─── Shared modules ───────────────────────────────────────────────
+
+  /**
+   * The card renderers and the shadow-DOM CSS, which this bridge shares with
+   * the CodeView bridge (pierre-codeview-bridge.js) so the two cannot drift:
+   * pierre-annotations.js and pierre-styles.js. The page loads both with
+   * script tags before this file; a unit test that requires this file alone
+   * gets them through require().
+   * @returns {{annotations: Object, styles: Object}}
+   * @private
+   */
+  static _shared() {
+    if (typeof module !== 'undefined' && typeof require === 'function') {
+      return {
+        annotations: require('./pierre-annotations.js'),
+        styles: require('./pierre-styles.js'),
+      };
     }
-    /* Let annotation cards wrap within a split column instead of overflowing. */
-    [data-line-annotation] { min-width: 0; }
-    [data-annotation-content] { min-width: 0; }
-    /* Split view: stretch a lone card across both columns. The class and
-       --pr-split-gutter-width are maintained by _syncSplitAnnotationLayout
-       (the middle gutter track is min-content sized — unknowable in pure
-       CSS). Without the var the card degrades to stopping at the seam.
-       z-index clears the middle gutter, which the vendor paints at 3. */
-    [data-diff-type='split'] .pr-annotation-fullwidth {
-      position: relative;
-      z-index: 4;
-      width: calc(200% + var(--pr-split-gutter-width, 0px));
-    }
-    /* Right-column cards anchor at the additions track; pull them back to
-       the left content track's start edge. */
-    [data-diff-type='split'] [data-additions] .pr-annotation-fullwidth {
-      margin-left: calc(-100% - var(--pr-split-gutter-width, 0px));
-    }
-    /* Split view, entirely added/removed file: the vendor emits ONE code
-       column stamped data-diff-type='single' and ships no rule for it, so
-       it stretches full width. Box it into the split layout instead:
-       deletions in the left half, additions in the right, other half empty.
-       The lone <code> keeps its internal gutter+content grid, so gutter and
-       content both live inside their 1fr half and can never cross the
-       center seam. The :has() guard skips unified mode, where every pre is
-       'single' but its code column is data-unified. */
-    [data-diff-type='single']:has(> [data-additions], > [data-deletions]) {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-    }
-    [data-diff-type='single'] > [data-deletions] {
-      grid-column: 1;
-      border-right: 1px solid var(--diffs-bg);
-    }
-    [data-diff-type='single'] > [data-additions] {
-      grid-column: 2;
-      border-left: 1px solid var(--diffs-bg);
-    }
-    /* The vendor's [data-code] ships overflow: scroll clip AND
-       contain: content. Both must be neutralized here, for different reasons:
-         - overflow: scroll clip is a scroll/clip box that would clip the
-           stretched cards; reset to visible (lines wrap in wrap mode, so
-           there is nothing to scroll).
-         - contain: content implies contain: PAINT, which clips descendant
-           paint to the code column's own border box REGARDLESS of overflow.
-           The .pr-annotation-fullwidth cards below reach past this box (a
-           right-half card sits at margin-left: calc(-100% - 2g)), so paint
-           containment would hide their left portion — header text and body —
-           while the right-aligned action buttons, which fall inside the box,
-           still paint (the "empty card" bug). Drop paint containment; keep
-           layout+style containment (cheap, no visual effect) so the vendor's
-           perf intent is mostly preserved.
-       Two-sided split columns escape both: they are display: contents and
-       generate no box, so neither overflow nor contain has anything to clip —
-       which is why this only bites one-sided (single) files, whose columns
-       ARE real boxes (display: grid children, above). */
-    [data-diff-type='single'][data-overflow='wrap'] > [data-deletions],
-    [data-diff-type='single'][data-overflow='wrap'] > [data-additions] {
-      overflow: visible;
-      contain: layout style;
-    }
-    /* One-sided file: every card is lone, stretch across both halves.
-       Geometry (g = the file's own gutter, published by
-       _applySplitAnnotationLayout as --pr-split-gutter-width; 100% = the
-       content track = half minus g): a left-half card starts after its
-       gutter, so 200% + g reaches the far edge; a right-half card must
-       also cross the empty left half AND its own gutter — shift back by
-       100% + 2g and span 200% + 2g. */
-    [data-diff-type='single'] .pr-annotation-fullwidth {
-      position: relative;
-      z-index: 4;
-    }
-    [data-diff-type='single'] [data-deletions] .pr-annotation-fullwidth {
-      width: calc(200% + var(--pr-split-gutter-width, 0px));
-    }
-    [data-diff-type='single'] [data-additions] .pr-annotation-fullwidth {
-      width: calc(200% + 2 * var(--pr-split-gutter-width, 0px));
-      margin-left: calc(-100% - 2 * var(--pr-split-gutter-width, 0px));
-    }
-    /* Brief flash applied by PierreBridge.scrollToLine. Generic [data-line]
-       match so it flashes whichever column (unified/deletions/additions) the
-       target line resolves to. */
-    [data-line].pierre-line-highlight {
-      animation: pierre-line-highlight-flash 3.5s ease-out forwards;
-    }
-    @keyframes pierre-line-highlight-flash {
-      0% {
-        background-color: rgba(227, 179, 65, var(--pierre-highlight-start, 0.20));
-        box-shadow: inset 3px 0 0 #e3b341;
-      }
-      57% {
-        background-color: rgba(227, 179, 65, var(--pierre-highlight-mid, 0.08));
-        box-shadow: inset 3px 0 0 #e3b341;
-      }
-      100% {
-        background-color: transparent;
-        box-shadow: inset 3px 0 0 transparent;
-      }
-    }
-  `;
+    return { annotations: window.PierreAnnotations, styles: window.PierreStyles };
+  }
+
+  /**
+   * What the shared card renderers need from the page, resolved each time a
+   * renderer asks (some of it does not exist yet when this bridge is built).
+   * @returns {Object}
+   * @private
+   */
+  static _pageEnv() {
+    return {
+      escapeHtml: window.prManager?.escapeHtml?.bind(window.prManager),
+      PostedComment: window.PostedComment,
+      getPostedCommentIcon: window.getPostedCommentIcon,
+      renderMarkdown: window.renderMarkdown,
+      escapeHtmlAttribute: window.escapeHtmlAttribute,
+      suggestionManager: window.prManager?.suggestionManager,
+      chatPanel: window.chatPanel,
+      emojiPicker: window.emojiPicker,
+    };
+  }
 
   static WORKER_INIT_TIMEOUT_MS = 15000;
 }

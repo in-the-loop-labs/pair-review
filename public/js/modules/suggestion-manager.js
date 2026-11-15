@@ -677,7 +677,6 @@ class SuggestionManager {
     td.className = 'ai-suggestion-cell';
 
     const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
-    const userComments = this.prManager?.userComments || [];
 
     suggestions.forEach(suggestion => {
       const suggestionDiv = document.createElement('div');
@@ -702,26 +701,20 @@ class SuggestionManager {
       // Store line_end from the suggestion itself (may differ from targetInfo.lineNumber for multi-line suggestions)
       suggestionDiv.dataset.lineEnd = suggestion.line_end !== undefined ? String(suggestion.line_end) : (targetInfo?.lineNumber !== undefined ? String(targetInfo.lineNumber) : '');
 
-      // Convert suggestion.id to number for comparison since parent_id might be a number
-      const suggestionIdNum = parseInt(suggestion.id);
-
-      // Check if this suggestion was adopted by looking for user comments with matching parent_id
-      const wasAdopted = userComments.some(comment =>
-        // A dismissed comment no longer adopts its suggestion (dismissing it
-        // dismisses the suggestion); the cache keeps dismissed comments.
-        comment.status !== 'inactive' && comment.parent_id &&
-          (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
-      );
+      // The status the card is built to show: adopted when an active comment
+      // of the review adopts the suggestion or its own status says so,
+      // dismissed, or active. One rule, shared with syncSuggestionElement, so a
+      // card built now and a card brought up to date later cannot disagree.
+      const effectiveStatus = this.effectiveSuggestionStatus(suggestion);
+      const isAdopted = effectiveStatus === 'adopted';
+      const isDismissed = effectiveStatus === 'dismissed';
 
       // Log when a suggestion is detected as adopted
-      if (wasAdopted) {
+      if (isAdopted && suggestion.status !== 'adopted') {
         console.log(`[UI] Suggestion ${suggestion.id} was adopted - showing as collapsed`);
       }
 
       // Apply collapsed class if the suggestion is dismissed or was adopted
-      // Check both: wasAdopted (from user comments with parent_id) OR status='adopted' (from DB)
-      const isAdopted = wasAdopted || suggestion.status === 'adopted';
-      const isDismissed = !isAdopted && suggestion.status === 'dismissed';
       if (isAdopted) {
         suggestionDiv.classList.add('collapsed');
         // Mark the suggestion div as adopted after it's created

@@ -16,6 +16,7 @@ const PATHS = {
   repoRoot: REPO_ROOT,
   harnessDir: __dirname,
   workload: path.join(REPO_ROOT, 'tests', 'contract', 'fixtures', 'workload.js'),
+  bridgePage: path.join(REPO_ROOT, 'tests', 'contract', 'bridge', 'bridge-page.js'),
   // Development flavour: the only build with the vendor's height validator.
   devBundle: path.join(REPO_ROOT, 'tests', '.cache', 'pierre-diffs.dev.js'),
   // The two files the app actually ships and serves.
@@ -72,6 +73,8 @@ function resolveVirtualPath(urlPath) {
     case '/harness.html': return { file: path.join(PATHS.harnessDir, 'harness.html') };
     case '/harness.js': return { file: path.join(PATHS.harnessDir, 'harness.js') };
     case '/workload.js': return { file: PATHS.workload };
+    // Browser side of the bridge-in-browser tests (tests/contract/bridge).
+    case '/bridge-page.js': return { file: PATHS.bridgePage };
     case '/vendor/pierre-diffs.dev.js': return { file: PATHS.devBundle };
     case '/vendor/pierre-diffs.js': return { file: PATHS.prodBundle };
     case '/vendor/pierre-diffs-worker.js': return { file: PATHS.worker };

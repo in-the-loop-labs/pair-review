@@ -32,7 +32,7 @@
 import { test, expect } from './fixtures.js';
 import {
   waitForDiffToRender, cleanupAllComments, enableChat, mockViewedStateApi, mockContextFilesApi,
-  mockAppConfig, mockHunkSummaries, mockTour
+  mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound
 } from './helpers.js';
 import {
   contextFile, contextFileState, contextLine, expandContextGap, expandContextGapFully,
@@ -65,6 +65,7 @@ async function addContextRange(page, file, lineStart, lineEnd) {
 
 /** What the server's push does in the page when the context files of this review changed. */
 async function pushContextFilesChanged(page, reviewId) {
+  await whenReviewEventsBound(page);
   await page.evaluate((rid) => {
     document.dispatchEvent(new CustomEvent('review:context_files_changed', { detail: { reviewId: rid } }));
   }, reviewId);

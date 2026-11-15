@@ -16,7 +16,7 @@
  *    form and a suggestion card built by main's PierreBridge renderers
  *
  * and lays them out the way the plan's section 3.2 / 3.6 specifies, with the
- * CSS the cut-over will need (CANDIDATE_CSS below, scoped by
+ * CSS the cut-over will need (CANDIDATE_CSS in harness/constants.js, scoped by
  * `.diff-view.codeview-engine` exactly as phase 5 will scope it):
  *
  *  - #diff-container is the scroll root
@@ -35,35 +35,18 @@
  */
 
 import { test, expect, VALIDATOR_PATTERN } from '../harness/contract-test.js';
-import { ROWLESS_FIX } from '../harness/constants.js';
+import { ROWLESS_FIX, CANDIDATE_CSS } from '../harness/constants.js';
 
 const APP_STYLES = ['/app/css/pr.css'];
 const APP_SCRIPTS = [
   '/app/js/utils/smart-truncate.js',
   '/app/js/modules/diff-renderer.js',
+  '/app/js/modules/pierre-styles.js',
+  '/app/js/modules/pierre-annotations.js',
   '/app/js/modules/pierre-bridge.js',
   '/app/js/modules/file-comment-manager.js',
   '/app/js/pr.js',
 ];
-
-/**
- * CSS the CodeView cut-over needs on top of pr.css. Recorded in the ledger;
- * phase 5 moves it into pr.css under the same scope.
- */
-const CANDIDATE_CSS = `
-.main-layout .diff-view.codeview-engine { overflow: hidden; }
-.diff-view.codeview-engine > #diff-container {
-  flex: 1 1 0; min-height: 0; overflow-y: auto;
-  /* The vendor lays items out from the top edge of the scroll root's content
-     box and does not know about padding or a border above it: main's 16 px
-     padding and 1 px border put every item 17 px below where the vendor
-     thinks it is. The vertical space moves into layout.paddingTop/Bottom. */
-  padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
-}
-.diff-view.codeview-engine diffs-container.d2h-file-wrapper[data-file-name] { margin-bottom: 0; }
-.diff-view.codeview-engine .pr-file-header-slot { height: var(--pr-file-header-height); box-sizing: border-box; overflow: hidden; }
-.diff-view.codeview-engine .pr-file-header-slot > .d2h-file-header { position: static; height: 100%; box-sizing: border-box; }
-`;
 
 /**
  * Build the app-shaped page: real layout elements, real header factory, real

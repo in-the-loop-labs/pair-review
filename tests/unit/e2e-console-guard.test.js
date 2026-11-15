@@ -67,6 +67,12 @@ describe('findAllowance', () => {
     expect(findAllowance(logged('Error loading user comments'), null, ALLOWED, 'console.error')).not.toBeNull();
     expect(findAllowance(logged('Failed to fetch file contents for src/main.js'), null, ALLOWED, 'console.error')).not.toBeNull();
     expect(findAllowance('Error loading context files: TypeError: Failed to fetch', null, ALLOWED, 'console.error')).not.toBeNull();
+    // Both requests of the Team Review Requests tab: the cached GET and the refresh that follows it.
+    expect(findAllowance(logged('Error loading team-reviews'), null, ALLOWED, 'console.error')).not.toBeNull();
+    expect(findAllowance(logged('Error refreshing team-reviews'), null, ALLOWED, 'console.error')).not.toBeNull();
+    // A refresh that failed for another reason is a failure.
+    expect(findAllowance('Error refreshing team-reviews: Error: Refresh failed', null, ALLOWED, 'console.error')).toBeNull();
+    expect(findAllowance(logged('Error refreshing my-prs'), null, ALLOWED, 'console.error')).toBeNull();
     // An uncaught rejection is a different thing from a logged one.
     expect(findAllowance('TypeError: Failed to fetch', null, ALLOWED, 'pageerror')).toBeNull();
     expect(findAllowance(logged('Error loading user comments'), null, ALLOWED, 'pageerror')).toBeNull();
