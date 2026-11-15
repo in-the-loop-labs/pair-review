@@ -1,7 +1,8 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Bridge-in-browser: the file-comment zone, collapse, layout and theme
- * changes, scroll targets, notice items, and a worker that does not start.
+ * changes, scroll targets, what scrolling leaves drawn, notice items, and a
+ * worker that does not start.
  */
 
 import { test, expect, openBridge } from './bridge-test.js';
@@ -106,9 +107,9 @@ test('in split layout a zone and a lone card span both columns, on changed, adde
     // More than half the host: across the seam, to the right edge.
     expect(info.zone.width, id).toBeGreaterThan(info.hostWidth * 0.9);
     expect(info.card.width, id).toBeGreaterThan(info.hostWidth * 0.9);
-    // To the right edge, give or take the 1 px seam borders of the two halves.
-    expect(info.zone.right, id).toBeLessThanOrEqual(2);
-    expect(info.card.right, id).toBeLessThanOrEqual(2);
+    // To the right edge, give or take the 1 px seam borders of the two halves and the 1 px of the file's frame.
+    expect(info.zone.right, id).toBeLessThanOrEqual(3);
+    expect(info.card.right, id).toBeLessThanOrEqual(3);
     expect(info.sound, id).toEqual({ orphans: 0, clean: true });
   }
   expect(harness.validatorErrors(page)).toEqual([]);
@@ -188,10 +189,88 @@ test('setCollapsed, setDiffStyle and setTheme keep the cards; layout and theme c
   expect(result.back).toMatchObject({ sameCard: true, value: 'draft', focused: true, diffType: 'single', colorScheme: 'light', sound: { orphans: 0, clean: true } });
   expect(result.style).toEqual(['unified', 'light']);
   expect(result.collapsedReturned).toBe(true);
-  expect(result.collapsed).toEqual({ classes: ['collapsed', 'd2h-file-wrapper'], rows: 0, cardConnected: false, zoneConnected: false, height: 40, held: true });
-  expect(result.expanded).toEqual({ classes: ['d2h-file-wrapper'], sameCard: true, value: 'draft', rows: true });
+  expect(result.collapsed).toEqual({ classes: ['collapsed', 'd2h-file-wrapper', 'has-diff-lines'], rows: 0, cardConnected: false, zoneConnected: false, height: 40, held: true });
+  expect(result.expanded).toEqual({ classes: ['d2h-file-wrapper', 'has-diff-lines'], sameCard: true, value: 'draft', rows: true });
   expect(result.unknown).toBe(false);
   expect(result.builds).toBe(0);
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+test('what is drawn of a mounted file does not change with the scroll position: no separator and no card is lost scrolling up and back down', async ({ harness }) => {
+  // With the viewer's default row window, a window that shrinks to end at a
+  // row drops what follows that row, the separator after a file's last hunk
+  // or a line's card, and does not draw it again when it grows (vendor fact
+  // F26, tests/contract/vendor/row-window.spec.js). The bridge gives every
+  // item a window of 5000 rows (itemMetrics.hunkLineCount), so a mounted
+  // file that shows fewer is always drawn whole. Walked a row at a time,
+  // which with the default window meets every window end.
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const { roles } = H.workload;
+    const names = H.workload.modifiedPaths.filter((n) => n !== roles.hugeModified && n !== roles.large).slice(0, 8);
+    await BH.up({ entries: names.map((n) => BH.diffEntry(n)) });
+    const b = BH.bridge;
+    const expected = {};
+    for (const n of names) {
+      const { oldFile, newFile } = H.contentsOf(n);
+      b.upgradeFileContents(n, oldFile, newFile);
+      // A card on the last line of every hunk: the row a window is most likely to end at.
+      const hunks = b.files.get(n).metadata.hunks;
+      for (const hunk of hunks) {
+        b.addAnnotation(n, { lineNumber: hunk.additionStart + hunk.additionCount - 1, side: 'RIGHT', type: 'card', data: { text: 'card', height: 30 } });
+      }
+      expected[n] = hunks.length;
+    }
+    await H.settle(300);
+
+    const drawn = {};
+    let unclean = 0;
+    const look = () => {
+      for (const id of H.mounted()) {
+        if (!b.isDiffDisplayed(id)) continue; // a file just mounted still shows its patch for a moment
+        const root = H.host(id).shadowRoot;
+        const last = [...root.querySelectorAll('[data-content] > *')].pop();
+        const cards = [...H.host(id).querySelectorAll('.card')].filter((card) => card.getBoundingClientRect().height > 0).length;
+        (drawn[id] = drawn[id] || new Set()).add(`${H.shape(id).rows} rows, ${cards} of ${expected[id]} cards, ends with a ${last && last.hasAttribute('data-separator') ? 'separator' : 'row'}`);
+      }
+      if (!H.auditClean()) unclean++;
+    };
+    b.scrollToItem(names[4], { align: 'start', behavior: 'instant' });
+    await H.settle(300);
+    const from = H.root.scrollTop;
+    const row = H.rec(names[4]).instance.metrics.lineHeight;
+    let steps = 0;
+    for (let y = from; y > 0; y -= row) { H.root.scrollTop = y; await H.raf(2); look(); steps++; }
+    for (let y = 0; y <= from; y += row) { H.root.scrollTop = y; await H.raf(2); look(); steps++; }
+    await H.settle(300);
+    look();
+    return {
+      steps, unclean,
+      seen: Object.keys(drawn).length,
+      drawn: Object.fromEntries(Object.entries(drawn).map(([id, set]) => [id, [...set]])),
+      hiddenAfterLastHunk: names.filter((n) => {
+        const { metadata } = b.files.get(n);
+        const last = metadata.hunks[metadata.hunks.length - 1];
+        return metadata.additionLines.length - (last.additionStart + last.additionCount - 1) > 5;
+      }),
+      sound: BH.sound(),
+    };
+  });
+
+  expect(result.steps).toBeGreaterThan(100);
+  expect(result.seen).toBeGreaterThanOrEqual(5);
+  // Every time a file was mounted it showed the same rows, every one of its
+  // cards, and, where lines are hidden after its last hunk, the separator
+  // that stands for them.
+  for (const [id, shapes] of Object.entries(result.drawn)) {
+    expect(shapes, id).toHaveLength(1);
+    expect(shapes[0], id).toMatch(/^[1-9]\d* rows, (\d+) of \1 cards, /);
+    if (result.hiddenAfterLastHunk.includes(id)) expect(shapes[0], id).toMatch(/ends with a separator$/);
+  }
+  expect(result.hiddenAfterLastHunk.filter((id) => id in result.drawn).length).toBeGreaterThanOrEqual(3);
+  expect(result.unclean).toBe(0);
   expect(result.sound).toEqual({ orphans: 0, clean: true });
   expect(harness.validatorErrors(page)).toEqual([]);
 });

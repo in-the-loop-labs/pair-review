@@ -74,7 +74,9 @@ async function setUp(page, { diffStyle = 'unified', type = 'new', contextCss = t
       ...H.APP_OPTIONS,
       diffStyle,
       pointerEventsOnScroll: true,
-      unsafeCSS: contextCss ? window.PierreStyles.unsafeCSS() : `${window.PierreStyles.ANNOTATION_CSS}\n${window.PierreStyles.ROWLESS_FIX}`,
+      // The blocks these facts are about. (The bridge also passes FRAME_CSS,
+      // which needs a metric with it; gate G13 has the whole of it.)
+      unsafeCSS: [window.PierreStyles.ANNOTATION_CSS, window.PierreStyles.ROWLESS_FIX, ...(contextCss ? [window.PierreStyles.CONTEXT_CSS] : [])].join('\n'),
     }, H.APP_CALLBACKS, { pool });
     H.cv.setItems(H.items);
     await H.settle(200, 15000);

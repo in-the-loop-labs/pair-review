@@ -17,7 +17,7 @@
 
 import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender, seedComment, seedSuggestions } from './helpers.js';
-import { filesInPane } from './diff-dom.js';
+import { filesInPane, layoutValidatorState, ENGINE } from './diff-dom.js';
 
 /** Rows of one review in the worker's database, counted the way the reset checks them. */
 function rowsOf(testServer, reviewId) {
@@ -71,3 +71,19 @@ for (const mode of MODES) {
     });
   });
 }
+
+// A run with PR_VENDOR_BUNDLE=dev is meant to assert the viewer's layout in
+// every test, through the console guard. That only holds if the page really
+// loaded the development bundle and the viewer really got its validator: a
+// run in which neither happened would be green and prove nothing.
+test.describe('The layout validator of a development-bundle run', () => {
+  const wanted = process.env.PR_VENDOR_BUNDLE === 'dev' && ENGINE === 'codeview';
+
+  for (const mode of MODES) {
+    test(`is on when the run asks for it, and off otherwise (${mode.name})`, async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      expect(await layoutValidatorState(page)).toEqual({ developmentBundle: wanted, validator: wanted });
+    });
+  }
+});

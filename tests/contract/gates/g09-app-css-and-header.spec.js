@@ -4,30 +4,39 @@
  * exact under the APP's real CSS and the APP's real header?
  *
  * The other contract specs use a 40 px stand-in header and stand-in cards.
- * This one loads the app's real stylesheet and real modules into the harness:
+ * This one loads the app's real stylesheets and real modules into the harness:
  *
- *  - public/css/pr.css, unmodified
+ *  - every stylesheet pr.html and local.html load, in their order, unmodified
+ *    (pr.css with its block for the virtualized viewer, and styles.css after
+ *    it, whose `!important` rules give the file header its padding)
  *  - the file header built by PRManager.prototype.renderFileDiff itself
  *    (DiffRenderer.createFileHeader plus the comment, chat and summary-toggle
  *    buttons), in every variant: plain, renamed, generated, viewed, with the
  *    comment indicator filled, with the summary toggle enabled
  *  - the file-comment zone element from FileCommentManager
- *  - PierreBridge.ANNOTATION_CSS as unsafeCSS, and comment cards, a comment
- *    form and a suggestion card built by main's PierreBridge renderers
+ *  - everything the CodeView bridge passes as unsafeCSS
+ *    (PierreStyles.unsafeCSS(): the card rules, the row-less fix, the file's
+ *    frame), and comment cards, a comment form and a suggestion card built by
+ *    main's PierreBridge renderers
  *
- * and lays them out the way the plan's section 3.2 / 3.6 specifies, with the
- * CSS the cut-over will need (CANDIDATE_CSS in harness/constants.js, scoped by
- * `.diff-view.codeview-engine` exactly as phase 5 will scope it):
+ * and lays them out the way the application does on the virtualized viewer,
+ * with the numbers its bridge gives the viewer:
  *
- *  - #diff-container is the scroll root
- *  - the header slot root has a fixed height, a token whose value is main's
- *    measured header height, and itemMetrics.diffHeaderHeight is that value
+ *  - #diff-container is the scroll root; the box a reader sees around the
+ *    files is drawn behind the viewer's list, not on the scroll root
+ *  - the header slot root has a fixed height, the token of pr.css, which is
+ *    main's measured header height in every variant, and
+ *    itemMetrics.diffHeaderHeight is that value
  *  - the vendor host carries `d2h-file-wrapper` and `data-file-name` but NOT
  *    the 24 px bottom margin; the space between files is `layout.gap: 24`
- *  - the scroll root has no vertical padding or border (main's 16 px + 1 px
- *    move into `layout.paddingTop` / `paddingBottom`)
+ *  - main's 16 px padding and 1 px border above the first file, and those
+ *    plus the last file's 24 px margin below the last, are
+ *    `layout.paddingTop` / `paddingBottom`
  *  - itemMetrics.lineHeight is the app's real row height, measured (pr.css
  *    makes rows 17.39 px, not the vendor's default 20)
+ *  - a file looks as on main: 8 px between its header and its first row (in
+ *    the file's comment zone, which the viewer measures), a 1 px frame left,
+ *    right and below (`itemMetrics.paddingBottom` counts the 1 px)
  *
  * The verdict is the development bundle's height validator plus the harness
  * audit across a walk of the whole list, in light and dark, unified and
@@ -35,9 +44,11 @@
  */
 
 import { test, expect, VALIDATOR_PATTERN } from '../harness/contract-test.js';
-import { ROWLESS_FIX, CANDIDATE_CSS } from '../harness/constants.js';
+import { appStylesheets } from '../harness/constants.js';
 
-const APP_STYLES = ['/app/css/pr.css'];
+const APP_STYLES = appStylesheets();
+/** The numbers the bridge gives the viewer (pierre-codeview-bridge.js DEFAULT_LAYOUT). */
+const APP_LAYOUT = { paddingTop: 17, paddingBottom: 41, gap: 24 };
 const APP_SCRIPTS = [
   '/app/js/utils/smart-truncate.js',
   '/app/js/modules/diff-renderer.js',
@@ -53,7 +64,7 @@ const APP_SCRIPTS = [
  * cards. Runs in the page. Leaves `window.G9` with everything the walk needs.
  */
 async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = 'measured' }) {
-  return page.evaluate(async ({ theme, diffStyle, lineHeightMode, candidateCss, rowlessFix }) => {
+  return page.evaluate(async ({ theme, diffStyle, lineHeightMode, appLayout }) => {
     const H = window.H;
     const { roles } = H.workload;
     document.documentElement.setAttribute('data-theme', theme);
@@ -75,6 +86,7 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     // pr.js declares `class PRManager` at the top level of a classic script:
     // a global lexical binding, not a property of window.
     const manager = Object.create(PRManager.prototype);
+    manager._initPaneState();
     manager.generatedFiles = new Map();
     manager.viewedFiles = new Set();
     manager.collapsedFiles = new Set();
@@ -138,7 +150,8 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     }
     const wrapperMarginOnMain = getComputedStyle(probe).marginBottom;
     probe.remove();
-    const token = natural.plain;
+    // The token of pr.css: what the bridge reads for itemMetrics.diffHeaderHeight.
+    const token = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pr-file-header-height'));
 
     // ---- the app's code row height ----
     // pr.css sets --diffs-font-size (12px) and --diffs-line-height (1.45) on
@@ -164,11 +177,7 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     probeRow.remove();
     const lineHeight = lineHeightMode === 'vendor-default' ? 20 : measuredRowHeight;
 
-    // ---- the candidate CSS and the header token ----
-    const style = document.createElement('style');
-    style.textContent = candidateCss;
-    document.head.appendChild(style);
-    document.documentElement.style.setProperty('--pr-file-header-height', `${token}px`);
+    // ---- the layout class PRManager puts on .diff-view for this engine ----
     view.classList.add('codeview-engine');
 
     // ---- real cards from main's bridge ----
@@ -199,16 +208,21 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
       }
       return H.headerEls.get(id);
     };
+    // The stamps the bridge and PRManager put on a host: `has-diff-lines`
+    // when the item shows lines, `has-diff-body` for a file whose diff is
+    // drawn (every file here but the binary one).
     const MANAGED = ['collapsed', 'generated-file', 'summaries-hidden-file'];
     H.hooks.onPostRender = (node, instance, phase, context) => {
       if (phase === 'unmount') {
         node.removeAttribute('data-file-name');
-        node.classList.remove('d2h-file-wrapper', ...MANAGED);
+        node.classList.remove('d2h-file-wrapper', 'has-diff-lines', 'has-diff-body', ...MANAGED);
         return;
       }
       node.setAttribute('data-file-name', context.item.id);
       node.classList.add('d2h-file-wrapper');
       for (const name of MANAGED) node.classList.toggle(name, parts.get(context.item.id).classes.includes(name));
+      node.classList.toggle('has-diff-lines', context.item.fileDiff.hunks.length > 0);
+      node.classList.toggle('has-diff-body', context.item.id !== roles.binary);
     };
 
     // ---- items ----
@@ -240,16 +254,30 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
       themeType: theme,
       diffStyle,
       pointerEventsOnScroll: true,
-      unsafeCSS: `${window.PierreBridge.ANNOTATION_CSS}\n${rowlessFix}`,
-      itemMetrics: { diffHeaderHeight: token, lineHeight },
-      layout: { paddingTop: 16, paddingBottom: 16, gap: 24 },
+      unsafeCSS: window.PierreStyles.unsafeCSS(),
+      itemMetrics: { diffHeaderHeight: token, lineHeight, paddingBottom: window.PierreStyles.ITEM_PADDING_BOTTOM },
+      layout: appLayout,
     }, H.APP_CALLBACKS);
     H.cv.setItems(H.items);
     await H.settle(200);
 
     window.G9 = { names, variantOf, parts, filled };
     const sampleRow = [...H.cv.getRenderedItems()].map((r) => r.element.shadowRoot.querySelector('[data-content] > [data-line]')).find(Boolean);
+    const rootStyle = getComputedStyle(container);
+    const boxStyle = getComputedStyle(container, '::before');
+    H.root.scrollTop = 0;
+    await H.settle(100);
+    const firstHost = H.cv.getRenderedItems().find((rendered) => rendered.id === H.items[0].id).element;
     return {
+      pane: {
+        rootBorderTop: rootStyle.borderTopWidth,
+        rootBorderBottom: rootStyle.borderBottomWidth,
+        rootPaddingTop: rootStyle.paddingTop,
+        rootPaddingBottom: rootStyle.paddingBottom,
+        boxBorder: boxStyle.borderTopWidth,
+        boxRadius: boxStyle.borderTopLeftRadius,
+        firstFileTop: firstHost.getBoundingClientRect().top - container.getBoundingClientRect().top,
+      },
       natural,
       token,
       wrapperMarginOnMain,
@@ -260,7 +288,7 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
       lineHeight,
       renderedRowHeight: sampleRow ? sampleRow.getBoundingClientRect().height : null,
     };
-  }, { theme, diffStyle, lineHeightMode, candidateCss: CANDIDATE_CSS, rowlessFix: ROWLESS_FIX });
+  }, { theme, diffStyle, lineHeightMode, appLayout: APP_LAYOUT });
 }
 
 /** Scroll through the whole list and audit every screen. */
@@ -286,6 +314,20 @@ async function walkAndAudit(page) {
         info.shadowHeaderHeight = shadowHeader ? shadowHeader.getBoundingClientRect().height : null;
         info.headerPosition = header ? getComputedStyle(header).position : null;
         info.hostMarginBottom = getComputedStyle(element).marginBottom;
+        // The look of a file: space under the header, and the frame.
+        const pre = element.shadowRoot.querySelector('pre[data-diff]');
+        const firstRow = element.shadowRoot.querySelector('[data-line], [data-separator]');
+        const zone = element.querySelector('.file-comments-zone');
+        const zoneEmpty = zone && zone.querySelector('.file-comments-container').childElementCount === 0;
+        // (Measured while the header is where the file starts, not pinned over its rows.)
+        const headerAtFileTop = shadowHeader && Math.abs(shadowHeader.getBoundingClientRect().top - element.getBoundingClientRect().top) < 0.5;
+        if (pre && firstRow && headerAtFileTop && zoneEmpty && element.shadowRoot.querySelector('[data-line]')) {
+          info.firstRowBelowHeader = Math.round((firstRow.getBoundingClientRect().top - shadowHeader.getBoundingClientRect().bottom) * 100) / 100;
+        }
+        if (pre && element.shadowRoot.querySelector('[data-line]')) {
+          const s = getComputedStyle(pre);
+          info.frame = [s.borderLeftWidth, s.borderRightWidth, s.borderBottomWidth, s.borderTopWidth, s.borderBottomLeftRadius].join(' ');
+        }
         info.hostClasses = [...element.classList].sort().join(' ');
         // Content the fixed height would clip.
         info.headerOverflows = header ? header.scrollHeight > header.clientHeight + 1 : null;
@@ -320,7 +362,7 @@ async function walkAndAudit(page) {
 
 for (const theme of ['light', 'dark']) {
   for (const diffStyle of ['unified', 'split']) {
-    test(`G9: the app's real header, cards and pr.css give an exact layout (${theme}, ${diffStyle})`, async ({ harness }, testInfo) => {
+    test(`G9: the app's real header, cards and stylesheets give an exact layout (${theme}, ${diffStyle})`, async ({ harness }, testInfo) => {
       testInfo.setTimeout(120000);
       const page = await harness.open({ styles: APP_STYLES, scripts: APP_SCRIPTS });
       const setup = await setUpAppShapedViewer(page, { theme, diffStyle });
@@ -329,8 +371,16 @@ for (const theme of ['light', 'dark']) {
       // Main's wrapper margin is what layout.gap replaces.
       expect(setup.wrapperMarginOnMain).toBe('24px');
       // One header height for every variant: the vendor has ONE header metric.
+      // It is the token of pr.css, with every stylesheet of the pages loaded.
+      expect(setup.token).toBe(53);
       const heights = Object.values(setup.natural);
       expect(heights.every((h) => h === setup.token), JSON.stringify(setup.natural)).toBe(true);
+      expect(setup.pane).toEqual({
+        // The scroll root has no box of its own that the viewer would not know about ...
+        rootBorderTop: '0px', rootBorderBottom: '0px', rootPaddingTop: '0px', rootPaddingBottom: '0px',
+        // ... the box a reader sees is drawn behind the list and scrolls with it.
+        boxBorder: '1px', boxRadius: '8px', firstFileTop: 17,
+      });
 
       expect(walk.itemsSeen).toBe(setup.items);
       expect(walk.rootIsScroller).toBe(true);
@@ -347,9 +397,16 @@ for (const theme of ['light', 'dark']) {
         expect(info.hostMarginBottom, id).toBe('0px');
         expect(info.hostClasses, id).toContain('d2h-file-wrapper');
         if (info.gapToNext !== undefined) expect(info.gapToNext, id).toBe(24);
+        // As on main: 8 px under the header, a 1 px frame left, right and below with 6 px corners.
+        if (info.firstRowBelowHeader !== undefined) expect(info.firstRowBelowHeader, id).toBe(8);
+        if (info.frame !== undefined) expect(info.frame, id).toBe('1px 1px 1px 0px 6px');
         expect(info.cardWiderThanHost, id).toBe(false);
       }
       expect([...variantsSeen].sort()).toEqual(['comment-indicator', 'generated', 'long-path', 'plain', 'renamed', 'summary-toggle', 'viewed']);
+      // The look was measured, not skipped: on most files of the walk.
+      const looked = Object.values(walk.perItem);
+      expect(looked.filter((info) => info.firstRowBelowHeader !== undefined).length).toBeGreaterThanOrEqual(8);
+      expect(looked.filter((info) => info.frame !== undefined).length).toBeGreaterThanOrEqual(8);
 
       // The same list with a tour active (body.tour-active changes annotation-slot rules).
       await page.evaluate(async () => {
@@ -368,9 +425,9 @@ for (const theme of ['light', 'dark']) {
       expect(setup.measuredRowHeight).not.toBe(20);
 
       await harness.record(`G9-app-css-${theme}-${diffStyle}`, {
-        requiredItemMetrics: { diffHeaderHeight: setup.token, lineHeight: setup.lineHeight },
-        requiredLayout: { paddingTop: 16, paddingBottom: 16, gap: 24 },
-        candidateCss: CANDIDATE_CSS.trim().split('\n'),
+        requiredItemMetrics: { diffHeaderHeight: setup.token, lineHeight: setup.lineHeight, paddingBottom: 9 },
+        requiredLayout: APP_LAYOUT,
+        stylesheets: APP_STYLES,
         rowHeight: { cssFontSize: setup.cssFontSize, cssLineHeight: setup.cssLineHeight, measuredPx: setup.measuredRowHeight },
         naturalHeaderHeightOnMainPx: setup.natural,
         headerTokenPx: setup.token,

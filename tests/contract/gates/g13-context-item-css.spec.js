@@ -7,11 +7,11 @@
  * gutter buttons and with the split card class set by hand. This gate closes
  * that gap. Everything here is production's:
  *
- *  - public/css/pr.css, unmodified, plus the CSS the cut-over adds
- *    (CANDIDATE_CSS, the same text gate G9 uses)
+ *  - every stylesheet pr.html and local.html load, in their order, unmodified
+ *    (pr.css with its block for the virtualized viewer; styles.css after it)
  *  - PierreCodeViewBridge with its own unsafeCSS (ANNOTATION_CSS, ROWLESS_FIX,
- *    CONTEXT_CSS), its own metrics (the header token and a measured row
- *    height), its gutter buttons and its split card layout pass
+ *    CONTEXT_CSS, FRAME_CSS), its own metrics (the header token and a
+ *    measured row height), its gutter buttons and its split card layout pass
  *  - the changed-file header built by PRManager.renderFileDiff and the
  *    context-file header built by PRManager.renderContextFile
  *  - the file-comment zone of FileCommentManager, and comment, suggestion and
@@ -24,9 +24,9 @@
  */
 
 import { test, expect, openBridge, clickExpandControl } from '../bridge/bridge-test.js';
-import { CANDIDATE_CSS } from '../harness/constants.js';
+import { appStylesheets } from '../harness/constants.js';
 
-const APP_STYLES = ['/app/css/pr.css'];
+const APP_STYLES = appStylesheets();
 const APP_BEFORE = ['/app/js/utils/smart-truncate.js', '/app/js/modules/diff-renderer.js', '/app/js/utils/posted-comment.js'];
 const APP_AFTER = ['/app/js/modules/file-comment-manager.js', '/app/js/pr.js'];
 const CONTEXT = 'src/mod01/shared-helpers.js';
@@ -42,6 +42,7 @@ async function setUp(page, { theme, diffStyle }) {
     // pr.js declares `class PRManager` at the top level of a classic script:
     // a global lexical binding, not a property of window.
     const manager = Object.create(PRManager.prototype);
+    manager._initPaneState();
     manager.generatedFiles = new Map();
     manager.viewedFiles = new Set();
     manager.collapsedFiles = new Set();
@@ -87,10 +88,6 @@ async function setUp(page, { theme, diffStyle }) {
     view.appendChild(container);
     layout.appendChild(view);
     document.body.replaceChildren(layout);
-    const style = document.createElement('style');
-    style.textContent = candidateCss;
-    document.head.appendChild(style);
-    document.documentElement.style.setProperty('--pr-file-header-height', '45px');
 
     // ---- the real bridge, measuring its own metrics ----
     H.root = container;
@@ -150,7 +147,7 @@ async function setUp(page, { theme, diffStyle }) {
       hostBorderLeft: getComputedStyle(host).borderLeftWidth,
       badge: host.querySelector('.context-badge')?.textContent ?? null,
     };
-  }, { theme, diffStyle, candidateCss: CANDIDATE_CSS, CONTEXT });
+  }, { theme, diffStyle, CONTEXT });
 }
 
 /** Scroll through the whole list and audit every screen. */
@@ -173,20 +170,20 @@ async function walkAndAudit(page) {
 
 for (const theme of ['light', 'dark']) {
   for (const diffStyle of ['unified', 'split']) {
-    test(`G13: a context item built by the bridge, with the app's header, gutter buttons, cards and pr.css, has an exact layout (${theme}, ${diffStyle})`, async ({ harness }, testInfo) => {
+    test(`G13: a context item built by the bridge, with the app's header, gutter buttons, cards and stylesheets, has an exact layout (${theme}, ${diffStyle})`, async ({ harness }, testInfo) => {
       testInfo.setTimeout(120000);
       const page = await openBridge(harness, { styles: APP_STYLES, before: APP_BEFORE, after: APP_AFTER });
       const setup = await setUp(page, { theme, diffStyle });
 
       // The context header is as tall as a changed file's: the viewer has ONE header metric.
-      expect(setup.contextHeaderHeightOnMain).toBe(45);
-      expect(setup.metrics.diffHeaderHeight).toBe(45);
+      expect(setup.contextHeaderHeightOnMain).toBe(53);
+      expect(setup.metrics.diffHeaderHeight).toBe(53);
       // The bridge measured the app's row height itself, and rows are that tall.
       expect(setup.metrics.lineHeight).toBe(setup.renderedRowHeight);
       expect(setup.metrics.lineHeight).not.toBe(20);
-      expect(setup.hostClasses).toEqual(['context-file', 'd2h-file-wrapper']);
-      expect(setup.slotHeight).toBe(45);
-      expect(setup.shadowHeaderHeight).toBe(45);
+      expect(setup.hostClasses).toEqual(['context-file', 'd2h-file-wrapper', 'has-diff-lines']);
+      expect(setup.slotHeight).toBe(53);
+      expect(setup.shadowHeaderHeight).toBe(53);
       expect(setup.hostMarginBottom).toBe('0px');
       expect(setup.badge).toBe('CONTEXT');
 
@@ -211,7 +208,7 @@ for (const theme of ['light', 'dark']) {
       // One column as wide as the host in both layouts, every line once.
       expect(before.columns).toEqual([diffStyle === 'split' ? 'data-additions' : 'data-unified']);
       expect(before.rows).toBe(32);
-      // (The host has the context file's 3 px left border; the column fills what is inside it.)
+      // (pr.css gives a context file a 3 px left border and styles.css takes every wrapper's border away: at most that.)
       expect(before.hostWidth - before.columnWidth).toBeLessThanOrEqual(4);
       // Cards span the content track: from the gutter to the right edge. A comment stored LEFT too.
       for (const [name, box] of Object.entries(before.cells)) {

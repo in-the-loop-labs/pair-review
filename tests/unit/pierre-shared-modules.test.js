@@ -417,11 +417,53 @@ describe('PierreGutter.createGutterButtons', () => {
 describe('PierreStyles', () => {
   const styles = load('pierre-styles.js');
 
-  it('carries the three blocks and joins them in cascade order', () => {
+  it('carries the four blocks and joins them in cascade order', () => {
     expect(styles.ANNOTATION_CSS).toContain('.pr-annotation-fullwidth');
     expect(styles.ANNOTATION_CSS).toContain('pierre-line-highlight-flash');
     expect(styles.ROWLESS_FIX.split('\n')).toHaveLength(2);
-    expect(styles.unsafeCSS()).toBe([styles.ANNOTATION_CSS, styles.ROWLESS_FIX, styles.CONTEXT_CSS].join('\n'));
+    expect(styles.unsafeCSS()).toBe([styles.ANNOTATION_CSS, styles.ROWLESS_FIX, styles.CONTEXT_CSS, styles.FRAME_CSS].join('\n'));
+  });
+
+  describe('FRAME_CSS, the frame of a file under the virtualized viewer', () => {
+    const rules = styles.FRAME_CSS.split('}').map((rule) => rule.trim()).filter(Boolean)
+      .map((rule) => ({ selector: rule.split('{')[0].trim().replace(/\s+/g, ' '), body: rule.split('{')[1] }));
+    const bodyOf = (selector) => rules.filter((rule) => rule.selector === selector).map((rule) => rule.body).join(' ');
+
+    it('a changed file\'s code block has the per-file body\'s border: left, right and bottom, 6 px bottom corners, nothing on top', () => {
+      const frame = bodyOf(':host(:not(.context-file)) pre[data-diff]');
+      // With a fallback: without the page's colour the border is still 1 px, which the viewer counts.
+      expect(frame).toContain('border: 1px solid var(--color-border-default, transparent)');
+      expect(frame).toContain('border-top: 0');
+      expect(frame).toContain('border-radius: 0 0 6px 6px');
+      expect(frame).toContain('overflow: clip');
+    });
+
+    it('the height it adds is what the viewer is told: 1 px of bottom border on every file with lines, context files included', () => {
+      // The vendor's bottom padding is 8 px; the number is one for every item.
+      expect(styles.ITEM_PADDING_BOTTOM).toBe(8 + 1);
+      expect(bodyOf(':host(.context-file) pre[data-diff]')).toContain('border-bottom: 1px solid transparent');
+      // No rule gives a border a width on top, or a width other than 1 px.
+      const widths = styles.FRAME_CSS.match(/border[a-z-]*:\s*\d+px/g) || [];
+      expect(widths.every((declaration) => /:\s*1px$/.test(declaration))).toBe(true);
+      expect(styles.FRAME_CSS).not.toMatch(/border-top:\s*[1-9]/);
+      // No declaration of a property that would add height by itself.
+      expect(styles.FRAME_CSS).not.toMatch(/(^|[\s;{])(padding|margin|height|min-height)[a-z-]*\s*:/);
+    });
+
+    it('a file without lines has no bottom border (the viewer counts no bottom padding for it) and no code background', () => {
+      const rowless = 'pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))';
+      expect(bodyOf(rowless)).toContain('border-bottom: 0 !important');
+      expect(bodyOf(rowless)).toContain('background-color: transparent !important');
+      expect(bodyOf(`${rowless} *`)).toContain('background-color: transparent !important');
+      // The same condition as ROWLESS_FIX, which removes the vendor's padding there.
+      expect(styles.ROWLESS_FIX).toContain(`${rowless} { padding-bottom: 0 !important; }`);
+    });
+
+    it('the pane shows behind a header\'s rounded corners and under the frame\'s translucent border', () => {
+      expect(bodyOf('[data-diffs-header]')).toContain('background-color: transparent !important');
+      expect(bodyOf(':host')).toContain('background-color: transparent !important');
+      expect(bodyOf(':host(:not(.context-file)) pre[data-diff]')).toContain('background-clip: padding-box');
+    });
   });
 
   it('every rule of CONTEXT_CSS is scoped to a context file\'s host', () => {
@@ -452,9 +494,17 @@ describe('both pages load the shared modules before the bridge that needs them',
       expect(at('pierre-annotations.js')).toBeGreaterThan(-1);
       expect(at('pierre-styles.js')).toBeLessThan(at('pierre-bridge.js'));
       expect(at('pierre-annotations.js')).toBeLessThan(at('pierre-bridge.js'));
-      // The CodeView bridge is not loaded by the app yet (phase 5).
-      expect(at('pierre-codeview-bridge.js')).toBe(-1);
-      expect(at('pierre-gutter.js')).toBe(-1);
+      // The CodeView bridge (behind the engine switch) needs all of them and
+      // its gutter module; it does not need the current bridge.
+      expect(at('pierre-gutter.js')).toBeGreaterThan(-1);
+      expect(at('pierre-context.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
+      expect(at('pierre-styles.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
+      expect(at('pierre-annotations.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
+      expect(at('pierre-gutter.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
+      // Both are on the page before the script that constructs one of them.
+      const prScript = html.indexOf('<script src="/js/pr.js"></script>');
+      expect(at('pierre-bridge.js')).toBeLessThan(prScript);
+      expect(at('pierre-codeview-bridge.js')).toBeLessThan(prScript);
     });
   }
 });

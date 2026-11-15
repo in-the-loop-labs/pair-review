@@ -141,7 +141,9 @@ describe('the options object', () => {
       lineDiffType: 'word', enableGutterUtility: true, enableLineSelection: true, hunkSeparators: 'line-info',
       expansionLineCount: 20, collapsedContextThreshold: 5, stickyHeaders: true, pointerEventsOnScroll: true,
       itemMetrics: { diffHeaderHeight: 45, lineHeight: 17 },
-      layout: { paddingTop: 16, paddingBottom: 16, gap: 24 },
+      // The per-file renderer's numbers: 16 px padding and a 1 px border
+      // above the first file, a 24 px margin more below the last.
+      layout: { paddingTop: 17, paddingBottom: 41, gap: 24 },
     });
     expect(first.unsafeCSS).toBe(env.window.PierreStyles.unsafeCSS());
     for (const name of ['renderCustomHeader', 'renderAnnotation', 'renderGutterUtility', 'onPostRender']) expect(typeof first[name]).toBe('function');
@@ -175,8 +177,28 @@ describe('the options object', () => {
   it('a layout option and extra viewer options given to the bridge are passed on', () => {
     create({ layout: { gap: 8 }, viewerOptions: { __devOnlyValidateItemHeights: true } });
     bridge.renderAll([diffEntry(A)]);
-    expect(viewer().options.layout).toEqual({ paddingTop: 16, paddingBottom: 16, gap: 8 });
+    expect(viewer().options.layout).toEqual({ paddingTop: 17, paddingBottom: 41, gap: 8 });
     expect(viewer().options.__devOnlyValidateItemHeights).toBe(true);
+  });
+
+  it('every item is given a row window of 5000 rows, next to the measured metrics', () => {
+    // The viewer's default (1) moves a window of rows with the scroll
+    // position, and a window that shrinks loses a separator or a card for
+    // good (vendor fact F26, tests/contract/vendor/row-window.spec.js). A
+    // file that shows fewer rows than the window is drawn whole.
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    expect(viewer().options.itemMetrics).toEqual({ diffHeaderHeight: 45, lineHeight: 17, hunkLineCount: 5000, paddingBottom: 9 });
+  });
+
+  it('the viewer is told what is below a file\'s last row: the frame\'s bottom border with the vendor\'s padding', () => {
+    // One number for the styles that draw it and the layout that counts it.
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    expect(viewer().options.itemMetrics.paddingBottom).toBe(env.window.PierreStyles.ITEM_PADDING_BOTTOM);
+    // Not told: a top padding. The viewer would count it for a file without
+    // lines too, which has none; the 8 px under a header are the page's.
+    expect(viewer().options.itemMetrics).not.toHaveProperty('paddingTop');
   });
 });
 
@@ -359,7 +381,7 @@ describe('a list write asked for inside a viewer callback', () => {
     options.onPostRender(host, context.instance, 'update', context);
     expect(oldRecord._element).toBe(host);
     expect(host.getAttribute('data-file-name')).toBe('src/b.js');
-    expect([...host.classList].sort()).toEqual(['d2h-file-wrapper', 'generated-file']);
+    expect([...host.classList].sort()).toEqual(['d2h-file-wrapper', 'generated-file', 'has-diff-lines']);
     // None of it is the new record's, and the page is neither asked nor told about an item of a file it no longer has.
     expect(record._headerSlot).toBeNull();
     expect(record._element).toBeNull();
@@ -474,7 +496,8 @@ describe('a list write asked for inside a viewer callback', () => {
     expect(options.renderCustomHeader({}, b)).toBe(slot);
     expect(options.renderAnnotation(annotation, {}, b)).toBeUndefined();
     options.onPostRender(b.element, b.instance, 'mount', b);
-    expect([...b.element.classList]).toEqual(['d2h-file-wrapper']);
+    // The bridge's own stamps only (the item shows lines); nothing the page's hook would add.
+    expect([...b.element.classList]).toEqual(['d2h-file-wrapper', 'has-diff-lines']);
     expect(b.element.getAttribute('data-file-name')).toBe('src/b.js');
     const range = { start: 118, end: 119, side: 'additions' };
     options.onLineSelected(range, b);
@@ -558,8 +581,9 @@ describe('a list write asked for inside a viewer callback', () => {
         insideCallback(fn);
       };
     };
-    /** The reader's first visible line: `line` of `id`, 60 px below the top of the pane. */
-    const readingAt = (id, line) => {
+    /** The reader's first visible line: `line` of `id`, 60 px below the top of the pane, which is scrolled. */
+    const readingAt = (id, line, { scrollTop = 800 } = {}) => {
+      Object.defineProperty(bridge.root, 'scrollTop', { value: scrollTop, writable: true, configurable: true });
       const row = {
         getBoundingClientRect: () => ({ top: 60 }),
         getAttribute: (name) => (name === 'data-line' ? String(line) : 'context'),
@@ -582,6 +606,22 @@ describe('a list write asked for inside a viewer callback', () => {
       // The second write's restore: the line is shown by the list it sent.
       expect(sent('scrollTo')[1]).toMatchObject({ type: 'line', id: 'src/b.js', lineNumber: 118, side: 'additions' });
       expect(bridge._listShowsLine('src/b.js', 118, 'additions')).toBe(true);
+    });
+
+    it('a pane that was at its very top stays there: the write sends no scroll target', () => {
+      // What a list write puts above the first file is shown, as content
+      // inserted at the top of a scroll container at offset 0 is.
+      readingAt('src/a.js', 117, { scrollTop: 0 });
+      bridge.reconcile([contextEntry('ctx/above.js'), diffEntry(A), diffEntry(B)]);
+      expect([...bridge.files.keys()]).toEqual(['ctx/above.js', 'src/a.js', 'src/b.js']);
+      expect(sent('scrollTo')).toEqual([]);
+      expect(bridge.root.scrollTop).toBe(0);
+    });
+
+    it('a pane that was scrolled keeps the reader\'s line when a file is put above it', () => {
+      readingAt('src/a.js', 117);
+      bridge.reconcile([contextEntry('ctx/above.js'), diffEntry(A), diffEntry(B)]);
+      expect(sent('scrollTo')).toEqual([expect.objectContaining({ type: 'line', id: 'src/a.js', lineNumber: 117 })]);
     });
 
     it('the view restore addresses the list the write sent: nothing for a file that list does not hold', async () => {
@@ -1003,12 +1043,30 @@ describe('the visibility oracle', () => {
     const record = bridge.files.get('src/a.js');
     const map = new Map([[1, { fromStart: 20, fromEnd: Infinity }], [0, { fromStart: 0, fromEnd: 10 }]]);
     record._instance = { hunksRenderer: { expandedHunks: map } };
+    const resetLayoutCache = vi.fn();
+    record._instance.resetLayoutCache = resetLayoutCache;
     bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
     expect(map.size).toBe(0);
+    // The viewer still draws the old diff, now without those lines: it is
+    // told to compute the item's height again, once.
+    expect(resetLayoutCache.mock.calls).toEqual([[{ includeEstimatedHeights: true }]]);
     // Infinity is the whole gap (124-246), clamped to it; ten lines before the first hunk.
     expect(record.contextRanges).toEqual([{ startLine: 107, endLine: 116 }, { startLine: 124, endLine: 246 }, { startLine: 300, endLine: 302 }]);
     expect(bridge.isLineVisible('src/a.js', 200, 'RIGHT')).toBe(true);
     expect(bridge.isLineVisible('src/a.js', 106, 'RIGHT')).toBe(false);
+  });
+
+  it('a reveal on a file with nothing expanded by hand does not touch the viewer\'s layout', () => {
+    bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile);
+    const record = bridge.files.get('src/a.js');
+    const resetLayoutCache = vi.fn();
+    record._instance = { hunksRenderer: { expandedHunks: new Map() }, resetLayoutCache };
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    expect(resetLayoutCache).not.toHaveBeenCalled();
+    // And an instance of a viewer without that method is left alone.
+    record._instance = { hunksRenderer: { expandedHunks: new Map([[0, { fromStart: 0, fromEnd: 3 }]]) } };
+    expect(() => bridge.addContextRanges('src/a.js', [{ startLine: 400, endLine: 401 }])).not.toThrow();
+    expect(record._instance.hunksRenderer.expandedHunks.size).toBe(0);
   });
 });
 

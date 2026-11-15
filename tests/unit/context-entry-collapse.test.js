@@ -68,6 +68,8 @@ function createManager() {
   manager.saveViewedState = vi.fn();
   manager.ensureFileBodyRendered = vi.fn().mockResolvedValue(undefined);
   manager.pierreBridge = null;
+  manager._diffEngine = 'filediff';
+  manager._initPaneState();
   return manager;
 }
 
@@ -82,6 +84,11 @@ describe('context entry collapse independence (#540)', () => {
     manager = createManager();
     diffWrapper = buildWrapper(FILE);
     contextWrapper = buildWrapper(FILE, { context: true });
+    // Both entries as their renders leave them: expanded, each under its
+    // own state key.
+    manager.changedFilesByPath = new Map([[FILE, { file: FILE }]]);
+    manager._fileCollapsed.set(FILE, false);
+    manager._fileCollapsed.set(`context:${FILE}`, false);
     const container = document.getElementById('diff-container');
     container.appendChild(diffWrapper);
     container.appendChild(contextWrapper);

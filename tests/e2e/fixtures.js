@@ -6,10 +6,13 @@
  * in-memory SQLite database, enabling safe parallel execution.
  */
 
+import fs from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { startTestServer } from './test-server.js';
 import { attachConsoleGuard, isRecordOnly } from './console-guard.js';
+import { layoutValidator, orphanHostsAtEnd } from './diff-dom.js';
 
 /** An ephemeral port the kernel reports as free, for the retry path below. */
 function freePort() {
@@ -39,15 +42,37 @@ const CHROMIUM_UNSAFE_PORTS = new Set([4045, 4190, 5060, 5061]);
  *
  * The CodeView migration (plans/codeview-virtualized-diff.md) builds the new
  * engine behind `window.__PAIR_REVIEW_DIFF_ENGINE === 'codeview'` so the same
- * specs can run against both engines. Nothing reads the flag yet: until the
- * cut-over phases wire it into PRManager, setting it changes nothing.
- * An unknown value is an error, not a silent run on the default engine.
+ * specs can run against both engines. PRManager reads the flag once, in its
+ * constructor; tests/e2e/diff-dom.js selects its engine half by the same
+ * variable. An unknown value is an error, not a silent run on the default
+ * engine.
  */
 function requestedDiffEngine() {
   const value = process.env.PR_ENGINE;
   if (value === undefined || value === '' || value === 'filediff') return null;
   if (value === 'codeview') return 'codeview';
   throw new Error(`PR_ENGINE must be "codeview" or "filediff" (got "${value}")`);
+}
+
+/**
+ * Whether the page gets the vendor's DEVELOPMENT bundle, from
+ * PR_VENDOR_BUNDLE=dev.
+ *
+ * The development bundle has the viewer's own layout validator compiled in:
+ * with `__devOnlyValidateItemHeights` it compares every mounted item's
+ * measured height with the height its layout computed and logs a
+ * `console.error` on a mismatch, which the console guard turns into a failed
+ * test. A run with it asserts the viewer's layout under every scenario of
+ * the suite, not only where a spec looks. It is built by
+ * `scripts/build-pierre-diffs.mjs` next to the shipped bundle
+ * (tests/.cache/pierre-diffs.dev.js; the contract suite's global setup
+ * checks its version).
+ */
+function requestedVendorBundle() {
+  const value = process.env.PR_VENDOR_BUNDLE;
+  if (value === undefined || value === '' || value === 'shipped') return null;
+  if (value === 'dev') return path.join(__dirname, '..', '.cache', 'pierre-diffs.dev.js');
+  throw new Error(`PR_VENDOR_BUNDLE must be "dev" or "shipped" (got "${value}")`);
 }
 
 /** The reviews tests/e2e/test-server.js seeds: 1 is the pull request, 2 the Local review. */
@@ -154,9 +179,59 @@ const test = base.extend({
         window.__PAIR_REVIEW_DIFF_ENGINE = value;
       }, engine);
     }
+    const devBundle = requestedVendorBundle();
+    if (devBundle) {
+      if (!fs.existsSync(devBundle)) {
+        throw new Error(`PR_VENDOR_BUNDLE=dev: ${devBundle} is missing; build it with "node scripts/build-pierre-diffs.mjs --dev"`);
+      }
+      // On the context, so a route a spec puts on its page (a spec that
+      // blocks the bundle) still wins.
+      await context.route(/\/js\/vendor\/pierre-diffs\.js(\?.*)?$/, (route) => route.fulfill({
+        path: devBundle, contentType: 'application/javascript'
+      }));
+      // The validator is an option of the viewer, which the application
+      // does not pass, and what it reports is the viewer's business: both
+      // are the engine half's (tests/e2e/diff-dom-codeview.js).
+      await context.addInitScript(layoutValidator.installInPage);
+    }
     await use(context);
+    // A development-bundle run: whatever the test did, the viewer's layout
+    // is exact once the pane rests. One more validating pass (a pixel of
+    // scroll downward, the way a wheel moves it) must report nothing.
+    const restless = [];
+    // A check that cannot run is not a check that passed: it is reported,
+    // unless the test closed the page. A page that is navigating when the
+    // test ends gets one more try on the document it arrives at.
+    const endOfTestCheck = async (page, label, run, missing) => {
+      for (let attempt = 0; ; attempt++) {
+        if (page.isClosed()) return missing;
+        try {
+          return await run(page);
+        } catch (error) {
+          if (page.isClosed()) return missing;
+          const navigating = /Execution context was destroyed|navigation|Target page, context or browser has been closed/i.test(String(error && error.message));
+          if (navigating && attempt === 0) {
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
+            continue;
+          }
+          restless.push(`[${label}] the end-of-test check could not run: ${String(error && error.message).split('\n')[0]} (${page.url()})`);
+          return missing;
+        }
+      }
+    };
+    // Every test, on an engine that can leave one: no orphan host when it ends.
+    for (const page of context.pages()) {
+      const problems = await endOfTestCheck(page, 'hosts', orphanHostsAtEnd, []);
+      for (const problem of problems) restless.push(`[hosts] ${problem} (${page.url()})`);
+    }
+    if (devBundle) {
+      for (const page of context.pages()) {
+        const reports = await endOfTestCheck(page, 'layout', layoutValidator.reportsAtRest, 0);
+        if (reports > 0) restless.push(`[layout] ${reports} validator report(s) with the pane at rest (${page.url()})`);
+      }
+    }
     const expectedHere = (line) => expectedConsoleErrors.some((pattern) => pattern.test(line));
-    const unexpected = guard.unexpected().filter((line) => !expectedHere(line));
+    const unexpected = [...guard.unexpected().filter((line) => !expectedHere(line)), ...restless];
     if (unexpected.length > 0 && !isRecordOnly()) {
       throw new Error(
         `Console guard: ${unexpected.length} unexpected console error(s) or page error(s) during this test.\n` +

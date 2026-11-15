@@ -251,7 +251,13 @@ async function mockViewedStateApi(page) {
     const files = route.request().postDataJSON().files || [];
     // The state a test polls for changes only once the page has its answer:
     // a test that reloads on seeing the new state must not abort the save.
+    // `fulfill` resolves when the browser has taken the response, which is
+    // before the page's `fetch` has it: wait for the load to finish in the
+    // page (measured: without this the reload aborted the save in 1 of 60
+    // executions, on either engine).
     await route.fulfill({ json: { success: true } });
+    const response = await route.request().response().catch(() => null);
+    if (response) await response.finished().catch(() => {});
     state.files = files;
   });
   return state;

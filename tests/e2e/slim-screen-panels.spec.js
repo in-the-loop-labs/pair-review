@@ -5,6 +5,7 @@
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender, dragResizeHandle } from './helpers.js';
+import { scrollDiffTo, scrollState } from './diff-dom.js';
 
 const MODES = [
   { name: 'PR Mode', url: '/pr/test-owner/test-repo/1', prKey: 'test-owner/test-repo#1', reviewId: 1 },
@@ -676,8 +677,8 @@ for (const mode of MODES) {
         await assertStacked();
 
         // Same once the diff scrolls and the bar + toolbar pin (sticky)
-        await page.locator('.main-layout .diff-view').evaluate((el) => { el.scrollTop = 400; });
-        await expect.poll(() => page.locator('.main-layout .diff-view').evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+        await scrollDiffTo(page, 400);
+        await expect.poll(async () => (await scrollState(page)).top).toBeGreaterThan(0);
         await assertStacked();
       });
     });

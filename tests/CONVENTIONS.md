@@ -298,6 +298,44 @@ because violating it produced a real, observed flake or measurable waste.
   (`GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS`). A spec still cleans up, itself, whatever
   else it creates: another review, a setting, viewed state it did not mock,
   `localStorage`. And a test must not count on rows an earlier test left.
+- **The suite runs on two diff engines until the migration ends, and a spec
+  must not know which.** `PR_ENGINE=codeview` runs it on the virtualized
+  viewer (`plans/codeview-virtualized-diff.md`). `tests/e2e/diff-dom.js` is
+  the surface; what an engine does its own way is in its half
+  (`diff-dom-filediff.js`, `diff-dom-codeview.js`), exported under one name.
+  Where the engines differ on purpose, the spec asks a named expectation of
+  `diff-dom.js` (`contextGapLabel`, `expectedContextRanges`,
+  `UPGRADED_DIFF_HUNKS`, `MISSING_VIEWER_BUNDLE`, ...), which has a value
+  per engine.
+- **"The file has an element" is not "the file is in the pane".** The
+  virtualized viewer has an element only for files near the viewport: two
+  files down in a four-file pane there may be none. Never assert a file's
+  presence through a locator's count or visibility: ask `filesInPane`,
+  `expectContextFile`, `expectNoContextFile`. A helper that reads a file's
+  rows brings the file into view first; a spec that points at a file further
+  down scrolls to it (`scrollFileIntoView`). `waitForContentUpgrade(file)`
+  returns for a file that rests outside the mounted window: its contents are
+  fetched when it is drawn.
+- **A long file is drawn a window of rows at a time.** A separator or a row
+  that is far inside a long file may not be in the DOM. The context-file
+  helpers take ranges and gaps from the application's data and check
+  whatever is drawn against it; do not count rows of a long file in a spec.
+- **Scroll through the helpers** (`scrollDiffTo`, `scrollDiffToEdge`,
+  `scrollThroughDiff`, `scrollFileOutOfView`), never by setting `scrollTop`
+  on an element a spec names. The scroll container is not the same element
+  on both engines, and the virtualized viewer holds a navigation's scroll
+  target until the reader takes over: a position written by a script right
+  after a sidebar jump is undone. The helpers let go the way a wheel does.
+- **`test.use({ expectedConsoleErrors: [a, b] })` with two patterns is read
+  by Playwright as `[value, options]`.** Pass one pattern with an
+  alternation.
+- **A development-bundle run** (`PR_VENDOR_BUNDLE=dev PR_ENGINE=codeview`)
+  serves the vendor's development bundle and gives the viewer its layout
+  validator: a layout that does not match what is drawn is a `console.error`
+  and fails the test, and after every test one more pass with the pane at
+  rest must be silent. `fixture-isolation.spec.js` asserts in every run that
+  the bundle and the validator are what the run asked for. On the
+  virtualized viewer every test also ends with the orphan-host check.
 
 ## Vendor contract suite (`tests/contract`)
 
@@ -395,6 +433,36 @@ because violating it produced a real, observed flake or measurable waste.
 - **The contract suite gates every `@pierre/diffs` bump.** The dependency is
   pinned to an exact version; `tests/unit/vendor-bundle-fresh.test.js` fails
   when the served bundle was not rebuilt after an install.
+
+## How the diff pane looks (`tests/parity/visual.mjs`)
+
+- **"The app's real CSS" means every stylesheet the pages load, in their
+  order.** `pr.html` and `local.html` load `styles.css` after `pr.css`, and
+  its `!important` rules change the file header's padding and border. A gate
+  that loaded `pr.css` alone measured a 45 px header where the application's
+  is 53 px, and a token was set from it. Gates take their stylesheets from
+  `appStylesheets()` (`tests/contract/harness/constants.js`), which reads the
+  two pages.
+- **A change to how the diff pane is drawn is checked with
+  `node tests/parity/visual.mjs --out <dir>`.** It opens both diff engines on
+  one test server with the file contents held back, and compares every
+  changed file as numbers (header box and its parts, distance to the first
+  row, frame, space to the next file, gutter, row height, fonts) and the pane
+  as pixels at fixed positions (top, a pinned header, the end, a collapsed
+  file, during a tour). A difference that is not listed in its `ACCEPTED`
+  with the decision that covers it fails the run. Do not run it while the E2E
+  suite is running.
+- **Pixels are compared with a tolerance for anti-aliasing only**: a pixel
+  counts when it is outside the range of the 3x3 pixels around the same place
+  in the other image by more than 8 of 255. The same glyph or curve painted in
+  another compositing layer differs by less; a missing line, another colour or
+  a shift of two pixels does not. Positions are compared as numbers, to a
+  hundredth of a pixel, so a shift cannot hide in the tolerance.
+- **Height that the virtualized viewer is not told about moves every file
+  below it.** A border, padding or margin on the scroll container or on a
+  file's element is such height. What draws the pane's box and a file's frame
+  there, and which number tells the viewer, is in `pr.css` (the block for the
+  viewer), `pierre-styles.js` (`FRAME_CSS`) and `engine-switch-sites.test.js`.
 
 ## Cleanup
 

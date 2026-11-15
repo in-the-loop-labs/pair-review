@@ -206,6 +206,9 @@ describe('SuggestionNavigator.goToSuggestion', () => {
     const wrapper = addWrapper('a.js', { collapsed: true });
     const order = [];
     window.prManager = makePageManager({
+      // A file of the diff that the reader collapsed.
+      changedFilesByPath: new Map([['a.js', { file: 'a.js' }]]),
+      collapsedFiles: new Set(['a.js']),
       findFileElement: vi.fn(() => wrapper),
       ensureFileBodyRendered: vi.fn(async () => { order.push('render'); }),
     });

@@ -97,8 +97,30 @@
   const COLLAPSED_CONTEXT_THRESHOLD = 5;
   const EXPANSION_LINE_COUNT = 20;
   const WORKER_INIT_TIMEOUT_MS = 15000;
-  const DEFAULT_LAYOUT = { paddingTop: 16, paddingBottom: 16, gap: 24 };
-  const FALLBACK_HEADER_HEIGHT = 45;
+  /**
+   * The viewer's layout, in the per-file renderer's numbers: 17 px above the
+   * first file (the pane's 16 px padding and its 1 px border, which pr.css
+   * draws behind the list and not on the scroll container), 24 px between
+   * files, and 41 px below the last (every file has a 24 px bottom margin
+   * there, the last one too, then the padding and the border).
+   */
+  const DEFAULT_LAYOUT = { paddingTop: 17, paddingBottom: 41, gap: 24 };
+  /**
+   * How many rows of an item the viewer draws at a time. An item that shows
+   * fewer rows than this is drawn whole whenever it is mounted, as a file is
+   * by the per-file renderer; a longer one is drawn in windows of this many
+   * rows. The viewer's default for a list (1) keeps a window of rows around
+   * the viewport and moves it a row at a time as the pane scrolls, and a
+   * window that shrinks to end at a row loses what follows that row, the
+   * separator after a file's last hunk or a line's card, which is not drawn
+   * again when the window grows (vendor fact F26,
+   * tests/contract/vendor/row-window.spec.js). A window that does not move is
+   * never trimmed. What is left of the defect: in a file that shows more
+   * than this many rows, a card on the last row of a window (row 5000,
+   * 10000, ...). Which items are mounted is still the viewer's.
+   */
+  const ROWS_PER_ITEM_WINDOW = 5000;
+  const FALLBACK_HEADER_HEIGHT = 53;
   /** Above these a context file's lines are not coloured (the limits a changed file's contents have). */
   const CONTEXT_PLAIN_TEXT_MAX_CHARS = 400 * 1024;
   const CONTEXT_PLAIN_TEXT_MAX_LINES = 12000;
@@ -472,7 +494,13 @@
         // With the default, item content takes no pointer input for about
         // 120 ms after any scroll, buttons inside cards included.
         pointerEventsOnScroll: true,
-        itemMetrics: { ...this._metrics },
+        itemMetrics: {
+          ...this._metrics,
+          hunkLineCount: ROWS_PER_ITEM_WINDOW,
+          // Below a file's last row: the vendor's 8 px and the frame's
+          // bottom border (pierre-styles.js FRAME_CSS).
+          paddingBottom: window.PierreStyles.ITEM_PADDING_BOTTOM,
+        },
         layout: { ...DEFAULT_LAYOUT, ...(this.options.layout || {}) },
         ...(this.options.viewerOptions || {}),
 
@@ -1221,8 +1249,8 @@
 
     /**
      * What a list replace would lose and can be put back: the first line
-     * below the sticky header and where it is, the line selection, and the
-     * focused element with its caret.
+     * below the sticky header and where it is (or that the pane was at its
+     * very top), the line selection, and the focused element with its caret.
      * @private
      */
     _captureView() {
@@ -1262,6 +1290,10 @@
       return {
         anchor,
         scrollTop: root.scrollTop,
+        // A reader at the very top of the pane is not "inside" the first
+        // file: what a list write puts above it is shown there, as content
+        // inserted at the top of a scroll container that is at offset 0 is.
+        atTop: root.scrollTop <= 0,
         selection: this.codeView.getSelectedLines?.() || null,
         focus,
       };
@@ -1279,7 +1311,10 @@
       const { anchor, selection, focus } = view;
       // The scroll events this restore causes are not the reader scrolling.
       this._ownScrollUntil = performance.now() + 250;
-      if (anchor && this._listed.has(anchor.id)) {
+      if (view.atTop) {
+        // The pane stays at its top, whatever is the first file now.
+        if (this.root.scrollTop !== 0) this.root.scrollTop = 0;
+      } else if (anchor && this._listed.has(anchor.id)) {
         const line = anchor.line;
         // A line target is exact where an item target plus a pixel offset is
         // not (heights above the line are estimates again after the clear).
@@ -1555,6 +1590,8 @@
       const classes = new Set(['d2h-file-wrapper']);
       if (record.kind === 'context') classes.add('context-file');
       if (record.collapsed) classes.add('collapsed');
+      // What pr.css keys the space under the header on: the file shows lines.
+      if (record.metadata?.hunks?.length > 0) classes.add('has-diff-lines');
       if (!this._isCurrent(record)) {
         // No longer the pane's record: the page is not asked about it, and
         // its host keeps what it carries until the waiting list write.
@@ -1919,7 +1956,15 @@
     /** @private */
     _clearExpansions(record) {
       // The map is keyed by hunk index: it must not outlive the hunks.
-      this._expansionMap(record)?.clear?.();
+      const map = this._expansionMap(record);
+      if (!map || !map.size) return;
+      map.clear();
+      // Until the new diff is displayed the viewer goes on drawing the old
+      // one, now without those lines, and it has the item's height cached
+      // with them. Nothing but a row window that moves makes it compute
+      // that height again, and an item's window does not move here
+      // (ROWS_PER_ITEM_WINDOW), so it is told to.
+      record._instance?.resetLayoutCache?.({ includeEstimatedHeights: true });
     }
 
     /**

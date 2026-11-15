@@ -14490,3 +14490,154 @@ diffs-container {
     animation: loop-spin 1.4s linear infinite !important;
   }
 }
+
+/* --------------------------------------------------------------------------
+   The virtualized diff viewer (diff engine 'codeview')
+   plans/codeview-virtualized-diff.md
+
+   One viewer draws every file of the pane and lays its items out itself, so
+   the pane's geometry is the viewer's: #diff-container is the scroll
+   container, and the toolbar and the tour bar are fixed siblings above it.
+   Every rule is scoped by the class PRManager puts on .diff-view for this
+   engine; the rules above it are the other engine's until the switch goes.
+
+   The pane must LOOK as it does on the other engine, to the pixel
+   (tests/parity/visual.mjs compares the two), and the viewer must be able to
+   account for every pixel of height (its development build validates that).
+   Each rule below says which of the two it serves. The numbers the viewer is
+   given are in pierre-codeview-bridge.js (DEFAULT_LAYOUT, _measureMetrics)
+   and pierre-styles.js (FRAME_CSS, ITEM_PADDING_BOTTOM).
+   -------------------------------------------------------------------------- */
+:root {
+  /* The height of every file header: 12px padding, the 28px comment button,
+     12px padding, 1px bottom border (styles.css gives .d2h-file-header its
+     padding and border with !important, collapsed or not). The viewer
+     estimates the position of files that are not mounted from it, so a header
+     must never be taller or shorter (gate G9, with every stylesheet the pages
+     load). */
+  --pr-file-header-height: 53px;
+}
+
+.main-layout .diff-view.codeview-engine {
+  overflow: hidden;
+}
+
+/* The scroll container. The viewer lays items out from the top edge of its
+   content box and knows nothing above it: padding or a border on this element
+   puts every item that far below where the viewer thinks it is. So the box a
+   reader sees around the files (1px border, 8px radius, 16px padding, the
+   shadow) is not this element's: it is the pseudo-element below, which
+   scrolls with the files, and the 17px above the first file and the 41px
+   below the last (its 24px margin, then padding and border) are the viewer's
+   own layout padding.
+
+   A grid of one cell that holds both the viewer's list and the box. Its one
+   row is as tall as the list with its margins, or as the pane when the files
+   are shorter than the pane; the box fills the row, the list keeps the
+   height the viewer gives it (a taller list would move the viewer's sticky
+   element). */
+.diff-view.codeview-engine > #diff-container {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto;
+  padding: 0 17px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  /* Nothing is pinned inside the scroll container but the viewer's own file
+     header: offsets that are measured from the toolbar or the tour bar are
+     measured from nothing here. */
+  --toolbar-height: 0px;
+  --tour-bar-offset: 0px;
+  --diff-file-header-height: var(--pr-file-header-height);
+  --diff-scroll-offset: var(--pr-file-header-height);
+}
+
+/* The pane's box: 1px border, 8px radius, and through the negative margins
+   the 17px (16px padding + 1px border) to the left and right of the files. */
+.diff-view.codeview-engine > #diff-container::before {
+  content: '';
+  grid-area: 1 / 1;
+  margin: 0 -17px;
+  pointer-events: none;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+/* The viewer's list (its one element child of the scroll container; the
+   viewer gives it its height and, as margins, the layout padding). */
+.diff-view.codeview-engine > #diff-container > div {
+  grid-area: 1 / 1;
+  align-self: start;
+}
+
+/* The space between files is the viewer's layout gap: a margin on a host is
+   height the viewer does not account for. */
+.diff-view.codeview-engine diffs-container.d2h-file-wrapper[data-file-name] {
+  margin-bottom: 0;
+}
+
+/* The header slot has the height the viewer was told, whatever is in it. The
+   viewer's own shadow header is the sticky element. A slotted element
+   inherits from the viewer's shadow tree, not from the page: what the header
+   inherits on the other engine is set here. */
+.diff-view.codeview-engine .pr-file-header-slot {
+  height: var(--pr-file-header-height);
+  box-sizing: border-box;
+  overflow: hidden;
+  font-family: var(--font-github);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  color-scheme: normal;
+  font-feature-settings: normal;
+}
+
+.diff-view.codeview-engine .pr-file-header-slot > .d2h-file-header {
+  position: static;
+  height: 100%;
+}
+
+/* Between the header (and the file's comments under it) and the first line
+   of a changed file there are 8px, the top padding of the other engine's code
+   block. The viewer removes that padding under a header, and the place it
+   offers for it (itemMetrics.paddingTop) also applies to a file without
+   lines, which has none. So the 8px belong to the file's comment zone, the
+   first thing every item draws: the viewer measures it. */
+.diff-view.codeview-engine diffs-container.has-diff-lines:not(.context-file) .file-comments-zone::after {
+  content: '';
+  display: block;
+  height: 8px;
+}
+
+/* A changed file that has a diff without any line (an empty added file, a
+   mode change, a pure rename) ends in a 1px line under its header: the other
+   engine's empty code block is its bottom border. */
+.diff-view.codeview-engine diffs-container.has-diff-body:not(.has-diff-lines) .file-comments-zone::after {
+  content: '';
+  display: block;
+  height: 1px;
+  background: var(--color-border-default);
+}
+
+/* While a message stands in place of the diff (loading, an error), the
+   scroll container keeps its box and is not painted. With `display: none`
+   the viewer inside it finds every item 0 px tall, and what it measures
+   there is what it lays the items out with until each is measured again. */
+.diff-view.codeview-engine {
+  position: relative;
+}
+
+.diff-view.codeview-engine > #diff-container[hidden] {
+  display: block;
+  visibility: hidden;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}

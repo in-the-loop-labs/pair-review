@@ -15,6 +15,12 @@
  * A third stage, `annotated`, dumps one file with a line comment, a
  * file-level comment and an AI suggestion on it (annotation slots and cards).
  *
+ * A fourth stage, `context`, adds two context files (one with two ranges,
+ * one whose range runs past the end of its file) and a line comment on the
+ * first, and dumps per file what does not depend on how a context file is
+ * drawn: its place in the pane, its ranges, the text of its lines, how many
+ * lines each gap hides, and which line each card is under.
+ *
  * It also measures landings: where a file's header ends up after a sidebar
  * click, and after collapsing the file while scrolled deep inside it; and
  * where a suggestion's card ends up after a click on it in the review panel.
@@ -77,6 +83,8 @@ function freePort() {
 
 /** Scroll the diff so `file`'s header is at the top of the visible area, by setting the container's scrollTop. */
 async function scrollToFileTop(page, file) {
+  // A virtualized viewer has no element for a file far from the viewport.
+  if (dom.ensureMounted) await dom.ensureMounted(page, file);
   await dom.inPage(page, (D, f) => {
     const s = D.scroller();
     const w = D.wrapper(f) || D.contextWrapper(f);
@@ -178,7 +186,14 @@ async function measureLandings(page, corpus) {
     await item.click();
     const headerTop = await settledHeaderTop(target);
     const scroll = await dom.scrollState(page);
-    landings.sidebarJump = { file: target, headerTop, atEnd: scroll.top + scroll.client >= scroll.height - 2 };
+    // `headerTop` is measured from the top of the scroll container, which
+    // holds the toolbar on one engine and not on the other; `belowPinned`
+    // from whatever is pinned above the diff, which a reader sees.
+    const landed = await dom.headerLanding(page, target);
+    landings.sidebarJump = {
+      file: target, headerTop, belowPinned: landed ? Math.round(landed.belowPinned * 100) / 100 : null,
+      atEnd: scroll.top + scroll.client >= scroll.height - 2,
+    };
   }
 
   // 2. Collapse while scrolled inside a file: where its header is afterwards.
@@ -191,7 +206,10 @@ async function measureLandings(page, corpus) {
   if (await wrapper.count()) {
     await page.evaluate((f) => window.prManager.toggleFileCollapse(f), tall);
     const headerTop = await settledHeaderTop(tall);
-    landings.collapseInside = { file: tall, scrolledInsideBy: 300, headerTop };
+    const landed = await dom.headerLanding(page, tall);
+    landings.collapseInside = {
+      file: tall, scrolledInsideBy: 300, headerTop, belowPinned: landed ? Math.round(landed.belowPinned * 100) / 100 : null,
+    };
     await page.evaluate((f) => window.prManager.toggleFileCollapse(f), tall);
   }
   return landings;
@@ -244,7 +262,9 @@ async function dumpAnnotated(page, corpus, order, reviewId) {
   await item.waitFor({ state: 'visible', timeout: 10000 });
   await item.click();
   const card = dom.inlineSuggestion(page, suggestionId);
-  await card.waitFor({ state: 'visible', timeout: 15000 });
+  // A click that does not bring the card on screen is a landing that did not
+  // happen: recorded as such, for the comparison to report.
+  const reached = await card.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false);
   let last = null;
   let same = 0;
   const deadline = Date.now() + 15000;
@@ -259,8 +279,74 @@ async function dumpAnnotated(page, corpus, order, reviewId) {
   await helpers.cleanupAllComments(page, reviewId);
   return {
     annotated: { [file]: dump },
-    landing: { file, line: suggestionLine, cardBelowPinned: last },
+    landing: { file, line: suggestionLine, cardBelowPinned: reached ? last : null, reached },
   };
+}
+
+const CONTEXT_FILES = [
+  // 240 lines (registered by the test server); two ranges.
+  { file: 'corpus-evict/context-long.js', ranges: [[20, 30], [150, 160]], comment: 25 },
+  // 30 generic lines; a range that runs past the end of the file.
+  { file: 'zz/near-end.js', ranges: [[25, 45]], comment: null },
+];
+
+/**
+ * The context stage: two context files and a line comment, as data that does
+ * not depend on how a context file is drawn.
+ */
+async function dumpContext(page, order, reviewId) {
+  const api = await helpers.mockContextFilesApi(page, { diffFiles: order });
+  const body = 'golden context comment';
+  for (const entry of CONTEXT_FILES) {
+    for (const [line_start, line_end] of entry.ranges) api.add({ review_id: reviewId, file: entry.file, line_start, line_end });
+  }
+  await page.evaluate(async ({ rid, file, line, text }) => {
+    const response = await fetch(`/api/reviews/${rid}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file, line_start: line, line_end: line, side: 'RIGHT', body: text }),
+    });
+    if (!response.ok) throw new Error(`seeding the context comment failed: ${response.status}`);
+    await window.prManager.loadContextFiles();
+    await window.prManager.loadUserComments();
+  }, { rid: reviewId, file: CONTEXT_FILES[0].file, line: CONTEXT_FILES[0].comment, text: body });
+  for (const entry of CONTEXT_FILES) await dom.expectContextFile(page, entry.file);
+
+  const pane = (await dom.filesInPane(page)).map(({ file, kind }) => ({ file, kind }));
+  const files = {};
+  for (const entry of CONTEXT_FILES) {
+    await scrollToFileTop(page, entry.file);
+    if (entry.comment != null) {
+      await dom.contextFile(page, entry.file).locator('.user-comment-body', { hasText: body })
+        .waitFor({ state: 'visible', timeout: 15000 });
+    }
+    const state = await dom.contextFileState(page, entry.file);
+    const cards = [];
+    let lastLine = null;
+    for (const item of state.sequence) {
+      if (item.kind === 'line') lastLine = item.line;
+      else if (item.kind === 'card') cards.push({ underLine: lastLine, classes: item.classes });
+    }
+    // The file's length: the viewer's own count, or, from what the table
+    // renderer draws, the last line it shows plus the lines its last gap hides.
+    const drawn = state.sequence.filter((item) => item.kind === 'line' || item.kind === 'gap');
+    const lastDrawn = drawn[drawn.length - 1];
+    const lastShown = state.ranges.length ? state.ranges[state.ranges.length - 1].end : 0;
+    const totalLines = state.totalLines ?? (lastDrawn && lastDrawn.kind === 'gap' ? lastShown + lastDrawn.hidden : lastShown);
+    files[entry.file] = {
+      asked: entry.ranges,
+      totalLines,
+      header: state.header,
+      collapsed: state.collapsed,
+      ranges: state.ranges,
+      hidden: state.gaps.map((gap) => gap.hidden),
+      separators: state.separators,
+      lines: state.sequence.filter((item) => item.kind === 'line').map((item) => [item.line, item.text.replace(/[\r\n]+$/, '')]),
+      cards,
+    };
+  }
+  await helpers.cleanupAllComments(page, reviewId);
+  return { pane, files };
 }
 
 async function dumpOne(browser, baseURL, { corpusName, mode, style, theme }) {
@@ -302,6 +388,8 @@ async function dumpOne(browser, baseURL, { corpusName, mode, style, theme }) {
   const landings = await measureLandings(page, corpus);
   const { annotated, landing } = await dumpAnnotated(page, corpus, order, MODES[mode].reviewId);
   if (landing) landings.aiPanelClick = landing;
+  await dom.scrollDiffToEdge(page, 'top');
+  const contextStage = await dumpContext(page, order, MODES[mode].reviewId);
 
   await context.close();
   return {
@@ -310,6 +398,7 @@ async function dumpOne(browser, baseURL, { corpusName, mode, style, theme }) {
     pre,
     post,
     annotated,
+    context: contextStage,
     landings,
     consoleErrors: consoleErrors.filter((text) => !/WebSocket connection|Failed to fetch|spawnSync|Failed to load resource/.test(text)),
   };

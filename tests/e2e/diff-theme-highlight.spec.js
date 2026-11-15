@@ -9,7 +9,7 @@
 
 import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender } from './helpers.js';
-import { dumpFile, rowCount, syntaxTokens, waitForContentUpgrade } from './diff-dom.js';
+import { dumpFile, rowCount, syntaxTokens, waitForContentUpgrade, WORKER_LOAD_FAILURE_ERROR } from './diff-dom.js';
 
 const FILE = 'src/main.js';
 
@@ -95,8 +95,8 @@ for (const mode of MODES) {
   });
 
   test.describe(`Highlighting without its worker (${mode.name})`, () => {
-    // The vendor reports the worker it could not start, once.
-    test.use({ expectedConsoleErrors: [/\[console\.error\] Worker error: Event/] });
+    // The vendor reports the worker it could not start.
+    test.use({ expectedConsoleErrors: [WORKER_LOAD_FAILURE_ERROR] });
 
     test('the diff still renders, highlighted, when the worker script cannot load', async ({ page }) => {
       let blocked = 0;

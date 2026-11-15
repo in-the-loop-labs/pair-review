@@ -63,6 +63,8 @@ function makeManager() {
   m.collapsedFiles = new Set();
   m.summariesHiddenFiles = new Set();
   m._summariesEnabled = false; // skip per-file summary-toggle block
+  m._diffEngine = 'filediff';
+  m._initPaneState();
   m._renderGen = 1;
   m._lazyFileBodies = new Map();
   m.fileCommentManager = null; // skip the file-comments-zone block

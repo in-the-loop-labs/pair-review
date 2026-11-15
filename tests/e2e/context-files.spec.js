@@ -9,11 +9,15 @@
  *
  * This is a characterization of what main does today, in both modes, written
  * before the diff engine changes. Where context files render after the
- * migration is an open decision (D2), so nothing here names how a context file
- * is drawn: every read and click goes through tests/e2e/diff-dom.js
- * (`contextFileState`, `contextLine`, `expandContextGap`, ...), and the one
- * expectation the decision may change on purpose, the position of a context
- * file among the changed files, is `expectedPaneOrder`.
+ * migration was an open decision (D2), so nothing here names how a context
+ * file is drawn: every read and click goes through tests/e2e/diff-dom.js
+ * (`contextFileState`, `contextLine`, `expandContextGap`, ...). What the two
+ * engines do differently is asked there too: the label of a hidden gap
+ * (`contextGapLabel`), what a gap of five lines or fewer shows
+ * (`expectedContextRanges`), and whether a file is in the pane
+ * (`expectContextFile`: a virtualized viewer has no element for a file far
+ * from the viewport). The position of a context file among the changed files
+ * is `expectedPaneOrder`.
  *
  * Harness:
  *  - The context-files API is mocked with a small stateful route (list, add,
@@ -32,12 +36,15 @@
 import { test, expect } from './fixtures.js';
 import {
   waitForDiffToRender, cleanupAllComments, enableChat, mockViewedStateApi, mockContextFilesApi,
-  mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound
+  mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound, setDiffView
 } from './helpers.js';
 import {
-  contextFile, contextFileState, contextLine, expandContextGap, expandContextGapFully,
+  contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText,
+  contextGapLabel, expectedContextRanges,
+  expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
-  fileWrapper, headerPosition, scrollState, waitForContentUpgrade, assertNoOrphanHosts
+  fileWrapper, headerPosition, headerLanding, scrollState, waitForContentUpgrade, assertNoOrphanHosts, contextFileLayout,
+  waitForDiffType, scrollFileIntoView, CONTEXT_LOADS_IN_FLIGHT
 } from './diff-dom.js';
 
 const MODES = [
@@ -52,6 +59,7 @@ const DIFF_FILES = ['src/main.js', 'src/utils.js'];
 const LONG = 'corpus-evict/context-long.js'; // 240 lines; sorts before src/
 const MIDDLE = 'src/notes.js';               // 30 lines; between main.js and utils.js
 const LAST = 'zz/last.js';                   // 30 lines; after everything
+const GONE = 'missing/gone.js';             // cannot be read (the test answers 404); sorts before src/
 const LONG_LINES = 240;
 const SHORT_LINES = 30;
 
@@ -109,7 +117,7 @@ for (const mode of MODES) {
       const result = await addContextRange(page, LONG, 100, 120);
       expect(result.type).toBe('context');
 
-      await expect(contextFile(page, LONG)).toBeVisible();
+      await expectContextFile(page, LONG);
       const state = await contextFileState(page, LONG);
       expect(state.header).toEqual({
         name: expect.stringContaining('context-long.js'),
@@ -123,11 +131,11 @@ for (const mode of MODES) {
       expect(state.ranges).toEqual([{ start: 100, end: 120 }]);
       // Hidden lines above and below, each with one control in its direction.
       expect(state.gaps).toEqual([
-        { kind: 'gap', hidden: 99, label: '99 hidden lines', directions: ['up'] },
-        { kind: 'gap', hidden: LONG_LINES - 120, label: `${LONG_LINES - 120} hidden lines`, directions: ['down'] }
+        { kind: 'gap', hidden: 99, label: contextGapLabel(99), directions: ['up'] },
+        { kind: 'gap', hidden: LONG_LINES - 120, label: contextGapLabel(LONG_LINES - 120), directions: ['down'] }
       ]);
       // The lines are the file's real lines.
-      const text = await contextLine(page, LONG, 100).locator('.d2h-code-line-ctn').textContent();
+      const text = await contextLineText(page, LONG, 100);
       expect(text.trim().length).toBeGreaterThan(0);
       // The request the frontend made.
       expect(api.requests.filter((r) => r.method === 'POST').map((r) => r.body)).toEqual([
@@ -141,8 +149,10 @@ for (const mode of MODES) {
       expect((await contextFileState(page, LONG)).ranges).toEqual([{ start: 1, end: 100 }]);
 
       await addContextRange(page, MIDDLE, 15);
-      // 15 - 10 = 5 .. 25
-      expect((await contextFileState(page, MIDDLE)).ranges).toEqual([{ start: 5, end: 25 }]);
+      // 15 - 10 = 5 .. 25. Four lines are hidden before it and five after:
+      // what the pane shows there is the engine's small-gap rule.
+      expect((await contextFileState(page, MIDDLE)).ranges)
+        .toEqual(expectedContextRanges([{ start: 5, end: 25 }], SHORT_LINES));
     });
 
     test('a range that runs past the end of the file is shifted up to keep its size', async ({ page }) => {
@@ -159,7 +169,7 @@ for (const mode of MODES) {
       await addContextRange(page, MIDDLE, 5, 10);
       await addContextRange(page, LAST, 5, 10);
       await addContextRange(page, LONG, 5, 10);
-      await expect(contextFile(page, LONG)).toBeVisible();
+      await expectContextFile(page, LONG);
 
       // In the pane.
       expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, [MIDDLE, LAST, LONG]));
@@ -185,8 +195,8 @@ for (const mode of MODES) {
       api.add({ review_id: mode.reviewId, file: LAST, line_start: 1, line_end: 8 });
       await open(page);
 
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
-      await expect(contextFile(page, LAST)).toBeVisible();
+      await expectContextFile(page, MIDDLE);
+      await expectContextFile(page, LAST);
       expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, [MIDDLE, LAST]));
       expect((await contextFileState(page, LAST)).ranges).toEqual([{ start: 1, end: 8 }]);
       // A range starting at line 1 has no gap above it.
@@ -198,7 +208,7 @@ for (const mode of MODES) {
       await addContextRange(page, LONG, 150, 160);
       await addContextRange(page, LONG, 20, 30);
 
-      await expect(contextFile(page, LONG)).toHaveCount(1);
+      await expectContextFile(page, LONG);
       const state = await contextFileState(page, LONG);
       expect(state.ranges).toEqual([{ start: 20, end: 30 }, { start: 150, end: 160 }]);
       expect(state.separators).toBe(1);
@@ -219,7 +229,7 @@ for (const mode of MODES) {
       expect(api.requests.filter((r) => r.method === 'PATCH').map((r) => r.body)).toEqual([
         { line_start: 100, line_end: 140 }
       ]);
-      await expect(contextFile(page, LONG)).toHaveCount(1);
+      await expectContextFile(page, LONG);
     });
 
     test('a request inside a stored range adds nothing', async ({ page }) => {
@@ -302,12 +312,12 @@ for (const mode of MODES) {
         });
         if (!response.ok) throw new Error(`seeding the comment failed: ${response.status}`);
       }, { rid: mode.reviewId, file: MIDDLE, text: body });
-      await expect(contextFile(page, MIDDLE)).toHaveCount(0);
+      await expectNoContextFile(page, MIDDLE);
 
       api.add({ review_id: mode.reviewId, file: MIDDLE, line_start: 12, line_end: 30 });
       await pushContextFilesChanged(page, mode.reviewId);
 
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
+      await expectContextFile(page, MIDDLE);
       await expect(contextFile(page, MIDDLE).locator('.user-comment-body', { hasText: body })).toBeVisible();
       const sequence = (await contextFileState(page, MIDDLE)).sequence;
       const lineIndex = sequence.findIndex((x) => x.kind === 'line' && x.line === 22);
@@ -385,7 +395,7 @@ for (const mode of MODES) {
       await page.reload();
       await waitForDiffToRender(page);
       const reloaded = contextFile(page, MIDDLE);
-      await expect(reloaded).toBeVisible();
+      await expectContextFile(page, MIDDLE);
       await expect(reloaded).toHaveClass(/collapsed/);
       await expect(reloaded.locator('.file-viewed-checkbox')).toBeChecked();
       await expect(fileWrapper(page, 'src/main.js')).not.toHaveClass(/collapsed/);
@@ -406,12 +416,12 @@ for (const mode of MODES) {
       await addContextRange(page, MIDDLE, 5, 15);
 
       await contextFile(page, LONG).locator('.context-file-dismiss').click();
-      await expect(contextFile(page, LONG)).toHaveCount(0);
+      await expectNoContextFile(page, LONG);
       await expect(page.locator(`.file-item[data-path="${LONG}"]`)).toHaveCount(0);
       expect(api.rows.map((r) => r.file)).toEqual([MIDDLE]);
       expect(api.requests.filter((r) => r.method === 'DELETE')).toHaveLength(2);
       // The other context file and the changed files are untouched.
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
+      await expectContextFile(page, MIDDLE);
       expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, [MIDDLE]));
     });
 
@@ -419,12 +429,12 @@ for (const mode of MODES) {
       await open(page);
       await addContextRange(page, MIDDLE, 5, 15);
       await addContextRange(page, LAST, 5, 15);
-      await expect(contextFile(page, LAST)).toBeVisible();
+      await expectContextFile(page, LAST);
 
       api.rows.splice(api.rows.findIndex((r) => r.file === LAST), 1);
       await pushContextFilesChanged(page, mode.reviewId);
-      await expect(contextFile(page, LAST)).toHaveCount(0);
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
+      await expectNoContextFile(page, LAST);
+      await expectContextFile(page, MIDDLE);
       await expect(page.locator(`.file-item[data-path="${LAST}"]`)).toHaveCount(0);
     });
 
@@ -433,8 +443,8 @@ for (const mode of MODES) {
       api.add({ review_id: mode.reviewId, file: MIDDLE, line_start: 5, line_end: 10 });
       await open(page);
 
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
-      await expect(contextFile(page, 'src/utils.js')).toHaveCount(0);
+      await expectContextFile(page, MIDDLE);
+      await expectNoContextFile(page, 'src/utils.js');
       await expect(fileWrapper(page, 'src/utils.js')).toHaveCount(1);
       expect((await sidebarEntries(page)).filter((e) => e.file === 'src/utils.js')).toEqual([
         { file: 'src/utils.js', kind: 'diff', badge: null }
@@ -449,19 +459,20 @@ for (const mode of MODES) {
       await open(page);
       await addContextRange(page, LAST, 1, 30);
       await addContextRange(page, MIDDLE, 1, 30);
-      await expect(contextFile(page, LAST)).toBeVisible();
+      await expectContextFile(page, LAST);
 
-      const reference = await headerPosition(page, 'src/main.js');
       await page.locator(`.file-item.context-file-item[data-path="${LAST}"]`).first().click();
 
-      // Smooth scroll: poll for the settled landing. The header ends where a
-      // changed file's header sits when it is at the top (under the toolbar),
-      // or the diff is at its end.
+      // Smooth scroll: poll for the settled landing. The header ends directly
+      // under what is pinned above the diff (the toolbar), where a changed
+      // file's header is pinned, or the diff is at its end.
       await expect.poll(async () => {
-        const position = await headerPosition(page, LAST);
+        // Null while the file has no header in the DOM (not scrolled to yet).
+        if ((await headerPosition(page, LAST)) == null) return false;
+        const landing = await headerLanding(page, LAST);
         const scroll = await scrollState(page);
         const atEnd = scroll.top + scroll.client >= scroll.height - 2;
-        return atEnd || Math.abs(position.top - reference.top) <= 2;
+        return atEnd || Math.abs(landing.belowPinned) <= 2;
       }, { timeout: 8000 }).toBe(true);
       await expect(contextFile(page, LAST).locator('.d2h-file-header')).toBeInViewport();
     });
@@ -484,8 +495,8 @@ for (const mode of MODES) {
       // LONG and MIDDLE both sort above LAST.
       await addContextRange(page, LONG, 1, 100);
       await addContextRange(page, MIDDLE, 1, 30);
-      await expect(contextFile(page, LONG)).toHaveCount(1);
-      await expect(contextFile(page, MIDDLE)).toHaveCount(1);
+      await expectContextFile(page, LONG);
+      await expectContextFile(page, MIDDLE);
 
       await expect.poll(async () => {
         const box = await contextLine(page, LAST, 12).boundingBox();
@@ -505,7 +516,7 @@ for (const mode of MODES) {
       });
       await page.route('**/api/analyses/runs*', (route) => route.fulfill({ json: { runs: [] } }));
       await open(page);
-      await expect(contextFile(page, MIDDLE)).toBeVisible();
+      await expectContextFile(page, MIDDLE);
       await page.waitForFunction(() => !!window.prManager?.analysisHistoryManager);
       await page.evaluate(() => window.prManager.loadAISuggestions());
 
@@ -514,6 +525,90 @@ for (const mode of MODES) {
       const sequence = (await contextFileState(page, MIDDLE)).sequence;
       const lineIndex = sequence.findIndex((x) => x.kind === 'line' && x.line === 9);
       expect(sequence[lineIndex + 1]).toMatchObject({ kind: 'card', suggestionId: '9601' });
+    });
+
+    test('in split layout a context file is still one column, as wide as the file', async ({ page }) => {
+      await open(page);
+      await addContextRange(page, MIDDLE, 5, 15);
+      await expectContextFile(page, MIDDLE);
+      const unified = await contextFileLayout(page, MIDDLE);
+      expect(unified.columns).toBe(1);
+      expect(Math.abs(unified.codeWidth - unified.fileWidth)).toBeLessThanOrEqual(1);
+
+      await setDiffView(page, 'split');
+      // A changed file with both sides is two columns now; the context file is not.
+      await scrollFileIntoView(page, 'src/utils.js');
+      await waitForDiffType(page, 'split', 5000, { fileName: 'src/utils.js' });
+      await expect.poll(async () => (await contextFileLayout(page, MIDDLE))?.columns).toBe(1);
+      const split = await contextFileLayout(page, MIDDLE);
+      expect(Math.abs(split.codeWidth - split.fileWidth)).toBeLessThanOrEqual(1);
+      expect(Math.abs(split.fileWidth - unified.fileWidth)).toBeLessThanOrEqual(1);
+      // Its lines are the same lines.
+      expect((await contextFileState(page, MIDDLE)).ranges)
+        .toEqual(expectedContextRanges([{ start: 5, end: 15 }], SHORT_LINES));
+    });
+
+    test('a comment stored on the old side of a line is shown under that line of the context file', async ({ page }) => {
+      // A comment made on a deleted line while the file was in the diff keeps
+      // side LEFT when the file later leaves the diff and is shown as context.
+      // A context file has one column of lines, numbered as the file is now.
+      api.add({ review_id: mode.reviewId, file: MIDDLE, line_start: 5, line_end: 15 });
+      await open(page);
+      await expectContextFile(page, MIDDLE);
+      const body = `Old-side comment ${Date.now()}`;
+      await page.evaluate(async ({ rid, file, text }) => {
+        const response = await fetch(`/api/reviews/${rid}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file, line_start: 9, line_end: 9, side: 'LEFT', body: text })
+        });
+        if (!response.ok) throw new Error(`seeding the comment failed: ${response.status}`);
+        await window.prManager.loadUserComments();
+      }, { rid: mode.reviewId, file: MIDDLE, text: body });
+
+      await expect(contextFile(page, MIDDLE).locator('.user-comment-body', { hasText: body })).toBeVisible();
+      const sequence = (await contextFileState(page, MIDDLE)).sequence;
+      const lineIndex = sequence.findIndex((x) => x.kind === 'line' && x.line === 9);
+      expect(sequence[lineIndex + 1].kind).toBe('card');
+      const saved = await page.evaluate(async ({ rid, text }) => {
+        const data = await (await fetch(`/api/reviews/${rid}/comments`)).json();
+        return (data.comments || []).find((c) => c.body === text) || null;
+      }, { rid: mode.reviewId, text: body });
+      expect(saved).toMatchObject({ file: MIDDLE, line_start: 9, side: 'LEFT' });
+    });
+
+    test.describe('a stored range of a file that cannot be read', () => {
+      // The application reports the read it could not make, and the browser
+      // the 404 it got for it.
+      test.use({ expectedConsoleErrors: [
+        /\[console\.error\] (Failed to fetch file content|Failed to load resource: the server responded with a status of 404 .*\/file-content\/missing%2Fgone\.js)/
+      ] });
+
+      test('has a sidebar entry and nothing in the pane', async ({ page }) => {
+        await page.route(/\/api\/reviews\/\d+\/file-content\/missing%2Fgone\.js/, (route) => route.fulfill({
+          status: 404, json: { error: 'File not found' }
+        }));
+        api.add({ review_id: mode.reviewId, file: GONE, line_start: 1, line_end: 20 });
+        api.add({ review_id: mode.reviewId, file: MIDDLE, line_start: 5, line_end: 15 });
+        await open(page);
+
+        // The file that can be read is there; the other one is not drawn.
+        await expectContextFile(page, MIDDLE);
+        await expectNoContextFile(page, GONE);
+        expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, [MIDDLE]));
+        // The sidebar lists both: the row is the review's.
+        expect((await sidebarEntries(page)).filter((e) => e.kind === 'context')).toEqual([
+          { file: GONE, kind: 'context', badge: 'CONTEXT' },
+          { file: MIDDLE, kind: 'context', badge: 'CONTEXT' }
+        ]);
+
+        // Its entry has nothing to go to: the pane stays where it is.
+        const before = await scrollState(page);
+        await page.locator(`.file-item.context-file-item[data-path="${GONE}"]`).first().click();
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        expect((await scrollState(page)).top).toBe(before.top);
+        await expectNoContextFile(page, GONE);
+      });
     });
 
     // -----------------------------------------------------------------------
@@ -542,13 +637,13 @@ for (const mode of MODES) {
       await openWithTour(page);
       // Nothing is added until the stop is reached.
       expect(added()).toEqual([]);
-      await expect(contextFile(page, LONG)).toHaveCount(0);
+      await expectNoContextFile(page, LONG);
 
       await page.locator('.tour-bar .tour-bar__next').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 2 of 2');
 
       // The file is there as a context file showing the stop's lines, where a context file goes.
-      await expect(contextFile(page, LONG)).toBeVisible();
+      await expectContextFile(page, LONG);
       expect(added()).toEqual([expect.objectContaining({ file: LONG, line_start: 100, line_end: 104 })]);
       const state = await contextFileState(page, LONG);
       expect(state.header.badge).toBe('CONTEXT');
@@ -566,7 +661,7 @@ for (const mode of MODES) {
       await page.keyboard.press('Escape');
       await expect(page.locator('.tour-bar')).toHaveCount(0);
       await expect(page.locator('.tour-annotation-row')).toHaveCount(0);
-      await expect(contextFile(page, LONG)).toHaveCount(0);
+      await expectNoContextFile(page, LONG);
       await expect.poll(() => api.rows).toEqual([]);
       expect(removed()).toHaveLength(1);
       expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, []));
@@ -574,10 +669,64 @@ for (const mode of MODES) {
       await assertNoOrphanHosts(page);
     });
 
+    test('a push that arrives while the tour is adding a stop\'s file does not make the tour skip the stop or keep the file', async ({ page }) => {
+      await openWithTour(page);
+      // The requests for the review's context files are held from here on,
+      // and let through one at a time, in the order this test chooses.
+      const held = [];
+      await page.route(/\/api\/reviews\/\d+\/context-files$/, (route) => {
+        if (route.request().method() !== 'GET' || held.done) return route.fallback();
+        return new Promise((release) => held.push({ request: route.request(), release: () => { release(); return route.fallback(); } }));
+      });
+
+      // The tour reaches the stop outside the diff: it adds the file and loads the context files ...
+      await page.locator('.tour-bar .tour-bar__next').click();
+      await expect.poll(() => held.length).toBe(1);
+      expect(added()).toEqual([expect.objectContaining({ file: LONG, line_start: 100, line_end: 104 })]);
+      // ... and before that load has its answer, a push starts a second one
+      // (another client changed the review's context files, or the server
+      // answered a comment on a file outside the diff).
+      await pushContextFilesChanged(page, mode.reviewId);
+      await expect.poll(() => held.length).toBe(2);
+
+      // The tour's load is answered first, while the push's is still in flight.
+      const first = held[0];
+      const answered = page.waitForResponse((response) => response.request() === first.request);
+      await first.release();
+      await (await answered).finished();
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      held.done = true;
+      await held[1].release();
+
+      // The stop is reached, not skipped, and drawn in the file the tour
+      // added once. (Where the pane ends up is the scenario above's; here
+      // the file is brought into view by the test.)
+      await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 2 of 2');
+      await expectContextFile(page, LONG);
+      expect(added()).toHaveLength(1);
+      await scrollFileIntoView(page, LONG);
+      await expect(contextFile(page, LONG).locator('.tour-annotation-row')).toHaveCount(1);
+      await expect(tourStop(page, 1).locator('.tour-annotation-title')).toHaveText('Outside the diff');
+
+      // Leaving the tour removes the file the tour added from the store ...
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.tour-bar')).toHaveCount(0);
+      await expect(page.locator('.tour-annotation-row')).toHaveCount(0);
+      await expect.poll(() => api.rows).toEqual([]);
+      expect(removed()).toHaveLength(1);
+      // ... and from the pane and the sidebar.
+      if (CONTEXT_LOADS_IN_FLIGHT === 'one-state') {
+        await expectNoContextFile(page, LONG);
+        expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, []));
+        expect((await sidebarEntries(page)).map((e) => e.file)).toEqual(DIFF_FILES);
+        await assertNoOrphanHosts(page);
+      }
+    });
+
     test('a context file that was there before the tour is used by the stop and stays when the tour ends', async ({ page }) => {
       api.add({ review_id: mode.reviewId, file: LONG, line_start: 90, line_end: 130 });
       await openWithTour(page);
-      await expect(contextFile(page, LONG)).toBeVisible();
+      await expectContextFile(page, LONG);
 
       await page.locator('.tour-bar .tour-bar__next').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 2 of 2');
@@ -590,7 +739,7 @@ for (const mode of MODES) {
       await expect(page.locator('.tour-bar')).toHaveCount(0);
       await expect(page.locator('.tour-annotation-row')).toHaveCount(0);
       // The reader's own context file is not the tour's to remove.
-      await expect(contextFile(page, LONG)).toBeVisible();
+      await expectContextFile(page, LONG);
       expect((await contextFileState(page, LONG)).ranges).toEqual([{ start: 90, end: 130 }]);
       expect(removed()).toEqual([]);
       expect(api.rows).toHaveLength(1);
