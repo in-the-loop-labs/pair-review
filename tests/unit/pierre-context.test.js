@@ -2,7 +2,7 @@
 
 // The module assigns to window.PierreContext; provide the global so require() works.
 global.window = global.window || {};
-const { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew } =
+const { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew, rangesFromExpansionMap } =
   require('../../public/js/modules/pierre-context.js');
 
 /**
@@ -459,19 +459,21 @@ describe('mergeContextRanges', () => {
     const meta = createTestMetadata();
     const result = mergeContextRanges(meta, [{ startLine: 30, endLine: 35 }]);
 
-    // Hunk 0 (original hunk 1 at 10): splitLineStart = 0
-    expect(result.hunks[0].splitLineStart).toBe(0);
-    expect(result.hunks[0].unifiedLineStart).toBe(0);
+    // A hunk's start is the row index of its first line in the full layout:
+    // everything above it, including the lines hidden right above it.
+    // Hunk 0 (original hunk 1 at 10): 9 hidden lines above it.
+    expect(result.hunks[0].splitLineStart).toBe(9);
+    expect(result.hunks[0].unifiedLineStart).toBe(9);
 
-    // Hunk 0 contributes: collapsedBefore(9) + splitLineCount(11) = 20
-    // Hunk 1 (context at 30): splitLineStart = 20
-    expect(result.hunks[1].splitLineStart).toBe(20);
-    expect(result.hunks[1].unifiedLineStart).toBe(20);
+    // Hunk 0 ends at row 9 + 11 = 20; 9 lines (21-29) are hidden before the
+    // context hunk at 30.
+    expect(result.hunks[1].splitLineStart).toBe(29);
+    expect(result.hunks[1].unifiedLineStart).toBe(29);
 
-    // Hunk 1 contributes: collapsedBefore(9) + splitLineCount(6) = 15
-    // Hunk 2 (original hunk 2 at 50): splitLineStart = 20 + 15 = 35
-    expect(result.hunks[2].splitLineStart).toBe(35);
-    expect(result.hunks[2].unifiedLineStart).toBe(35);
+    // The context hunk ends at row 29 + 6 = 35; 14 lines (36-49) are hidden
+    // before the original hunk 2 at 50.
+    expect(result.hunks[2].splitLineStart).toBe(49);
+    expect(result.hunks[2].unifiedLineStart).toBe(49);
   });
 
   // ── Preserves baseMetadata fields ─────────────────────────────────
@@ -790,5 +792,254 @@ describe('convertOldToNew', () => {
     const ctxHunk = result.hunks.find(h => h.additionStart === 16);
     expect(ctxHunk).toBeDefined();
     expect(ctxHunk.deletionStart).toBe(20);
+  });
+});
+
+// ─── Line starts in the viewer's convention ─────────────────────────────
+//
+// The virtualized viewer lays rows out from each hunk's splitLineStart and
+// unifiedLineStart. Its own producers write "everything above this hunk,
+// including the lines hidden right above it". The inputs below are produced
+// by the installed package's own parsers, so the shapes are real; what is
+// asserted is what mergeContextRanges writes.
+
+describe('mergeContextRanges writes line starts the way the viewer lays rows out', () => {
+  let vendor;
+  beforeAll(async () => {
+    vendor = await import('@pierre/diffs');
+  });
+
+  const lines = (n, tag = 'line') => Array.from({ length: n }, (_, i) => `${tag} ${i + 1}`);
+  const OLD = lines(400);
+  const NEW = (() => {
+    const out = OLD.slice();
+    out[119] = 'changed 120';
+    out.splice(249, 0, 'inserted after 249');
+    return out;
+  })();
+  const text = (arr) => `${arr.join('\n')}\n`;
+  const PATCH = [
+    'diff --git a/src/a.js b/src/a.js',
+    '--- a/src/a.js',
+    '+++ b/src/a.js',
+    '@@ -117,7 +117,7 @@',
+    ...OLD.slice(116, 119).map((l) => ` ${l}`),
+    `-${OLD[119]}`,
+    '+changed 120',
+    ...OLD.slice(120, 123).map((l) => ` ${l}`),
+    '@@ -247,6 +247,7 @@',
+    ...OLD.slice(246, 249).map((l) => ` ${l}`),
+    '+inserted after 249',
+    ...OLD.slice(249, 252).map((l) => ` ${l}`),
+    '',
+  ].join('\n');
+
+  /** Every hunk's starts equal the running total above it plus its own hidden lines. */
+  function expectVendorLineStarts(metadata) {
+    let split = 0;
+    let unified = 0;
+    expect(metadata.hunks.length).toBeGreaterThan(0);
+    for (const hunk of metadata.hunks) {
+      expect(hunk.splitLineStart).toBe(split + hunk.collapsedBefore);
+      expect(hunk.unifiedLineStart).toBe(unified + hunk.collapsedBefore);
+      split += hunk.collapsedBefore + hunk.splitLineCount;
+      unified += hunk.collapsedBefore + hunk.unifiedLineCount;
+    }
+  }
+
+  function partialDiff() {
+    return vendor.parsePatchFiles(PATCH)[0].files[0];
+  }
+  function hydratedDiff() {
+    return vendor.hydratePartialDiff('clone', partialDiff(), {
+      oldFile: { name: 'src/a.js', contents: text(OLD) },
+      newFile: { name: 'src/a.js', contents: text(NEW) },
+    });
+  }
+  function zeroHunkBase() {
+    const file = { name: 'src/ctx.js', contents: text(lines(400)) };
+    return vendor.parseDiffFromFile(file, file);
+  }
+
+  it('the inputs are what the test says they are', () => {
+    expect(partialDiff().isPartial).toBe(true);
+    expect(partialDiff().hunks).toHaveLength(2);
+    expect(hydratedDiff().isPartial).toBe(false);
+    expect(hydratedDiff().additionLines).toHaveLength(401);
+    expect(zeroHunkBase().hunks).toHaveLength(0);
+    expect(zeroHunkBase().additionLines).toHaveLength(400);
+    // The package's own output satisfies the formula this suite holds
+    // mergeContextRanges to.
+    expectVendorLineStarts(partialDiff());
+    expectVendorLineStarts(hydratedDiff());
+  });
+
+  const CASES = [
+    ['one range', [{ startLine: 30, endLine: 40 }]],
+    ['two ranges', [{ startLine: 30, endLine: 40 }, { startLine: 300, endLine: 310 }]],
+    ['a range touching a hunk', [{ startLine: 100, endLine: 116 }]],
+    ['a range between the hunks and one after the last', [{ startLine: 180, endLine: 190 }, { startLine: 390, endLine: 400 }]],
+  ];
+
+  for (const [name, ranges] of CASES) {
+    it(`a diff parsed from a patch alone holds no line outside its hunks, so it comes back as it was: ${name}`, () => {
+      // A partial diff's additionLines are the patch's lines only. Production
+      // merges ranges into a diff with full contents (below), never into this.
+      const base = partialDiff();
+      const merged = mergeContextRanges(base, ranges);
+      expect(merged).toBe(base);
+      expectVendorLineStarts(merged);
+    });
+
+    it(`a diff with full contents, ${name}`, () => {
+      const base = hydratedDiff();
+      const merged = mergeContextRanges(base, ranges);
+      expect(merged.hunks.length).toBeGreaterThan(base.hunks.length);
+      expectVendorLineStarts(merged);
+    });
+
+    it(`a file without changes, ${name}`, () => {
+      const merged = mergeContextRanges(zeroHunkBase(), ranges);
+      expect(merged.hunks.length).toBeGreaterThan(0);
+      expectVendorLineStarts(merged);
+    });
+  }
+
+  it('ranges 100-120 and 300-310 of a file without changes start at rows 99 and 299', () => {
+    const merged = mergeContextRanges(zeroHunkBase(), [{ startLine: 100, endLine: 120 }, { startLine: 300, endLine: 310 }]);
+    expect(merged.hunks.map((h) => [h.collapsedBefore, h.unifiedLineStart, h.splitLineStart])).toEqual([
+      [99, 99, 99],
+      [179, 299, 299],
+    ]);
+    expect(merged.unifiedLineCount).toBe(400);
+    expect(merged.splitLineCount).toBe(400);
+  });
+
+  it('leaves the base metadata it was given as it was', () => {
+    const base = hydratedDiff();
+    const before = base.hunks.map((h) => [h.collapsedBefore, h.unifiedLineStart, h.splitLineStart]);
+    mergeContextRanges(base, [{ startLine: 30, endLine: 40 }]);
+    expect(base.hunks.map((h) => [h.collapsedBefore, h.unifiedLineStart, h.splitLineStart])).toEqual(before);
+  });
+});
+
+// ─── rangesFromExpansionMap ─────────────────────────────────────────────
+
+describe('rangesFromExpansionMap', () => {
+  /** 400-line file with hunks at 100-120 and 300-310 (no changes: context hunks). */
+  function twoHunkMetadata() {
+    const base = {
+      name: 'ctx.js', type: 'change', isPartial: false, hunks: [],
+      additionLines: new Array(400).fill('x'), deletionLines: new Array(400).fill('x'),
+      splitLineCount: 0, unifiedLineCount: 0,
+    };
+    return mergeContextRanges(base, [{ startLine: 100, endLine: 120 }, { startLine: 300, endLine: 310 }]);
+  }
+
+  it('answers nothing without a map, for partial metadata, and for missing metadata', () => {
+    expect(rangesFromExpansionMap(twoHunkMetadata(), null)).toEqual([]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map())).toEqual([]);
+    expect(rangesFromExpansionMap({ ...twoHunkMetadata(), isPartial: true }, new Map([[0, { fromStart: 5, fromEnd: 5 }]]))).toEqual([]);
+    expect(rangesFromExpansionMap(null, new Map([[0, { fromStart: 5, fromEnd: 5 }]]))).toEqual([]);
+    expect(rangesFromExpansionMap(undefined, undefined)).toEqual([]);
+  });
+
+  it('a file without hunks has no gap to report', () => {
+    const meta = { isPartial: false, hunks: [], additionLines: new Array(30).fill('x'), deletionLines: new Array(30).fill('x') };
+    expect(rangesFromExpansionMap(meta, new Map([[0, { fromStart: Infinity, fromEnd: 0 }]]))).toEqual([]);
+  });
+
+  it('reads partial regions at the start and the end of the gap before a hunk', () => {
+    const map = new Map([[1, { fromStart: 20, fromEnd: 40 }]]);
+    // Gap 1 is lines 121-299.
+    expect(rangesFromExpansionMap(twoHunkMetadata(), map)).toEqual([
+      { startLine: 121, endLine: 140 },
+      { startLine: 260, endLine: 299 },
+    ]);
+  });
+
+  it('the gap before the first hunk and the gap after the last', () => {
+    const map = new Map([
+      [0, { fromStart: 0, fromEnd: 20 }],
+      [2, { fromStart: 20, fromEnd: 0 }],
+    ]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), map)).toEqual([
+      { startLine: 80, endLine: 99 },
+      { startLine: 311, endLine: 330 },
+    ]);
+  });
+
+  it('Infinity is the whole gap, from either end', () => {
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[1, { fromStart: Infinity, fromEnd: 0 }]])))
+      .toEqual([{ startLine: 121, endLine: 299 }]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[1, { fromStart: 0, fromEnd: Infinity }]])))
+      .toEqual([{ startLine: 121, endLine: 299 }]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[0, { fromStart: Infinity, fromEnd: Infinity }]])))
+      .toEqual([{ startLine: 1, endLine: 99 }]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[2, { fromStart: Infinity, fromEnd: 0 }]])))
+      .toEqual([{ startLine: 311, endLine: 400 }]);
+  });
+
+  it('clamps counts to the gap and joins two regions that meet', () => {
+    // Gap 0 is lines 1-99.
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[0, { fromStart: 60, fromEnd: 60 }]])))
+      .toEqual([{ startLine: 1, endLine: 99 }]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[0, { fromStart: 500, fromEnd: 0 }]])))
+      .toEqual([{ startLine: 1, endLine: 99 }]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[0, { fromStart: 49, fromEnd: 49 }]])))
+      .toEqual([{ startLine: 1, endLine: 49 }, { startLine: 51, endLine: 99 }]);
+  });
+
+  it('the gap after the last hunk only grows from its start', () => {
+    expect(rangesFromExpansionMap(twoHunkMetadata(), new Map([[2, { fromStart: 0, fromEnd: 30 }]]))).toEqual([]);
+  });
+
+  it('ignores counts that are not positive numbers', () => {
+    const map = new Map([[1, { fromStart: -3, fromEnd: NaN }], [0, { fromStart: '20', fromEnd: undefined }]]);
+    expect(rangesFromExpansionMap(twoHunkMetadata(), map)).toEqual([]);
+  });
+
+  it('a gap of five lines or fewer is on screen without an entry; six lines are not', () => {
+    const base = {
+      isPartial: false, hunks: [],
+      additionLines: new Array(40).fill('x'), deletionLines: new Array(40).fill('x'),
+    };
+    // Gaps: 1-5 (5 lines), 11-16 (6 lines), 21-25 (5 lines), 31-40 (10 lines).
+    const meta = mergeContextRanges(base, [
+      { startLine: 6, endLine: 10 }, { startLine: 17, endLine: 20 }, { startLine: 26, endLine: 30 },
+    ]);
+    expect(rangesFromExpansionMap(meta, new Map())).toEqual([
+      { startLine: 1, endLine: 5 },
+      { startLine: 21, endLine: 25 },
+    ]);
+    expect(rangesFromExpansionMap(meta, new Map(), { threshold: 6 })).toEqual([
+      { startLine: 1, endLine: 5 },
+      { startLine: 11, endLine: 16 },
+      { startLine: 21, endLine: 25 },
+    ]);
+  });
+
+  it('accepts a plain object keyed by gap index', () => {
+    expect(rangesFromExpansionMap(twoHunkMetadata(), { 1: { fromStart: 3, fromEnd: 0 } }))
+      .toEqual([{ startLine: 121, endLine: 123 }]);
+  });
+
+  it('answers in deletion-side coordinates when asked', () => {
+    const meta = createTestMetadata();
+    // Hunk 2: additionStart 50, deletionStart 47, collapsedBefore as parsed.
+    meta.hunks[0].collapsedBefore = 9;
+    meta.hunks[1].collapsedBefore = 29;
+    const map = new Map([[1, { fromStart: 0, fromEnd: 10 }]]);
+    expect(rangesFromExpansionMap(meta, map)).toEqual([{ startLine: 40, endLine: 49 }]);
+    expect(rangesFromExpansionMap(meta, map, { side: 'deletions' })).toEqual([{ startLine: 37, endLine: 46 }]);
+  });
+
+  it('does not change the metadata or the map', () => {
+    const meta = twoHunkMetadata();
+    const snapshot = JSON.stringify(meta.hunks);
+    const map = new Map([[1, { fromStart: 20, fromEnd: Infinity }]]);
+    rangesFromExpansionMap(meta, map);
+    expect(JSON.stringify(meta.hunks)).toBe(snapshot);
+    expect(map.get(1)).toEqual({ fromStart: 20, fromEnd: Infinity });
   });
 });

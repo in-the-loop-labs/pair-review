@@ -65,6 +65,10 @@ const ALLOWED = [
       'Error loading recent reviews',
       'Error loading config',
       'Error loading team-reviews',
+      // The same tab's second request: the live refresh (POST) that follows
+      // the cached GET. A reload right after applying a team filter
+      // (team-reviews-filter.spec.js) interrupts whichever is in flight.
+      'Error refreshing team-reviews',
     ].join('|') + '): TypeError: Failed to fetch(?:$|\\s)'),
     reason: 'An in-flight fetch aborted by a navigation, a reload or the page closing at the end of a test: the named loader logs the rejection of what it was loading. The test server is in-process and always up, so for these loaders this is never a server failure. Only console.error lines with one of these prefixes are covered; an uncaught "Failed to fetch" is not.',
   },

@@ -17,7 +17,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, whenReviewEventsBound } from './helpers.js';
 import { waitForFileRendered } from './diff-dom.js';
 
 const PR_REVIEW_ID = 1;
@@ -91,6 +91,7 @@ async function readFirstHunkHash(page, fileName) {
  * mirrors what ChatPanel does when the WebSocket relays the same payload.
  */
 async function dispatchSummariesReady(page, payload) {
+  await whenReviewEventsBound(page);
   await page.evaluate(({ payload: detail }) => {
     document.dispatchEvent(new CustomEvent('review:hunk_summaries_ready', { detail }));
   }, { payload });
@@ -104,6 +105,7 @@ async function dispatchSummariesReady(page, payload) {
  * cancel dialog.
  */
 async function dispatchJobFinished(page, { reviewId, jobType, hasActiveForType = false }) {
+  await whenReviewEventsBound(page);
   await page.evaluate(({ reviewId: rid, jobType: jt, hasActiveForType: active }) => {
     document.dispatchEvent(new CustomEvent('review:background_job_finished', {
       detail: { reviewId: rid, jobType: jt, hasActiveForType: active }
@@ -259,6 +261,10 @@ for (const mode of MODES) {
       await expect(toggle).toHaveClass(/generating/);
 
       // Backend signals the summary job has finished — pulse should clear.
+      // The page starts listening for pushes after the diff has rendered and
+      // the button is already pulsing; an event dispatched before that is
+      // heard by nobody and the pulse never clears.
+      await whenReviewEventsBound(page);
       await page.evaluate((reviewId) => {
         document.dispatchEvent(new CustomEvent('review:background_job_finished', {
           detail: { reviewId, jobType: 'summaries:abc123', ok: true }

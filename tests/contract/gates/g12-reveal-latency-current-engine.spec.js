@@ -33,7 +33,7 @@ test('G12: reveal latency through main\'s PierreBridge (FileDiff) and through a 
   // ---- current engine: main's bridge, per-file FileDiff ----
   const fileDiffPage = await harness.open({
     bundle: 'prod',
-    scripts: ['/app/js/modules/pierre-context.js', '/app/js/modules/pierre-bridge.js'],
+    scripts: ['/app/js/modules/pierre-context.js', '/app/js/modules/pierre-styles.js', '/app/js/modules/pierre-annotations.js', '/app/js/modules/pierre-bridge.js'],
   });
   const current = await fileDiffPage.evaluate(async (RUNS) => {
     const H = window.H;

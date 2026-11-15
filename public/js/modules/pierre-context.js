@@ -269,12 +269,22 @@ function mergeContextRanges(baseMetadata, ranges) {
     }
   }
 
-  // Walk merged hunks accumulating splitLineStart / unifiedLineStart
+  // Walk merged hunks accumulating splitLineStart / unifiedLineStart.
+  //
+  // A hunk's line start is the row index of its FIRST line in the file's full
+  // layout, so it includes the hunk's own collapsedBefore: the running total
+  // of everything above, plus the lines hidden right above this hunk. That is
+  // the convention of the vendor's own producers (parsePatchFiles,
+  // hydratePartialDiff, updateDiffHunks), and the virtualized viewer lays
+  // rows out from these two fields. Writing the running total alone (as this
+  // function did before) is invisible to a non-virtualized FileDiff and puts a
+  // CodeView item one row out of step with its layout once a gap above a
+  // revealed range is expanded by hand.
   let cumulativeSplit = 0;
   let cumulativeUnified = 0;
   for (const hunk of allHunks) {
-    hunk.splitLineStart = cumulativeSplit;
-    hunk.unifiedLineStart = cumulativeUnified;
+    hunk.splitLineStart = cumulativeSplit + hunk.collapsedBefore;
+    hunk.unifiedLineStart = cumulativeUnified + hunk.collapsedBefore;
     cumulativeSplit += hunk.collapsedBefore + hunk.splitLineCount;
     cumulativeUnified += hunk.collapsedBefore + hunk.unifiedLineCount;
   }
@@ -335,11 +345,87 @@ function convertOldToNew(baseMetadata, oldStart, oldEnd) {
   };
 }
 
+// ─── Manual expansions as ranges ──────────────────────────────────────
+
+/**
+ * The lines of a file's hidden gaps that are on screen without being part of
+ * a hunk, as ranges: what the reader revealed with the viewer's expand
+ * controls, plus every gap small enough for the viewer to paint in full.
+ *
+ * `expansionMap` is the viewer's own record of manual expansions: for gap
+ * index i (the gap BEFORE hunk i; index hunks.length is the gap after the last
+ * hunk) an entry `{ fromStart, fromEnd }` counting the lines revealed at the
+ * beginning and at the end of that gap. A whole gap is recorded as Infinity.
+ * Every count is clamped to the gap, and a gap revealed from both ends past
+ * its middle comes back as one range.
+ *
+ * Pure: reads `metadata` and the map, touches neither.
+ *
+ * @param {Object} metadata - FileDiffMetadata the expansions were made on
+ * @param {Map<number, {fromStart: number, fromEnd: number}>|Object|null} expansionMap
+ *   A Map, or anything with `get(index)`, or a plain object keyed by index
+ * @param {Object} [options]
+ * @param {'additions'|'deletions'} [options.side='additions'] - coordinates of
+ *   the returned ranges
+ * @param {number} [options.threshold=5] - the viewer's collapsedContextThreshold:
+ *   gaps of this many lines or fewer are painted in full by the viewer. (A
+ *   default parameter, not a top-level constant: this file is a classic
+ *   script, and top-level `const` names are shared by every script on the page.)
+ * @returns {Array<{startLine: number, endLine: number}>} in file order
+ */
+function rangesFromExpansionMap(metadata, expansionMap, { side = 'additions', threshold = 5 } = {}) {
+  if (!metadata || metadata.isPartial) return [];
+  const hunks = Array.isArray(metadata.hunks) ? metadata.hunks : [];
+  const sideKey = side === 'deletions' ? 'deletion' : 'addition';
+  const totalLines = metadata[`${sideKey}Lines`]?.length || 0;
+  const entryFor = (index) => {
+    if (!expansionMap) return null;
+    if (typeof expansionMap.get === 'function') return expansionMap.get(index) || null;
+    return expansionMap[index] || null;
+  };
+  const count = (value, gapSize) => {
+    if (value === Infinity) return gapSize;
+    if (typeof value !== 'number' || !(value > 0)) return 0;
+    return Math.min(gapSize, Math.floor(value));
+  };
+
+  const ranges = [];
+  for (let i = 0; i <= hunks.length; i++) {
+    const hunk = hunks[i];
+    const last = hunks[hunks.length - 1];
+    // A file without hunks has one gap: the whole file. The viewer draws no
+    // row for it, so there is nothing to report.
+    if (!hunk && !last) continue;
+    const start = hunk
+      ? hunk[`${sideKey}Start`] - hunk.collapsedBefore
+      : last[`${sideKey}Start`] + last[`${sideKey}Count`];
+    const end = hunk ? hunk[`${sideKey}Start`] - 1 : totalLines;
+    const gapSize = end - start + 1;
+    if (gapSize <= 0) continue;
+    if (gapSize <= threshold) {
+      ranges.push({ startLine: start, endLine: end });
+      continue;
+    }
+    const entry = entryFor(i);
+    if (!entry) continue;
+    const fromStart = count(entry.fromStart, gapSize);
+    // The gap after the last hunk has no hunk below it to grow from.
+    const fromEnd = hunk ? count(entry.fromEnd, gapSize) : 0;
+    if (fromStart + fromEnd >= gapSize) {
+      ranges.push({ startLine: start, endLine: end });
+      continue;
+    }
+    if (fromStart > 0) ranges.push({ startLine: start, endLine: start + fromStart - 1 });
+    if (fromEnd > 0) ranges.push({ startLine: end - fromEnd + 1, endLine: end });
+  }
+  return ranges;
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────
 
-window.PierreContext = { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew };
+window.PierreContext = { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew, rangesFromExpansionMap };
 
 // CommonJS export for tests
 if (typeof module !== 'undefined') {
-  module.exports = { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew };
+  module.exports = { mergeContextRanges, mergeOverlapping, subtractRanges, convertOldToNew, rangesFromExpansionMap };
 }

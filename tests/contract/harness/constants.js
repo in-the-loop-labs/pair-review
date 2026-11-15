@@ -5,27 +5,13 @@
 
 /**
  * `unsafeCSS` that makes a file-level (lineNumber 0) annotation on a ROW-LESS
- * item (binary, mode-only, pure rename, empty file) measure correctly.
- *
- * The vendor keeps 8 px of bottom padding below the code area and only counts
- * it when the item has rows. With an annotation but no rows the DOM is 8 px
- * taller than the vendor's layout (contract: layout.spec.js, F10).
- *
- * Two things make the selector more than "code without lines":
- *
- *  - The padding is on a different element per diff style: `code[data-code]`
- *    in unified (pre is a block), `pre[data-diff]` in split (pre is the grid
- *    and code is display: contents). Hence two rules.
- *  - An ordinary item is sometimes mounted with NO rows in its rendered window
- *    (a header-only mount at the edge of the viewport). There the vendor DOES
- *    count the 8 px, so the rule must not match. Such a mount renders no
- *    annotation wrapper either, while a row-less item with a file-level
- *    annotation always has one. Hence `:has([data-line-annotation])`.
+ * item (binary, mode-only, pure rename, empty file) measure correctly. The
+ * text is production's: public/js/modules/pierre-styles.js explains the two
+ * rules, and the CodeView bridge passes them in its `unsafeCSS`. The specs
+ * that pin the vendor behaviour behind it (layout.spec.js, gate G11) import
+ * it from here.
  */
-const ROWLESS_FIX = [
-  '[data-code]:has([data-line-annotation]):not(:has([data-line])) { padding-bottom: 0 !important; }',
-  'pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { padding-bottom: 0 !important; }',
-].join('\n');
+const { ROWLESS_FIX } = require('../../../public/js/modules/pierre-styles.js');
 
 /**
  * The rule as the plan's first draft had it. Kept so specs can show what it
@@ -33,4 +19,25 @@ const ROWLESS_FIX = [
  */
 const ROWLESS_FIX_FIRST_DRAFT = '[data-code]:not(:has([data-line])) { padding-bottom: 0 !important; }';
 
-module.exports = { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT };
+/**
+ * CSS the CodeView cut-over needs on top of pr.css, scoped by
+ * `.diff-view.codeview-engine` as phase 5 will scope it. Recorded in the
+ * ledger (section 6, correction 3); phase 5 moves it into pr.css under the
+ * same scope. Gates G9 and G13 load it next to the unmodified stylesheet.
+ */
+const CANDIDATE_CSS = `
+.main-layout .diff-view.codeview-engine { overflow: hidden; }
+.diff-view.codeview-engine > #diff-container {
+  flex: 1 1 0; min-height: 0; overflow-y: auto;
+  /* The vendor lays items out from the top edge of the scroll root's content
+     box and does not know about padding or a border above it: main's 16 px
+     padding and 1 px border put every item 17 px below where the vendor
+     thinks it is. The vertical space moves into layout.paddingTop/Bottom. */
+  padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+}
+.diff-view.codeview-engine diffs-container.d2h-file-wrapper[data-file-name] { margin-bottom: 0; }
+.diff-view.codeview-engine .pr-file-header-slot { height: var(--pr-file-header-height); box-sizing: border-box; overflow: hidden; }
+.diff-view.codeview-engine .pr-file-header-slot > .d2h-file-header { position: static; height: 100%; box-sizing: border-box; }
+`;
+
+module.exports = { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT, CANDIDATE_CSS };

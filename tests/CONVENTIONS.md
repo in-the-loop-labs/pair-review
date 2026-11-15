@@ -344,6 +344,54 @@ because violating it produced a real, observed flake or measurable waste.
   a measurement to the test and, with `CONTRACT_EVIDENCE_DIR` set, writes it to
   disk. Assert structure instead: "at least one frame passed", "the card
   arrived together with the new diff".
+- **The CodeView bridge is tested in the browser against the real vendor**
+  (`tests/contract/bridge`, the same command). `openBridge(harness)` from
+  `bridge-test.js` loads the development bundle, the production
+  `PierreCodeViewBridge` with the modules it depends on, and the app's own CSS
+  for the gutter buttons; `window.BH` (`bridge-page.js`) builds entries from
+  the workload and constructs the bridge the way the app does. A spec drives
+  the bridge's public API and asserts the DOM and the bridge's data; it ends
+  with `BH.sound()` (no orphan host, an exact layout), and the height
+  validator is on for every test. No `pr.js` is loaded: what the page does
+  with the bridge is E2E's subject.
+- **Bridge behaviour that depends on being inside a viewer callback is tested
+  from inside one**, in the browser: `BH.fromViewerCallback('hook' | 'renderer',
+  file, line, fn)` runs `fn` from the page's lifecycle hook or from a card
+  renderer during a real render pass. Such a test asserts both moments, the
+  same task and after the pass (`await Promise.resolve()`, then `H.settle`),
+  and compares the viewer's list with the bridge's records through
+  `BH.listState(ids)` (`outOfStep` empty) and `BH.spyOnSetItems()` (how many
+  list writes reached the real instance). Calling a viewer callback by hand on
+  the unit stub proves what the bridge sends, never that the vendor accepts it.
+  What the bridge sends to the viewer's list is read through
+  `BH.spyOnListCommands()` (every `scrollTo` and `setSelectedLines` on the real
+  instance, with whether the viewer had the item and the item showed the line
+  at that moment), and what it asks of the page through the hooks themselves
+  and `BH.rendererCalls`. A scenario that is one order of events among several
+  (a hook asking during a write's flush, a command sent from a hook) is run
+  twice, next to its control (the same calls made directly, one after the
+  other), and must end where the control ends: same file, same pixel, same
+  selection.
+- **What a publish guarantees, and what it does not.** After an
+  annotation-only publish on a file that is mounted, expanded, with no new
+  diff awaiting display and with the worker pool ready, the card is connected
+  in the same task. In every other state it is not: an unmounted or collapsed
+  file draws nothing, a file whose new diff is still being highlighted goes on
+  showing the old one with the cards it had, and nothing is mounted before the
+  pool is ready. And the viewer attaches the wrapper of an annotation whose
+  line it does not draw, with no height. So a test (and the application) may
+  never read "the card is not in the document" as "the line is not shown", nor
+  "the card is connected" as "the card is on screen": ask
+  `bridge.isLineVisible` for the line and `bridge.getAnnotationElement` for
+  the card, and use auto-waiting assertions for what reaches the screen.
+- **A unit test of the CodeView bridge uses the recording stub of
+  `tests/utils/codeview-bridge-harness.js`** in place of the viewer: it stores
+  what the bridge sends and answers booleans and items. It never renders,
+  mounts or calls a render callback, so such a test covers the bridge's own
+  decisions only (records, derived metadata and their keys, the visibility
+  oracle, the flush state machine, which records a reconcile keeps and when it
+  writes the list). The metadata it works on comes from the installed
+  package's own parsers.
 - **The contract suite gates every `@pierre/diffs` bump.** The dependency is
   pinned to an exact version; `tests/unit/vendor-bundle-fresh.test.js` fails
   when the served bundle was not rebuilt after an install.

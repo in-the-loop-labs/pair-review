@@ -320,9 +320,31 @@ async function mockContextFilesApi(page, { diffFiles = [], initialRows = [] } = 
  */
 async function mockAppConfig(page, overrides) {
   await page.route('**/api/config', async (route) => {
-    const response = await route.fetch();
-    const config = await response.json();
-    await route.fulfill({ response, json: { ...config, ...overrides } });
+    // `route.fetch()` is a request from the test process, on a kept-alive
+    // connection the test server may have closed meanwhile (`read
+    // ECONNRESET`), and it is cut off when the page goes away mid-request.
+    // A rejection that leaves this handler is an unhandled rejection in the
+    // worker: it fails whichever test is running and restarts the worker.
+    // So: one more attempt on a fresh connection, then the request fails for
+    // the page as it would have without the mock. Nothing is thrown.
+    let response = null;
+    for (let attempt = 0; attempt < 2 && !response; attempt++) {
+      try {
+        response = await route.fetch();
+      } catch {
+        response = null;
+      }
+    }
+    try {
+      if (!response) {
+        await route.abort('failed');
+        return;
+      }
+      const config = await response.json();
+      await route.fulfill({ response, json: { ...config, ...overrides } });
+    } catch {
+      // The page or its context closed while the answer was on its way.
+    }
   });
 }
 
@@ -343,12 +365,26 @@ async function mockHunkSummaries(page, summaries = []) {
 }
 
 /**
+ * Resolves once the page listens for the server's pushes (`review:*` events).
+ * The page registers those listeners at the end of its load sequence, after
+ * the diff has rendered and after the suggestions and the running-analysis
+ * check have been fetched (`PRManager._initReviewEventListeners`), so
+ * `waitForDiffToRender` returns before they exist. A test that stands in for
+ * a push by dispatching the event itself must wait for this first, or the
+ * event goes to nobody.
+ */
+async function whenReviewEventsBound(page) {
+  await page.waitForFunction(() => window.prManager?._reviewEventsBound === true);
+}
+
+/**
  * What the server's push does in the page when summaries for one file have
  * been generated (E2E has no WebSocket; the client dispatches this DOM event
  * for the message), followed by the "job finished" push that ends the
  * toolbar button's generating state.
  */
 async function pushHunkSummaries(page, reviewId, filePath, summaries) {
+  await whenReviewEventsBound(page);
   await page.evaluate(({ rid, file, list }) => {
     document.dispatchEvent(new CustomEvent('review:hunk_summaries_ready', {
       detail: { reviewId: rid, filePath: file, summaries: list }
@@ -766,6 +802,7 @@ module.exports = {
   mockContextFilesApi,
   mockAppConfig,
   mockHunkSummaries,
+  whenReviewEventsBound,
   pushHunkSummaries,
   mockTour,
   mockExternalComments,
