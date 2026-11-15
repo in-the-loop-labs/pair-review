@@ -20,24 +20,26 @@ const { ROWLESS_FIX } = require('../../../public/js/modules/pierre-styles.js');
 const ROWLESS_FIX_FIRST_DRAFT = '[data-code]:not(:has([data-line])) { padding-bottom: 0 !important; }';
 
 /**
- * CSS the CodeView cut-over needs on top of pr.css, scoped by
- * `.diff-view.codeview-engine` as phase 5 will scope it. Recorded in the
- * ledger (section 6, correction 3); phase 5 moves it into pr.css under the
- * same scope. Gates G9 and G13 load it next to the unmodified stylesheet.
+ * The stylesheets the application's two diff pages load, in the order they
+ * load them, as harness URLs. Read from the pages themselves: a gate that
+ * says "under the app's real CSS" has to load every one of them (styles.css,
+ * loaded after pr.css, changes the file header's padding and border with
+ * `!important`; a gate that loaded pr.css alone measured a 45 px header where
+ * the application's is 53 px).
+ * @returns {string[]}
  */
-const CANDIDATE_CSS = `
-.main-layout .diff-view.codeview-engine { overflow: hidden; }
-.diff-view.codeview-engine > #diff-container {
-  flex: 1 1 0; min-height: 0; overflow-y: auto;
-  /* The vendor lays items out from the top edge of the scroll root's content
-     box and does not know about padding or a border above it: main's 16 px
-     padding and 1 px border put every item 17 px below where the vendor
-     thinks it is. The vertical space moves into layout.paddingTop/Bottom. */
-  padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+function appStylesheets() {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const publicDir = path.resolve(__dirname, '../../../public');
+  const local = (page) => [...fs.readFileSync(path.join(publicDir, page), 'utf8').matchAll(/<link rel="stylesheet" href="(\/css\/[^"]+)"/g)]
+    .map((match) => `/app${match[1]}`);
+  const pr = local('pr.html');
+  if (pr.length === 0) throw new Error('pr.html lists no stylesheet of its own');
+  if (JSON.stringify(pr) !== JSON.stringify(local('local.html'))) {
+    throw new Error('pr.html and local.html load different stylesheets: the gates must run for each');
+  }
+  return pr;
 }
-.diff-view.codeview-engine diffs-container.d2h-file-wrapper[data-file-name] { margin-bottom: 0; }
-.diff-view.codeview-engine .pr-file-header-slot { height: var(--pr-file-header-height); box-sizing: border-box; overflow: hidden; }
-.diff-view.codeview-engine .pr-file-header-slot > .d2h-file-header { position: static; height: 100%; box-sizing: border-box; }
-`;
 
-module.exports = { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT, CANDIDATE_CSS };
+module.exports = { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT, appStylesheets };

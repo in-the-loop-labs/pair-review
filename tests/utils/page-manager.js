@@ -33,8 +33,19 @@ function makePageManager(overrides = {}) {
     contextFiles: [],
     userComments: [],
     _lazyFileBodies: null,
+    _diffEngine: 'filediff',
     findFileElement: () => null,
-  }, overrides);
+  });
+  // What is collapsed right now, and the virtualized viewer's page state.
+  manager._initPaneState();
+  Object.assign(manager, overrides);
+  // A test names the files of its diff and which of them the reader
+  // collapsed; the collapsed state of each is seeded as a render seeds it.
+  for (const path of manager.changedFilesByPath?.keys?.() || []) {
+    if (!manager._fileCollapsed.has(path)) {
+      manager._fileCollapsed.set(path, manager.viewedFiles.has(path) || manager.collapsedFiles.has(path));
+    }
+  }
   return manager;
 }
 

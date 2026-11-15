@@ -270,3 +270,69 @@ for (const gap of [2, 5, 6]) {
     expect(result.clean).toBe(true);
   });
 }
+
+test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the item lay itself out from its diff again after the expansion map was emptied by hand', async ({ harness }) => {
+  // Depends on it: PierreCodeViewBridge._clearExpansions. The bridge empties
+  // `instance.hunksRenderer.expandedHunks` before it publishes metadata with
+  // other hunks (the map is keyed by hunk index), and the item's cached
+  // heights were computed with the expanded lines in them. This is the
+  // second vendor internal the bridge calls (ledger H120).
+  const page = await harness.open();
+  const result = await page.evaluate(async () => {
+    const H = window.H;
+    const W = window.ContractWorkload;
+    const name = 'reset/file.js';
+    const oldLines = Array.from({ length: 120 }, (_, i) => `const line${i + 1} = ${i + 1};`);
+    const edits = [
+      { at: 10, del: 1, ins: ['const first = true;'] },
+      { at: 80, del: 1, ins: ['const second = true;'] },
+    ];
+    const newLines = W.applyEdits(oldLines, edits);
+    const hunks = W.hunksFromEdits(oldLines, edits);
+    const patch = `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}\n+++ b/${name}\n${hunks.text}\n`;
+    const partial = window.PierreDiffs.parsePatchFiles(patch)[0].files[0];
+    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', partial, {
+      oldFile: { name, contents: `${oldLines.join('\n')}\n` },
+      newFile: { name, contents: `${newLines.join('\n')}\n` },
+    });
+    const item = { id: name, type: 'diff', fileDiff: hydrated, annotations: [], version: 0 };
+    H.items = [item];
+    H.create({ ...H.APP_OPTIONS }, H.APP_CALLBACKS);
+    H.cv.setItems(H.items);
+    await H.settle();
+    const instance = H.instance(name);
+    const height = () => H.host(name).getBoundingClientRect().height;
+    const rows = () => H.host(name).shadowRoot.querySelectorAll('[data-content] > [data-line]').length;
+    const start = { height: height(), rows: rows(), clean: H.auditClean() };
+
+    // The reader expands the gap between the two hunks.
+    instance.expandHunk(1, 'both', Infinity);
+    H.cv.render(true);
+    await H.settle();
+    const expanded = { height: height(), rows: rows(), entries: instance.hunksRenderer.expandedHunks.size, clean: H.auditClean() };
+
+    // What the bridge does: empty the map, reset the cached layout, publish.
+    const publish = (version) => { H.cv.updateItem({ ...H.cv.getItem(name), version }); H.cv.render(true); };
+    instance.hunksRenderer.expandedHunks.clear();
+    const hasMethod = typeof instance.resetLayoutCache === 'function';
+    instance.resetLayoutCache({ includeEstimatedHeights: true });
+    publish(1);
+    await H.settle();
+    return {
+      hasMethod,
+      start,
+      expanded,
+      after: { height: height(), rows: rows(), clean: H.auditClean() },
+    };
+  });
+  expect(result.hasMethod).toBe(true);
+  expect(result.start.clean).toBe(true);
+  expect(result.expanded.entries).toBe(1);
+  expect(result.expanded.rows).toBeGreaterThan(result.start.rows);
+  expect(result.expanded.clean).toBe(true);
+  // Back to the diff's own layout: the same rows, the same height, exact.
+  expect(result.after.rows).toBe(result.start.rows);
+  expect(result.after.height).toBe(result.start.height);
+  expect(result.after.clean).toBe(true);
+  expect(harness.validatorErrors(page)).toEqual([]);
+});

@@ -1,6 +1,10 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * tests/e2e/diff-dom.js is the only E2E file that knows vendor DOM.
+ * tests/e2e/diff-dom.js is the only E2E module that knows vendor DOM. It has
+ * three files while the application has two engines: diff-dom.js itself (the
+ * surface every spec imports and what both engines share) and one half per
+ * engine, diff-dom-filediff.js and diff-dom-codeview.js, which only
+ * diff-dom.js loads.
  *
  * The diff engine is being moved from one @pierre/diffs FileDiff per file to a
  * single virtualized CodeView (plans/codeview-virtualized-diff.md). Parity is
@@ -40,8 +44,11 @@ const FORBIDDEN = [
   { name: 'a field of the bridge\'s file record', pattern: /\bbaseMetadata\b|\bgetRenderedDiff\b|\bfileDiff\b/ },
 ];
 
-/** Files allowed to contain them. */
-const ALLOWED_FILES = new Set(['diff-dom.js']);
+/** The module's engine halves: loaded by diff-dom.js alone. */
+const ENGINE_HALVES = ['diff-dom-filediff.js', 'diff-dom-codeview.js'];
+
+/** Files allowed to contain them: the module's surface, and its engine halves. */
+const ALLOWED_FILES = new Set(['diff-dom.js', ...ENGINE_HALVES]);
 
 /** Every .js file under tests/e2e, at any depth, as a path relative to it. */
 function listSources(dir = E2E_DIR) {
@@ -64,6 +71,10 @@ describe('E2E vendor DOM boundary', () => {
   it('finds the E2E sources and the one file that may know vendor DOM', () => {
     const names = listSources();
     expect(names).toContain('diff-dom.js');
+    for (const half of ENGINE_HALVES) {
+      expect(names).toContain(half);
+      expect(sources().map((s) => s.name)).not.toContain(half);
+    }
     // The corpus builders live one directory down and are scanned too.
     expect(names).toContain(path.join('fixtures', 'diffs.js'));
     expect(sources().map((s) => s.name)).not.toContain('diff-dom.js');
@@ -83,6 +94,43 @@ describe('E2E vendor DOM boundary', () => {
       });
     }
     expect(violations, `Move these behind tests/e2e/diff-dom.js:\n${violations.join('\n')}`).toEqual([]);
+  });
+
+  it('the engine halves are loaded by diff-dom.js and by nothing else', () => {
+    // A spec that imported one would know which engine it runs on.
+    for (const half of ENGINE_HALVES) {
+      const stem = half.replace(/\.js$/, '');
+      const importers = listSources()
+        .filter((name) => name !== half)
+        .filter((name) => new RegExp(`['"\`]\\./${stem}(\\.js)?['"\`]`).test(fs.readFileSync(path.join(E2E_DIR, name), 'utf8')));
+      expect(importers, half).toEqual(['diff-dom.js']);
+    }
+    // The virtualized viewer's half does know vendor DOM: the rule above is not vacuous for it.
+    const codeview = fs.readFileSync(path.join(E2E_DIR, 'diff-dom-codeview.js'), 'utf8');
+    expect(FORBIDDEN.filter((rule) => rule.pattern.test(codeview)).length).toBeGreaterThan(3);
+  });
+
+  it('a spec gets an engine\'s helpers under one name, whichever engine runs', () => {
+    const surface = fs.readFileSync(path.join(E2E_DIR, 'diff-dom.js'), 'utf8');
+    expect(surface).toContain('...engineAdapter.overrides,');
+    const overridesOf = (half) => {
+      const text = fs.readFileSync(path.join(E2E_DIR, half), 'utf8');
+      const block = text.slice(text.indexOf('    overrides: {'), text.indexOf('    expectations: {'));
+      return [...block.matchAll(/^\s{6}(\w+),$/gm)].map((match) => match[1]);
+    };
+    const filediff = overridesOf('diff-dom-filediff.js');
+    const codeview = overridesOf('diff-dom-codeview.js');
+    expect(filediff.length).toBeGreaterThan(8);
+    // Everything the default engine's half gives, the virtualized viewer's half gives too:
+    // a helper that existed on one engine only would be undefined on the other.
+    expect(filediff.filter((name) => !codeview.includes(name))).toEqual([]);
+    // What only the virtualized viewer's half gives replaces a helper diff-dom.js
+    // has for both engines (`ensureMounted` is its own: a file need not be mounted).
+    const exported = surface.slice(surface.indexOf('module.exports = {'));
+    const unknown = codeview
+      .filter((name) => !filediff.includes(name) && name !== 'ensureMounted')
+      .filter((name) => !new RegExp(`^  ${name},$`, 'm').test(exported));
+    expect(unknown).toEqual([]);
   });
 
   it('the patterns do match what they are meant to (and spare the application attributes)', () => {

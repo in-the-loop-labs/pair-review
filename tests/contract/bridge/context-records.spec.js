@@ -64,7 +64,7 @@ test('renderAll draws changed files and context files in entry order; a context 
   }, CONTEXT);
   expect(result.order).toEqual([diffA, CONTEXT, diffB]);
   expect(result.kinds).toEqual(['diff', 'context', 'diff']);
-  expect(result.host).toEqual({ fileName: CONTEXT, classes: ['context-file', 'd2h-file-wrapper'], header: CONTEXT });
+  expect(result.host).toEqual({ fileName: CONTEXT, classes: ['context-file', 'd2h-file-wrapper', 'has-diff-lines'], header: CONTEXT });
   expect(result.headerKind).toBe('context');
   expect(result.runs).toEqual([[100, 120], [300, 310]]);
   expect(result.rowTypes).toEqual(['context']);
@@ -384,7 +384,7 @@ test('a collapsed context file shows its header only, and setCollapsed works on 
     out.sound = BH.sound();
     return out;
   }, CONTEXT);
-  expect(result.collapsed).toEqual({ classes: ['collapsed', 'context-file', 'd2h-file-wrapper'], rows: 0, visible: false, height: 40 });
-  expect(result.expanded).toEqual({ classes: ['context-file', 'd2h-file-wrapper'], runs: [[100, 120], [300, 310]], visible: true });
+  expect(result.collapsed).toEqual({ classes: ['collapsed', 'context-file', 'd2h-file-wrapper', 'has-diff-lines'], rows: 0, visible: false, height: 40 });
+  expect(result.expanded).toEqual({ classes: ['context-file', 'd2h-file-wrapper', 'has-diff-lines'], runs: [[100, 120], [300, 310]], visible: true });
   expect(result.sound).toEqual({ orphans: 0, clean: true });
 });

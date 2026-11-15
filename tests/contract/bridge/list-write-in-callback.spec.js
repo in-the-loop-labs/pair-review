@@ -450,7 +450,7 @@ test('the old list drawn again before the write runs (a publish, a layout change
     return { before, removedSameTask, removedSettled, newDiffSameTask, newDiffSettled, names: T.names };
   }, { CONTEXT, readingIndex });
 
-  const contextClasses = ['context-file', 'd2h-file-wrapper', 'generated-file'];
+  const contextClasses = ['context-file', 'd2h-file-wrapper', 'generated-file', 'has-diff-lines'];
   expect(result.before).toEqual({ mounted: true, card: true, classes: contextClasses });
   expect(result.removedSameTask).toEqual({
     removed: [CONTEXT],
@@ -653,7 +653,7 @@ for (const [how, mode] of FIRST_DRAWN) {
       // The same pass went on to draw the item whose record is gone.
       mounted: true,
       fileName: result.victim,
-      classes: context ? ['context-file', 'd2h-file-wrapper'] : ['d2h-file-wrapper'],
+      classes: context ? ['context-file', 'd2h-file-wrapper', 'has-diff-lines'] : ['d2h-file-wrapper', 'has-diff-lines'],
       // An empty header slot of the height the viewer was told, and the file's lines.
       slotHeight: 40,
       pageHeader: false,

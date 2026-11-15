@@ -136,6 +136,7 @@ class PRManager {
     this.collapsedFiles = new Set();
     // File viewed state - tracks which files are marked as viewed
     this.viewedFiles = new Set();
+    this._initPaneState();
     // Context files - pinned non-diff file ranges
     this.contextFiles = [];
     // Canonical file order - sorted file paths for consistent ordering across components
@@ -310,7 +311,13 @@ class PRManager {
     const initialDiffStyle = window.readPersistedDiffView
       ? window.readPersistedDiffView()
       : (localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified');
-    this.pierreBridge = window.PierreBridge ? new window.PierreBridge({
+    // Which diff engine draws the pane. Read once, here. The default is one
+    // FileDiff per file (PierreBridge); 'codeview' is the single virtualized
+    // viewer (PierreCodeViewBridge), built behind this switch until the
+    // migration flips it (plans/codeview-virtualized-diff.md). The sites that
+    // may branch on it are listed in tests/unit/engine-switch-sites.test.js.
+    this._diffEngine = window.__PAIR_REVIEW_DIFF_ENGINE === 'codeview' ? 'codeview' : 'filediff';
+    const bridgeOptions = {
       theme: this.currentTheme,
       diffStyle: initialDiffStyle,
       onCommentClick: (fileName, lineNumber, side, target) => {
@@ -370,7 +377,10 @@ class PRManager {
           this.commentManager.insertSuggestionBlock(textarea, button);
         }
       },
-    }) : null;
+    };
+    this.pierreBridge = this._diffEngine === 'codeview'
+      ? this._createCodeViewBridge(bridgeOptions)
+      : (window.PierreBridge ? new window.PierreBridge(bridgeOptions) : null);
 
     // Line range selection state - delegate to lineTracker
     Object.defineProperty(this, 'rangeSelectionStart', {
@@ -492,6 +502,31 @@ class PRManager {
       }
       return originalFetch.call(this, input, init);
     };
+  }
+
+  /**
+   * The page's state of the files of the diff pane that is not persisted:
+   * what is collapsed right now, and what the page holds for the virtualized
+   * viewer. Set up once, by the constructor.
+   * @private
+   */
+  _initPaneState() {
+    // Whether each file of the pane is collapsed right now, by state key
+    // (_fileStateKey). A file is collapsed because it is generated, viewed or
+    // was collapsed by the reader, and the reader can expand it whatever the
+    // reason, so this is state of its own: seeded when a file is rendered,
+    // written by setFileCollapsed, read by isFileCollapsed.
+    this._fileCollapsed = new Map();
+    // The virtualized viewer's per-file page state: cached headers by path,
+    // the paths whose items are mounted, the context files that are items.
+    this._fileHeaders = new Map();
+    this._mountedDiffItems = new Set();
+    this._contextItemIds = new Set();
+    // Contents of the context files, by path: { text, seq }. `seq` changes
+    // whenever other contents are loaded for a path.
+    this._contextContents = new Map();
+    this._contextContentsSeq = 0;
+    this._contextLoadGen = 0;
   }
 
   /**
@@ -1906,7 +1941,7 @@ class PRManager {
     } else {
       this.summariesHiddenFiles.add(filePath);
     }
-    fileWrapper.classList.toggle('summaries-hidden-file', !isHidden);
+    this._setFileElementClass(filePath, fileWrapper, 'summaries-hidden-file', !isHidden);
     const btn = fileWrapper.querySelector('.file-header-summary-toggle');
     if (btn) this._syncFileSummaryToggleButton(btn, filePath);
     if (this.currentPR?.id != null) {
@@ -2677,7 +2712,7 @@ class PRManager {
       if (e.detail?.reviewId !== reviewId()) return;
       if (e.detail?.sourceClientId === this._clientId) return;
       if (document.hidden) { this._dirtyContextFiles = true; return; }
-      debounced('contextFiles', () => this.loadContextFiles());
+      debounced('contextFiles', () => this.loadContextFiles({ whenIdle: true }));
     });
 
     document.addEventListener('review:expand_hunk', async (e) => {
@@ -2755,7 +2790,7 @@ class PRManager {
       }
       if (this._dirtyContextFiles) {
         this._dirtyContextFiles = false;
-        this.loadContextFiles();
+        this.loadContextFiles({ whenIdle: true });
       }
     });
   }
@@ -2908,6 +2943,10 @@ class PRManager {
     // won't reflect. (The dropdown also hides the control via
     // diffViewAvailable, so this is defense in depth.)
     if (!this.pierreBridge) return false;
+    if (this._diffEngine === 'codeview') {
+      // The viewer keeps the first visible line where it is.
+      return this.pierreBridge.setDiffStyle(mode);
+    }
     const scrollContainer = document.querySelector?.('.diff-view') || null;
     const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
     this.pierreBridge.setDiffStyle(mode);
@@ -3786,9 +3825,23 @@ class PRManager {
     if (!this.pierreBridge?.files) return [];
     const forceFiles = options.forceFiles || new Set();
     return files.filter(f => {
-      if (!f.patch || f.binary || !this.pierreBridge.files.has(f.file)) return false;
+      if (!f.patch || f.binary || !this._isDiffFileRendered(f.file)) return false;
       return forceFiles.has(f.file) || this._isPatchEligibleForContentUpgrade(f);
     });
+  }
+
+  /**
+   * Whether a changed file is drawn right now: its body has rendered (the
+   * default engine keeps it from then on), or its item is mounted (the
+   * virtualized viewer, which holds a record for every file, so `files.has`
+   * would name the whole diff). Background content upgrades go to drawn
+   * files only.
+   * @param {string} filePath
+   * @returns {boolean}
+   */
+  _isDiffFileRendered(filePath) {
+    if (this._diffEngine === 'codeview') return this._mountedDiffItems.has(filePath);
+    return !!this.pierreBridge?.files?.has(filePath);
   }
 
   _getChangedFile(filePath) {
@@ -3978,11 +4031,678 @@ class PRManager {
     return true;
   }
 
+  // ─── The virtualized viewer (diff engine 'codeview') ────────────────
+  //
+  // One CodeView draws every file of the pane, changed files and context
+  // files alike (PierreCodeViewBridge). PRManager gives it an ordered list of
+  // entries and three hooks, and keeps what is the page's: which files there
+  // are, their collapsed and viewed state, their headers and comment zones.
+
   /**
-   * Render diff for the PR
-   * @param {Object} pr - PR data with files
+   * Build the bridge of the virtualized viewer and mark the pane as its.
+   * @param {Object} interaction - the callbacks every bridge takes
+   * @returns {Object|null} null when the viewer's bundle is not on the page;
+   *   renderDiff then shows an error in place of the diff
+   * @private
    */
-  renderDiff(pr) {
+  _createCodeViewBridge(interaction) {
+    // The pane's layout under this engine (pr.css): #diff-container is the
+    // scroll container, the toolbar a fixed sibling above it.
+    document.querySelector('.diff-view')?.classList.add('codeview-engine');
+    const Bridge = window.PierreCodeViewBridge;
+    if (!Bridge) return null;
+    const bridge = new Bridge({
+      ...interaction,
+      root: document.getElementById('diff-container'),
+      hooks: {
+        renderHeader: (id, kind) => this._renderFileHeader(id, kind),
+        hostState: (id) => this._fileHostClasses(id),
+        onItemLifecycle: (id, phase) => this._onDiffItemLifecycle(id, phase),
+        resolvePath: (path) => this._canonicalFilePath(path),
+      },
+      collaborators: () => ({
+        escapeHtml: (text) => this.escapeHtml(text),
+        PostedComment: window.PostedComment,
+        suggestionManager: this.suggestionManager,
+      }),
+    });
+    if (!bridge.available) {
+      bridge.destroy();
+      return null;
+    }
+    bridge.registerAnnotationRenderer('file-comments', (data) => this._ensureFileCommentsZone(data.file));
+    bridge.registerAnnotationRenderer('notice', (data, id, fileName) => this._buildDiffNotice(fileName, data));
+    return bridge;
+  }
+
+  /**
+   * What a path is in the diff pane, from data: a changed file, a context
+   * file, or neither. The one resolver; nothing asks the DOM.
+   * @param {string} filePath - the pane's own path of the file
+   * @returns {'diff'|'context'|null}
+   */
+  fileKind(filePath) {
+    if (!filePath) return null;
+    if (this.changedFilesByPath?.has(filePath)) return 'diff';
+    if (this._contextItemIds.has(filePath)) return 'context';
+    const kind = this.pierreBridge?.files?.get(filePath)?.kind;
+    if (kind === 'diff' || kind === 'context') return kind;
+    return (this.contextFiles || []).some(row => row.file === filePath) ? 'context' : null;
+  }
+
+  /**
+   * The key a file's collapsed and viewed state is kept under: the path for
+   * a changed file, `context:<path>` for a context file, so that the two
+   * never share state when a path is one and later the other (#540). The key
+   * is persisted with the viewed state; its format must not change.
+   * @param {string} filePath - the pane's own path of the file
+   * @returns {string}
+   */
+  _fileStateKey(filePath) {
+    return this.fileKind(filePath) === 'context' ? this._contextStateKey(filePath) : filePath;
+  }
+
+  /**
+   * The number of lines of a text, counted as an editor counts them: a final
+   * newline ends the last line and does not start another. This is how the
+   * viewer counts a context file's lines.
+   * @param {string} text
+   * @returns {number}
+   */
+  static countTextLines(text) {
+    if (typeof text !== 'string' || text === '') return 0;
+    let lines = 1;
+    for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) lines++;
+    return text.endsWith('\n') ? lines - 1 : lines;
+  }
+
+  /**
+   * The lines a stored context range shows in a file of `totalLines` lines.
+   * A range that runs past the end of the file is moved up so that it keeps
+   * its size, as far as line 1.
+   * @param {{line_start: number, line_end: number}} row
+   * @param {number} totalLines
+   * @returns {{startLine: number, endLine: number}|null} null when the file
+   *   has no such lines
+   */
+  _effectiveContextRange(row, totalLines) {
+    const lineStart = Number(row?.line_start);
+    const lineEnd = Number(row?.line_end);
+    if (!Number.isFinite(lineStart) || !Number.isFinite(lineEnd) || !(totalLines > 0)) return null;
+    const clampedEnd = Math.min(lineEnd, totalLines);
+    const intendedSize = lineEnd - lineStart + 1;
+    let effectiveStart = Math.max(1, lineStart);
+    const actualSize = clampedEnd - effectiveStart + 1;
+    if (actualSize < intendedSize && effectiveStart > 1) {
+      effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
+    }
+    if (clampedEnd < effectiveStart) return null;
+    return { startLine: effectiveStart, endLine: clampedEnd };
+  }
+
+  /**
+   * The entry of one changed file for the viewer's list. Also seeds the
+   * file's collapsed state: generated, viewed, or collapsed by the reader.
+   * @param {Object} file - a changed_files entry
+   * @returns {Object}
+   * @private
+   */
+  _buildDiffEntry(file) {
+    const path = file.file;
+    const isGenerated = file.generated || this.generatedFiles.has(path);
+    // Seeded once per render: afterwards the state is the reader's.
+    if (!this._fileCollapsed.has(path)) {
+      this._fileCollapsed.set(path, !!(isGenerated || this.viewedFiles.has(path) || this.collapsedFiles.has(path)));
+    }
+    const collapsed = this._fileCollapsed.get(path);
+    this._ensureFileCommentsZone(path);
+
+    const decision = this._getPierreRenderDecision(file);
+    const entry = {
+      id: path,
+      kind: 'diff',
+      patch: file.binary ? null : (file.patch || null),
+      status: file.status || null,
+      collapsed,
+      forcePlainText: decision.forcePlainText,
+      deferred: decision.deferDiff,
+    };
+    if (decision.deferDiff) {
+      const metrics = this._getPatchMetrics(file);
+      entry.notice = { kind: 'large-diff', chars: metrics.chars, lines: metrics.lines };
+    }
+    return entry;
+  }
+
+  /**
+   * The ordered list of everything the diff pane shows: the changed files in
+   * diff order, and each context file before the first entry whose path
+   * sorts after it. The one place the list is built.
+   *
+   * The diff wins: a context row whose path is a changed file gets no entry
+   * (the row stays stored and comes back when the file leaves the diff). A
+   * context path whose contents could not be loaded gets none either; its
+   * sidebar entry stays.
+   * @returns {Array<Object>} entries for PierreCodeViewBridge
+   * @private
+   */
+  _buildPaneEntries() {
+    const changed = this.changedFilesByPath || new Map();
+    const entries = [...changed.values()].map(file => this._buildDiffEntry(file));
+
+    const rowsByPath = new Map();
+    for (const row of this.contextFiles || []) {
+      if (!row?.file || changed.has(row.file)) continue;
+      if (!rowsByPath.has(row.file)) rowsByPath.set(row.file, []);
+      rowsByPath.get(row.file).push(row);
+    }
+    const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    for (const path of [...rowsByPath.keys()].sort(byCodeUnit)) {
+      const cached = this._contextContents.get(path);
+      if (!cached) continue;
+      const totalLines = PRManager.countTextLines(cached.text);
+      const ranges = rowsByPath.get(path)
+        .map(row => this._effectiveContextRange(row, totalLines))
+        .filter(Boolean);
+      const key = this._contextStateKey(path);
+      if (!this._fileCollapsed.has(key)) {
+        this._fileCollapsed.set(key, this.viewedFiles.has(key) || this.collapsedFiles.has(key));
+      }
+      this._ensureFileCommentsZone(path, { context: true });
+      const entry = {
+        id: path,
+        kind: 'context',
+        contents: cached.text,
+        contentsSeq: cached.seq,
+        ranges,
+        collapsed: this._fileCollapsed.get(key),
+      };
+      const index = entries.findIndex(other => other.id > path);
+      if (index === -1) entries.push(entry);
+      else entries.splice(index, 0, entry);
+    }
+    return entries;
+  }
+
+  /**
+   * renderDiff on the virtualized viewer: every file of the pane becomes an
+   * item of the one viewer. The reader's position is restored by the bridge
+   * when the file they were in is still there.
+   * @param {Object} pr - PR data with files
+   * @private
+   */
+  _renderDiffCodeView(pr) {
+    // A missing list is not an empty diff: leave what is drawn alone.
+    const files = pr ? (pr.changed_files || pr.files) : null;
+    if (!Array.isArray(files)) return;
+
+    this._abortContentUpgrades();
+    if (!document.getElementById('diff-container')) return;
+    // Before the list is replaced: the tour's exit restores state of files
+    // that must still be the pane's.
+    if (this._tourIsActive && this._tourIsActive()) {
+      this._exitTour();
+    }
+    this._resetHunkSummaryRenderState();
+
+    this.changedFilesByPath = new Map(files.map(file => [file.file, file]));
+    for (const file of files) {
+      if (file.generated) {
+        this.generatedFiles.set(file.file, { insertions: file.insertions, deletions: file.deletions });
+      }
+    }
+    // Headers, comment zones and collapsed state belong to a render.
+    this._fileHeaders = new Map();
+    this._fileCollapsed = new Map();
+    this._mountedDiffItems = new Set();
+    this.fileCommentManager?.releaseAllZones?.();
+
+    if (!this.pierreBridge) {
+      this._setDiffStatus(
+        '<div class="no-diff diff-viewer-missing">The diff viewer could not be loaded. Reload the page; if this message stays, reinstall pair-review.</div>',
+        { hideScroller: true }
+      );
+      return;
+    }
+
+    // The container must be displayed before the viewer measures its rows.
+    this._setDiffStatus(null);
+    this.pierreBridge.renderAll(this._buildPaneEntries(), { keyPrefix: this.currentPR?.id ?? 'review' });
+    // The page starts a render knowing no context item, so the load below
+    // reloads the comments when the pane has any, as it does when context
+    // files are drawn after a render on the other engine.
+    this._contextItemIds = new Set();
+    if (files.length === 0) {
+      // The viewer stays: context files are its items.
+      this._setDiffStatus('<div class="no-diff">No files changed</div>', { hideScroller: false });
+    }
+    for (const file of files) this._registerPierreHunkAnchorsForFile(file);
+
+    // The rows are the review's, not the render's: they are kept, and the
+    // contents of every context file are read again (they may have changed
+    // with the diff).
+    this.loadContextFiles({ refreshContents: true });
+    this._startPostRenderLoads();
+  }
+
+  /**
+   * Take every file out of the virtualized viewer (an empty diff).
+   * @private
+   */
+  _clearDiffItems() {
+    this.changedFilesByPath = new Map();
+    this._fileHeaders = new Map();
+    this._fileCollapsed = new Map();
+    this._mountedDiffItems = new Set();
+    this._contextItemIds = new Set();
+    // A context load in flight stops, and leaves nothing for the next one.
+    this._contextLoadGen = (this._contextLoadGen || 0) + 1;
+    this._contextLoadPending = null;
+    this.pierreBridge?.renderAll([], { keyPrefix: this.currentPR?.id ?? 'review' });
+  }
+
+  /**
+   * The header of a file of the pane, for the viewer: one element per file,
+   * built on first use and re-stamped from data every time the viewer draws
+   * it (a header that was off screen missed every change meanwhile).
+   * @param {string} id - the file's path
+   * @param {'diff'|'context'} kind
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  _renderFileHeader(id, kind) {
+    let header = this._fileHeaders.get(id);
+    if (!header) {
+      if (kind === 'context') {
+        const row = (this.contextFiles || []).find(contextFile => contextFile.file === id);
+        header = this._buildContextFileHeader(id, {
+          label: row?.label || null,
+          zone: this._ensureFileCommentsZone(id, { context: true }),
+        });
+      } else {
+        const file = this._getChangedFile(id);
+        if (!file) return null;
+        header = this._buildFileHeader(file, {
+          collapsed: this.isFileCollapsed(id) === true,
+          zone: this._ensureFileCommentsZone(id),
+        });
+      }
+      this._fileHeaders.set(id, header);
+    }
+    this._syncFileHeader(id, header);
+    return header;
+  }
+
+  /**
+   * Re-stamp a file's cached header from data: chevron, Viewed, the
+   * file-comment indicator, the summary toggle. Idempotent; only touches the
+   * header's own DOM.
+   * @param {string} filePath - the pane's own path of the file
+   * @param {HTMLElement} [header]
+   * @private
+   */
+  _syncFileHeader(filePath, header = this._fileHeaders?.get(filePath)) {
+    if (!header) return;
+    window.DiffRenderer.updateFileHeaderState(header, this.isFileCollapsed(filePath) !== true);
+    window.DiffRenderer.updateFileViewedState(header, this.viewedFiles.has(this._fileStateKey(filePath)));
+    const zone = this.getFileCommentsZone(filePath);
+    if (zone && zone.dataset.fileName === filePath && this.fileCommentManager && zone.querySelector('.file-comments-container')) {
+      this.fileCommentManager.updateCommentCount(zone);
+    }
+    const summaryToggle = header.querySelector('.file-header-summary-toggle');
+    if (summaryToggle) {
+      if (this._summariesEnabled === false) {
+        summaryToggle.remove();
+      } else {
+        if (this._summariesEnabled === true && summaryToggle.classList.contains('summary-toggle-pending')) {
+          summaryToggle.classList.remove('summary-toggle-pending');
+          summaryToggle.style.display = '';
+        }
+        this._syncFileSummaryToggleButton(summaryToggle, filePath);
+      }
+    }
+    const badge = header.querySelector('.context-badge');
+    if (badge) {
+      const row = (this.contextFiles || []).find(contextFile => contextFile.file === filePath);
+      if (row?.label) badge.title = row.label;
+      else badge.removeAttribute('title');
+    }
+  }
+
+  /**
+   * The classes a file's element carries besides the viewer's own
+   * (`collapsed`, `context-file`, `has-diff-lines`): what pr.css keys on for
+   * a generated file, for a file whose summaries are hidden, and for a file
+   * whose diff is drawn.
+   * @param {string} id - the file's path
+   * @returns {string[]}
+   * @private
+   */
+  _fileHostClasses(id) {
+    const classes = [];
+    const file = this._getChangedFile(id);
+    if (file && (file.generated || this.generatedFiles.has(id))) classes.push('generated-file');
+    if (this.summariesHiddenFiles?.has(id)) classes.push('summaries-hidden-file');
+    // A changed file whose diff is drawn (not a binary file, not a diff that
+    // is held back for its size) has a code block under its header on the
+    // per-file renderer, lines or not; pr.css draws its empty form.
+    if (file && file.patch && !file.binary && !this.pierreBridge?.files?.get(id)?.deferred) {
+      classes.push('has-diff-body');
+    }
+    return classes;
+  }
+
+  /**
+   * The viewer mounted, updated or unmounted a file's item. A changed file
+   * that comes into the mounted window is queued for its content upgrade
+   * (what makes its hidden lines expandable), as a file whose body rendered
+   * is on the other engine. Context files hold their whole contents already.
+   * @param {string} id - the file's path
+   * @param {'mount'|'update'|'unmount'} phase
+   * @private
+   */
+  _onDiffItemLifecycle(id, phase) {
+    if (phase === 'unmount') {
+      this._mountedDiffItems.delete(id);
+      return;
+    }
+    if (phase !== 'mount') return;
+    this._mountedDiffItems.add(id);
+    const file = this._getChangedFile(id);
+    if (file) this._enqueuePierreContentUpgrade(file);
+  }
+
+  /**
+   * The file-comment zone of a file of the pane, created on first use and
+   * held by FileCommentManager's registry whether or not it is on screen.
+   * @param {string} filePath - the pane's own path of the file
+   * @param {Object} [options]
+   * @param {boolean} [options.context] - the file is a context file
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  _ensureFileCommentsZone(filePath, { context = this.fileKind(filePath) === 'context' } = {}) {
+    if (!this.fileCommentManager) return null;
+    // The registry's lookup is tolerant of the forms a path comes in
+    // ('a.js' finds the zone of 'src/a.js'); a file's own zone is the one
+    // that carries exactly its path.
+    const existing = this.getFileCommentsZone(filePath);
+    if (existing && existing.dataset.fileName === filePath) return existing;
+    return this.fileCommentManager.createFileCommentsZone(filePath, { context: !!context });
+  }
+
+  /**
+   * The message a file shows under its header in place of its lines.
+   * @param {string} filePath
+   * @param {{kind: string, chars: number, lines: number}} data
+   * @returns {HTMLElement|null}
+   * @private
+   */
+  _buildDiffNotice(filePath, data) {
+    if (data?.kind !== 'large-diff') return null;
+    const file = this._getChangedFile(filePath);
+    return file ? this._createDeferredDiffPlaceholder(file) : null;
+  }
+
+  /**
+   * Show the lines of a file whose diff was held back for its size, on the
+   * virtualized viewer: the same item, now with its lines.
+   * @param {string} filePath - the pane's own path of the file
+   * @param {Object} [options]
+   * @param {boolean} [options.reanchor=false] - reload comments and
+   *   suggestions afterwards (the reader's own click; other callers do that
+   *   themselves)
+   * @returns {Promise<boolean>} true when the file shows its diff on return
+   * @private
+   */
+  async _materializeDeferredItem(filePath, { reanchor = false } = {}) {
+    const renderGen = this._renderGen;
+    await this._yieldForDiffWork(this._fileContentsAbort?.signal || null);
+    if (renderGen !== this._renderGen) return false;
+    if (!this.pierreBridge?.materializeDeferred?.(filePath)) return false;
+    const file = this._getChangedFile(filePath);
+    if (file) this._registerPierreHunkAnchorsForFile(file);
+    if (reanchor) await this._reanchorInlineFeedbackAfterDeferredRender();
+    return true;
+  }
+
+  /**
+   * The ids of the context files that are items of the viewer now.
+   * @returns {Set<string>}
+   * @private
+   */
+  _currentContextItemIds() {
+    const ids = new Set();
+    for (const [id, record] of this.pierreBridge?.files || []) {
+      if (record.kind === 'context') ids.add(id);
+    }
+    return ids;
+  }
+
+  /**
+   * Compare the context files that are items now with those the page last
+   * knew of, and drop what the page holds for the ones that went: header,
+   * comment zone, collapsed state.
+   * @returns {{created: string[], removed: string[]}}
+   * @private
+   */
+  _noteContextItems() {
+    const now = this._currentContextItemIds();
+    const known = this._contextItemIds || new Set();
+    const created = [...now].filter(id => !known.has(id));
+    const removed = [...known].filter(id => !now.has(id));
+    this._contextItemIds = now;
+    for (const id of removed) {
+      this._fileHeaders.delete(id);
+      this._fileCollapsed.delete(this._contextStateKey(id));
+      const zone = this.fileCommentManager?.getZone?.(id);
+      if (zone && zone.dataset.fileName === id && this.fileKind(id) !== 'diff') {
+        this.fileCommentManager.releaseZone(zone);
+      }
+    }
+    return { created, removed };
+  }
+
+  /**
+   * Bring the viewer's context items in line with the context rows and the
+   * contents the page holds. Synchronous and idempotent, and the only caller
+   * of the bridge's `reconcile`.
+   * @param {Object} [options]
+   * @param {boolean} [options.whenIdle=false] - for a change the reader did
+   *   not just ask for (a push): wait while a selection is being dragged in
+   *   the pane; the comments are then reloaded when it has been applied
+   * @returns {{created: string[], removed: string[], deferred: boolean}}
+   * @private
+   */
+  _syncContextItems({ whenIdle = false } = {}) {
+    const bridge = this.pierreBridge;
+    if (!bridge || typeof bridge.reconcile !== 'function') return { created: [], removed: [], deferred: false };
+    let deferred = false;
+    const result = bridge.reconcile(() => {
+      const entries = this._buildPaneEntries();
+      if (deferred) {
+        // Applied later than asked for: nobody is waiting for the outcome.
+        queueMicrotask(() => {
+          if (this._noteContextItems().created.length > 0) this.loadUserComments();
+        });
+      }
+      return entries;
+    }, { whenIdle });
+    if (result.deferred) {
+      deferred = true;
+      return { created: [], removed: [], deferred: true };
+    }
+    return { ...this._noteContextItems(), deferred: false };
+  }
+
+  /**
+   * loadContextFiles on the virtualized viewer: data in, one synchronous
+   * sync out. No step reads the DOM.
+   *
+   * Callers: renderDiff (with refreshContents), the context_files_changed
+   * listener (with whenIdle), removeContextFile, ensureContextFile after a
+   * PATCH and after a POST, the visibility handler. Any two can be in flight
+   * together: the later one wins, and an earlier one stops at its next await
+   * without touching the pane.
+   *
+   * What a caller that awaits a load may rely on: when the promise settles,
+   * the pane has the rows of a request that was sent after the call (its own,
+   * or the one of a later load), unless that request failed or the diff has
+   * been replaced meanwhile (the new diff's own load then answers for the
+   * pane). A load that was overtaken therefore settles only when the load
+   * that overtook it has; it hands the later load what it was asked for
+   * (fresh contents, "the reader is waiting"); and when the later load ends
+   * without having applied anything, it runs again.
+   * @param {Object} [options]
+   * @param {boolean} [options.refreshContents=false] - read every context
+   *   file's contents again, not only those the page does not hold
+   * @param {boolean} [options.whenIdle=false] - see _syncContextItems
+   * @returns {Promise<void>}
+   * @private
+   */
+  _loadContextFilesCodeView({ refreshContents = false, whenIdle = false } = {}) {
+    if (!this.currentPR?.id) return Promise.resolve();
+    const gen = this._contextLoadGen = (this._contextLoadGen || 0) + 1;
+    // What the loads that are still in flight were asked for goes to this
+    // one, which will be the one that reaches the pane.
+    const pending = this._contextLoadPending;
+    const request = {
+      refreshContents: refreshContents || !!(pending && pending.refreshContents),
+      whenIdle: whenIdle && (!pending || pending.whenIdle),
+    };
+    this._contextLoadPending = request;
+    const promise = this._runContextLoad(gen, request);
+    this._contextLoadTail = { gen, promise };
+    return promise;
+  }
+
+  /**
+   * One load of the context rows and contents (see
+   * _loadContextFilesCodeView, the only caller).
+   * @param {number} gen - this load's number
+   * @param {{refreshContents: boolean, whenIdle: boolean}} request
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _runContextLoad(gen, request) {
+    const reviewId = this.currentPR.id;
+    const renderGen = this._renderGen;
+    const superseded = () => gen !== this._contextLoadGen || renderGen !== this._renderGen;
+    // The last load in flight has ended, one way or the other: nothing is
+    // carried to the next.
+    const ended = () => {
+      if (gen === this._contextLoadGen) this._contextLoadPending = null;
+    };
+
+    try {
+      const response = await fetch(`/api/reviews/${reviewId}/context-files`);
+      if (superseded()) return this._afterOvertakenContextLoad(gen, renderGen, request);
+      if (!response.ok) return ended();
+      const data = await response.json();
+      if (superseded()) return this._afterOvertakenContextLoad(gen, renderGen, request);
+      const rows = data.contextFiles || [];
+
+      const changed = this.changedFilesByPath || new Map();
+      const paths = [...new Set(rows.map(row => row.file))].filter(path => !changed.has(path));
+      const wanted = paths.filter(path => request.refreshContents || !this._contextContents.has(path));
+      const fetched = await Promise.all(wanted.map(async (path) => {
+        try {
+          const content = await this.fetchFileContent(path);
+          return [path, content && Array.isArray(content.lines) ? content.lines.join('\n') : null];
+        } catch (error) {
+          console.error(`Error loading context file ${path}:`, error);
+          return [path, null];
+        }
+      }));
+      if (superseded()) return this._afterOvertakenContextLoad(gen, renderGen, request);
+
+      const previousRows = this.contextFiles || [];
+      this.contextFiles = rows;
+      for (const [path, text] of fetched) {
+        if (text == null) {
+          // No contents: no item. The sidebar entry stays and the next load
+          // tries again.
+          this._contextContents.delete(path);
+          continue;
+        }
+        const cached = this._contextContents.get(path);
+        if (!cached || cached.text !== text) {
+          this._contextContentsSeq = (this._contextContentsSeq || 0) + 1;
+          this._contextContents.set(path, { text, seq: this._contextContentsSeq });
+        }
+      }
+      const rowPaths = new Set(rows.map(row => row.file));
+      for (const path of [...this._contextContents.keys()]) {
+        if (!rowPaths.has(path)) this._contextContents.delete(path);
+      }
+      this._scrubRemovedContextState(previousRows);
+
+      const { created } = this._syncContextItems({ whenIdle: request.whenIdle });
+      this._contextLoadApplied = gen;
+      ended();
+      this.rebuildFileListWithContext();
+      // Comments on lines of a file that has just become an item.
+      if (created.length > 0) {
+        await this.loadUserComments();
+      }
+    } catch (error) {
+      ended();
+      console.error('Error loading context files:', error);
+    }
+    return undefined;
+  }
+
+  /**
+   * The rest of a context load that a later load, or a new diff, overtook:
+   * wait for the load that is now the newest, so that whoever awaits this
+   * one finds the pane as that load left it; and load again when that load
+   * ended without reaching the pane (its request failed) and the diff is
+   * still the one this load was started for.
+   * @param {number} gen - the overtaken load's number
+   * @param {number} renderGen - the render it was started for
+   * @param {{refreshContents: boolean, whenIdle: boolean}} request
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _afterOvertakenContextLoad(gen, renderGen, request) {
+    const tail = this._contextLoadTail;
+    // Nothing later was started when only the diff was emptied
+    // (_clearDiffItems): there is nothing to wait for.
+    if (!tail || tail.gen <= gen) return;
+    await tail.promise;
+    if (renderGen !== this._renderGen) return;
+    if ((this._contextLoadApplied || 0) > gen) return;
+    if (this._contextLoadTail !== tail) {
+      // A newer load was started meanwhile (by another overtaken load that
+      // ran again): it answers for this one too.
+      await this._afterOvertakenContextLoad(gen, renderGen, request);
+      return;
+    }
+    await this._loadContextFilesCodeView(request);
+  }
+
+  /**
+   * Remove every stored range of a context file (its header's dismiss
+   * button). The ranges are the review's rows, read from data.
+   * @param {string} filePath
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _dismissContextFile(filePath) {
+    const ids = (this.contextFiles || [])
+      .filter(row => row.file === filePath)
+      .map(row => row.id);
+    // One after the other: each removal reloads the rows.
+    for (const id of ids) {
+      await this.removeContextFile(id);
+    }
+  }
+
+  /**
+   * Stop the content upgrades of the diff that is about to be replaced.
+   * @private
+   */
+  _abortContentUpgrades() {
     // Abort any in-flight file content fetches from progressive loading
     this._fileContentsAbort?.abort();
     this._fileContentsAbort = null;
@@ -3990,6 +4710,18 @@ class PRManager {
     this._pierreContentUpgradePromises = new Map();
     this._pierreUpgradeCandidates = null;
     this._deferredDiffRenderPromises = new Map();
+  }
+
+  /**
+   * Render diff for the PR
+   * @param {Object} pr - PR data with files
+   */
+  renderDiff(pr) {
+    if (this._diffEngine === 'codeview') {
+      this._renderDiffCodeView(pr);
+      return;
+    }
+    this._abortContentUpgrades();
 
     const diffContainer = document.getElementById('diff-container');
     if (!diffContainer) return;
@@ -4014,28 +4746,7 @@ class PRManager {
     this._removeRenderedFiles(diffContainer);
     this._setDiffStatus(null);
 
-    // Reset hunk-summary tracking — `renderPatch` will populate this as it
-    // walks each block, and we hash the records once render finishes.
-    this._pendingHunkRecords = [];
-    if (this.hunkSummaryRenderer) {
-      this.hunkSummaryRenderer.reset();
-    }
-    this._tourStops = null;
-    this._summaryAnchorsByHash = new Map();
-    this._summaryHashesByFile = new Map();
-    this._pendingSummariesByHash = new Map();
-    // Reset alongside the other per-render summary state. Set true again only
-    // when a summary actually mounts (see _applyHunkSummaries / the existing-
-    // summary fetch). Without this, a re-render whose subsequent fetch returns
-    // no matching rows keeps the stale `true`, leaving the toolbar stuck in
-    // Hide/Show mode with nothing in the DOM and blocking click-to-generate.
-    this._summariesGenerated = false;
-    // Reset alongside `_summariesGenerated`. Set true again only when a fetch
-    // (or WS event) accepts/queues a non-trivial summary for this render.
-    this._summariesAvailable = false;
-    // Bump generation so any in-flight `_fetchHunkSummaryMap` from the
-    // previous render bails out instead of mutating maps we just reset.
-    this._renderGen = (this._renderGen || 0) + 1;
+    this._resetHunkSummaryRenderState();
 
     // Reset lazy-body state and (re)create the IntersectionObserver. The
     // `innerHTML = ''` above detached every previously-observed body, so a
@@ -4089,24 +4800,63 @@ class PRManager {
       this.contextFiles = [];
       this.loadContextFiles();
 
-      // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
-      // usable while summaries arrive asynchronously. Anchors are wired lazily
-      // as each file body renders (_registerHunkAnchorsForFile); this just loads
-      // the server's summary map and applies it to whatever has rendered so far.
-      if (this.hunkSummaryRenderer) {
-        this._fetchHunkSummaryMap().catch((err) => {
-          console.warn('[HunkSummary] summary fetch failed:', err);
-        });
-      }
-
-      // Probe tour endpoint after diff is rendered. `currentPR.id` is now
-      // set (init()/LocalManager populates it before calling renderDiff),
-      // so the toolbar button can reflect the right state.
-      if (this._toursEnabled === true) {
-        this._loadAndStashTour().catch(() => {});
-      }
+      this._startPostRenderLoads();
     } finally {
       this._pierreRenderBudget = null;
+    }
+  }
+
+  /**
+   * Reset what a render owns of the hunk summaries and the tour, and start a
+   * new render generation. Runs before the files of the new diff are drawn.
+   * @private
+   */
+  _resetHunkSummaryRenderState() {
+    // Reset hunk-summary tracking — `renderPatch` will populate this as it
+    // walks each block, and we hash the records once render finishes.
+    this._pendingHunkRecords = [];
+    if (this.hunkSummaryRenderer) {
+      this.hunkSummaryRenderer.reset();
+    }
+    this._tourStops = null;
+    this._summaryAnchorsByHash = new Map();
+    this._summaryHashesByFile = new Map();
+    this._pendingSummariesByHash = new Map();
+    // Reset alongside the other per-render summary state. Set true again only
+    // when a summary actually mounts (see _applyHunkSummaries / the existing-
+    // summary fetch). Without this, a re-render whose subsequent fetch returns
+    // no matching rows keeps the stale `true`, leaving the toolbar stuck in
+    // Hide/Show mode with nothing in the DOM and blocking click-to-generate.
+    this._summariesGenerated = false;
+    // Reset alongside `_summariesGenerated`. Set true again only when a fetch
+    // (or WS event) accepts/queues a non-trivial summary for this render.
+    this._summariesAvailable = false;
+    // Bump generation so any in-flight `_fetchHunkSummaryMap` from the
+    // previous render bails out instead of mutating maps we just reset.
+    this._renderGen = (this._renderGen || 0) + 1;
+  }
+
+  /**
+   * What is loaded once a new diff is in the pane: hunk summaries and the
+   * tour. Fire-and-forget; the diff is usable while they arrive.
+   * @private
+   */
+  _startPostRenderLoads() {
+    // Fetch hunk summaries (Phase 5). Fire-and-forget — the diff is fully
+    // usable while summaries arrive asynchronously. Anchors are wired lazily
+    // as each file body renders (_registerHunkAnchorsForFile); this just loads
+    // the server's summary map and applies it to whatever has rendered so far.
+    if (this.hunkSummaryRenderer) {
+      this._fetchHunkSummaryMap().catch((err) => {
+        console.warn('[HunkSummary] summary fetch failed:', err);
+      });
+    }
+
+    // Probe tour endpoint after diff is rendered. `currentPR.id` is now
+    // set (init()/LocalManager populates it before calling renderDiff),
+    // so the toolbar button can reflect the right state.
+    if (this._toursEnabled === true) {
+      this._loadAndStashTour().catch(() => {});
     }
   }
 
@@ -4253,7 +5003,11 @@ class PRManager {
     // (reanchor:false) wins, its caller reanchors anyway.
     const { reanchor = false } = options;
     if (!filePath) return false;
-    if (this.pierreBridge?.files?.has(filePath)) return true;
+    // A file the bridge holds shows its diff, unless its record says the
+    // diff is still held back (the virtualized viewer has a record for every
+    // file from the start; the other engine only for rendered ones).
+    const record = this.pierreBridge?.files?.get(filePath);
+    if (record && !record.deferred) return true;
     if (!this._deferredDiffRenderPromises) {
       this._deferredDiffRenderPromises = new Map();
     }
@@ -4264,10 +5018,12 @@ class PRManager {
     const wrapper = this.findFileElement(filePath);
     const placeholder = wrapper?.querySelector('.large-diff-placeholder');
     const file = this._getChangedFile(filePath);
-    if (!wrapper || !placeholder || !file) return false;
+    if (!record && (!wrapper || !placeholder || !file)) return false;
 
     let promise;
     promise = (async () => {
+      // An item of the virtualized viewer: no element is needed.
+      if (record) return this._materializeDeferredItem(filePath, { reanchor });
       const signal = this._fileContentsAbort?.signal || null;
       await this._yieldForDiffWork(signal);
       // If renderDiff() re-ran during the idle yield, the review was torn down and
@@ -4343,6 +5099,228 @@ class PRManager {
   }
 
   /**
+   * The header button that opens a file-level comment form in the file's
+   * comment zone. The zone keeps a reference to it so FileCommentManager can
+   * show whether the file has comments.
+   * @param {string} filePath
+   * @param {HTMLElement} zone - the file's comment zone
+   * @returns {HTMLButtonElement}
+   * @private
+   */
+  _createFileCommentButton(filePath, zone) {
+    const fileCommentBtn = document.createElement('button');
+    fileCommentBtn.className = 'file-header-comment-btn';
+    fileCommentBtn.title = 'Add file comment';
+    fileCommentBtn.dataset.file = filePath;
+    // Outline icon (no comments) - will be updated by updateHeaderButtonState
+    fileCommentBtn.innerHTML = `
+      <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
+      </svg>
+      <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+        <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+      </svg>
+    `;
+    fileCommentBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Directly open the comment form (like GitHub's behavior)
+      this.fileCommentManager.showCommentForm(zone, filePath);
+    });
+    // Store reference for updating icon state later
+    zone.headerButton = fileCommentBtn;
+    return fileCommentBtn;
+  }
+
+  /**
+   * The header button that opens the chat panel about a file.
+   * @param {string} filePath
+   * @returns {HTMLButtonElement}
+   * @private
+   */
+  _createFileChatButton(filePath) {
+    const fileChatBtn = document.createElement('button');
+    fileChatBtn.className = 'file-header-chat-btn';
+    fileChatBtn.title = 'Chat about file';
+    fileChatBtn.dataset.file = filePath;
+    fileChatBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+      </svg>
+    `;
+    fileChatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.chatPanel) {
+        window.chatPanel.open({
+          fileContext: { file: filePath }
+        });
+      }
+    });
+    return fileChatBtn;
+  }
+
+  /**
+   * Build the header of a changed file: chevron, path, stats, Viewed, and,
+   * with a comment zone, the file-comment, chat and summary-toggle buttons.
+   * Its controls call functions that work from data, so the header works
+   * whatever element it is attached to.
+   *
+   * Callers: renderFileDiff (the wrapper it builds) and _renderFileHeader
+   * (the virtualized viewer, which caches the element per file).
+   * @param {Object} file - a changed_files entry
+   * @param {Object} options
+   * @param {boolean} options.collapsed - whether the file starts collapsed
+   * @param {HTMLElement|null} options.zone - the file's comment zone
+   * @returns {HTMLElement}
+   * @private
+   */
+  _buildFileHeader(file, { collapsed, zone }) {
+    const isGenerated = file.generated || this.generatedFiles.has(file.file);
+    // Create file header with new options API
+    const header = window.DiffRenderer.createFileHeader(file.file, {
+      isGenerated,
+      isExpanded: !collapsed,
+      isViewed: this.viewedFiles.has(file.file),
+      generatedInfo: isGenerated ? this.generatedFiles.get(file.file) : null,
+      // File stats for collapsed view
+      fileStats: {
+        insertions: file.insertions || 0,
+        deletions: file.deletions || 0
+      },
+      renamed: file.renamed || false,
+      renamedFrom: file.renamedFrom || null,
+      onToggleCollapse: (path) => this.toggleFileCollapse(path),
+      onToggleViewed: (path, checked) => this.toggleFileViewed(path, checked)
+    });
+    if (!this.fileCommentManager || !zone) return header;
+
+    // File comment button - directly adds a file comment (like GitHub)
+    header.appendChild(this._createFileCommentButton(file.file, zone));
+    header.appendChild(this._createFileChatButton(file.file));
+
+    // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
+    // one file. Disabled (greyed) when no summaries exist yet for this file;
+    // _applyHunkSummaries / _registerHunkAnchorsForFile re-enable it as soon
+    // as hashes for this file are recorded (so a summary that arrives later
+    // doesn't get hidden behind a permanently-disabled button).
+    // Gated on `_summariesEnabled`: skipped entirely when /api/config has
+    // already reported the feature is off; created hidden + revealed later
+    // when config has not yet resolved.
+    if (this._summariesEnabled !== false) {
+      const summaryToggleBtn = document.createElement('button');
+      summaryToggleBtn.className = 'file-header-summary-toggle';
+      summaryToggleBtn.dataset.file = file.file;
+      summaryToggleBtn.innerHTML = `
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+          <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
+        </svg>
+      `;
+
+      if (this._summariesEnabled !== true) {
+        // Config still pending; hide until the gate resolves.
+        summaryToggleBtn.classList.add('summary-toggle-pending');
+        summaryToggleBtn.style.display = 'none';
+      }
+      this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
+
+      summaryToggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleFileSummaries(file.file, this.findFileElement(file.file));
+      });
+      header.appendChild(summaryToggleBtn);
+    }
+    return header;
+  }
+
+  /**
+   * Build the header of a context file: chevron, path, the CONTEXT badge,
+   * Viewed, the file-comment and chat buttons, and dismiss. Its controls
+   * call functions that work from data (the context rows, the state keys).
+   *
+   * Callers: renderContextFile (the wrapper it builds) and _renderFileHeader
+   * (the virtualized viewer).
+   * @param {string} filePath
+   * @param {Object} [options]
+   * @param {string|null} [options.label] - the row's label, the badge's title
+   * @param {HTMLElement|null} [options.zone] - the file's comment zone
+   * @returns {HTMLElement}
+   * @private
+   */
+  _buildContextFileHeader(filePath, { label = null, zone = null } = {}) {
+    const header = document.createElement('div');
+    header.className = 'd2h-file-header context-file-header';
+
+    // Chevron toggle for expand/collapse
+    const chevronBtn = document.createElement('button');
+    chevronBtn.className = 'file-collapse-toggle';
+    chevronBtn.title = 'Collapse file';
+    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
+    chevronBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleContextFileCollapse(filePath);
+    });
+    header.appendChild(chevronBtn);
+
+    const fileName = document.createElement('span');
+    fileName.className = 'd2h-file-name';
+    fileName.textContent = filePath;
+    window.DiffRenderer.applyFilePathTruncation(fileName, filePath);
+    header.appendChild(fileName);
+
+    const contextLabel = document.createElement('span');
+    contextLabel.className = 'context-badge';
+    contextLabel.textContent = 'CONTEXT';
+    if (label) contextLabel.title = label;
+    header.appendChild(contextLabel);
+
+    // Viewed checkbox (right-aligned group start)
+    const viewedLabel = document.createElement('label');
+    viewedLabel.className = 'file-viewed-label';
+    viewedLabel.title = 'Mark file as viewed';
+    const viewedCheckbox = document.createElement('input');
+    viewedCheckbox.type = 'checkbox';
+    viewedCheckbox.className = 'file-viewed-checkbox';
+    viewedCheckbox.checked = this.viewedFiles.has(this._contextStateKey(filePath));
+    viewedCheckbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this.toggleContextFileViewed(filePath, viewedCheckbox.checked);
+    });
+    viewedLabel.appendChild(viewedCheckbox);
+    viewedLabel.appendChild(document.createTextNode('Viewed'));
+    header.appendChild(viewedLabel);
+
+    // File comment button
+    if (this.fileCommentManager && zone) {
+      header.appendChild(this._createFileCommentButton(filePath, zone));
+    }
+
+    // Chat/discussion button
+    header.appendChild(this._createFileChatButton(filePath));
+
+    // Dismiss button — removes ALL context ranges for this file
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'context-file-dismiss';
+    dismissBtn.title = 'Remove context file';
+    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+    dismissBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._dismissContextFile(filePath);
+    });
+    header.appendChild(dismissBtn);
+
+    // Click anywhere on header to toggle collapse (except interactive controls)
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle') ||
+          e.target.closest('.file-header-comment-btn') || e.target.closest('.file-header-chat-btn') ||
+          e.target.closest('.context-file-dismiss')) {
+        return;
+      }
+      this.toggleContextFileCollapse(filePath);
+    });
+
+    return header;
+  }
+
+  /**
    * Render diff for a single file
    * @param {Object} file - File data
    * @returns {HTMLElement} File wrapper element
@@ -4360,6 +5338,7 @@ class PRManager {
     // - Files in collapsedFiles set are collapsed
     const isViewed = this.viewedFiles.has(file.file);
     const isCollapsed = isGenerated || isViewed || this.collapsedFiles.has(file.file);
+    this._fileCollapsed.set(file.file, !!isCollapsed);
 
     if (isGenerated) {
       wrapper.classList.add('generated-file');
@@ -4368,111 +5347,18 @@ class PRManager {
       wrapper.classList.add('collapsed');
     }
 
-    // Get file stats for collapsed view
-    const fileStats = {
-      insertions: file.insertions || 0,
-      deletions: file.deletions || 0
-    };
-
-    // Create file header with new options API
-    const header = window.DiffRenderer.createFileHeader(file.file, {
-      isGenerated,
-      isExpanded: !isCollapsed,
-      isViewed,
-      generatedInfo: isGenerated ? this.generatedFiles.get(file.file) : null,
-      fileStats,
-      renamed: file.renamed || false,
-      renamedFrom: file.renamedFrom || null,
-      onToggleCollapse: (path) => this.toggleFileCollapse(path),
-      onToggleViewed: (path, checked) => this.toggleFileViewed(path, checked)
-    });
+    // File-level comments zone (between header and diff); the header's
+    // comment button opens a form in it.
+    const fileCommentsZone = this.fileCommentManager
+      ? this.fileCommentManager.createFileCommentsZone(file.file)
+      : null;
+    const header = this._buildFileHeader(file, { collapsed: isCollapsed, zone: fileCommentsZone });
     wrapper.appendChild(header);
-
-    // Create file-level comments zone (between header and diff)
-    if (this.fileCommentManager) {
-      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
+    if (fileCommentsZone) {
       wrapper.appendChild(fileCommentsZone);
-
-      // Add file comment button to header - directly adds a file comment (like GitHub)
-      const fileCommentBtn = document.createElement('button');
-      fileCommentBtn.className = 'file-header-comment-btn';
-      fileCommentBtn.title = 'Add file comment';
-      fileCommentBtn.dataset.file = file.file;
-      // Outline icon (no comments) - will be updated by updateHeaderButtonState
-      fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
-      `;
-      fileCommentBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // Directly open the comment form (like GitHub's behavior)
-        this.fileCommentManager.showCommentForm(fileCommentsZone, file.file);
-      });
-      header.appendChild(fileCommentBtn);
-
-      // Store reference for updating icon state later
-      fileCommentsZone.headerButton = fileCommentBtn;
-
-      // Add file chat button to header
-      const fileChatBtn = document.createElement('button');
-      fileChatBtn.className = 'file-header-chat-btn';
-      fileChatBtn.title = 'Chat about file';
-      fileChatBtn.dataset.file = file.file;
-      fileChatBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-        </svg>
-      `;
-      fileChatBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (window.chatPanel) {
-          window.chatPanel.open({
-            fileContext: { file: file.file }
-          });
-        }
-      });
-      header.appendChild(fileChatBtn);
-
-      // Per-file hunk-summary toggle. Mirrors the toolbar toggle but scoped to
-      // one file. Disabled (greyed) when no summaries exist yet for this file;
-      // _applyHunkSummaries / _registerHunkAnchorsForFile re-enable it as soon
-      // as hashes for this file are recorded (so a summary that arrives later
-      // doesn't get hidden behind a permanently-disabled button).
-      // Gated on `_summariesEnabled`: skipped entirely when /api/config has
-      // already reported the feature is off; created hidden + revealed later
-      // when config has not yet resolved.
-      if (this._summariesEnabled !== false) {
-        const summaryToggleBtn = document.createElement('button');
-        summaryToggleBtn.className = 'file-header-summary-toggle';
-        summaryToggleBtn.dataset.file = file.file;
-        summaryToggleBtn.innerHTML = `
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25Zm1.75-.25a.25.25 0 0 0-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-8.5a.25.25 0 0 0-.25-.25ZM3.5 6.25a.75.75 0 0 1 .75-.75h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1-.75-.75Zm.75 2.25h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1 0-1.5Z"/>
-          </svg>
-        `;
-
-        if (this._summariesEnabled !== true) {
-          // Config still pending; hide until the gate resolves.
-          summaryToggleBtn.classList.add('summary-toggle-pending');
-          summaryToggleBtn.style.display = 'none';
-        }
-
-        const fileIsHidden = this.summariesHiddenFiles?.has(file.file) || false;
-        if (fileIsHidden) {
-          wrapper.classList.add('summaries-hidden-file');
-        }
-        this._syncFileSummaryToggleButton(summaryToggleBtn, file.file);
-
-        summaryToggleBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.toggleFileSummaries(file.file, wrapper);
-        });
-        header.appendChild(summaryToggleBtn);
-      }
+    }
+    if (this.summariesHiddenFiles?.has(file.file) && header.querySelector('.file-header-summary-toggle')) {
+      wrapper.classList.add('summaries-hidden-file');
     }
 
     const pierreDecision = this._getPierreRenderDecision(file);
@@ -5192,6 +6078,9 @@ class PRManager {
     if (!filePath || typeof filePath !== 'string') return null;
     const changed = this.changedFilesByPath;
     if (changed?.has(filePath)) return filePath;
+    // A context file is known from data, on screen or not.
+    if (this._contextItemIds.has(filePath)) return filePath;
+    if ((this.contextFiles || []).some(row => row.file === filePath)) return filePath;
     // What is on screen: a changed file's wrapper, else a context file's.
     const rendered = this.findFileElement(filePath)?.dataset?.fileName;
     if (rendered) return rendered;
@@ -5208,28 +6097,29 @@ class PRManager {
   }
 
   /**
-   * Whether a changed file is collapsed. The one place that answers it, so
-   * no caller reads the `collapsed` class of a wrapper it looked up itself.
+   * Whether a file of the diff pane is collapsed. The one place that answers
+   * it, from data: `_fileCollapsed`, which is seeded when a file is rendered
+   * (generated, viewed, or collapsed by the reader) and written by
+   * setFileCollapsed. No caller reads the `collapsed` class of an element;
+   * an element is what is on screen, and a file need not have one.
    * @param {string} filePath - Path of the file, in any form
    *   _canonicalFilePath accepts
-   * @returns {boolean|null} null when the path is not a file of the diff
+   * @returns {boolean|null} null when the path is not a file of the pane
    */
   isFileCollapsed(filePath) {
     const path = this._canonicalFilePath(filePath);
     if (!path) return null;
-    // A file is collapsed for one of three reasons (generated, viewed, or the
-    // reader collapsed it) and the reader can expand it whatever the reason,
-    // so on this engine the state lives on the file's wrapper, which exists
-    // for every file of the diff from renderDiff on.
-    const wrapper = this.findFileElement(path);
-    if (wrapper) return wrapper.classList.contains('collapsed');
-    return this.changedFilesByPath?.has(path) ? this.collapsedFiles.has(path) : null;
+    const collapsed = this._fileCollapsed.get(this._fileStateKey(path));
+    return typeof collapsed === 'boolean' ? collapsed : null;
   }
 
   /**
-   * Collapse or expand a changed file. The single writer of a file's
-   * collapsed state: `collapsedFiles`, the wrapper's class, the header's
-   * chevron and the diff engine are updated here and nowhere else.
+   * Collapse or expand a file of the diff pane, a changed file or a context
+   * file. The single writer of a file's collapsed state: `_fileCollapsed`,
+   * `collapsedFiles` (under the file's state key), the element's class, the
+   * header's chevron and the diff engine are updated here and nowhere else.
+   * It needs no element: a file that is not on screen is collapsed in data
+   * and drawn collapsed when it is.
    *
    * Callers: toggleFileCollapse (header chevron and click, toggleGeneratedFile,
    * the tour's restore on exit), toggleFileViewed, revealInDiff (navigation
@@ -5267,17 +6157,17 @@ class PRManager {
       if (this._collapseRequests.get(path) !== request) return false;
     }
 
-    if (collapsed) this.collapsedFiles.add(path);
-    else this.collapsedFiles.delete(path);
+    const key = this._fileStateKey(path);
+    if (collapsed) this.collapsedFiles.add(key);
+    else this.collapsedFiles.delete(key);
+    this._fileCollapsed.set(key, collapsed);
 
     // Looked up after the await: a re-render replaces the wrapper.
     const wrapper = this.findFileElement(path);
-    if (wrapper) {
-      wrapper.classList.toggle('collapsed', collapsed);
-      const header = wrapper.querySelector('.d2h-file-header');
-      if (header) {
-        window.DiffRenderer.updateFileHeaderState(header, !collapsed);
-      }
+    this._setFileElementClass(path, wrapper, 'collapsed', collapsed);
+    const header = this._fileHeaders.get(path) || wrapper?.querySelector('.d2h-file-header');
+    if (header) {
+      window.DiffRenderer.updateFileHeaderState(header, !collapsed);
     }
 
     // Sync collapsed state with @pierre/diffs instance
@@ -5285,6 +6175,28 @@ class PRManager {
       this.pierreBridge.setCollapsed(path, collapsed);
     }
     return true;
+  }
+
+  /**
+   * Put a class that mirrors a file's state on the file's element.
+   *
+   * An element the page built (a wrapper) is written here. An element that
+   * belongs to the virtualized viewer is not the page's to write: its hosts
+   * are pooled, and a class written from outside would follow the host to
+   * the next file. The bridge stamps those from data (`collapsed` from its
+   * record, the rest from _fileHostClasses), so it is asked to stamp again.
+   * @param {string} filePath - the pane's own path of the file
+   * @param {Element|null} element - the file's wrapper, when it has one
+   * @param {string} className
+   * @param {boolean} on
+   * @private
+   */
+  _setFileElementClass(filePath, element, className, on) {
+    if (typeof this.pierreBridge?.refreshHostState === 'function') {
+      this.pierreBridge.refreshHostState(filePath);
+      return;
+    }
+    element?.classList.toggle(className, !!on);
   }
 
   /**
@@ -5502,6 +6414,13 @@ class PRManager {
    */
   _removeRenderedFiles(container = document.getElementById('diff-container')) {
     this.fileCommentManager?.releaseAllZones?.();
+    this._fileCollapsed = new Map();
+    this._contextItemIds = new Set();
+    if (this._diffEngine === 'codeview') {
+      // The container's children are the viewer's: it is given an empty list.
+      this._clearDiffItems();
+      return;
+    }
     if (!container) return;
     while (container.firstChild) container.removeChild(container.firstChild);
   }
@@ -5540,12 +6459,19 @@ class PRManager {
    * @param {string} filePath - Path of the file
    */
   toggleContextFileCollapse(filePath) {
+    if (this._diffEngine === 'codeview') {
+      // A context file is an item like any other: its state is under its own
+      // key (_fileStateKey), and no element is needed.
+      const isCollapsed = this.isFileCollapsed(filePath);
+      if (isCollapsed !== null) this.setFileCollapsed(filePath, !isCollapsed);
+      return;
+    }
     const wrapper = this.findContextFileWrapper(filePath);
     if (!wrapper) return;
 
     const key = this._contextStateKey(filePath);
-    const header = wrapper.querySelector('.d2h-file-header');
-    const collapsed = !wrapper.classList.contains('collapsed');
+    const collapsed = wrapper.classList.toggle('collapsed');
+    this._fileCollapsed.set(key, collapsed);
     if (collapsed) {
       window.HeaderAnchor.keepHeaderInPlace(header, () => {
         wrapper.classList.add('collapsed');
@@ -5572,6 +6498,19 @@ class PRManager {
    * @param {boolean} isViewed - Whether the context entry is now viewed
    */
   toggleContextFileViewed(filePath, isViewed) {
+    if (this._diffEngine === 'codeview') {
+      const stateKey = this._contextStateKey(filePath);
+      if (isViewed) this.viewedFiles.add(stateKey);
+      else this.viewedFiles.delete(stateKey);
+      // Marking as viewed collapses, unmarking expands (match GitHub).
+      if (this.isFileCollapsed(filePath) === !isViewed) {
+        this.setFileCollapsed(filePath, !!isViewed);
+      }
+      this._syncFileHeader(filePath);
+      this.updateFileItemViewedState(filePath, isViewed, { contextItem: true });
+      this.saveViewedState();
+      return;
+    }
     const wrapper = this.findContextFileWrapper(filePath);
     const key = this._contextStateKey(filePath);
     const header = wrapper ? wrapper.querySelector('.d2h-file-header') : null;
@@ -5580,10 +6519,9 @@ class PRManager {
       this.viewedFiles.add(key);
       // Auto-collapse when marking as viewed
       if (wrapper && !wrapper.classList.contains('collapsed')) {
-        window.HeaderAnchor.keepHeaderInPlace(header, () => {
-          wrapper.classList.add('collapsed');
-          this.collapsedFiles.add(key);
-        });
+        wrapper.classList.add('collapsed');
+        this._fileCollapsed.set(key, true);
+        this.collapsedFiles.add(key);
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
@@ -5593,6 +6531,7 @@ class PRManager {
       // Auto-expand when unchecking viewed (match GitHub behavior)
       if (wrapper && wrapper.classList.contains('collapsed')) {
         wrapper.classList.remove('collapsed');
+        this._fileCollapsed.set(key, false);
         this.collapsedFiles.delete(key);
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, true);
@@ -8562,6 +9501,15 @@ class PRManager {
   }
 
   async scrollToFile(filePath) {
+    if (this._diffEngine === 'codeview') {
+      // The viewer scrolls to an item whether or not it is mounted, and
+      // lands its header at the top of the pane.
+      const path = this._canonicalFilePath(filePath);
+      if (!path || !this.pierreBridge?.files.has(path)) return;
+      if (this.isFileCollapsed(path) === false) this._prioritizePierreContentUpgrade(path);
+      this.pierreBridge.scrollToItem(path, { align: 'start', behavior: 'smooth' });
+      return;
+    }
     const fileWrapper = this.findFileElement(filePath);
     if (fileWrapper) {
       // Render the body so the scroll target has its real height (an empty
@@ -9447,10 +10395,23 @@ class PRManager {
   /**
    * Load context files for the current review and render them in the diff panel.
    * Called after renderDiff() and on WebSocket context_files_changed events.
+   * @param {Object} [options]
+   * @param {string} [options.rerenderFile] - a path whose stored range was
+   *   changed in place (same row id): what is drawn of it is drawn again
+   * @param {boolean} [options.refreshContents] - virtualized viewer: read
+   *   every context file's contents again
+   * @param {boolean} [options.whenIdle] - virtualized viewer: the change is
+   *   not the reader's own (a push); do not replace the list under a drag
    */
-  async loadContextFiles() {
+  async loadContextFiles(options = {}) {
+    if (this._diffEngine === 'codeview') {
+      // Ranges and contents are data there: nothing is drawn by hand, and a
+      // changed range needs no eviction.
+      return this._loadContextFilesCodeView(options);
+    }
     const reviewId = this.currentPR?.id;
     if (!reviewId) return;
+    if (options.rerenderFile) this._evictRenderedContextFile(options.rerenderFile);
 
     // Capture before anything reassigns this.contextFiles — needed to scrub
     // context-scoped state for rows deleted remotely (peer tab / WebSocket).
@@ -9474,6 +10435,7 @@ class PRManager {
           if (el.classList.contains('context-file')) {
             // Standalone wrapper (legacy) — remove entirely
             this.fileCommentManager?.releaseZone(el._fileCommentsZone);
+            this._forgetContextWrapper(el.dataset.fileName);
             el.remove();
           } else {
             // Chunk tbody within a merged wrapper
@@ -9490,6 +10452,7 @@ class PRManager {
             // If no more chunks remain, remove the wrapper too
             if (wrapper && !wrapper.querySelector('.context-chunk')) {
               this.fileCommentManager?.releaseZone(wrapper._fileCommentsZone);
+              this._forgetContextWrapper(wrapper.dataset.fileName);
               wrapper.remove();
             }
           }
@@ -9534,6 +10497,41 @@ class PRManager {
       }
     } catch (error) {
       console.error('Error loading context files:', error);
+    }
+  }
+
+  /**
+   * The page's own record of a context wrapper that is being removed: the
+   * file is no longer in the pane and has no collapsed state.
+   * @param {string} filePath
+   * @private
+   */
+  _forgetContextWrapper(filePath) {
+    if (!filePath) return;
+    this._contextItemIds.delete(filePath);
+    this._fileCollapsed.delete(this._contextStateKey(filePath));
+  }
+
+  /**
+   * Take a context file's wrapper and its rows out, so that the next
+   * loadContextFiles draws the file again. For a stored range that was
+   * changed in place: its row keeps its id, and the table renderer only
+   * draws rows whose id is new.
+   * @param {string} filePath
+   * @private
+   */
+  _evictRenderedContextFile(filePath) {
+    // Evict stale entries for this file so loadContextFiles sees
+    // them as new IDs and triggers a fresh render.
+    this.contextFiles = (this.contextFiles || []).filter(cf => cf.file !== filePath);
+    // Remove the file wrapper from the DOM so chunks are re-created
+    const staleWrapper = document.querySelector(
+      `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(filePath)}"]`
+    );
+    if (staleWrapper) {
+      this.fileCommentManager?.releaseZone(staleWrapper._fileCommentsZone);
+      this._forgetContextWrapper(filePath);
+      staleWrapper.remove();
     }
   }
 
@@ -9712,125 +10710,15 @@ class PRManager {
     wrapper.className = 'd2h-file-wrapper context-file';
     wrapper.dataset.fileName = contextFile.file;
 
-    // Build file header — matches regular diff headers (chevron, viewed, comment btn, chat btn)
-    const header = document.createElement('div');
-    header.className = 'd2h-file-header context-file-header';
-
-    // Chevron toggle for expand/collapse
-    const chevronBtn = document.createElement('button');
-    chevronBtn.className = 'file-collapse-toggle';
-    chevronBtn.title = 'Collapse file';
-    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
-    chevronBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.toggleContextFileCollapse(contextFile.file);
-    });
-    header.appendChild(chevronBtn);
-
-    const fileName = document.createElement('span');
-    fileName.className = 'd2h-file-name';
-    fileName.textContent = contextFile.file;
-    window.DiffRenderer.applyFilePathTruncation(fileName, contextFile.file);
-    header.appendChild(fileName);
-
-    const contextLabel = document.createElement('span');
-    contextLabel.className = 'context-badge';
-    contextLabel.textContent = 'CONTEXT';
-    if (contextFile.label) contextLabel.title = contextFile.label;
-    header.appendChild(contextLabel);
-
-    // Viewed checkbox (right-aligned group start)
-    const viewedLabel = document.createElement('label');
-    viewedLabel.className = 'file-viewed-label';
-    viewedLabel.title = 'Mark file as viewed';
-    const viewedCheckbox = document.createElement('input');
-    viewedCheckbox.type = 'checkbox';
-    viewedCheckbox.className = 'file-viewed-checkbox';
-    viewedCheckbox.checked = this.viewedFiles.has(this._contextStateKey(contextFile.file));
-    viewedCheckbox.addEventListener('change', (e) => {
-      e.stopPropagation();
-      this.toggleContextFileViewed(contextFile.file, viewedCheckbox.checked);
-    });
-    viewedLabel.appendChild(viewedCheckbox);
-    viewedLabel.appendChild(document.createTextNode('Viewed'));
-    header.appendChild(viewedLabel);
-
-    // File comment button
+    // File comments zone and header — the header matches a changed file's
+    // (chevron, viewed, comment btn, chat btn) plus the badge and dismiss.
     if (this.fileCommentManager) {
-      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file, { context: true });
-      wrapper._fileCommentsZone = fileCommentsZone;
-
-      const fileCommentBtn = document.createElement('button');
-      fileCommentBtn.className = 'file-header-comment-btn';
-      fileCommentBtn.title = 'Add file comment';
-      fileCommentBtn.dataset.file = contextFile.file;
-      fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
-      `;
-      fileCommentBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.fileCommentManager.showCommentForm(fileCommentsZone, contextFile.file);
-      });
-      header.appendChild(fileCommentBtn);
-      fileCommentsZone.headerButton = fileCommentBtn;
+      wrapper._fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file, { context: true });
     }
-
-    // Chat/discussion button
-    const fileChatBtn = document.createElement('button');
-    fileChatBtn.className = 'file-header-chat-btn';
-    fileChatBtn.title = 'Chat about file';
-    fileChatBtn.dataset.file = contextFile.file;
-    fileChatBtn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-      </svg>
-    `;
-    fileChatBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (window.chatPanel) {
-        window.chatPanel.open({ fileContext: { file: contextFile.file } });
-      }
+    const header = this._buildContextFileHeader(contextFile.file, {
+      label: contextFile.label,
+      zone: wrapper._fileCommentsZone || null,
     });
-    header.appendChild(fileChatBtn);
-
-    // Dismiss button — removes ALL context ranges for this file
-    const dismissBtn = document.createElement('button');
-    dismissBtn.className = 'context-file-dismiss';
-    dismissBtn.title = 'Remove context file';
-    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
-    dismissBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Remove all context ranges for this file
-      const fileWrapper = e.target.closest('.context-file');
-      if (!fileWrapper) return;
-      const chunkIds = [...fileWrapper.querySelectorAll('tbody.context-chunk[data-context-id]')]
-        .map(tb => tb.dataset.contextId);
-      if (chunkIds.length === 0) return;
-      // Remove all ranges — fire sequentially to avoid race conditions
-      const removeAll = async () => {
-        for (const cid of chunkIds) {
-          await this.removeContextFile(cid);
-        }
-      };
-      removeAll();
-    });
-    header.appendChild(dismissBtn);
-
-    // Click anywhere on header to toggle collapse (except interactive controls)
-    header.addEventListener('click', (e) => {
-      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle') ||
-          e.target.closest('.file-header-comment-btn') || e.target.closest('.file-header-chat-btn') ||
-          e.target.closest('.context-file-dismiss')) {
-        return;
-      }
-      this.toggleContextFileCollapse(contextFile.file);
-    });
-
     wrapper.appendChild(header);
 
     // Insert file comments zone between header and diff content
@@ -9852,7 +10740,10 @@ class PRManager {
     // Apply context-scoped collapse/viewed state (independent of any diff
     // entry for the same file) — mirrors renderFileDiff's initial state.
     const contextKey = this._contextStateKey(contextFile.file);
-    if (this.viewedFiles.has(contextKey) || this.collapsedFiles.has(contextKey)) {
+    const startsCollapsed = this.viewedFiles.has(contextKey) || this.collapsedFiles.has(contextKey);
+    this._contextItemIds.add(contextFile.file);
+    this._fileCollapsed.set(contextKey, startsCollapsed);
+    if (startsCollapsed) {
       wrapper.classList.add('collapsed');
       window.DiffRenderer.updateFileHeaderState(header, false);
     }
@@ -9890,6 +10781,7 @@ class PRManager {
       if (!prev || remainingPaths.has(prev.file)) continue;
       const key = this._contextStateKey(prev.file);
       this.collapsedFiles?.delete(key);
+      this._fileCollapsed.delete(key);
       if (this.viewedFiles?.delete(key)) {
         viewedRemoved = true;
       }
@@ -9942,6 +10834,10 @@ class PRManager {
    * @param {number} [lineStart] - Optional line number to highlight
    */
   async scrollToContextFile(file, lineStart, contextId) {
+    if (this._diffEngine === 'codeview') {
+      this._scrollToContextItem(file, lineStart, contextId);
+      return;
+    }
     // Use contextId to find a specific chunk tbody within a merged wrapper,
     // or fall back to a standalone wrapper or the file-level wrapper.
     let target;
@@ -9984,6 +10880,45 @@ class PRManager {
           row.classList.remove('chat-line-highlight');
         }, { once: true });
       }
+    }
+  }
+
+  /**
+   * scrollToContextFile on the virtualized viewer: bring a context file's
+   * header to the top of the pane, or, for a stored range that is not the
+   * file's first, that range's first line; then flash `lineStart`.
+   * @param {string} file - File path
+   * @param {number} [lineStart] - line to flash
+   * @param {number|string} [contextId] - the stored range the entry names
+   * @private
+   */
+  _scrollToContextItem(file, lineStart, contextId) {
+    const bridge = this.pierreBridge;
+    const path = this._canonicalFilePath(file);
+    if (!bridge || !path || !bridge.files.has(path)) return;
+
+    const cached = this._contextContents.get(path);
+    const totalLines = cached ? PRManager.countTextLines(cached.text) : 0;
+    const ranges = (this.contextFiles || [])
+      .filter(row => row.file === path)
+      .map(row => ({ id: row.id, range: this._effectiveContextRange(row, totalLines) }))
+      .filter(entry => entry.range);
+    const firstStart = Math.min(...ranges.map(entry => entry.range.startLine));
+    const named = contextId != null
+      ? ranges.find(entry => String(entry.id) === String(contextId))
+      : null;
+
+    let scrolled = false;
+    if (named && named.range.startLine > firstStart) {
+      scrolled = bridge.scrollToLine(path, named.range.startLine, 'RIGHT', {
+        align: 'center', behavior: 'smooth', flash: false
+      });
+    }
+    if (!scrolled) bridge.scrollToItem(path, { align: 'start', behavior: 'smooth' });
+
+    const line = Number(lineStart);
+    if (Number.isFinite(line) && line > 0) {
+      bridge.scrollToLine(path, line, 'RIGHT', { scroll: false });
     }
   }
 
@@ -10037,20 +10972,8 @@ class PRManager {
             body: JSON.stringify({ line_start: newStart, line_end: newEnd })
           });
           if (resp.ok) {
-            // Evict stale entries for this file so loadContextFiles sees
-            // them as new IDs and triggers a fresh render.
-            const staleFile = overlapping.file;
-            this.contextFiles = (this.contextFiles || []).filter(cf => cf.file !== staleFile);
-            // Remove the file wrapper from the DOM so chunks are re-created
-            const staleWrapper = document.querySelector(
-              `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(staleFile)}"]`
-            );
-            if (staleWrapper) {
-              this.fileCommentManager?.releaseZone(staleWrapper._fileCommentsZone);
-              staleWrapper.remove();
-            }
-
-            await this.loadContextFiles();
+            // The row keeps its id: what is drawn of the file is drawn again.
+            await this.loadContextFiles({ rerenderFile: overlapping.file });
             const updated = this.contextFiles?.find(cf => cf.id === overlapping.id);
             return { type: 'context', contextFile: updated || overlapping, expanded: true };
           }

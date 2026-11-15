@@ -23,12 +23,19 @@
  * `.ai-suggestion`, ...), `.pierre-gutter-buttons` / `.pierre-comment-btn` /
  * `.pierre-chat-btn` (application elements), and `#diff-container`.
  *
- * Engine notes (current engine: FileDiff):
- *  - A diff file is `div.d2h-file-wrapper[data-file-name] > .pierre-diff-body
- *    > diffs-container` with an open shadow root. Under CodeView the wrapper
- *    IS the `diffs-container`. `hostOf` below accepts both.
- *  - A context file is `div.d2h-file-wrapper.context-file[data-file-name]`
- *    rendered by the application's table renderer (no shadow DOM).
+ * Two engines, selected by PR_ENGINE (the default is FileDiff):
+ *  - FileDiff: a diff file is `div.d2h-file-wrapper[data-file-name] >
+ *    .pierre-diff-body > diffs-container` with an open shadow root; a context
+ *    file is `div.d2h-file-wrapper.context-file[data-file-name]` rendered by
+ *    the application's table renderer (no shadow DOM). This file.
+ *  - CodeView (PR_ENGINE=codeview): the wrapper IS the `diffs-container`, for
+ *    changed files and context files alike, and exists only while the file
+ *    is mounted. `hostOf` below accepts both shapes.
+ * This file is the surface every spec imports, what both engines share, and
+ * the named expectations. What an engine does its own way is in its half:
+ * tests/e2e/diff-dom-filediff.js (the table renderer's context files) and
+ * tests/e2e/diff-dom-codeview.js. A half extends the in-page library and
+ * gives the helpers that differ, which are exported here under one name.
  *  - Playwright CSS locators pierce open shadow roots, so
  *    `wrapper.locator('[data-line]')` reaches rows in either layout.
  *
@@ -44,6 +51,11 @@
 // ---------------------------------------------------------------------------
 
 const { expect } = require('@playwright/test');
+const filediffEngine = require('./diff-dom-filediff.js');
+const codeviewEngine = require('./diff-dom-codeview.js');
+
+/** The engine this run drives the application with (tests/e2e/fixtures.js sets it in the page). */
+const ENGINE = process.env.PR_ENGINE === 'codeview' ? 'codeview' : 'filediff';
 
 const ROW = '[data-line]';
 const NUMBER_CELL = '[data-column-number]';
@@ -133,6 +145,17 @@ function installInPage() {
       el = el.parentElement;
     }
     return document.scrollingElement;
+  };
+
+  /**
+   * Set the diff's scroll position the way a reader's own scrolling does.
+   * (An engine half may have to let go of a navigation first: D.releaseScroll.)
+   */
+  D.setScrollTop = (top) => {
+    const s = D.scroller();
+    if (D.releaseScroll) D.releaseScroll();
+    s.scrollTop = top;
+    return s.scrollTop;
   };
 
   const box = (el) => {
@@ -461,97 +484,16 @@ function installInPage() {
     return '';
   };
 
-  // ---- context files -------------------------------------------------
-  // A context file is rendered by the application's table renderer today
-  // (one <tr> per line, gap rows with expand buttons). Everything that reads
-  // that markup is here, so the same specs can run if context files move into
-  // the vendor viewer.
-
-  /** Line rows of a context file, in order (no gap rows, no card rows). */
-  D.contextLineRows = (file) => {
-    const w = D.contextWrapper(file);
-    if (!w) return [];
-    return [...w.querySelectorAll('.d2h-diff-table tr[data-line-number]')]
-      .filter((tr) => !tr.classList.contains('context-expand-row') && tr.querySelector('.d2h-code-linenumber'));
-  };
-
-  D.contextLineRow = (file, line) => D.contextLineRows(file)
-    .find((tr) => Number(tr.dataset.lineNumber) === Number(line)) || null;
-
-  /** Gap rows of a context file ("N hidden lines" with expand buttons), in order. */
-  D.contextGapRows = (file) => {
-    const w = D.contextWrapper(file);
-    return w ? [...w.querySelectorAll('.d2h-diff-table tr.context-expand-row')] : [];
-  };
-
-  const gapDirections = (row) => [...row.querySelectorAll('.expand-button')].map((b) => {
-    const title = (b.title || '').toLowerCase();
-    return title.includes('all') ? 'all' : title.includes('up') ? 'up' : title.includes('down') ? 'down' : 'unknown';
-  });
-
-  /** What a reader sees of a context file, as data. */
-  D.contextDump = (file) => {
-    const w = D.contextWrapper(file);
-    if (!w) return null;
-    const header = w.querySelector('.d2h-file-header');
-    const sequence = [];
-    for (const tr of w.querySelectorAll('.d2h-diff-table tr')) {
-      if (tr.classList.contains('context-expand-row')) {
-        const info = tr.querySelector('.expand-info');
-        const match = info && /(\d+) hidden lines/.exec(info.textContent || '');
-        sequence.push({ kind: 'gap', hidden: match ? Number(match[1]) : null, label: info ? info.textContent.trim() : '', directions: gapDirections(tr) });
-      } else if (tr.classList.contains('context-chunk-separator-row')) {
-        sequence.push({ kind: 'separator' });
-      } else if (tr.dataset.lineNumber && tr.querySelector('.d2h-code-linenumber')) {
-        const content = tr.querySelector('.d2h-code-line-ctn');
-        sequence.push({ kind: 'line', line: Number(tr.dataset.lineNumber), text: content ? content.textContent : '' });
-      } else {
-        const card = tr.matches('.user-comment-row, .ai-suggestion-row') ? tr
-          : tr.querySelector('.user-comment-row, .ai-suggestion, .user-comment-form');
-        if (card) {
-          sequence.push({
-            kind: 'card',
-            classes: [...card.classList].sort().join(' '),
-            commentId: card.getAttribute('data-comment-id') || (card.querySelector('[data-comment-id]') || {}).dataset?.commentId || null,
-            suggestionId: card.getAttribute('data-suggestion-id') || (card.querySelector('[data-suggestion-id]') || {}).dataset?.suggestionId || null,
-          });
-        }
-      }
-    }
-    const lines = sequence.filter((x) => x.kind === 'line').map((x) => x.line);
-    const ranges = [];
-    for (const n of lines) {
-      const last = ranges[ranges.length - 1];
-      if (last && n === last.end + 1) last.end = n;
-      else ranges.push({ start: n, end: n });
-    }
-    const body = w.querySelector('.d2h-file-body');
-    return {
-      file,
-      collapsed: w.classList.contains('collapsed'),
-      bodyVisible: !!body && body.getBoundingClientRect().height > 0,
-      header: header ? {
-        name: (header.querySelector('.d2h-file-name') || {}).textContent || null,
-        badge: ((header.querySelector('.context-badge') || {}).textContent || '').trim(),
-        viewed: !!(header.querySelector('.file-viewed-checkbox') || {}).checked,
-        hasCommentButton: !!header.querySelector('.file-header-comment-btn'),
-        hasChatButton: !!header.querySelector('.file-header-chat-btn'),
-        hasDismissButton: !!header.querySelector('.context-file-dismiss'),
-      } : null,
-      lines,
-      ranges,
-      gaps: sequence.filter((x) => x.kind === 'gap'),
-      separators: sequence.filter((x) => x.kind === 'separator').length,
-      sequence,
-    };
-  };
-
   window.__diffDom = D;
 }
 /* eslint-enable no-undef */
 
+/** What builds the in-page library: this file's, then the engine's extension of it. */
+const IN_PAGE_INSTALLERS = [installInPage, ENGINE === 'codeview' ? codeviewEngine.extendInPage : filediffEngine.extendInPage];
+const IN_PAGE_SOURCES = IN_PAGE_INSTALLERS.map((fn) => fn.toString());
+
 async function lib(page) {
-  await page.evaluate(installInPage);
+  for (const installer of IN_PAGE_INSTALLERS) await page.evaluate(installer);
 }
 
 /** Run `fn(D, arg)` in the page with the in-page library as first argument. */
@@ -570,17 +512,16 @@ async function inPage(page, fn, arg) {
 /** Poll `fn(D, arg)` in the page until it returns a truthy value. */
 async function waitInPage(page, fn, arg, { timeout = 10000 } = {}) {
   const source = fn.toString();
-  const installer = installInPage.toString();
   return page.waitForFunction(
-    ({ source: s, installer: i, arg: inner }) => {
+    ({ source: s, installers, arg: inner }) => {
       if (!window.__diffDom) {
         // eslint-disable-next-line no-new-func
-        new Function(`return (${i})`)()();
+        for (const i of installers) new Function(`return (${i})`)()();
       }
       // eslint-disable-next-line no-new-func
       return new Function(`return (${s})`)()(window.__diffDom, inner);
     },
-    { source, installer, arg },
+    { source, installers: IN_PAGE_SOURCES, arg },
     { timeout }
   );
 }
@@ -812,7 +753,8 @@ async function annotationCell(page, file, text) {
 async function waitForDiffType(page, diffType, timeout = 5000, { fileName } = {}) {
   await waitInPage(page, (D, { type, file }) => {
     if (file) return D.diffType(file) === type;
-    const hosts = D.hosts();
+    // Changed files only: a context file is one column in either layout.
+    const hosts = D.wrappers().filter((w) => !w.classList.contains('context-file')).map(D.hostOf).filter(Boolean);
     if (hosts.length === 0) return false;
     return hosts.every((host) => {
       const pre = host.shadowRoot && host.shadowRoot.querySelector('pre[data-diff-type]');
@@ -1213,8 +1155,7 @@ async function scrollDiffUnderPointer(page) {
     const s = D.scroller();
     const max = s.scrollHeight - s.clientHeight;
     const before = s.scrollTop;
-    s.scrollTop = before < max ? max : 0;
-    return s.scrollTop !== before;
+    return D.setScrollTop(before < max ? max : 0) !== before;
   });
 }
 
@@ -1237,14 +1178,13 @@ async function scrollState(page) {
 
 /** Set the diff's scroll position directly (no smooth scrolling). */
 async function scrollDiffTo(page, top) {
-  await inPage(page, (D, t) => { D.scroller().scrollTop = t; }, top);
+  await inPage(page, (D, t) => { D.setScrollTop(t); }, top);
 }
 
 /** Scroll the diff to its very top or very bottom, by real scrolling of the scroll container. */
 async function scrollDiffToEdge(page, edge) {
   await inPage(page, (D, e) => {
-    const s = D.scroller();
-    s.scrollTop = e === 'bottom' ? s.scrollHeight : 0;
+    D.setScrollTop(e === 'bottom' ? D.scroller().scrollHeight : 0);
   }, edge);
 }
 
@@ -1307,7 +1247,7 @@ async function scrollFileOutOfView(page, file, { margin = 3, timeout = 10000 } =
     if (below <= maxTop) target = below;
     else if (above >= 0) target = above;
     if (target == null) return { ok: false, maxTop, fileTop, fileBottom, need };
-    s.scrollTop = target;
+    D.setScrollTop(target);
     return { ok: true, target };
   }, { file, margin });
   if (!result.ok) {
@@ -1450,10 +1390,43 @@ async function parkPointerOnLine(page, file, line, { side = 'additions' } = {}) 
  *   'first-visible-line'  the first visible code row stays where it was (what
  *                         the virtualized viewer does by itself; plan 3.12)
  *
- * Like CONTEXT_FILE_PLACEMENT this is a behaviour the migration changes on
- * purpose, so the expectation lives here and scroll-landing.spec.js asks.
+ * This is a behaviour the migration changes on purpose, so the expectation
+ * lives here and scroll-landing.spec.js asks. On the virtualized viewer it is
+ * 'first-visible-line' (tests/e2e/diff-dom-codeview.js).
  */
 const LAYOUT_TOGGLE_KEEPS = 'scroll-offset';
+
+/**
+ * Which hunks a changed file has once its contents are loaded (decision D5).
+ *
+ *   'rediff'  the two contents are diffed again: three lines of context
+ *             around every change, so lines next to a hunk that the patch
+ *             did not show are drawn, and the last lines of a file are drawn
+ *             when few enough are left (the current behaviour)
+ *   'patch'   git's hunks are kept and every other line is behind a
+ *             separator, the end of the file included (the virtualized
+ *             viewer: no row moves when the contents arrive)
+ *
+ * A spec that counts separators or names the rows next to a hunk after the
+ * upgrade asks this.
+ */
+const UPGRADED_DIFF_HUNKS = 'rediff';
+
+/**
+ * What the diff pane shows when the viewer's bundle did not load (decision
+ * D1): 'table', every file drawn by the application's table renderer (the
+ * current behaviour), or 'message', an error in place of the diff (the
+ * virtualized viewer has no second renderer).
+ */
+const MISSING_VIEWER_BUNDLE = 'table';
+
+/**
+ * What the console shows when the highlight worker's script cannot load and
+ * highlighting falls back to the main thread: on both engines the vendor's
+ * one `Worker error` line; the virtualized viewer's pool also reports the
+ * worker it lost (tests/e2e/diff-dom-codeview.js).
+ */
+const WORKER_LOAD_FAILURE_ERROR = /\[console\.error\] Worker error: Event/;
 
 /**
  * Whether a background content upgrade waits while the keyboard focus is
@@ -1571,17 +1544,49 @@ const GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS = true;
 const BASE_CHANGE_KEEPS_CARDS = false;
 
 /**
- * Where a context file sits in the diff pane relative to the changed files.
- *
- *   'interleaved'  by path among the changed files (the current behaviour)
- *   'after-diff'   after every changed file, sorted by path among themselves
- *                  (decision D2 of plans/codeview-virtualized-diff.md, if the
- *                  user accepts it)
- *
- * The position is the one context-file behaviour the migration may change on
- * purpose, so the expectation lives here and specs ask `expectedPaneOrder`.
+ * Where a context file sits in the diff pane relative to the changed files:
+ * 'interleaved', by path among them, on both engines (decision D2 of
+ * plans/codeview-virtualized-diff.md: a context file is an item of the
+ * viewer in the place it has today). Specs ask `expectedPaneOrder`.
  */
 const CONTEXT_FILE_PLACEMENT = 'interleaved';
+
+/**
+ * What a context file shows where five lines or fewer are hidden: before its
+ * first range, after its last, or between two ranges.
+ *
+ *   'gap'    a gap row with expand controls, like any hidden gap (the table
+ *            renderer)
+ *   'shown'  the lines themselves: the rule the viewer has for the gaps of a
+ *            changed file applies to a context file too (the virtualized
+ *            viewer; decision D2, accepted by the user as part of the look)
+ *
+ * `expectedContextRanges` turns the ranges a scenario asked for into the
+ * ranges the pane shows under the engine's rule.
+ */
+const SMALL_CONTEXT_GAP = 'gap';
+const SMALL_CONTEXT_GAP_LINES = 5;
+
+/**
+ * What the pane holds when two loads of the context files were in flight
+ * together (the reader's own, and one a push from the server started).
+ *
+ *   'each-draws'  every load draws what it fetched by itself: a range can be
+ *                 drawn twice, and one copy stays in the pane after its row
+ *                 is removed (the table renderer, a defect of the current
+ *                 engine; a scenario does not assert the pane there)
+ *   'one-state'   the later load wins and the pane has each file once (the
+ *                 virtualized viewer)
+ *
+ * On both engines whoever asked for a context file is answered with its row,
+ * with the file in the pane.
+ */
+const CONTEXT_LOADS_IN_FLIGHT = 'each-draws';
+
+/** The label of a hidden gap of `n` lines of a context file, as this engine words it. */
+function contextGapLabel(n) {
+  return `${n} hidden lines`;
+}
 
 /**
  * The order in which the pane shows `diffFiles` (already in diff order) and
@@ -1594,9 +1599,8 @@ function expectedPaneOrder(diffFiles, contextFiles) {
   const byPath = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const context = contextFiles.slice().sort(byPath).map((file) => ({ file, kind: 'context' }));
   const diff = diffFiles.map((file) => ({ file, kind: 'diff' }));
-  if (CONTEXT_FILE_PLACEMENT === 'after-diff') return [...diff, ...context];
   // Interleaved: each context file goes before the first file whose path
-  // sorts after it (pr.js renderContextFile).
+  // sorts after it (pr.js renderContextFile, _buildPaneEntries).
   const out = diff.slice();
   for (const entry of context) {
     const index = out.findIndex((other) => other.file > entry.file);
@@ -1606,49 +1610,27 @@ function expectedPaneOrder(diffFiles, contextFiles) {
   return out;
 }
 
-/** What a reader sees of a context file: header, displayed lines and ranges, gaps, cards. Null when absent. */
-async function contextFileState(page, file) {
-  return inPage(page, (D, f) => D.contextDump(f), file);
-}
-
-/** Locator of the row showing `line` of a context file. */
-function contextLine(page, file, line) {
-  return contextFile(page, file)
-    .locator(`.d2h-diff-table tr[data-line-number="${line}"]:not(.context-expand-row)`);
-}
-
 /**
- * Click an expand control of the Nth gap (0-based, top to bottom) of a
- * context file.
- * @param {('up'|'down'|'all')} direction - must be one the gap offers
- *   (see contextFileState(...).gaps[n].directions)
+ * The ranges of lines a context file of `totalLines` lines shows for the
+ * ranges a scenario asked for, under this engine's small-gap rule.
+ * @param {Array<{start: number, end: number}>} ranges - ascending, disjoint
+ * @param {number} totalLines
+ * @returns {Array<{start: number, end: number}>}
  */
-async function expandContextGap(page, file, gapIndex, direction) {
-  const gap = contextFile(page, file).locator('.d2h-diff-table tr.context-expand-row').nth(gapIndex);
-  const title = direction === 'all' ? 'Expand all' : direction === 'up' ? 'Expand up' : 'Expand down';
-  await gap.locator(`.expand-button[title="${title}"]`).click();
-}
-
-/** Click the whole-gap control of the Nth gap ("N hidden lines"): reveals everything hidden there. */
-async function expandContextGapFully(page, file, gapIndex) {
-  await contextFile(page, file).locator('.d2h-diff-table tr.context-expand-row').nth(gapIndex)
-    .locator('.clickable-expand').click();
-}
-
-/** Hover a context line and click its "add comment" control; waits for the form. */
-async function openContextLineCommentForm(page, file, line) {
-  const row = contextLine(page, file, line);
-  await row.scrollIntoViewIfNeeded();
-  await row.hover();
-  const button = row.locator('.add-comment-btn');
-  await button.waitFor({ state: 'visible', timeout: 5000 });
-  await button.click();
-  await contextFile(page, file).locator('.user-comment-form').waitFor({ state: 'visible', timeout: 5000 });
-}
-
-/** Locator of a context line's "chat about this line" control (visible on hover). */
-function contextLineChatButton(page, file, line) {
-  return contextLine(page, file, line).locator('.chat-line-btn');
+function expectedContextRanges(ranges, totalLines) {
+  if (engineExpectations.SMALL_CONTEXT_GAP === 'gap') return ranges.map((r) => ({ ...r }));
+  const out = [];
+  for (const range of ranges) {
+    const last = out[out.length - 1];
+    if (last && range.start - last.end - 1 <= SMALL_CONTEXT_GAP_LINES) last.end = Math.max(last.end, range.end);
+    else out.push({ ...range });
+  }
+  if (out.length > 0) {
+    if (out[0].start - 1 <= SMALL_CONTEXT_GAP_LINES) out[0].start = 1;
+    const last = out[out.length - 1];
+    if (totalLines - last.end <= SMALL_CONTEXT_GAP_LINES) last.end = totalLines;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,12 +1660,39 @@ async function assertNoOrphanHosts(page) {
   }
 }
 
+/**
+ * Whether this page checks the viewer's layout as it draws (see the
+ * virtualized viewer's half). The default engine has no layout of its own to
+ * check.
+ */
+async function layoutValidatorState() {
+  return { developmentBundle: false, validator: false };
+}
+
 /** Everything visible of one diff file, as data (see D.dump). */
 async function dumpFile(page, file) {
   return inPage(page, (D, f) => D.dump(f), file);
 }
 
+// The engine half: on the virtualized viewer the helpers that differ come from
+// tests/e2e/diff-dom-codeview.js, under the same names.
+const engineAdapter = (ENGINE === 'codeview' ? codeviewEngine.createCodeViewAdapter : filediffEngine.createFileDiffAdapter)(
+  { inPage, waitInPage, contextFile, fileWrapper, waitForContentUpgrade }
+);
+const engineExpectations = {
+  LAYOUT_TOGGLE_KEEPS, UPGRADED_DIFF_HUNKS, MISSING_VIEWER_BUNDLE, WORKER_LOAD_FAILURE_ERROR, SMALL_CONTEXT_GAP, contextGapLabel,
+  CONTEXT_LOADS_IN_FLIGHT,
+  ...engineAdapter.expectations,
+};
+
 module.exports = {
+  ENGINE,
+  // what a development-bundle run needs (tests/e2e/fixtures.js)
+  layoutValidator: codeviewEngine.layoutValidator,
+  // the standing check of every test: problems with the pane's hosts when a
+  // test ends (the default engine has one host per rendered file and nothing
+  // to orphan; assertNoOrphanHosts is its check where a spec asks)
+  orphanHostsAtEnd: ENGINE === 'codeview' ? codeviewEngine.orphanHostsOf : async () => [],
   // selectors
   fileSelector,
   contextFileSelector,
@@ -1770,16 +1779,19 @@ module.exports = {
   BASE_CHANGE_KEEPS_CARDS,
   THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY,
   GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS,
+  SMALL_CONTEXT_GAP,
+  contextGapLabel,
+  expectedContextRanges,
   expectedPaneOrder,
-  contextFileState,
-  contextLine,
-  expandContextGap,
-  expandContextGapFully,
-  openContextLineCommentForm,
-  contextLineChatButton,
   // checks and dumps
   assertNoOrphanHosts,
   dumpFile,
+  layoutValidatorState,
   inPage,
   waitInPage,
+  // what each engine does its own way (see ENGINE): the context-file helpers,
+  // and on the virtualized viewer the helpers that must not assume a file is
+  // mounted
+  ...engineAdapter.overrides,
+  ...engineExpectations,
 };

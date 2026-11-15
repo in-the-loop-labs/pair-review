@@ -51,6 +51,61 @@ for (const [where, index] of [['above', 3], ['directly above', null], ['below', 
   });
 }
 
+test('a pane that is at its very top stays there: a context file added above the first file is shown at the top', async ({ harness }) => {
+  // Content inserted at the top of a scroll container at offset 0 is seen:
+  // nobody is "reading below it". The first list of a page has no context
+  // files; the ones stored for the review arrive with the first reconcile
+  // and must not leave the reader scrolled past them.
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async ({ CONTEXT, RANGES }) => {
+    const { H, BH } = window;
+    const { roles } = H.workload;
+    const names = H.workload.modifiedPaths.filter((n) => n !== roles.hugeModified && n !== roles.large).slice(0, 12);
+    const entries = names.map((n) => BH.diffEntry(n));
+    await BH.up({ entries });
+    const b = BH.bridge;
+    const before = { scrollTop: H.root.scrollTop, first: H.firstVisibleItem() };
+    const withContext = [BH.contextEntry(CONTEXT, { contents: BH.numberedLines(400), ranges: RANGES }), ...entries];
+    const added = b.reconcile(withContext);
+    const sync = { scrollTop: H.root.scrollTop, first: H.firstVisibleItem() };
+    await H.settle(300);
+    const settled = {
+      scrollTop: H.root.scrollTop,
+      first: H.firstVisibleItem(),
+      hostTop: H.viewportTopOf(b.findFileElement(CONTEXT)),
+      sound: BH.sound(),
+    };
+    // Scrolled, the same list write keeps the reader's line (the other half of the rule).
+    b.reconcile(entries);
+    await H.settle(200);
+    b.scrollToItem(names[5]);
+    await H.settle(250);
+    H.root.scrollTop += 90;
+    await H.settle(300);
+    const reading = H.firstVisibleItem();
+    const row = [...H.host(reading).shadowRoot.querySelectorAll('[data-content] > [data-line]')].find((r) => H.viewportTopOf(r) >= 40);
+    const rowKey = { n: Number(row.getAttribute('data-line')), side: row.getAttribute('data-line-type') === 'change-deletion' ? 'deletions' : 'additions', top: H.viewportTopOf(row) };
+    b.reconcile(withContext);
+    await H.settle(300);
+    const again = H.findRow(reading, rowKey.n, rowKey.side);
+    const scrolled = { moved: again ? H.viewportTopOf(again) - rowKey.top : null, scrollTop: H.root.scrollTop, sound: BH.sound() };
+    return { before, added, sync, settled, scrolled, first: names[0] };
+  }, { CONTEXT, RANGES });
+
+  expect(result.before).toEqual({ scrollTop: 0, first: result.first });
+  expect(result.added.listWritten).toBe(true);
+  expect(result.sync).toEqual({ scrollTop: 0, first: CONTEXT });
+  expect(result.settled.scrollTop).toBe(0);
+  expect(result.settled.first).toBe(CONTEXT);
+  // The viewer's own top padding, and nothing above the file.
+  expect(result.settled.hostTop).toBe(17);
+  expect(result.settled.sound).toEqual({ orphans: 0, clean: true });
+  expect(result.scrolled.moved).toBe(0);
+  expect(result.scrolled.scrollTop).toBeGreaterThan(0);
+  expect(result.scrolled.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
 test('with the ids unchanged no list is written: new ranges and new contents are published on the same item', async ({ harness }) => {
   const page = await openBridge(harness);
   await readingInTheMiddle(page);

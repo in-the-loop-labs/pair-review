@@ -19,7 +19,7 @@ import { MODES, waitForDiffToRender } from './helpers.js';
 import { allCorpora, checkRows, customCorpus, routeDiff } from './fixtures/diffs.js';
 import {
   filesInPane, diffStatus, fileWrapper, dumpFile, rowCount, scrollFileIntoView, waitForFileRendered,
-  waitForFileSettled, waitForContentUpgrade, wrapInfo, syntaxTokens, assertNoOrphanHosts
+  waitForFileSettled, waitForContentUpgrade, wrapInfo, syntaxTokens, assertNoOrphanHosts, UPGRADED_DIFF_HUNKS
 } from './diff-dom.js';
 
 const { default: DEFAULT, edge: EDGE, eviction: EVICTION } = allCorpora();
@@ -86,7 +86,11 @@ for (const mode of MODES) {
       await waitForContentUpgrade(page, 'src/utils.js');
 
       const utils = await dumpFile(page, 'src/utils.js');
-      expect(utils.separators).toHaveLength(1);
+      // One separator between the two hunks. The file has seven more lines
+      // after its last hunk: a re-diff of the contents draws them (three of
+      // context, and the four left are too few to hide); with git's hunks
+      // kept they are a second separator, after the last row (D5).
+      expect(utils.separators).toHaveLength(UPGRADED_DIFF_HUNKS === 'patch' ? 2 : 1);
       expect(utils.separators[0]).toMatch(/^\d+ unmodified lines/);
       expect(utils.expandControls).toBeGreaterThan(0);
       // The separator sits between the two hunks: no row of the hidden range is on screen.

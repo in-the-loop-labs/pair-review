@@ -218,13 +218,76 @@
 :host(.context-file) [data-additions] [data-content] [data-separator='line-info'] [data-separator-wrapper] { display: none !important; }
 `;
 
+  /**
+   * What the viewer is told a file's code block has below its last row
+   * (`itemMetrics.paddingBottom`): the vendor's own 8 px and the 1 px bottom
+   * border FRAME_CSS adds. The viewer counts it for every item that has a
+   * line and for no other, and it is one number for every item, so FRAME_CSS
+   * must make it true for changed files and for context files alike.
+   */
+  const ITEM_PADDING_BOTTOM = 9;
+
+  /**
+   * The frame of a file under the virtualized viewer: what the per-file
+   * renderer's `.pierre-diff-body` (pr.css) draws around a file's lines, a
+   * 1 px border left, right and below with 6 px bottom corners. There the
+   * body is an element of the page around the vendor's host; here the host is
+   * the file, so the frame is on the code block inside it.
+   *
+   *  - Left and right borders add no height. The bottom border adds 1 px,
+   *    which the viewer is told (ITEM_PADDING_BOTTOM). The colour is the
+   *    page's; the 1 px must be there on a page that does not define it, so
+   *    the colour has a fallback.
+   *  - A file without a line has no bottom padding in the viewer's layout
+   *    (and ROWLESS_FIX removes the vendor's), so it gets no bottom border
+   *    either; pr.css draws its 1 px line in the file's comment zone, which
+   *    the viewer measures.
+   *    Such a file has no code background either: what it shows (its
+   *    comments, a notice, that line) is on the pane, as on the other engine.
+   *  - A context file has no frame on the other engine and none here; its
+   *    bottom border is transparent, because the 1 px is counted for it too.
+   *  - The viewer paints its host and its sticky header's box with the code
+   *    background. The page's header has rounded top corners and the pane
+   *    shows through them, also while the header is pinned over the code;
+   *    and the frame's translucent border is over the pane.
+   *  - The row of a file-level annotation (the file's comment zone, a notice)
+   *    is painted like a context line by the viewer. On the per-file renderer
+   *    those are elements of the page above the code block, on the code
+   *    background; the 8 px pr.css puts under the zone are the code block's
+   *    top padding there.
+   *  - `overflow: clip` keeps the rows inside the rounded corners, as the
+   *    body's `overflow-x: auto` does; it makes no scroll container.
+   *  - The border colour is translucent. The body has no background of its
+   *    own, so its border is over the pane; `background-clip: padding-box`
+   *    keeps the code background from under this one, for the same pixels.
+   */
+  const FRAME_CSS = `
+:host(:not(.context-file)) pre[data-diff] {
+  border: 1px solid var(--color-border-default, transparent);
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
+  overflow: clip;
+  background-clip: padding-box;
+}
+[data-line-annotation='-1,-1'],
+[data-gutter] > [data-gutter-buffer='annotation']:first-child { background-color: var(--diffs-bg) !important; }
+:host(.context-file) pre[data-diff] { border-bottom: 1px solid transparent; }
+pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { border-bottom: 0 !important; }
+pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { background-color: transparent !important; }
+pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) * { background-color: transparent !important; border-color: transparent !important; }
+[data-diffs-header] { background-color: transparent !important; }
+:host { background-color: transparent !important; }
+`;
+
   const PierreStyles = {
     ANNOTATION_CSS,
     ROWLESS_FIX,
     CONTEXT_CSS,
+    FRAME_CSS,
+    ITEM_PADDING_BOTTOM,
     /** Everything the CodeView bridge passes as `unsafeCSS`, in cascade order. */
     unsafeCSS() {
-      return [ANNOTATION_CSS, ROWLESS_FIX, CONTEXT_CSS].join('\n');
+      return [ANNOTATION_CSS, ROWLESS_FIX, CONTEXT_CSS, FRAME_CSS].join('\n');
     },
   };
 

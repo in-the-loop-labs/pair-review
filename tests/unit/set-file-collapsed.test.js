@@ -2,10 +2,15 @@
 // @vitest-environment jsdom
 
 /**
- * PRManager.setFileCollapsed is the single writer of a changed file's
- * collapsed state, and isFileCollapsed the single reader. The header
- * chevron, the Viewed checkbox, the review panel, the suggestion navigator
- * and the tour all go through them.
+ * PRManager.setFileCollapsed is the single writer of a file's collapsed
+ * state, and isFileCollapsed the single reader. The header chevron, the
+ * Viewed checkbox, the review panel, the suggestion navigator and the tour
+ * all go through them.
+ *
+ * The state is data (`_fileCollapsed`, seeded when a file is rendered): a
+ * file is collapsed because it is generated, viewed or was collapsed by the
+ * reader, and it need not have an element. A wrapper's `collapsed` class is
+ * written from it and never read.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -19,6 +24,12 @@ function addWrapper(fileName, { collapsed = false } = {}) {
   wrapper.innerHTML = '<div class="d2h-file-header"></div>';
   document.body.appendChild(wrapper);
   return wrapper;
+}
+
+/** A file as a render leaves it: its wrapper, and its collapsed state in the manager's data. */
+function addRenderedFile(manager, fileName, { collapsed = false } = {}) {
+  manager._fileCollapsed.set(fileName, collapsed);
+  return addWrapper(fileName, { collapsed });
 }
 
 function makeManager(overrides = {}) {
@@ -43,21 +54,46 @@ afterEach(() => {
 });
 
 describe('PRManager.isFileCollapsed', () => {
-  it('answers from the file\'s wrapper, whatever made the file collapsed', () => {
+  it('answers from data, whatever made the file collapsed', async () => {
     const manager = makeManager();
-    const wrapper = addWrapper('a.js', { collapsed: true });
-    // A generated or viewed file is collapsed without being in collapsedFiles.
+    // A generated or viewed file is rendered collapsed without being in collapsedFiles.
+    const wrapper = addRenderedFile(manager, 'a.js', { collapsed: true });
     expect(manager.collapsedFiles.has('a.js')).toBe(false);
     expect(manager.isFileCollapsed('a.js')).toBe(true);
-    wrapper.classList.remove('collapsed');
+    // The reader expands it: the answer changes although no set says so.
+    await manager.setFileCollapsed('a.js', false);
+    expect(manager.collapsedFiles.has('a.js')).toBe(false);
     expect(manager.isFileCollapsed('a.js')).toBe(false);
+    expect(wrapper.classList.contains('collapsed')).toBe(false);
   });
 
-  it('answers from data for a file of the diff that has no wrapper', () => {
+  it('never reads an element: a class on the wrapper does not answer', () => {
+    const manager = makeManager();
+    const wrapper = addRenderedFile(manager, 'a.js', { collapsed: false });
+    wrapper.classList.add('collapsed');
+    expect(manager.isFileCollapsed('a.js')).toBe(false);
+    manager._fileCollapsed.set('a.js', true);
+    wrapper.classList.remove('collapsed');
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
+  });
+
+  it('answers for a file of the diff that has no wrapper, and such a file can be collapsed', async () => {
     const manager = makeManager();
     expect(manager.isFileCollapsed('unmounted.js')).toBe(false);
-    manager.collapsedFiles.add('unmounted.js');
+    await expect(manager.setFileCollapsed('unmounted.js', true)).resolves.toBe(true);
     expect(manager.isFileCollapsed('unmounted.js')).toBe(true);
+    expect(manager.collapsedFiles.has('unmounted.js')).toBe(true);
+  });
+
+  it('keys a context file by its own state key, never by the bare path', async () => {
+    const manager = makeManager({ contextFiles: [{ id: 1, file: 'ctx.js', line_start: 1, line_end: 5 }] });
+    manager._fileCollapsed.set('context:ctx.js', false);
+    expect(manager.fileKind('ctx.js')).toBe('context');
+    expect(manager.isFileCollapsed('ctx.js')).toBe(false);
+    await expect(manager.setFileCollapsed('ctx.js', true)).resolves.toBe(true);
+    expect(manager.isFileCollapsed('ctx.js')).toBe(true);
+    expect([...manager.collapsedFiles]).toEqual(['context:ctx.js']);
+    expect(manager._fileCollapsed.has('ctx.js')).toBe(false);
   });
 
   it('is null for a path that is not a file of the diff, and for no path', () => {
@@ -203,9 +239,9 @@ describe('a path that is not in the diff\'s own form', () => {
     ['src/{b.js => a.js}'],
   ])('isFileCollapsed answers for %s as for the canonical path', (variant) => {
     const manager = makeVariantManager();
-    const wrapper = addWrapper('src/a.js', { collapsed: true });
+    addRenderedFile(manager, 'src/a.js', { collapsed: true });
     expect(manager.isFileCollapsed(variant)).toBe(true);
-    wrapper.classList.remove('collapsed');
+    manager._fileCollapsed.set('src/a.js', false);
     expect(manager.isFileCollapsed(variant)).toBe(false);
   });
 
@@ -215,7 +251,7 @@ describe('a path that is not in the diff\'s own form', () => {
     ['src/{b.js => a.js}'],
   ])('expanding through %s clears the state, the wrapper and the engine under the canonical path', async (variant) => {
     const manager = makeVariantManager();
-    const wrapper = addWrapper('src/a.js', { collapsed: true });
+    const wrapper = addRenderedFile(manager, 'src/a.js', { collapsed: true });
     manager.collapsedFiles.add('src/a.js');
 
     await expect(manager.setFileCollapsed(variant, false)).resolves.toBe(true);

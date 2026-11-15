@@ -28,7 +28,7 @@ test('renderAll draws one item per entry, in entry order, with the header and th
   expect(result.itemIds).toEqual(result.names);
   expect(result.mounted.length).toBeGreaterThan(0);
   for (const id of result.mounted) {
-    expect(result.hosts[id]).toEqual({ fileName: id, classes: ['d2h-file-wrapper'], header: id });
+    expect(result.hosts[id]).toEqual({ fileName: id, classes: ['d2h-file-wrapper', 'has-diff-lines'], header: id });
   }
   expect(result.zones.every(Boolean)).toBe(true);
   // The zone is on the side the vendor lays out for the file.
@@ -110,7 +110,7 @@ test('host stamps follow the item through pooling and are stripped when it unmou
     // Every mounted host carries its own file's stamps and nobody else's.
     const mismatched = H.mounted().filter((id) => {
       const info = BH.hostInfo(id);
-      return info.fileName !== id || info.header !== id || info.classes.join(' ') !== 'd2h-file-wrapper';
+      return info.fileName !== id || info.header !== id || info.classes.join(' ') !== 'd2h-file-wrapper has-diff-lines';
     });
     const hostsInDom = [...H.root.querySelectorAll('diffs-container')].map((el) => el.getAttribute('data-file-name'));
 
@@ -131,7 +131,7 @@ test('host stamps follow the item through pooling and are stripped when it unmou
     };
   });
   expect(result.first).toEqual({ fileName: result.names[0], classes: ['collapsed', 'd2h-file-wrapper', 'generated-file'], header: result.names[0] });
-  expect(result.second).toEqual({ fileName: result.names[1], classes: ['d2h-file-wrapper', 'summaries-hidden-file'], header: result.names[1] });
+  expect(result.second).toEqual({ fileName: result.names[1], classes: ['d2h-file-wrapper', 'has-diff-lines', 'summaries-hidden-file'], header: result.names[1] });
   expect(result.unmounted).toBe(true);
   expect(result.unmountSeen).toBe(true);
   // A host that is not in use carries nothing of the file it showed.
@@ -146,7 +146,7 @@ test('host stamps follow the item through pooling and are stripped when it unmou
   expect(result.mismatched).toEqual([]);
   expect(result.everyHostNamed).toBe(true);
   expect(result.firstAgain).toEqual(result.first);
-  expect(result.secondRefreshed.classes).toEqual(['d2h-file-wrapper']);
+  expect(result.secondRefreshed.classes).toEqual(['d2h-file-wrapper', 'has-diff-lines']);
   expect(result.sound).toEqual({ orphans: 0, clean: true });
 });
 

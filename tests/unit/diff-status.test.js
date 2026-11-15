@@ -287,7 +287,7 @@ describe('the pages and the sources', () => {
 
     // One loop that removes the container's children: inside _removeRenderedFiles.
     expect(all.match(/container\.removeChild\(container\.firstChild\)/g)).toHaveLength(1);
-    const remove = pr.slice(pr.indexOf('  _removeRenderedFiles(container'), pr.indexOf('  _removeRenderedFiles(container') + 400);
+    const remove = pr.slice(pr.indexOf('  _removeRenderedFiles(container'), pr.indexOf('  _contextStateKey(filePath)'));
     expect(remove).toContain('container.removeChild(container.firstChild)');
   });
 
