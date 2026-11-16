@@ -1512,6 +1512,18 @@ class PierreBridge {
   }
 
   /**
+   * Run several annotation changes as one. On this engine every change is
+   * drawn by the file's own instance as it is made, so there is nothing to
+   * hold back; the virtualized viewer's bridge draws once when `fn` returns.
+   * Callers use it on both.
+   * @param {Function} fn
+   * @returns {*} what `fn` returns
+   */
+  batch(fn) {
+    return fn();
+  }
+
+  /**
    * Remove all annotations of a given type for a file.
    * @param {string} fileName
    * @param {string} type - 'comment' | 'suggestion' | 'comment-form'

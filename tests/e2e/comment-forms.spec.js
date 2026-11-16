@@ -15,7 +15,7 @@ import {
 import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, openLineCommentForm, selectLineRange, lineSelection, inlineComment, expectAnnotationInColumn,
-  scrollFileIntoView, waitForContentUpgrade, waitForFileRendered
+  scrollFileIntoView, waitForContentUpgrade, waitForFileRendered, SUGGESTION_BLOCK_HAS_EMPTY_LINE
 } from './diff-dom.js';
 
 const { eviction: EVICTION } = allCorpora();
@@ -109,8 +109,11 @@ for (const mode of MODES) {
       const value = await form.locator('textarea').inputValue();
       // Characterization: on main the block holds the line followed by an
       // empty line (the row's text ends in a newline and the block adds its
-      // own; ledger H52). The extra line is tolerated here, not required.
-      expect(value).toMatch(/```suggestion\nfunction log\(message\) \{\n{1,2}```/);
+      // own; ledger H52). The same text on either diff engine.
+      const block = SUGGESTION_BLOCK_HAS_EMPTY_LINE
+        ? '```suggestion\nfunction log(message) {\n\n```'
+        : '```suggestion\nfunction log(message) {\n```';
+      expect(value).toBe(block);
     });
 
     test('a range dragged on the additions side in split layout becomes a range comment in that column', async ({ page }) => {

@@ -1485,3 +1485,403 @@ describe('the list has one writer (grep)', () => {
     expect(code.some((line) => /type:\s*'position'/.test(line))).toBe(false);
   });
 });
+
+describe('a card the viewer dropped at the end of a row window (H119)', () => {
+  let record;
+  let publishes;
+  let content;
+
+  /** A unified column with `count` line rows starting at `first`; `withCards` are lines followed by an annotation row. */
+  function draw({ first = 1, count, withCards = [] }) {
+    const document = env.window.document;
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const code = document.createElement('code');
+    code.setAttribute('data-unified', '');
+    content = document.createElement('div');
+    content.setAttribute('data-content', '');
+    const rows = [];
+    for (let line = first; line < first + count; line++) {
+      rows.push(`<div data-line="${line}" data-line-type="change-addition" data-line-index="${line - 1},${line - 1}"></div>`);
+      if (withCards.includes(line)) rows.push(`<div data-line-annotation="0,${line - 1}"></div>`);
+    }
+    content.innerHTML = rows.join('');
+    code.appendChild(content);
+    shadow.appendChild(code);
+    record._element = host;
+    return host;
+  }
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    record = bridge.files.get('src/a.js');
+    bridge.addAnnotation('src/a.js', { lineNumber: 5000, side: 'RIGHT', type: 'comment', data: { id: 1 } });
+    bridge.isDiffDisplayed = () => true;
+    publishes = 0;
+    bridge._publish = () => { publishes++; return true; };
+  });
+
+  it('a file that shows fewer rows than a window is never looked at', () => {
+    draw({ count: 200 });
+    bridge.addAnnotation('src/a.js', { lineNumber: 100, side: 'RIGHT', type: 'comment', data: { id: 2 } });
+    publishes = 0;
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(0);
+  });
+
+  it('a line whose row is drawn, followed by another row and not by its cards: the file is drawn again, once per state', () => {
+    draw({ count: 6000 });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(1);
+    // Still missing after that draw, same rows: not asked again.
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(1);
+    // The window moved (other rows): one more attempt.
+    draw({ first: 3000, count: 6000 });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(2);
+  });
+
+  it('once the cards are back the next loss is repaired again', () => {
+    draw({ count: 6000 });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(1);
+    draw({ count: 6000, withCards: [5000] });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(1);
+    // The same rows as the first time, the cards gone again.
+    draw({ count: 6000 });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(2);
+  });
+
+  it('a line at the very end of the drawn rows is left alone: the window ends there', () => {
+    draw({ count: 5000 });
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(0);
+  });
+
+  it('nothing is asked for a collapsed file, a file without an element, or while the old diff is still displayed', () => {
+    draw({ count: 6000 });
+    record.collapsed = true;
+    bridge._restoreTrimmedCards(record);
+    record.collapsed = false;
+    bridge.isDiffDisplayed = () => false;
+    bridge._restoreTrimmedCards(record);
+    bridge.isDiffDisplayed = () => true;
+    record._element = null;
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(0);
+  });
+
+  it('file-level annotations (line 0) are not lines: the zone alone asks for nothing', () => {
+    record.annotations = record.annotations.filter((annotation) => annotation.lineNumber === 0);
+    expect(record.annotations).toHaveLength(1);
+    draw({ count: 6000 });
+    publishes = 0;
+    bridge._restoreTrimmedCards(record);
+    expect(publishes).toBe(0);
+  });
+});
+
+describe('a click the browser does not deliver because the file was drawn between press and release', () => {
+  let host;
+  let button;
+  let clicks;
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const down = (target, extra = {}) => bridge._handleRootPointerDown({ isPrimary: true, button: 0, composedPath: () => [target], target, ...extra });
+  const up = (target, extra = {}) => bridge._handlePointerUp({ type: 'pointerup', button: 0, composedPath: () => [target], target, ...extra });
+  const drawFile = () => bridge._hostDraws.set(host, (bridge._hostDraws.get(host) || 0) + 1);
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    const document = env.window.document;
+    host = document.createElement('diffs-container');
+    button = document.createElement('button');
+    host.appendChild(button);
+    document.body.appendChild(host);
+    clicks = 0;
+    button.addEventListener('click', () => { clicks++; });
+  });
+
+  it('press and release on the same control with a draw of its file in between: the control is clicked, once', async () => {
+    down(button);
+    drawFile();
+    up(button);
+    expect(clicks).toBe(0); // decided at the end of the release's task
+    await tick();
+    expect(clicks).toBe(1);
+    await tick();
+    expect(clicks).toBe(1);
+  });
+
+  it('nothing is added when the file was not drawn, when the browser did send the click, or when the release is elsewhere', async () => {
+    down(button);
+    up(button);
+    await tick();
+    expect(clicks).toBe(0);
+
+    down(button);
+    drawFile();
+    up(button);
+    bridge._onRootClick(); // the browser's own click reaches the pane
+    await tick();
+    expect(clicks).toBe(0);
+
+    const other = env.window.document.createElement('button');
+    host.appendChild(other);
+    down(button);
+    drawFile();
+    up(other);
+    await tick();
+    expect(clicks).toBe(0);
+  });
+
+  it('an icon inside the control is pressed: the control is what is clicked', async () => {
+    const icon = env.window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    button.appendChild(icon);
+    down(icon);
+    drawFile();
+    up(icon);
+    await tick();
+    expect(clicks).toBe(1);
+  });
+
+  it('the icon that was pressed is replaced by the draw: the control both icons are in is clicked, once', async () => {
+    // The page writes a header's icon again on every draw (the collapse
+    // chevron), so the release is on another element than the press.
+    const svg = () => env.window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const pressed = svg();
+    pressed.appendChild(env.window.document.createElementNS('http://www.w3.org/2000/svg', 'path'));
+    button.appendChild(pressed);
+    down(pressed.firstChild);
+    drawFile();
+    pressed.remove();
+    const fresh = svg();
+    button.appendChild(fresh);
+    up(fresh);
+    await tick();
+    expect(clicks).toBe(1);
+
+    // The same with the release on the control's own box.
+    down(fresh);
+    drawFile();
+    fresh.remove();
+    up(button);
+    await tick();
+    expect(clicks).toBe(2);
+  });
+
+  it('press and release on different parts of one control: the innermost element both are in is clicked', async () => {
+    const document = env.window.document;
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    const text = document.createElement('span');
+    label.append(box, text);
+    host.appendChild(label);
+    const seen = [];
+    label.addEventListener('click', (event) => seen.push(event.target));
+    down(text);
+    drawFile();
+    up(box);
+    await tick();
+    // The label, not the checkbox and not the file's element. (A click on a
+    // label is passed on to its control by the document, as a second event.)
+    expect(seen[0]).toBe(label);
+    expect(clicks).toBe(0);
+  });
+
+  it('nothing when the control itself was replaced by another, or the header left this file\'s element', async () => {
+    down(button);
+    drawFile();
+    const replacement = env.window.document.createElement('button');
+    let replacementClicks = 0;
+    replacement.addEventListener('click', () => { replacementClicks++; });
+    button.replaceWith(replacement);
+    up(replacement);
+    await tick();
+    expect(clicks).toBe(0);
+    expect(replacementClicks).toBe(0);
+
+    // Slotted into another file's element by the time of the release.
+    const otherHost = env.window.document.createElement('diffs-container');
+    env.window.document.body.appendChild(otherHost);
+    host.appendChild(button);
+    down(button);
+    drawFile();
+    otherHost.appendChild(button);
+    up(button);
+    await tick();
+    expect(clicks).toBe(0);
+  });
+
+  it('not for the viewer\'s own rows, another button, a second pointer, a cancelled press or a control that is gone', async () => {
+    // A row is in the viewer's shadow tree.
+    const shadow = host.attachShadow({ mode: 'open' });
+    const row = env.window.document.createElement('div');
+    shadow.appendChild(row);
+    let rowClicks = 0;
+    row.addEventListener('click', () => { rowClicks++; });
+    down(row);
+    drawFile();
+    up(row);
+    await tick();
+    expect(rowClicks).toBe(0);
+
+    down(button, { button: 2 });
+    drawFile();
+    up(button);
+    down(button, { isPrimary: false });
+    drawFile();
+    up(button);
+    down(button);
+    drawFile();
+    bridge._handlePointerUp({ type: 'pointercancel', composedPath: () => [button] });
+    up(button);
+    await tick();
+    expect(clicks).toBe(0);
+
+    down(button);
+    drawFile();
+    up(button);
+    button.remove();
+    await tick();
+    expect(clicks).toBe(0);
+  });
+
+  describe('only for a press the browser handles as a mouse press', () => {
+    // What the browser sends right after `pointerdown`, as the pane's
+    // listeners receive it (trusted).
+    const browserSends = (type, isTrusted = true) => bridge._onRootPressKind({ type, isTrusted });
+
+    it('a touch: nothing is added, the browser delivers the click of a tap itself whatever was drawn', async () => {
+      down(button, { pointerType: 'touch' });
+      browserSends('touchstart');
+      drawFile();
+      up(button, { pointerType: 'touch' });
+      // Not kept for the `mousedown` the browser sends after the release of a tap.
+      expect(bridge._press).toBeNull();
+      browserSends('mousedown');
+      await tick();
+      expect(clicks).toBe(0);
+
+      // The same when `touchstart` never reached the pane: the pointer's type says it.
+      down(button, { pointerType: 'touch' });
+      drawFile();
+      up(button, { pointerType: 'touch' });
+      await tick();
+      expect(clicks).toBe(0);
+    });
+
+    it('a pen is what the browser treats it as: a mouse press when `mousedown` came with it, a touch when `touchstart` did', async () => {
+      down(button, { pointerType: 'pen' });
+      browserSends('mousedown');
+      drawFile();
+      up(button, { pointerType: 'pen' });
+      await tick();
+      expect(clicks).toBe(1);
+
+      down(button, { pointerType: 'pen' });
+      browserSends('touchstart');
+      drawFile();
+      up(button, { pointerType: 'pen' });
+      await tick();
+      expect(clicks).toBe(1);
+    });
+
+    it('neither event seen (a `pointerdown` whose default was prevented has no `mousedown`): a mouse and a pen are mouse presses', async () => {
+      down(button, { pointerType: 'mouse' });
+      drawFile();
+      up(button, { pointerType: 'mouse' });
+      await tick();
+      expect(clicks).toBe(1);
+
+      down(button, { pointerType: 'pen' });
+      drawFile();
+      up(button, { pointerType: 'pen' });
+      await tick();
+      expect(clicks).toBe(2);
+
+      // No pointer type at all (an old event shape): a mouse.
+      down(button);
+      drawFile();
+      up(button);
+      await tick();
+      expect(clicks).toBe(3);
+    });
+
+    it('`mousedown` during the press decides, whatever the pointer calls itself', async () => {
+      down(button, { pointerType: 'touch' });
+      browserSends('mousedown');
+      drawFile();
+      up(button, { pointerType: 'touch' });
+      await tick();
+      expect(clicks).toBe(1);
+    });
+
+    it('an event a script dispatched says nothing about the browser: it is not counted', async () => {
+      down(button, { pointerType: 'pen' });
+      browserSends('touchstart', false);
+      drawFile();
+      up(button, { pointerType: 'pen' });
+      await tick();
+      expect(clicks).toBe(1);
+
+      down(button, { pointerType: 'touch' });
+      browserSends('mousedown', false);
+      drawFile();
+      up(button, { pointerType: 'touch' });
+      await tick();
+      expect(clicks).toBe(1);
+    });
+
+    it('the kind belongs to one press: the next press starts without it', async () => {
+      down(button, { pointerType: 'pen' });
+      browserSends('touchstart');
+      up(button, { pointerType: 'pen' });
+      down(button, { pointerType: 'pen' });
+      drawFile();
+      up(button, { pointerType: 'pen' });
+      await tick();
+      expect(clicks).toBe(1);
+      // With no press in progress there is nothing to mark.
+      expect(() => browserSends('mousedown')).not.toThrow();
+    });
+
+    it('the pane listens for both events before anything inside it can stop them, and stops listening when destroyed', () => {
+      const root = bridge.root;
+      const added = [];
+      const removed = [];
+      const add = root.addEventListener.bind(root);
+      const remove = root.removeEventListener.bind(root);
+      root.addEventListener = (type, listener, options) => { added.push([type, listener, options]); add(type, listener, options); };
+      root.removeEventListener = (type, listener, options) => { removed.push([type, listener, options]); remove(type, listener, options); };
+      bridge._bindRoot();
+      for (const type of ['mousedown', 'touchstart']) {
+        const entry = added.find(([t]) => t === type);
+        expect(entry[1]).toBe(bridge._onRootPressKind);
+        expect(entry[2]).toEqual({ capture: true, passive: true });
+      }
+      bridge.destroy();
+      for (const type of ['mousedown', 'touchstart']) {
+        const entry = removed.find(([t]) => t === type);
+        expect(entry[1]).toBe(bridge._onRootPressKind);
+        expect(entry[2]).toEqual({ capture: true });
+      }
+    });
+  });
+
+  it('every draw of a file is counted for its element, which is what "drawn in between" asks', () => {
+    const record = bridge.files.get('src/a.js');
+    const element = env.window.document.createElement('diffs-container');
+    expect(bridge._hostDraws.get(element)).toBeUndefined();
+    bridge._onPostRender(element, {}, 'mount', { item: { id: record.id }, element });
+    bridge._onPostRender(element, {}, 'update', { item: { id: record.id }, element });
+    expect(bridge._hostDraws.get(element)).toBe(2);
+    bridge._onPostRender(element, {}, 'unmount', { item: { id: record.id }, element });
+    expect(bridge._hostDraws.get(element)).toBe(2);
+  });
+});

@@ -39,7 +39,7 @@ import {
   mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound, setDiffView
 } from './helpers.js';
 import {
-  contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText,
+  contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText, ensureMounted,
   contextGapLabel, expectedContextRanges,
   expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
@@ -628,6 +628,11 @@ for (const mode of MODES) {
       await open(page);
       await page.locator('#tour-toggle-btn').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 1 of 2');
+      // The first stop is drawn in its file. Whether the tour itself brings
+      // a stop into view is not this spec's subject (offscreen-mutations.spec.js
+      // has the tour across files far apart): with a context file above it,
+      // the stop's file can be outside what a virtualized viewer has drawn.
+      await ensureMounted(page, TOUR_STOPS[0].file_path);
       await expect(tourStop(page, 0)).toBeVisible();
     }
     const added = () => api.requests.filter((r) => r.method === 'POST').map((r) => r.body);
@@ -730,6 +735,10 @@ for (const mode of MODES) {
 
       await page.locator('.tour-bar .tour-bar__next').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 2 of 2');
+      // As in openWithTour: on a virtualized viewer the context file, which
+      // is above the first stop's file, may have no element at this point. A
+      // no-op where the tour has brought the stop into view itself.
+      await ensureMounted(page, LONG);
       await expect(contextFile(page, LONG).locator('.tour-annotation-row')).toHaveCount(1);
       await expect(tourStop(page, 1)).toBeInViewport();
       // The stored range already covers the stop: nothing is added or changed.

@@ -336,6 +336,39 @@ because violating it produced a real, observed flake or measurable waste.
   rest must be silent. `fixture-isolation.spec.js` asserts in every run that
   the bundle and the validator are what the run asked for. On the
   virtualized viewer every test also ends with the orphan-host check.
+- **A `PR_ENGINE=codeview` run of a phase's list includes the lists of the
+  phases before it.** A later phase can take away what an earlier one had,
+  and a run of the later phase's own list does not see it (phase 6's CSS
+  failed a test of phase 5's list that phase 6's list does not contain).
+- **`scrollWidth - clientWidth` is a scroll range only on a box that
+  scrolls.** On a box with `overflow: visible` it says how far something
+  sticks out of the padding box, which includes anything drawn over the
+  box's own border on purpose. `wrapInfo` (`diff-dom.js`) asks each box the
+  question that fits it, and a test next to its user proves it still reads a
+  line that does not wrap, in a column that scrolls and in one that does
+  not. A measure of "nothing overflows" needs such a test: a 0 from a measure
+  that cannot read anything else proves nothing.
+- **A test of a click that must survive a redraw presses, redraws and
+  releases** (`page.mouse.down()`, `redrawFile`, `page.mouse.up()`), on the
+  application's own control. `locator.click()` cannot place a draw between
+  the press and the release, and a stand-in control does not get its
+  contents rewritten the way the application's header does on every draw.
+- **Such a test is made with each kind of pointer, and counts the clicks.**
+  A browser makes the click of a mouse press and the click of a tap in two
+  ways: a mouse press (and a pen it reports as one) loses its click when the
+  pressed element left the document before the release; a tap is recognized
+  after the release and clicks what is under the point then, a few
+  milliseconds after `pointerup`. Code that adds a missing click for the
+  first kind doubles the click of the second, and a doubled click on a
+  toggle looks like no click. `gesture` in `file-controls.spec.js` makes a
+  press with a mouse, a pen or a touch (the last two through the protocol's
+  `Input.dispatchMouseEvent` with `pointerType: 'pen'` and
+  `Input.dispatchTouchEvent`; a touch needs `test.use({ hasTouch: true })`).
+  The tap under test is not the first of the page: the first tap after a
+  load gets its click in the task of the release, later ones do not. "One
+  click, not two" is asserted with a sentinel, not a wait: a second gesture
+  of the same kind on an element of the test's own, then a timer once its
+  click has arrived (`clicksOfPressDrawRelease`).
 
 ## Vendor contract suite (`tests/contract`)
 
@@ -463,6 +496,17 @@ because violating it produced a real, observed flake or measurable waste.
   file's element is such height. What draws the pane's box and a file's frame
   there, and which number tells the viewer, is in `pr.css` (the block for the
   viewer), `pierre-styles.js` (`FRAME_CSS`) and `engine-switch-sites.test.js`.
+- **A box is measured after the animations on it have ended.** A card slides
+  in when it is attached (`slideUp`, 0.3 s, a transform), so its box is up to
+  a tenth of a pixel away from its place for a few frames, and differently in
+  every run. `visual.mjs` waits for every finite animation of the document
+  before it measures cards; anything else that compares boxes to a fraction
+  of a pixel must do the same.
+- **A difference a single column wide can be inside the pixel tolerance.** A
+  2 px ring painted over a 1 px border blends to a value between its two
+  neighbours and passes; the same ring one pixel past the file's edge does
+  not. When a position differs in one layout, look at the same place in the
+  other layout before deciding it is that layout's alone.
 
 ## Cleanup
 

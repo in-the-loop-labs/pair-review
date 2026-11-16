@@ -69,6 +69,9 @@
       row.appendChild(path);
       BH.headers.set(id, row);
     }
+    // The page re-stamps a file's cached header every time the viewer asks
+    // for it (PRManager._syncFileHeader): a test may do the same here.
+    if (typeof BH.onHeaderDraw === 'function') BH.onHeaderDraw(id, BH.headers.get(id));
     return BH.headers.get(id);
   };
 

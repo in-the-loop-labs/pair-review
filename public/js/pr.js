@@ -522,6 +522,9 @@ class PRManager {
     this._fileHeaders = new Map();
     this._mountedDiffItems = new Set();
     this._contextItemIds = new Set();
+    // The files whose summary toggle has been brought in line with their
+    // summaries in this render (_noteSummaryToggleSynced).
+    this._summaryToggleSyncedFiles = new Set();
     // Contents of the context files, by path: { text, seq }. `seq` changes
     // whenever other contents are loaded for a path.
     this._contextContents = new Map();
@@ -1649,6 +1652,7 @@ class PRManager {
       // both the wrapper class AND the toggle button so its visible state and
       // aria-pressed match the persisted hidden flag.
       for (const filePath of this.summariesHiddenFiles) {
+        this._noteSummaryToggleSynced(filePath);
         const wrapper = document.querySelector(
           `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
         );
@@ -1766,6 +1770,7 @@ class PRManager {
    */
   _refreshFileSummaryToggle(filePath) {
     if (!filePath) return;
+    this._noteSummaryToggleSynced(filePath);
     const wrapper = document.querySelector(
       `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
     );
@@ -1789,9 +1794,9 @@ class PRManager {
    * @param {HTMLButtonElement} btn
    * @param {string} filePath
    */
-  _syncFileSummaryToggleButton(btn, filePath) {
+  _syncFileSummaryToggleButton(btn, filePath, { live = true } = {}) {
     if (!btn || !filePath) return;
-    const hasSummaries = (this._summaryHashesByFile.get(filePath)?.size || 0) > 0;
+    const hasSummaries = live && (this._summaryHashesByFile.get(filePath)?.size || 0) > 0;
     const isHidden = this.summariesHiddenFiles.has(filePath);
     btn.classList.toggle('summaries-off', isHidden);
     btn.setAttribute('aria-pressed', isHidden ? 'false' : 'true');
@@ -1802,6 +1807,25 @@ class PRManager {
       btn.disabled = false;
       btn.title = isHidden ? 'Show file summaries' : 'Hide file summaries';
     }
+  }
+
+  /**
+   * Record that a file's summary toggle was brought in line with the file's
+   * summaries: a summary was drawn on the file, its hidden state was
+   * restored, or the reader used the toggle.
+   *
+   * A toggle starts out saying "No summaries available": a header is built
+   * before the file's hunks are known. Where a header is an element of the
+   * page for as long as the diff is drawn, that is what the toggle shows
+   * until one of those three things happens. A header that is drawn again
+   * whenever its file comes near the viewport (_syncFileHeader) must not
+   * enable the toggle of a file without a summary merely by being drawn, so
+   * it asks this record.
+   * @param {string} filePath
+   * @private
+   */
+  _noteSummaryToggleSynced(filePath) {
+    if (filePath) this._summaryToggleSyncedFiles.add(filePath);
   }
 
   /**
@@ -1942,6 +1966,7 @@ class PRManager {
       this.summariesHiddenFiles.add(filePath);
     }
     this._setFileElementClass(filePath, fileWrapper, 'summaries-hidden-file', !isHidden);
+    this._noteSummaryToggleSynced(filePath);
     const btn = fileWrapper.querySelector('.file-header-summary-toggle');
     if (btn) this._syncFileSummaryToggleButton(btn, filePath);
     if (this.currentPR?.id != null) {
@@ -4358,7 +4383,9 @@ class PRManager {
           summaryToggle.classList.remove('summary-toggle-pending');
           summaryToggle.style.display = '';
         }
-        this._syncFileSummaryToggleButton(summaryToggle, filePath);
+        this._syncFileSummaryToggleButton(summaryToggle, filePath, {
+          live: this._summaryToggleSyncedFiles.has(filePath),
+        });
       }
     }
     const badge = header.querySelector('.context-badge');
@@ -4821,6 +4848,7 @@ class PRManager {
     this._tourStops = null;
     this._summaryAnchorsByHash = new Map();
     this._summaryHashesByFile = new Map();
+    this._summaryToggleSyncedFiles = new Set();
     this._pendingSummariesByHash = new Map();
     // Reset alongside the other per-render summary state. Set true again only
     // when a summary actually mounts (see _applyHunkSummaries / the existing-
@@ -7818,13 +7846,6 @@ class PRManager {
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row:not(.suggestion-edit-pending)').forEach(row => row.remove());
 
-      // Clear existing PierreBridge comment annotations
-      if (this.pierreBridge) {
-        for (const [file] of this.pierreBridge.files) {
-          this.pierreBridge.removeAnnotationsByType(file, 'comment');
-        }
-      }
-
       // Partition line-level comments by rendering engine
       const pierreComments = [];
       const legacyComments = [];
@@ -7851,8 +7872,19 @@ class PRManager {
           data: comment,
         });
       });
-      for (const [file, annotations] of commentAnnotationsByFile) {
-        this.pierreBridge.addAnnotations(file, annotations);
+      // The old cards go and the new ones come as one change of the diff:
+      // no file is drawn in between without its comments. Synchronous from
+      // the cache assignment above to the end of this block; nothing here
+      // may wait.
+      if (this.pierreBridge) {
+        this.pierreBridge.batch(() => {
+          for (const [file] of this.pierreBridge.files) {
+            this.pierreBridge.removeAnnotationsByType(file, 'comment');
+          }
+          for (const [file, annotations] of commentAnnotationsByFile) {
+            this.pierreBridge.addAnnotations(file, annotations);
+          }
+        });
       }
 
       if (legacyComments.length > 0) {

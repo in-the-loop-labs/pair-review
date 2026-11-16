@@ -81,7 +81,10 @@ test('G12: reveal latency through main\'s PierreBridge (FileDiff) and through a 
     const { roles } = H.workload;
     const T = roles.large;
     await H.appLike({ parse: { cacheKeyPrefix: 'contract:1' }, build: { only: [T] }, pool: true, options: { __devOnlyValidateItemHeights: false } });
-    await H.until(() => H.shape(T).tokens > 0, 30000);
+    // Not yet mounted reads as "not yet": with the pool nothing is mounted
+    // until its workers are up (G7), which under load is after the bring-up's
+    // quiet period.
+    await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
     const instance = H.instance(T);
     const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     const upgradeStart = performance.now();

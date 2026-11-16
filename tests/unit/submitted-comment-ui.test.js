@@ -270,6 +270,7 @@ describe('posted comment UI', () => {
     document.body.appendChild(annotations);
     manager.pierreBridge = {
       files: new Map([['src/a.js', {}]]),
+      batch: (fn) => fn(),
       removeAnnotationsByType: () => annotations.replaceChildren(),
       addAnnotations: (_file, items) => items.forEach(item => annotations.appendChild(bridge._renderCommentAnnotation(item.data, item.id))),
     };

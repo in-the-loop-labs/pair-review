@@ -621,6 +621,27 @@ describe('TourRenderer', () => {
       expect(pm.ensureContextFile).not.toHaveBeenCalled();
     });
 
+    it('does NOT call ensureContextFile for a file the bridge holds that has no element (a virtualized viewer far from it)', async () => {
+      buildDiff('src/other.js'); // the only element in the document is another file's
+      for (const kind of ['diff', 'context']) {
+        const pm = {
+          ensureContextFile: vi.fn().mockResolvedValue({ type: 'context', contextFile: { id: 99 } }),
+          ensureLinesVisible: vi.fn().mockResolvedValue(),
+          contextFiles: kind === 'context' ? [{ id: 7, file: 'src/far.js', line_start: 1, line_end: 5 }] : [],
+          pierreBridge: { files: new Map([['src/far.js', { kind }]]) },
+        };
+        const r = new TourRenderer(pm);
+        r.setStops([makeStop({ file_path: 'src/far.js', line_start: 11, line_end: 12 })]);
+        expect(await r.prepareStop(0)).toBe(true);
+        // No request, no stored range changed, nothing for the tour to remove on exit.
+        expect(pm.ensureContextFile).not.toHaveBeenCalled();
+        expect(r._autoAddedContextFileIds.size).toBe(0);
+        expect(pm.ensureLinesVisible).toHaveBeenCalledWith([
+          { file: 'src/far.js', line_start: 11, line_end: 12, side: 'RIGHT' },
+        ]);
+      }
+    });
+
     it('calls ensureContextFile when the file wrapper is missing', async () => {
       buildDiff('src/other.js'); // wrapper present for a DIFFERENT file
       const pm = {

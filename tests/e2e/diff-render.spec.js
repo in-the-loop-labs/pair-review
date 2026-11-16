@@ -19,7 +19,7 @@ import { MODES, waitForDiffToRender } from './helpers.js';
 import { allCorpora, checkRows, customCorpus, routeDiff } from './fixtures/diffs.js';
 import {
   filesInPane, diffStatus, fileWrapper, dumpFile, rowCount, scrollFileIntoView, waitForFileRendered,
-  waitForFileSettled, waitForContentUpgrade, wrapInfo, syntaxTokens, assertNoOrphanHosts, UPGRADED_DIFF_HUNKS
+  waitForFileSettled, waitForContentUpgrade, wrapInfo, setLineLayout, syntaxTokens, assertNoOrphanHosts, UPGRADED_DIFF_HUNKS
 } from './diff-dom.js';
 
 const { default: DEFAULT, edge: EDGE, eviction: EVICTION } = allCorpora();
@@ -176,6 +176,27 @@ for (const mode of MODES) {
       // A 2,400-character line takes many times the height of a short one.
       expect(info.maxRowHeight).toBeGreaterThan(info.minRowHeight * 5);
       expectRowsMatchContents(await dumpFile(page, file), EDGE.files[file]);
+    });
+
+    test('the measure of that test sees a line that does not wrap, in a column that scrolls and in one that does not', async ({ page }) => {
+      // What `wrapInfo` reads is two questions (how far a box scrolls; how
+      // far something sticks out of a box that does not). Both are asked
+      // here of the same file with wrapping switched off in the page, so
+      // the 0 of the test above is a 0 of a measure that can read more.
+      const file = R.longLine;
+      await show(page, file);
+      expect((await wrapInfo(page, file)).overflow).toBe(0);
+
+      // The vendor's other layout: the column scrolls sideways.
+      await setLineLayout(page, file, 'scroll');
+      expect((await wrapInfo(page, file)).overflow).toBeGreaterThan(5000);
+
+      // Nothing scrolls and nothing clips: the line leaves the code block.
+      await setLineLayout(page, file, 'spill');
+      expect((await wrapInfo(page, file)).overflow).toBeGreaterThan(5000);
+
+      await setLineLayout(page, file, 'wrap');
+      expect((await wrapInfo(page, file)).overflow).toBe(0);
     });
 
     for (const [role, changed] of [

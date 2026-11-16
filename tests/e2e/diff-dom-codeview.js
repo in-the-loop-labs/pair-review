@@ -539,15 +539,90 @@ const layoutValidator = {
   /**
    * Runs in the page before any of its scripts (an init script): gives the
    * viewer its validator and counts what it reports. Nothing it reports is
-   * expected: every report fails the test through the console guard.
+   * expected: every report fails the test through the console guard, with
+   * one exception that is decided in the frames that follow (see below): a
+   * height the viewer had not followed yet when a render was forced, and
+   * has followed once the pane's box has stopped changing.
    */
   /* eslint-disable no-undef */
   installInPage: () => {
-      const state = { reports: 0 };
+      const state = { reports: 0, followed: 0 };
       window.__layoutValidator = state;
       const report = console.error;
       console.error = function (...args) {
         const text = typeof args[0] === 'string' ? args[0] : '';
+        if (text.startsWith('CodeView: sticky container height does not match computed layout')) {
+          // Vendor fact F27 (tests/contract/vendor/layout.spec.js,
+          // tests/contract/bridge/view.spec.js): something changed the height
+          // of what is drawn (a card or a file's comment zone grew, lines
+          // wrapped again because the pane got narrower), and a render was
+          // forced before the next frame. The viewer follows the change when
+          // the browser reports the resize, which is in that frame and
+          // before it is painted. So the report is not decided in its task.
+          // The validator's own comparison is made again in the frames that
+          // follow: a layout that agrees was never shown wrong, and the
+          // report is counted as followed. A layout that still disagrees
+          // after two frames in which the pane's box did not change is a
+          // real mismatch and fails the test like any other report. A frame
+          // in which the box did change does not count towards the two: a
+          // panel that opens animates the pane's width for 0.2 s, the lines
+          // of every drawn file wrap again in each of those frames, and the
+          // viewer follows each one in its own frame (measured: the review
+          // panel opening over a drawn 4,000-line file, a render forced in
+          // every frame; ledger H139).
+          const snapshot = () => {
+            const bridge = window.prManager.pierreBridge;
+            const viewer = bridge.codeView;
+            const actual = viewer.stickyContainer.getBoundingClientRect().height;
+            const { firstIndex, lastIndex, stickyHeight } = viewer.renderState;
+            // Per drawn file whose box is not what the viewer has for it:
+            // the end of its path, the difference, and whether the diff on
+            // screen is the one the bridge last published.
+            const off = viewer.getRenderedItems().map((item) => {
+              const specs = item.instance && item.instance.getAdvancedStickySpecs && item.instance.getAdvancedStickySpecs();
+              const height = item.element ? item.element.getBoundingClientRect().height : null;
+              if (!specs || height == null || specs.height === height) return null;
+              const id = String(item.item && item.item.id);
+              return `${id.slice(-14)} ${Math.round((height - specs.height) * 100) / 100}${bridge.isDiffDisplayed(id) ? '' : ' swap'}`;
+            }).filter(Boolean);
+            const width = document.getElementById('diff-container').getBoundingClientRect().width;
+            return {
+              // The viewer's own tolerance for this comparison (SUB_PIXEL_TOLERANCE).
+              agrees: Math.abs(actual - stickyHeight) < 1,
+              box: `${actual}x${width}`,
+              text: `${Math.round((actual - stickyHeight) * 100) / 100} items ${firstIndex}-${lastIndex} top ${Math.round(viewer.getScrollTop())}${viewer.pendingScrollTarget != null || viewer.scrollAnimation != null ? ' scrolling' : ''} [${off.join('; ')}]`,
+            };
+          };
+          const MAX_FRAMES = 240;
+          let atReport = null;
+          try { atReport = snapshot(); } catch (_error) { atReport = null; }
+          let box = atReport ? atReport.box : null;
+          let frames = 0;
+          let atRest = 0;
+          const decide = () => {
+            let now = null;
+            try { now = snapshot(); } catch (_error) { now = null; }
+            frames += 1;
+            if (now && now.agrees) {
+              state.followed += 1;
+              return;
+            }
+            const moved = !!now && box !== null && now.box !== box;
+            if (now) box = now.box;
+            atRest = moved ? 0 : atRest + 1;
+            if (!now || atRest >= 2 || frames >= MAX_FRAMES) {
+              state.reports += 1;
+              // What the pane was doing, for whoever reads the failure
+              // (before the viewer's own object: the console guard keeps the
+              // first 300 characters of a line).
+              report.apply(console, [args[0], `(then: ${atReport ? atReport.text : '?'}; ${frames} frame(s) later, the pane at rest: ${now ? now.text : '?'})`, ...args.slice(1)]);
+              return;
+            }
+            requestAnimationFrame(decide);
+          };
+          requestAnimationFrame(decide);
+          return undefined;
+        }
         if (text.startsWith('CodeView: ') || text.startsWith('VirtualizedFileDiff')) state.reports += 1;
         return report.apply(this, args);
       };
@@ -565,6 +640,108 @@ const layoutValidator = {
         },
       });
   },
+  /* eslint-enable no-undef */
+
+  /**
+   * For the fixture's own tests: log the viewer's sticky-height report while
+   * the viewer's number for the drawn files reads `by` px short, whatever
+   * the viewer writes to it meanwhile, and nothing moves. The comparison the
+   * fixture repeats stays unequal.
+   * @returns {Promise<{sameTask: Object, oneFrame: Object, later: Object}>} the fixture's counters
+   */
+  /* eslint-disable no-undef */
+  reportWithTheLayoutOff: (page, by) => page.evaluate(async (by) => {
+    const { renderState } = window.prManager.pierreBridge.codeView;
+    let real = renderState.stickyHeight;
+    Object.defineProperty(renderState, 'stickyHeight', { configurable: true, enumerable: true, get: () => real - by, set: (value) => { real = value; } });
+    try {
+      console.error('CodeView: sticky container height does not match computed layout', { delta: by });
+      const sameTask = { ...window.__layoutValidator };
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const oneFrame = { ...window.__layoutValidator };
+      for (let frames = 0; frames < 3; frames++) await new Promise((resolve) => requestAnimationFrame(resolve));
+      return { sameTask, oneFrame, later: { ...window.__layoutValidator } };
+    } finally {
+      delete renderState.stickyHeight;
+      renderState.stickyHeight = real;
+    }
+  }, by),
+  /* eslint-enable no-undef */
+
+  /**
+   * For the fixture's own tests: close the review panel, open it again (its
+   * width animates) and force a render of the viewer in every frame of it.
+   * @returns {Promise<{before: Object, after: Object, widths: number}>} the
+   *   fixture's counters before and after, and how many widths the pane had
+   */
+  /* eslint-disable no-undef */
+  openReviewPanelUnderForcedRenders: (page) => page.evaluate(async () => {
+    const viewer = window.prManager.pierreBridge.codeView;
+    const pane = document.getElementById('diff-container');
+    const widths = new Set();
+    window.aiPanel.collapse();
+    for (let frames = 0; frames < 30; frames++) await new Promise((resolve) => requestAnimationFrame(resolve));
+    const before = { ...window.__layoutValidator };
+    window.aiPanel.expand();
+    for (let frames = 0; frames < 40; frames++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      widths.add(Math.round(pane.getBoundingClientRect().width));
+      viewer.render(true);
+    }
+    for (let frames = 0; frames < 6; frames++) await new Promise((resolve) => requestAnimationFrame(resolve));
+    return { before, widths: widths.size, after: { ...window.__layoutValidator } };
+  }),
+  /* eslint-enable no-undef */
+
+  /**
+   * For the fixture's own tests: log the viewer's sticky-height report while
+   * the viewer's number for the drawn files reads `by` px short, and change
+   * the height of a drawn file between the first and the second frame after
+   * it (the comment form of the first file opens). The comparison the
+   * fixture repeats is unequal at both frames, and the pane's box is not
+   * the same at the second as at the first. From then on the viewer's
+   * number is its own again. The form is cancelled before this returns.
+   * @returns {Promise<{before: Object, oneFrame: Object, twoFrames: Object, later: Object, grew: number}>}
+   *   the fixture's counters at each point, and by how much the drawn files grew
+   */
+  /* eslint-disable no-undef */
+  reportThenChangeHeightBetweenFrames: (page, by) => page.evaluate(async (by) => {
+    const viewer = window.prManager.pierreBridge.codeView;
+    const { renderState } = viewer;
+    const drawn = () => viewer.stickyContainer.getBoundingClientRect().height;
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    // A task queued from a frame's callbacks runs when that frame is done and before the next one begins.
+    const task = () => new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+      channel.port2.postMessage(null);
+    });
+    let real = renderState.stickyHeight;
+    let short = by;
+    Object.defineProperty(renderState, 'stickyHeight', { configurable: true, enumerable: true, get: () => real - short, set: (value) => { real = value; } });
+    let form = null;
+    try {
+      const before = { ...window.__layoutValidator };
+      const heightBefore = drawn();
+      console.error('CodeView: sticky container height does not match computed layout', { delta: by });
+      await frame();
+      const oneFrame = { ...window.__layoutValidator };
+      await task();
+      document.querySelector('#diff-container .file-header-comment-btn').click();
+      form = document.querySelector('#diff-container .file-comment-form');
+      const grew = drawn() - heightBefore;
+      await frame();
+      const twoFrames = { ...window.__layoutValidator };
+      short = 0;
+      for (let frames = 0; frames < 4; frames++) await frame();
+      return { before, oneFrame, twoFrames, later: { ...window.__layoutValidator }, grew };
+    } finally {
+      delete renderState.stickyHeight;
+      renderState.stickyHeight = real;
+      if (form) form.querySelector('.cancel-btn').click();
+      for (let frames = 0; frames < 3; frames++) await frame();
+    }
+  }, by),
   /* eslint-enable no-undef */
 
   /**
@@ -810,6 +987,55 @@ function createCodeViewAdapter(base) {
     }, { file, line });
   }
 
+  /**
+   * Expand hidden lines next to a hunk by an exact number of lines, through
+   * the viewer's own instance of the file (what its expand control calls).
+   * The file must show its upgraded diff: the control does not exist before.
+   */
+  async function expandHunkBy(page, file, { hunkIndex, direction, lines }) {
+    await ensureMounted(page, file);
+    await base.waitForContentUpgrade(page, file);
+    await inPage(page, (D, a) => {
+      const record = D.record(a.file);
+      const instance = record && record._instance;
+      if (!instance || !window.prManager.pierreBridge.findFileElement(a.file)) {
+        throw new Error(`expandHunkBy: ${a.file} is not mounted`);
+      }
+      instance.expandHunk(a.hunkIndex, a.direction, a.lines);
+    }, { file, hunkIndex, direction, lines });
+  }
+
+  /**
+   * Put the file's upgraded base diff back on screen while the bridge's
+   * record of revealed ranges and its annotations stay: what is drawn (and
+   * what the visibility oracle answers from) falls behind what was revealed.
+   */
+  async function redisplayBaseDiff(page, file) {
+    await waitInPage(page, (D) => D.engineSettled(), null, { timeout: 20000 });
+    await inPage(page, (D, f) => {
+      const bridge = window.prManager.pierreBridge;
+      const record = D.record(f);
+      if (!record || !record.upgraded || !record.baseMetadata) throw new Error(`redisplayBaseDiff: ${f} is not upgraded`);
+      // A new key: the viewer never displays derived metadata under a key it has seen.
+      record.metadata = bridge.constructor.rekey(record, record.baseMetadata);
+      bridge._clearExpansions(record);
+      bridge._publish(record.id);
+    }, file);
+  }
+
+  /**
+   * Draw `file` again as it is, now: the bridge publishes the item, and the
+   * viewer takes the file's header, comment zone and cards out of the
+   * document and puts them back (every draw does).
+   */
+  async function redrawFile(page, file) {
+    await inPage(page, (D, f) => {
+      const record = D.record(f);
+      if (!record || !record._element) throw new Error(`redrawFile: ${f} is not mounted`);
+      window.prManager.pierreBridge._publish(record.id);
+    }, file);
+  }
+
   return {
     overrides: {
       filesInPane,
@@ -828,6 +1054,9 @@ function createCodeViewAdapter(base) {
       layoutValidatorState,
       hunkContaining,
       ensureMounted,
+      expandHunkBy,
+      redisplayBaseDiff,
+      redrawFile,
     },
     expectations: {
       // The viewer keeps the first visible line where it is (plan 3.12).
@@ -844,6 +1073,9 @@ function createCodeViewAdapter(base) {
       SMALL_CONTEXT_GAP: 'shown',
       // Of two loads of the context files in flight the later one wins.
       CONTEXT_LOADS_IN_FLIGHT: 'one-state',
+      // The viewer's own gutter buttons leave with the pointer, whatever the
+      // review holds (the fallback positioner is not ported; ledger H66).
+      GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS: false,
       contextGapLabel: (n) => `${n} unmodified line${n === 1 ? '' : 's'}`,
     },
   };

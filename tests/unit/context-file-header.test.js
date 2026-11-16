@@ -201,3 +201,71 @@ describe('on the virtualized viewer the context toggles need no element', () => 
     expect(manager.pierreBridge.setCollapsed).toHaveBeenCalledWith(FILE, true);
   });
 });
+
+describe('the summary toggle of a changed file\'s cached header (virtualized viewer)', () => {
+  // A header of the virtualized viewer is drawn again whenever its file comes
+  // near the viewport, and re-stamped from data each time. The toggle must
+  // then say what it says on the per-file renderer, where a header is built
+  // once: "No summaries available" until a summary was drawn on the file,
+  // its hidden state was restored, or the reader used the toggle.
+  const A = 'src/a.js';
+  // jsdom has no CSS.escape; the paths here need no escaping.
+  beforeEach(() => { globalThis.CSS = { escape: (value) => value }; });
+  afterEach(() => { delete globalThis.CSS; });
+  function setup() {
+    const manager = makeManager({
+      _diffEngine: 'codeview',
+      changedFilesByPath: new Map([[A, { file: A, patch: '@@ -1 +1 @@\n-a\n+b\n' }]]),
+      summariesHiddenFiles: new Set(),
+      _summariesEnabled: true,
+      // The file's hunks are known (their hashes are registered) as soon as the diff is drawn.
+      _summaryHashesByFile: new Map([[A, new Set(['hash-1'])]]),
+    });
+    const header = document.createElement('div');
+    header.innerHTML = '<button class="file-header-summary-toggle"></button>';
+    manager._fileHeaders.set(A, header);
+    return { manager, header, toggle: header.querySelector('.file-header-summary-toggle') };
+  }
+
+  it('says there are none on every draw of the header while no summary was drawn on the file', () => {
+    const { manager, toggle } = setup();
+    manager._syncFileHeader(A);
+    manager._syncFileHeader(A);
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toBe('No summaries available');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('is live once a summary was drawn on the file, also when the file had no element then', () => {
+    const { manager, toggle } = setup();
+    // The file is far from the viewport: there is no wrapper to find.
+    manager._refreshFileSummaryToggle(A);
+    manager._syncFileHeader(A);
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.title).toBe('Hide file summaries');
+  });
+
+  it('shows a hidden file as hidden once the reader used the toggle', () => {
+    const { manager, toggle } = setup();
+    manager._setFileElementClass = vi.fn();
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(toggle.cloneNode());
+    manager.currentPR = null;
+    manager.toggleFileSummaries(A, wrapper);
+    manager._syncFileHeader(A);
+    expect(manager.summariesHiddenFiles.has(A)).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.title).toBe('Show file summaries');
+    expect(toggle.classList.contains('summaries-off')).toBe(true);
+  });
+
+  it('starts over with a new render', () => {
+    const { manager, toggle } = setup();
+    manager._refreshFileSummaryToggle(A);
+    manager._resetHunkSummaryRenderState();
+    manager._summaryHashesByFile = new Map([[A, new Set(['hash-1'])]]);
+    manager._syncFileHeader(A);
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.title).toBe('No summaries available');
+  });
+});

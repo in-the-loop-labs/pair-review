@@ -14616,6 +14616,38 @@ diffs-container {
   height: 8px;
 }
 
+/* The file's comment zone is slotted into the viewer, so it inherits from
+   the viewer's shadow tree (the code font, 12px, the code colour) and not
+   from the page as it does on the other engine. What it inherits there is
+   set here; its cards and forms take it from the zone. The same for the
+   message of a file whose diff is held back for its size ("Large diff ...
+   Load diff"), which is slotted next to the zone. */
+.diff-view.codeview-engine diffs-container .file-comments-zone,
+.diff-view.codeview-engine diffs-container .large-diff-placeholder {
+  font-family: var(--font-github);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  color-scheme: normal;
+  word-break: normal;
+  tab-size: 8;
+}
+
+/* The zone's background and the line under it end where its content ends:
+   the 8px below belong to the code (the rule above this one draws them
+   inside the zone element so that the viewer measures them). */
+.diff-view.codeview-engine diffs-container .file-comments-zone {
+  background: none;
+  border-bottom: 0;
+}
+
+.diff-view.codeview-engine diffs-container .file-comments-container:has(.file-comment-card:not(.posted-comment-hidden)),
+.diff-view.codeview-engine diffs-container .file-comments-container:has(.file-comment-form),
+.diff-view.codeview-engine diffs-container .file-comments-container:has(.external-comment-row) {
+  background: var(--file-comment-bg);
+  border-bottom: 1px solid var(--file-comment-border);
+}
+
 /* A changed file that has a diff without any line (an empty added file, a
    mode change, a pure rename) ends in a 1px line under its header: the other
    engine's empty code block is its bottom border. */

@@ -5,7 +5,7 @@
  * worker that does not start.
  */
 
-import { test, expect, openBridge } from './bridge-test.js';
+import { test, expect, openBridge, VALIDATOR_PATTERN } from './bridge-test.js';
 
 test('the file-comment zone costs 0 px when empty, and the extent follows it when it grows and shrinks', async ({ harness }) => {
   const page = await openBridge(harness);
@@ -49,6 +49,80 @@ test('the file-comment zone costs 0 px when empty, and the extent follows it whe
   // A file without rows: the zone is all there is under the header.
   expect(result[roles.binary].empty.itemHeight).toBe(40);
   expect(result.sound).toEqual({ orphans: 0, clean: true });
+});
+
+for (const change of ['a form opens in', 'a form closes in']) {
+  test(`${change} a file's comment zone and another file is published before the next frame: the development validator reports once, and the layout is exact at the next frame`, async ({ harness }) => {
+    // Vendor fact F27, through the bridge, with the zone. What a reader
+    // could see is the frame, and by then the viewer has followed the zone.
+    // A development-bundle E2E run meets this whenever a comment reload, a
+    // suggestion display or a summary lands right after a form opened or a
+    // comment was saved; its fixture tells it from a real mismatch by the
+    // state one frame later.
+    const page = await openBridge(harness);
+    harness.allowErrors(page, VALIDATOR_PATTERN);
+    const result = await page.evaluate(async (opens) => {
+      const { H, BH } = window;
+      const { roles } = H.workload;
+      await BH.up({ entries: [BH.diffEntry(roles.small), BH.diffEntry(roles.medium), BH.diffEntry(roles.large)] });
+      const b = BH.bridge;
+      await H.settle(150);
+      const zone = BH.zones.get(roles.small);
+      const form = document.createElement('div');
+      form.style.cssText = 'height: 132px; margin: 0;';
+      if (!opens) {
+        zone.appendChild(form);
+        await H.settle(150);
+      }
+      const before = { sound: BH.sound(), height: H.itemHeight(roles.small) };
+      // One task: the zone changes, and another file gets a card.
+      if (opens) zone.appendChild(form);
+      else form.remove();
+      b.addAnnotation(roles.medium, { lineNumber: 1, side: 'RIGHT', type: 'card', data: { text: 'elsewhere' }, id: 'card-elsewhere' });
+      const sameTask = BH.sound();
+      await H.raf(1);
+      const nextFrame = BH.sound();
+      await H.settle(150);
+      return { before, sameTask, nextFrame, rest: BH.sound(), grewBy: H.itemHeight(roles.small) - before.height };
+    }, change === 'a form opens in');
+    const reports = harness.validatorErrors(page);
+
+    expect(result.before.sound).toEqual({ orphans: 0, clean: true });
+    expect(result.sameTask).toEqual({ orphans: 0, clean: false });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('sticky container height does not match computed layout');
+    expect(result.nextFrame).toEqual({ orphans: 0, clean: true });
+    expect(result.rest).toEqual({ orphans: 0, clean: true });
+    expect(result.grewBy).toBe(change === 'a form opens in' ? 132 : -132);
+  });
+}
+
+test('a file\'s comment zone changes its height and the same file is published in that task: measured at once, nothing reported', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const { roles } = H.workload;
+    await BH.up({ entries: [BH.diffEntry(roles.small), BH.diffEntry(roles.medium)] });
+    const b = BH.bridge;
+    await H.settle(150);
+    const id = roles.small;
+    const line = Number(H.host(id).shadowRoot.querySelector('[data-content] > [data-line]').getAttribute('data-line'));
+    const before = H.itemHeight(id);
+    b.addAnnotation(id, { lineNumber: line, side: 'RIGHT', type: 'card', data: { text: 'same file' }, id: 'card-same' });
+    await H.settle(150);
+    const form = document.createElement('div');
+    form.style.cssText = 'height: 132px; margin: 0;';
+    // One task: the zone grows, and the same file loses its card.
+    BH.zones.get(id).appendChild(form);
+    b.removeAnnotation(id, 'card-same');
+    const sameTask = BH.sound();
+    await H.settle(150);
+    return { sameTask, rest: BH.sound(), grewBy: H.itemHeight(id) - before };
+  });
+  // No allowance: the fixture fails this test on any validator report.
+  expect(result.sameTask).toEqual({ orphans: 0, clean: true });
+  expect(result.rest).toEqual({ orphans: 0, clean: true });
+  expect(result.grewBy).toBe(132);
 });
 
 test('a file\'s status decides the zone\'s side when the patch does not say the file was deleted', async ({ harness }) => {
@@ -274,6 +348,88 @@ test('what is drawn of a mounted file does not change with the scroll position: 
   expect(result.sound).toEqual({ orphans: 0, clean: true });
   expect(harness.validatorErrors(page)).toEqual([]);
 });
+
+for (const guarded of [true, false]) {
+  const title = guarded
+    ? 'a file drawn in row windows keeps the card of the row a window ended at: the bridge draws the file again when the viewer drops it'
+    : 'without the bridge\'s redraw, the card of the row a window ended at is gone when the window covers that row again (F26, what the redraw is for)';
+  test(title, async ({ harness }) => {
+    // Hazard H119. A file that shows more rows than the bridge's row window
+    // (5000) is still drawn in windows, which move in steps of 5000 rows as
+    // the pane scrolls. The viewer updates the rows in place, and the
+    // annotation row of the last row it keeps goes with the rows it removes;
+    // the rows it adds later start at the next line. The second variant
+    // switches the bridge's check off and shows the loss; when it starts to
+    // fail, the viewer no longer drops the card and the check can go.
+    test.setTimeout(120000);
+    const page = await openBridge(harness);
+    const result = await page.evaluate(async (withGuard) => {
+      const { H, BH } = window;
+      const { roles } = H.workload;
+      const id = roles.hugeAdded;
+      await BH.up({ entries: [BH.diffEntry(id)] });
+      const b = BH.bridge;
+      if (!withGuard) b._restoreTrimmedCards = () => {};
+      const lines = [5000, 9999, 10000, 10001];
+      for (const lineNumber of lines) b.addAnnotation(id, { lineNumber, side: 'RIGHT', type: 'card', data: { text: `card ${lineNumber}.`, height: 30 } });
+      await H.settle(300);
+      const row = H.rec(id).instance.metrics.lineHeight;
+      const drawn = (line) => {
+        const card = [...H.host(id).querySelectorAll('.card')].find((el) => el.textContent.includes(`card ${line}.`));
+        return !!card && card.isConnected && card.getBoundingClientRect().height > 0;
+      };
+      const rowOnScreen = (line) => {
+        const el = H.host(id).shadowRoot.querySelector(`[data-content] > [data-line="${line}"]`);
+        if (!el) return false;
+        const box = el.getBoundingClientRect();
+        const pane = H.root.getBoundingClientRect();
+        return box.bottom > pane.top && box.top < pane.bottom;
+      };
+      // Away by `rows` rows in steps, and back the same way: the window moves and returns.
+      const awayAndBack = async (rows) => {
+        const from = H.root.scrollTop;
+        const step = 100 * Math.sign(rows);
+        for (let moved = step; Math.abs(moved) <= Math.abs(rows); moved += step) { H.root.scrollTop = from + moved * row; await H.raf(2); }
+        for (let moved = rows - step; Math.abs(moved) >= 0 && Math.sign(moved) !== -Math.sign(rows); moved -= step) { H.root.scrollTop = from + moved * row; await H.raf(2); if (moved === 0) break; }
+        H.root.scrollTop = from;
+        await H.settle(300);
+      };
+      const seen = [];
+      // On screen with the rows after it: the line is not the end of what is drawn.
+      const look = (label, line) => seen.push({ label, line, onScreen: rowOnScreen(line) && rowOnScreen(line + 1), card: drawn(line) });
+      for (const line of [10000, 5000]) {
+        b.scrollToLine(id, line, 'RIGHT', { align: 'start', behavior: 'instant' });
+        await H.settle(400);
+        look('reached', line);
+        await awayAndBack(2600);
+        look('after 2600 rows down and back', line);
+        await awayAndBack(-2600);
+        look('after 2600 rows up and back', line);
+      }
+      b.scrollToLine(id, 9999, 'RIGHT', { align: 'start', behavior: 'instant' });
+      await H.settle(400);
+      look('reached again, with its neighbours', 10000);
+      look('the line before it', 9999);
+      look('the line after it', 10001);
+      return { rows: H.shape(id).rows, seen, annotations: b.getAnnotations(id, 'card').length, sound: BH.sound() };
+    }, guarded);
+
+    // Every look was at a row that is on screen, and the bridge holds every card throughout.
+    expect(result.seen.every((entry) => entry.onScreen), JSON.stringify(result.seen)).toBe(true);
+    expect(result.annotations).toBe(4);
+    const lost = result.seen.filter((entry) => !entry.card);
+    if (guarded) {
+      expect(lost, JSON.stringify(result.seen)).toEqual([]);
+    } else {
+      // The viewer's defect, through the bridge: a card on a window's last row is missing with its row on screen.
+      expect(lost.length, JSON.stringify(result.seen)).toBeGreaterThan(0);
+      expect(lost.every((entry) => entry.line === 5000 || entry.line === 10000), JSON.stringify(lost)).toBe(true);
+    }
+    // The layout is exact either way: a row is measured with or without its card.
+    expect(result.sound).toEqual({ orphans: 0, clean: true });
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}
 
 test('scrollToItem and scrollToLine land on a file that was never mounted, and on a file the reader collapsed nothing is scrolled to', async ({ harness }) => {
   const page = await openBridge(harness);

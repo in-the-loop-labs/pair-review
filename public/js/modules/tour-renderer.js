@@ -196,10 +196,14 @@ class TourRenderer {
     //    context file (or PATCHes an existing context file to cover the
     //    range). Track the new id so unmountAll can DELETE it on exit and
     //    not leave the user with surprise persistent entries.
-    const existingWrapper = document.querySelector(
+    //    "In the pane" is asked of data first: a file the bridge holds is
+    //    there whether or not it has an element (a virtualized viewer draws
+    //    only what is near the viewport). An element without a record is a
+    //    context file drawn by the table renderer.
+    const inPane = this._isPierreFile(filePath) || !!document.querySelector(
       `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
     );
-    if (!existingWrapper && typeof this.prManager.ensureContextFile === 'function') {
+    if (!inPane && typeof this.prManager.ensureContextFile === 'function') {
       const wasAlreadyContext = Array.isArray(this.prManager.contextFiles) &&
         this.prManager.contextFiles.some((cf) => cf.file === filePath);
       try {

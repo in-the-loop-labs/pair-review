@@ -9,7 +9,12 @@
  * row, the file's frame, the space to the next file, gutter width, row height,
  * fonts), and the pane as pixels at fixed positions (top of the pane, a file
  * header pinned over a hunk, a collapsed file, the end of the pane, a context
- * file).
+ * file), and with something drawn on the diff: comment and suggestion cards
+ * under lines and in a file's comment zone, a hunk summary, open comment
+ * forms, a line selection, minimized comments, review threads from the pull
+ * request (PR mode), a comment in a context file's zone, and the message of
+ * a file whose diff is held back for its size (the box of every card as
+ * numbers, and the pane as pixels).
  *
  * Both engines are opened against one test server in one run, with the
  * file-contents requests held back, so every changed file shows the rows of
@@ -20,7 +25,10 @@
  *
  * Usage:
  *   PLAYWRIGHT_BROWSERS_PATH=... node tests/parity/visual.mjs --out <dir>
- *     [--corpus default,edge] [--mode pr,local] [--style unified,split] [--theme light,dark]
+ *     [--corpus default,edge,lazy] [--mode pr,local] [--style unified,split] [--theme light,dark]
+ *
+ * Corpora: `default` and `edge` are the E2E fixtures' (tests/e2e/fixtures/diffs.js);
+ * `lazy` is built here, a file whose diff is held back for its size.
  *
  * Writes <out>/<engine>/<config>.json and <config>.<position>.png per engine,
  * <out>/compare/<config>.<position>.png (default engine, codeview, and the
@@ -72,7 +80,8 @@ const TOUR_STOP = {
 /**
  * Differences that are decided, each with the decision that covers it. A
  * difference that matches no entry fails the run.
- *   where: 'number' (a geometry path) or 'pixels' (a position)
+ *   where: 'number' (a geometry path; test({ kind, path, a, b })) or
+ *          'pixels' (a position of a configuration; test({ config, position }))
  */
 const ACCEPTED = [
   {
@@ -86,14 +95,53 @@ const ACCEPTED = [
     why: 'D2: a context file\'s lines are drawn by the viewer (one number column, the viewer\'s separators); its header and its place are compared',
   },
   {
+    where: 'pixels',
+    test: ({ config, position }) => config.corpusName === 'edge' && config.style === 'split' && position === 'end',
+    why: 'the second and third lines of wrapped rows are drawn one pixel higher or lower (11 text lines of 8 px, 1,143 pixels outside the tolerance; no line, box or colour differs). The files there are at fractional offsets (heights of wrapped rows are not whole pixels), and where a glyph row lands on the pixel grid depends on the layer it is painted in: the page\'s scrolling layer on the default engine, the viewer\'s pinned container on codeview. The layout is the same: every file\'s box is equal in the numbers, and so is where the last file ends (the number "lastFileBottomToViewBottom"). Ledger H126',
+  },
+  {
     where: 'number',
-    test: ({ kind, path: key, a, b }) => kind === 'diff' && key === 'frame.bottom' && a.frame && b.frame && a.frame.h === 1 && b.frame.h === 1,
-    why: 'a diff without a line: the 1 px line under the header is the empty code block\'s bottom border on the default engine and is drawn in the file\'s comment zone on codeview (the viewer counts no bottom padding for an item without lines); the pixels are compared',
+    test: ({ kind, path: key }) => kind === 'contextCards' && key === 'fileHeight',
+    why: 'D2: a context file\'s lines are drawn by the viewer, so the file is another height; its comment zone and the card in it are compared',
+  },
+  {
+    where: 'number',
+    test: ({ kind, path: key, a, b }) => kind === 'diff' && /^frame(\.|$)/.test(key) && !!a.frame && a.frame.h === 1 && !b.frame,
+    why: 'a diff without a line: the 1 px line under the header is the empty code block\'s border on the default engine (a frame 1 px high) and is drawn in the file\'s comment zone on codeview, where a file without lines has no frame (the viewer counts no bottom padding for an item without lines); the pixels are compared',
   },
 ];
 
+/**
+ * The corpus named `lazy`: one file whose diff is held back for its size (a
+ * header and "Large diff ... Load diff" in place of its lines) above a small
+ * one. Built here: a builder corpus has no file that large.
+ */
+function lazyCorpus(corpora) {
+  const big = [];
+  for (let i = 0; i < 20100; i++) big.push(`// big line ${i}`);
+  const diff = [
+    'diff --git a/src/main.js b/src/main.js', '--- a/src/main.js', '+++ b/src/main.js', '@@ -0,0 +1,20100 @@',
+    ...big.map((line) => `+${line}`),
+    'diff --git a/src/utils.js b/src/utils.js', '--- a/src/utils.js', '+++ b/src/utils.js', '@@ -1,2 +1,3 @@',
+    ' line a', '+added line', ' line b', '',
+  ].join('\n');
+  return corpora.customCorpus({
+    name: 'lazy',
+    diff,
+    files: {
+      'src/main.js': { old: '', new: `${big.join('\n')}\n` },
+      'src/utils.js': { old: 'line a\nline b\n', new: 'line a\nadded line\nline b\n' },
+    },
+  });
+}
+
+/** A corpus by the name the command line gives it. */
+function corpusNamed(corpora, name) {
+  return name === 'lazy' ? lazyCorpus(corpora) : corpora.allCorpora()[name];
+}
+
 function parseArgs(argv) {
-  const args = { corpus: ['default', 'edge'], mode: ['pr', 'local'], style: ['unified', 'split'], theme: ['light', 'dark'], out: null, capture: null };
+  const args = { corpus: ['default', 'edge', 'lazy'], mode: ['pr', 'local'], style: ['unified', 'split'], theme: ['light', 'dark'], out: null, capture: null };
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i].replace(/^--/, '');
     const value = argv[i + 1];
@@ -237,7 +285,54 @@ function measureFile(D, file) {
       ...css(frameEl, 'border-bottom-left-radius', 'border-bottom-right-radius'),
     } : null,
     gapToNext: next ? round(next.getBoundingClientRect().top - box.bottom) : null,
+    // A file whose diff is held back for its size: the message and its button.
+    notice: rel(wrapper.querySelector('.large-diff-placeholder')),
+    loadButton: rel(wrapper.querySelector('.large-diff-load-btn')),
   };
+}
+
+/**
+ * Runs in the page. The boxes of what is drawn on one file besides its lines,
+ * relative to the file: its comment zone and what is in it, the cards and
+ * forms under its lines, a hunk summary, the indicators of minimized
+ * comments. In document order per kind.
+ */
+function measureCards(D, file) {
+  const round = (n) => Math.round(n * 100) / 100;
+  const wrapper = D.wrapper(file) || D.contextWrapper(file);
+  if (!wrapper) return null;
+  const box = wrapper.getBoundingClientRect();
+  const kinds = {
+    zoneCard: '.file-comments-zone .file-comment-card',
+    zoneSuggestion: '.file-comments-zone .ai-suggestion',
+    zoneForm: '.file-comments-zone .file-comment-form',
+    comment: '[data-annotation-slot] > .user-comment-row',
+    suggestion: '[data-annotation-slot] > .ai-suggestion',
+    lineForm: '[data-annotation-slot] > .user-comment-form',
+    external: '[data-annotation-slot] > .external-comment-row',
+    summary: '.hunk-summary-row',
+    indicator: '.comment-indicator',
+  };
+  const out = {};
+  for (const [kind, selector] of Object.entries(kinds)) {
+    out[kind] = [...wrapper.querySelectorAll(selector)]
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ x: round(r.left - box.left), y: round(r.top - box.top), w: round(r.width), h: round(r.height), rightInset: round(box.right - r.right) }));
+  }
+  // The zone's line under its content is the zone's own border on one
+  // engine and its content box's on the other: where the line ends is what
+  // a reader sees.
+  const zoneEl = wrapper.querySelector('.file-comments-zone');
+  const content = zoneEl && zoneEl.querySelector('.file-comments-container');
+  out.zone = [];
+  if (content && content.getBoundingClientRect().height > 0) {
+    const r = content.getBoundingClientRect();
+    const line = parseFloat(getComputedStyle(zoneEl).borderBottomWidth) || 0;
+    out.zone.push({ x: round(r.left - box.left), y: round(r.top - box.top), w: round(r.width), bottom: round(r.bottom + line - box.top), rightInset: round(box.right - r.right) });
+  }
+  out.fileHeight = round(box.height);
+  return out;
 }
 
 /** Runs in the page. The pane's own box: borders, radius, padding as a reader sees them at the top of the pane. */
@@ -325,7 +420,7 @@ async function capture(args, engine) {
 
   try {
     for (const config of configsOf(args)) {
-      const corpus = corpora.allCorpora()[config.corpusName];
+      const corpus = corpusNamed(corpora, config.corpusName);
       if (!corpus) throw new Error(`Unknown corpus "${config.corpusName}"`);
       const context = await browser.newContext({ baseURL, viewport: VIEWPORT });
       await context.addInitScript(({ style, theme, eng }) => {
@@ -336,10 +431,19 @@ async function capture(args, engine) {
       const page = await context.newPage();
       await corpora.routeDiff(page, corpus);
       const tourStop = TOUR_STOP[config.corpusName] || null;
+      // The file the cards, forms and the selection are drawn on: the tour's.
+      const annotated = tourStop ? tourStop.file_path : null;
       if (tourStop) {
-        await helpers.mockAppConfig(page, { tours: { enabled: true } });
+        await helpers.mockAppConfig(page, { tours: { enabled: true }, summaries: { enabled: true } });
         await helpers.mockTour(page, [{ ...tourStop, title: 'A stop', description: 'A stop of the tour.' }]);
+        // A summary on the annotated file's first hunk, in every position.
+        const [firstHunk] = corpora.hunkHashes(corpus.diff).get(annotated) || [];
+        await helpers.mockHunkSummaries(page, firstHunk
+          ? [{ file_path: annotated, content_hash: firstHunk, summary_text: 'What this hunk does, said in one sentence.' }]
+          : []);
       }
+      // The review threads of the pull request: none until the position that shows them.
+      const external = config.mode === 'pr' ? await helpers.mockExternalComments(page, []) : null;
       // Held for the whole run: every changed file shows the rows of its
       // patch on both engines.
       await page.route(/\/api\/reviews\/\d+\/file-contents\//, () => {});
@@ -367,8 +471,16 @@ async function capture(args, engine) {
       await shoot(page, config.name, 'pinned');
       result.positions.push('pinned');
 
-      // Position: the end of the pane.
+      // Position: the end of the pane. Where the last file ends there is a
+      // number too, so that a shift of less than a pixel cannot hide in the
+      // tolerance of the pixel comparison.
       await dom.scrollDiffToEdge(page, 'bottom');
+      await settle(page);
+      result.end = await dom.inPage(page, (D) => {
+        const last = D.wrappers().pop();
+        const view = document.querySelector('.diff-view').getBoundingClientRect();
+        return last ? { lastFileBottomToViewBottom: Math.round((view.bottom - last.getBoundingClientRect().bottom) * 1000) / 1000 } : null;
+      });
       await shoot(page, config.name, 'end');
       result.positions.push('end');
 
@@ -388,6 +500,95 @@ async function capture(args, engine) {
       await shoot(page, config.name, 'collapsed');
       result.positions.push('collapsed');
       if (!wasCollapsed) await dom.fileWrapper(page, middle).locator('.file-collapse-toggle').click();
+
+      // Positions: what is drawn on the diff. Everything is on one file,
+      // whose top edge is 40 px below the toolbar in every shot.
+      if (annotated && order.includes(annotated)) {
+        const reviewId = MODES[config.mode].reviewId;
+        const added = corpora.changedLines(corpus, annotated).additions;
+        const line = (i) => added[Math.min(i, added.length - 1)];
+        const frames = (count) => page.evaluate((n) => new Promise((resolve) => {
+          const tick = (left) => (left <= 0 ? resolve() : requestAnimationFrame(() => tick(left - 1)));
+          tick(n);
+        }), count);
+        const annotatedShot = async (position) => {
+          await alignFile(page, annotated, 40);
+          // A card slides in when it is attached (slideUp, 0.3 s, a
+          // transform): its box is measured where the animation has ended.
+          await page.evaluate(() => Promise.all(document.getAnimations()
+            .filter((animation) => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime))
+            .map((animation) => animation.finished.catch(() => {}))));
+          result.cards[position] = await dom.inPage(page, measureCards, annotated);
+          await shoot(page, config.name, position);
+          result.positions.push(position);
+        };
+        result.cards = {};
+
+        // Cards: a line comment, a comment on a range, suggestions in each
+        // state, and the file's comment zone with a comment and a suggestion.
+        await helpers.seedComment(page, reviewId, { file: annotated, line: line(0), body: 'A line comment.\n\nA second paragraph, with `code` in it.' });
+        if (line(2) > line(1)) await helpers.seedComment(page, reviewId, { file: annotated, line: line(1), lineEnd: line(2), body: 'A comment on a range of lines.' });
+        await helpers.seedComment(page, reviewId, { file: annotated, body: 'A comment on the whole file.', fileLevel: true });
+        await helpers.reloadComments(page);
+        await helpers.seedSuggestions(page, reviewId, [
+          { file: annotated, line_start: line(1), type: 'bug', title: 'An open suggestion', body: 'Its body, with a `code` span.' },
+          { file: annotated, line_start: line(2), type: 'improvement', title: 'A dismissed suggestion', body: 'Dismissed by the reader.', status: 'dismissed' },
+          { file: annotated, line_start: line(3), type: 'suggestion', title: 'An adopted suggestion', body: 'Adopted by the reader.', status: 'adopted' },
+          { file: annotated, line_start: line(3), type: 'praise', title: 'Praise', body: 'Nicely done.' },
+          { file: annotated, type: 'design', title: 'A suggestion about the file', body: 'About the whole file.', is_file_level: true },
+        ]);
+        await frames(4);
+        await annotatedShot('cards');
+
+        // Minimized comments: the cards are hidden, their lines carry indicators.
+        await helpers.setMinimize(page, true);
+        await frames(4);
+        await annotatedShot('minimized');
+        await helpers.setMinimize(page, false);
+        await frames(4);
+
+        // Forms: one under a line, one in the file's comment zone. Nothing
+        // has the focus (a caret blinks).
+        await page.evaluate(({ f, l }) => window.prManager.showCommentForm(null, l, f, null, null, 'RIGHT'), { f: annotated, l: line(4) });
+        await dom.fileWrapper(page, annotated).locator('.file-header-comment-btn').click();
+        await dom.fileWrapper(page, annotated).locator('.file-comments-zone .file-comment-form textarea').waitFor({ state: 'visible', timeout: 10000 });
+        await page.evaluate(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); });
+        await frames(4);
+        await annotatedShot('forms');
+        await dom.fileWrapper(page, annotated).locator('.file-comments-zone .file-comment-form .cancel-btn').click();
+        await page.evaluate(({ f, l }) => window.prManager.pierreBridge.removeAnnotation(f, `form-${f}-${l}-RIGHT`), { f: annotated, l: line(4) });
+
+        // The review is the next position's too: take everything off again.
+        await helpers.cleanupAllComments(page, reviewId);
+        await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
+        await frames(4);
+
+        // Review threads from the pull request (PR mode): one on a line,
+        // one with a reply on a later line.
+        if (external) {
+          external.threads = [
+            helpers.externalThread({ id: 9101, file: annotated, line: line(0), body: 'A thread from the pull request.' }),
+            helpers.externalThread({ id: 9201, file: annotated, line: line(2), body: 'A second thread, **with** a reply.', replies: [{ body: 'The reply.' }] }),
+          ];
+          await page.evaluate(() => window.prManager._loadExternalComments());
+          await dom.fileWrapper(page, annotated).locator('.external-comment-row').first().waitFor({ state: 'visible', timeout: 10000 });
+          await frames(4);
+          await annotatedShot('external');
+          external.threads = [];
+          await page.evaluate(() => window.prManager._loadExternalComments());
+          await dom.fileWrapper(page, annotated).locator('.external-comment-row').first().waitFor({ state: 'detached', timeout: 10000 });
+          await frames(4);
+        }
+
+        // A selection of several lines, made with the pointer on the line
+        // numbers of a file with no card between them.
+        if (line(2) > line(0)) {
+          await dom.selectLineRange(page, { file: annotated, start: line(0), end: line(2), waitForUpgrade: false });
+          await annotatedShot('selection');
+          await page.evaluate((f) => window.prManager.pierreBridge.clearLineSelection(f), annotated);
+          await frames(2);
+        }
+      }
 
       // Positions: a tour. Its bar is above the toolbar; both are pinned
       // while the diff scrolls under them.
@@ -422,6 +623,23 @@ async function capture(args, engine) {
         const position = `context-${entry.file.split('/')[0]}`;
         await shoot(page, config.name, position);
         result.positions.push(position);
+      }
+
+      // Position: a context file with a comment in its comment zone. Its
+      // lines are drawn differently (D2); its zone and the card in it are
+      // compared as numbers.
+      {
+        const [{ file }] = CONTEXT_FILES;
+        await helpers.seedComment(page, MODES[config.mode].reviewId, { file, body: 'A comment on a file outside the diff.', fileLevel: true });
+        await helpers.reloadComments(page);
+        await alignFile(page, file, 40);
+        await page.evaluate(() => Promise.all(document.getAnimations()
+          .filter((animation) => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime))
+          .map((animation) => animation.finished.catch(() => {}))));
+        result.contextCards = { [file]: await dom.inPage(page, measureCards, file) };
+        await shoot(page, config.name, 'context-zone');
+        result.positions.push('context-zone');
+        await helpers.cleanupAllComments(page, MODES[config.mode].reviewId);
       }
 
       fs.writeFileSync(path.join(outDir, `${config.name}.json`), `${JSON.stringify(result, null, 1)}\n`);
@@ -585,12 +803,16 @@ async function compare(args) {
       for (const file of a.order) report.numbers.push(...numberDifferences(scope(file), 'diff', a.files[file], b.files[file]));
       report.numbers.push(...numberDifferences(scope(`collapsed ${a.collapsed.file}`), 'diff', a.collapsed.geometry, b.collapsed.geometry));
       for (const file of Object.keys(a.context)) report.numbers.push(...numberDifferences(scope(`context ${file}`), 'context', a.context[file], b.context[file]));
+      report.numbers.push(...numberDifferences(scope('end of the pane'), 'end', a.end, b.end));
+      for (const position of Object.keys(a.cards || {})) report.numbers.push(...numberDifferences(scope(`${position} on the annotated file`), 'cards', a.cards[position], (b.cards || {})[position]));
+      for (const file of Object.keys(a.contextCards || {})) report.numbers.push(...numberDifferences(scope(`comment zone of context ${file}`), 'contextCards', a.contextCards[file], (b.contextCards || {})[file]));
 
       for (const position of a.positions) {
         const data = ENGINES.map((engine) => `data:image/png;base64,${fs.readFileSync(path.join(args.out, engine, `${config.name}.${position}.png`)).toString('base64')}`);
         const result = await page.evaluate(diffImages, { a: data[0], b: data[1] });
         fs.writeFileSync(path.join(compareDir, `${config.name}.${position}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
         const compared = !position.startsWith('context-');
+        const decided = ACCEPTED.find((entry) => entry.where === 'pixels' && entry.test({ config, position }));
         report.pixels.push({
           scope: `${config.name} ${position}`,
           differing: result.count,
@@ -601,7 +823,7 @@ async function compare(args) {
           samples: result.samples,
           rows: result.rows,
           box: result.box,
-          accepted: compared ? null : 'D2: a context file\'s lines are drawn by the viewer; saved for the eye, not compared',
+          accepted: compared ? (decided ? decided.why : null) : 'D2: a context file\'s lines are drawn by the viewer; saved for the eye, not compared',
         });
       }
     }
@@ -623,7 +845,9 @@ async function compare(args) {
   lines.push('  (per pair: pixels that are not identical, by how far apart the two values are; and of those, the ones outside the');
   lines.push('   anti-aliasing tolerance, which is what fails)');
   for (const p of report.pixels) {
-    const state = p.accepted ? 'not compared' : (p.visible > 0 ? 'DIFFERENT' : (p.differing === 0 ? 'identical' : 'equal'));
+    const state = p.accepted
+      ? (p.accepted.startsWith('D2') ? 'not compared' : (p.visible > 0 ? 'accepted' : 'equal'))
+      : (p.visible > 0 ? 'DIFFERENT' : (p.differing === 0 ? 'identical' : 'equal'));
     const far = Object.entries(p.byDelta || {}).reduce((n, [delta, count]) => n + (Number(delta) > 2 ? count : 0), 0);
     lines.push(`  ${state} ${p.scope}: ${p.differing} px not identical (${p.differing - far} by 1-2 of 255, ${far} by more), ${p.visible} outside tolerance${p.visibleBox ? ` box ${p.visibleBox.x0},${p.visibleBox.y0}..${p.visibleBox.x1},${p.visibleBox.y1}` : ''}`);
     if (p.visible && !p.accepted) for (const sample of p.visibleSamples.slice(0, 6)) lines.push(`      at ${sample.x},${sample.y}: default rgb(${sample.filediff}) / codeview rgb(${sample.codeview})`);

@@ -31,7 +31,7 @@ import {
 import { allCorpora, changedLines, hunkHashes, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, inlineComment, inlineSuggestion, lineCards, fileSelector, inAnnotationGroup, scrollFileIntoView, scrollFileOutOfView,
-  waitForFileRendered, waitForFileSettled, isLineVisible, revealOffHunkLine, lineNumberCell, assertNoOrphanHosts,
+  waitForFileRendered, waitForFileSettled, isLineVisible, revealOffHunkLine, lineNumberCell, assertNoOrphanHosts, expectLineCardsInPane,
   openLineCommentForm, hasRenderedBody, waitForDiffSettled, DELETED_COMMENT_RETURNS_ON_RERENDER
 } from './diff-dom.js';
 
@@ -740,7 +740,8 @@ for (const mode of MODES) {
       await scrollFileIntoView(page, TARGET);
       await waitForFileRendered(page, TARGET);
       await expect(lineCards(page, '.hunk-summary-row', fileSelector(TARGET))).toHaveCount(2);
-      await expect(page.locator('.hunk-summary-row')).toHaveCount(3);
+      // Three in the whole pane (the tail's file may have no element now), each once.
+      await expectLineCardsInPane(page, '.hunk-summary-row', 'hunk-summary', 3);
       await assertNoOrphanHosts(page);
     });
   });
@@ -878,7 +879,8 @@ test.describe('Drawn on a far file: external threads (PR mode)', () => {
     await expect(threadsOf(page, TARGET)).toHaveCount(2);
     await expect(threadRow(page, 8101)).toHaveCount(1);
     await expect(threadRow(page, 8301)).toHaveCount(1);
-    await expect(page.locator('.external-comment-row')).toHaveCount(3);
+    // (the tail's file may have no element now: a statement about the pane)
+    await expectLineCardsInPane(page, '.external-comment-row', 'external-comment', 3);
     await assertNoOrphanHosts(page);
   });
 });
