@@ -4,8 +4,8 @@
  * @pierre/diffs host (the vendor's `unsafeCSS` option).
  *
  * One copy for both diff bridges: PierreBridge (one FileDiff per file) uses
- * ANNOTATION_CSS; PierreCodeViewBridge (one virtualized CodeView) uses all
- * three blocks through unsafeCSS(). Page CSS (pr.css) cannot reach into a
+ * ANNOTATION_CSS; PierreCodeViewBridge (one virtualized CodeView) uses every
+ * block through unsafeCSS(). Page CSS (pr.css) cannot reach into a
  * shadow root, so everything that styles vendor rows lives here.
  *
  * Wrapped in a function: this file is a classic script, and top-level
@@ -244,6 +244,9 @@
    *    the viewer measures.
    *    Such a file has no code background either: what it shows (its
    *    comments, a notice, that line) is on the pane, as on the other engine.
+   *    Its side borders keep their width (the comment zone's row is sized
+   *    with it, ZONE_CSS) and are not drawn: beside a notice or the 1 px
+   *    line they would be two strokes the other engine does not have.
    *  - A context file has no frame on the other engine and none here; its
    *    bottom border is transparent, because the 1 px is counted for it too.
    *  - The viewer paints its host and its sticky header's box with the code
@@ -255,8 +258,17 @@
    *    those are elements of the page above the code block, on the code
    *    background; the 8 px pr.css puts under the zone are the code block's
    *    top padding there.
-   *  - `overflow: clip` keeps the rows inside the rounded corners, as the
-   *    body's `overflow-x: auto` does; it makes no scroll container.
+   *  - Nothing clips the code block. The per-file renderer's body clips its
+   *    rows at the rounded corners (`overflow-x: auto`); here nothing a file
+   *    draws reaches them: its rows end 8 px above the bottom border (the
+   *    code block's bottom padding, 6 px corners), the code columns have no
+   *    background of their own (ZONE_CSS) and the block's own background is
+   *    clipped to its rounded padding box. A clip is left out on purpose:
+   *    `overflow: clip` cuts at the padding box, and the file's comment zone
+   *    is drawn over the frame's side borders (ZONE_CSS); `clip-path` is
+   *    anti-aliased at a fractional offset and thins the bottom border
+   *    (measured: 246 for 232 of 255 on a file 441.67 px tall). What the
+   *    body's clip does for the cards under lines, ZONE_CSS does per card.
    *  - The border colour is translucent. The body has no background of its
    *    own, so its border is over the pane; `background-clip: padding-box`
    *    keeps the code background from under this one, for the same pixels.
@@ -266,17 +278,103 @@
   border: 1px solid var(--color-border-default, transparent);
   border-top: 0;
   border-radius: 0 0 6px 6px;
-  overflow: clip;
   background-clip: padding-box;
 }
 [data-line-annotation='-1,-1'],
 [data-gutter] > [data-gutter-buffer='annotation']:first-child { background-color: var(--diffs-bg) !important; }
 :host(.context-file) pre[data-diff] { border-bottom: 1px solid transparent; }
-pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { border-bottom: 0 !important; }
+pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { border-bottom: 0 !important; border-color: transparent !important; }
 pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { background-color: transparent !important; }
 pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) * { background-color: transparent !important; border-color: transparent !important; }
 [data-diffs-header] { background-color: transparent !important; }
 :host { background-color: transparent !important; }
+`;
+
+  /**
+   * The file's comment zone under the virtualized viewer spans the file from
+   * edge to edge, as it does on the per-file renderer, where it is an element
+   * of the page between the header and the code block: as wide as the file,
+   * over the line-number column and outside the frame's side borders.
+   *
+   * Here the zone is the item's first annotation (line 0), so the viewer
+   * draws its row in the code's content column: to the right of the
+   * line-number column and between the frame's borders. These rules stretch
+   * that one row. They add no height.
+   *
+   * What each layout needs (b = the frame's side border, 1 px on a changed
+   * file and 0 on a context file, set here as --pr-frame-inline;
+   * g = --pr-split-gutter-width, published together with the
+   * .pr-annotation-fullwidth class by
+   * PierreAnnotations.applySplitAnnotationLayout):
+   *
+   *  - Unified, and a context file in either layout: the row ends at the
+   *    right edge of the one code column, which is a size container, so its
+   *    width is known without knowing the line-number column's
+   *    (100cqw = the column's content box). The column is a scroll container
+   *    with paint containment and clips at its padding box, so on a changed
+   *    file it is widened by b on both sides (a negative margin and the same
+   *    padding: its rows stay where they are) to reach under the frame's
+   *    borders.
+   *  - Split, a two-sided file: the columns generate no box, the <pre> is
+   *    the four-track grid, and the row is in the last track. From the
+   *    row's own width (100%) and g: the first number track is g minus the
+   *    1 px seam border the second one carries.
+   *  - Split, an entirely added or removed file: ANNOTATION_CSS boxes the
+   *    lone column into its half; each half is 1 px of seam border, g and
+   *    the content track.
+   *
+   * The row is transparent: under it are the line-number column's buffer
+   * cell, the paired empty cell and the frame's borders, which show beside
+   * the 8 px pr.css puts under the zone's content (they are the code
+   * block's own top padding on the per-file renderer). The zone's content
+   * has its own background (pr.css). z-index 4 is above the line-number
+   * column, which the vendor paints at 3.
+   *
+   * The code columns of a changed file have no background of their own:
+   * the <pre>'s is behind them, clipped to its padding box, so the widened
+   * column does not paint over the frame's translucent borders.
+   *
+   * With the zone over the frame's borders the code block can no longer
+   * clip at its padding box (FRAME_CSS), which is what kept a card's
+   * outline off the frame on the right: an annotation's row ends at the
+   * frame's inner edge, and a card that fills it and draws around itself
+   * (the active tour stop's 2 px ring) would paint over the border and past
+   * the file. Every annotation's content except line 0's is therefore
+   * clipped at its own right edge, and nowhere else: on the left the
+   * per-file renderer shows such a ring over the line-number column in
+   * split layout, and above and below nothing clips there either.
+   *
+   * Depends on vendor markup that is not API ([data-line-annotation='-1,-1']
+   * for the row of line 0, [data-unified], [data-additions], [data-deletions],
+   * [data-content]); tests/parity/visual.mjs measures the zone against the
+   * per-file renderer in every layout these rules name.
+   */
+  const ZONE_CSS = `
+:host(:not(.context-file)) pre[data-diff] { --pr-frame-inline: 1px; }
+:host(:not(.context-file)) pre[data-diff] > code { background-color: transparent; }
+:host(:not(.context-file)) pre[data-diff] > code[data-unified] { margin-inline: -1px; padding-inline: 1px; }
+pre[data-diff] [data-unified] > [data-content] > [data-line-annotation='-1,-1'],
+:host(.context-file) pre[data-diff] [data-additions] > [data-content] > [data-line-annotation='-1,-1'] {
+  z-index: 4;
+  width: calc(100cqw + 2 * var(--pr-frame-inline, 0px)) !important;
+  margin-left: calc(100% - 100cqw - var(--pr-frame-inline, 0px)) !important;
+  background-color: transparent !important;
+}
+:host(:not(.context-file)) [data-line-annotation]:not([data-line-annotation='-1,-1']) > [data-annotation-content] { clip-path: inset(-10000px 0 -10000px -10000px); }
+[data-diff-type='split'] [data-additions] [data-line-annotation='-1,-1'].pr-annotation-fullwidth,
+:host(:not(.context-file)) [data-diff-type='single'] [data-line-annotation='-1,-1'].pr-annotation-fullwidth { background-color: transparent !important; }
+[data-diff-type='split'] [data-additions] [data-line-annotation='-1,-1'].pr-annotation-fullwidth {
+  width: calc(200% + 2 * var(--pr-split-gutter-width, 0px) - 1px + 2 * var(--pr-frame-inline, 0px));
+  margin-left: calc(-100% - 2 * var(--pr-split-gutter-width, 0px) + 1px - var(--pr-frame-inline, 0px));
+}
+:host(:not(.context-file)) [data-diff-type='single'] [data-additions] [data-line-annotation='-1,-1'].pr-annotation-fullwidth {
+  width: calc(200% + 2 * var(--pr-split-gutter-width, 0px) + 2px + 2 * var(--pr-frame-inline, 0px));
+  margin-left: calc(-100% - 2 * var(--pr-split-gutter-width, 0px) - 2px - var(--pr-frame-inline, 0px));
+}
+:host(:not(.context-file)) [data-diff-type='single'] [data-deletions] [data-line-annotation='-1,-1'].pr-annotation-fullwidth {
+  width: calc(200% + 2 * var(--pr-split-gutter-width, 0px) + 2px + 2 * var(--pr-frame-inline, 0px));
+  margin-left: calc(-1 * var(--pr-split-gutter-width, 0px) - var(--pr-frame-inline, 0px));
+}
 `;
 
   const PierreStyles = {
@@ -284,10 +382,11 @@ pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) * { background
     ROWLESS_FIX,
     CONTEXT_CSS,
     FRAME_CSS,
+    ZONE_CSS,
     ITEM_PADDING_BOTTOM,
     /** Everything the CodeView bridge passes as `unsafeCSS`, in cascade order. */
     unsafeCSS() {
-      return [ANNOTATION_CSS, ROWLESS_FIX, CONTEXT_CSS, FRAME_CSS].join('\n');
+      return [ANNOTATION_CSS, ROWLESS_FIX, CONTEXT_CSS, FRAME_CSS, ZONE_CSS].join('\n');
     },
   };
 

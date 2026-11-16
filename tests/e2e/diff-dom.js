@@ -396,13 +396,36 @@ function installInPage() {
     return { rows: rows.length, highlightedRows, colors: [...colors].sort() };
   };
 
-  /** How far a file's code overflows horizontally (0 when every line wraps), and its row heights. */
+  /**
+   * How far a file's code overflows horizontally (0 when every line wraps),
+   * and its row heights.
+   *
+   * Per box, one of two questions. A box that scrolls (`overflow-x` auto,
+   * scroll or hidden): how far it can be scrolled. A box that does not: how
+   * far something sticks out of it, which is past its border. `scrollWidth`
+   * is counted from the padding box, so a box's own right border is taken
+   * off: on the virtualized viewer the file's frame is the code block's
+   * border and the file's comment zone lies over it by design, as it does
+   * over the frame on the per-file renderer (ledger H142); there the code
+   * block has no border and the number is the one it always was.
+   *
+   * The boxes that do not scroll must stay in the list. An overflow that
+   * leaves the code block without a box that scrolls never reaches the
+   * pane's scroller on the virtualized viewer (layout containment on the way
+   * up), so only the code block and the file report it.
+   */
   D.wrapInfo = (file) => {
     const pre = D.pre(file);
     const wrapper = D.wrapper(file);
     if (!pre || !wrapper) return null;
     const scroller = D.scroller();
-    const over = (el) => (el ? Math.max(0, el.scrollWidth - el.clientWidth) : 0);
+    const over = (el) => {
+      if (!el) return 0;
+      const style = getComputedStyle(el);
+      const beyond = el.scrollWidth - el.clientWidth;
+      const scrolls = /^(auto|scroll|hidden)$/.test(style.overflowX);
+      return Math.max(0, scrolls ? beyond : beyond - (parseFloat(style.borderRightWidth) || 0));
+    };
     const heights = D.rows(file).map((row) => row.getBoundingClientRect().height);
     return {
       overflow: Math.max(over(pre), over(wrapper), over(scroller), ...[...pre.querySelectorAll('code')].map(over)),
@@ -699,6 +722,45 @@ function lineCards(page, cardSelector, fileScope) {
 }
 
 /**
+ * The pane holds exactly `count` line cards of one annotation type, each
+ * once. A statement about the pane, not about the document: the count is
+ * taken from what the application holds for its files, and every file that
+ * has an element shows exactly its own cards.
+ *
+ * On the per-file renderer a file keeps its element once drawn, so the
+ * document holds every card and is counted too. A virtualized viewer has no
+ * element for a file far from the viewport; there the document may hold
+ * fewer cards, never more, and never one twice.
+ * @param {string} cardSelector - e.g. '.hunk-summary-row'
+ * @param {string} annotationType - the cards' annotation type, e.g. 'hunk-summary'
+ */
+async function expectLineCardsInPane(page, cardSelector, annotationType, count) {
+  const read = () => inPage(page, (D, a) => {
+    const bridge = window.prManager.pierreBridge;
+    let held = 0;
+    const mismatched = [];
+    for (const file of bridge.files.keys()) {
+      const own = bridge.getAnnotations(file, a.type).length;
+      held += own;
+      const wrapper = D.wrapper(file) || (D.contextWrapper ? D.contextWrapper(file) : null);
+      if (!wrapper) continue;
+      const drawn = wrapper.querySelectorAll(`${a.slot} > ${a.card}`).length;
+      if (drawn !== own) mismatched.push(`${file}: ${drawn} drawn, ${own} held`);
+    }
+    return { held, mismatched, inDocument: document.querySelectorAll(`#diff-container ${a.slot} > ${a.card}`).length };
+  }, { type: annotationType, card: cardSelector, slot: ANNOTATION_SLOT });
+  await expect.poll(async () => {
+    const state = await read();
+    return { held: state.held, mismatched: state.mismatched };
+  }).toEqual({ held: count, mismatched: [] });
+  if (ENGINE === 'codeview') {
+    expect((await read()).inDocument).toBeLessThanOrEqual(count);
+  } else {
+    await expect(page.locator(cardSelector)).toHaveCount(count);
+  }
+}
+
+/**
  * The per-line annotation groups: one per (line, side) that has at least one
  * annotation. `having` narrows to groups that directly contain a match.
  */
@@ -901,6 +963,13 @@ async function hunkContaining(page, file, line) {
 }
 
 /**
+ * Bring a file of the pane to where it has an element. On this engine a file
+ * keeps its element once the page has drawn it, so there is nothing to do;
+ * the virtualized viewer's half scrolls the file into its mounted window.
+ */
+async function ensureMounted() {}
+
+/**
  * Expand hidden context next to a hunk the way the vendor's own expand
  * control does, by an exact number of lines (a click expands by the
  * configured step, which a scenario cannot choose).
@@ -941,6 +1010,23 @@ async function redisplayBaseDiff(page, file) {
     const record = D.record(f);
     if (!record || !record.baseMetadata) throw new Error(`redisplayBaseDiff: ${f} is not upgraded`);
     bridge._renderWithFileDiff(record, record.baseMetadata);
+  }, file);
+}
+
+/**
+ * Draw `file` again as it is, now: what a comment reload, a suggestion that
+ * lands or the file's contents arriving do to a file on screen. On this
+ * engine the file's own instance draws its rows again and the header and the
+ * comment zone, elements of the page, are not touched; the virtualized
+ * viewer's half publishes the file, which takes its header, zone and cards
+ * out of the document and puts them back.
+ */
+async function redrawFile(page, file) {
+  await inPage(page, (D, f) => {
+    const record = D.record(f);
+    const instance = record && record.instance;
+    if (!instance) throw new Error(`redrawFile: ${f} is not rendered`);
+    if (typeof instance.rerender === 'function') instance.rerender();
   }, file);
 }
 
@@ -1327,6 +1413,34 @@ async function wrapInfo(page, file) {
   return inPage(page, (D, f) => D.wrapInfo(f), file);
 }
 
+/**
+ * Change how the lines of a file that is on screen are laid out, in the page
+ * only (the application always wraps): what `wrapInfo` must be able to see.
+ *  - 'scroll': lines are not wrapped and the code column scrolls sideways
+ *    (the vendor's other layout);
+ *  - 'spill': lines are not wrapped and no column scrolls or clips, so the
+ *    long line leaves the code block;
+ *  - 'wrap': as the application draws it.
+ * Resolves two frames later, when the layout has followed.
+ */
+async function setLineLayout(page, file, layout) {
+  await inPage(page, async (D, a) => {
+    const pre = D.pre(a.file);
+    if (!pre) throw new Error(`setLineLayout: ${a.file} is not rendered`);
+    const root = pre.getRootNode();
+    const MARK = 'data-test-line-layout';
+    root.querySelector(`style[${MARK}]`)?.remove();
+    pre.setAttribute('data-overflow', a.layout === 'wrap' ? 'wrap' : 'scroll');
+    if (a.layout === 'spill') {
+      const style = document.createElement('style');
+      style.setAttribute(MARK, '');
+      style.textContent = 'pre[data-diff] > code { overflow: visible !important; contain: none !important; }';
+      root.appendChild(style);
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }, { file, layout });
+}
+
 /** The first code row visible under the toolbar and sticky header: `{file, line, type, text, top}` or null. */
 async function firstVisibleRow(page) {
   return inPage(page, (D) => D.firstVisibleRow());
@@ -1521,9 +1635,23 @@ const THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY = 'line';
  * suite's baseline "known flake": the test for a clean review failed when
  * an earlier spec of the same worker had left its analysis on the review.
  * The fallback positioner this lives in is not ported to the virtualized
- * viewer (plan 3.13); the phase that ports the gutter flips this.
+ * viewer (plan 3.13), whose own buttons are cleared: `false` there since
+ * phase 6 (the value of that engine is in diff-dom-codeview.js).
  */
 const GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS = true;
+
+/**
+ * Whether the block the suggestion button inserts into a comment form holds
+ * an empty line after the code.
+ *
+ *   true   "```suggestion\n<the line>\n\n```": the line's text as the diff
+ *          holds it ends in a newline and the block's template adds its own.
+ *          A defect of main (ledger H52) that is in CommentManager, not in
+ *          the diff engine, so both engines give the same text; the
+ *          migration keeps it as it is, and a fix is separate work.
+ *   false  the code is followed by the closing fence at once
+ */
+const SUGGESTION_BLOCK_HAS_EMPTY_LINE = true;
 
 // ---------------------------------------------------------------------------
 // Context files (files outside the diff, shown as line ranges)
@@ -1681,7 +1809,7 @@ const engineAdapter = (ENGINE === 'codeview' ? codeviewEngine.createCodeViewAdap
 );
 const engineExpectations = {
   LAYOUT_TOGGLE_KEEPS, UPGRADED_DIFF_HUNKS, MISSING_VIEWER_BUNDLE, WORKER_LOAD_FAILURE_ERROR, SMALL_CONTEXT_GAP, contextGapLabel,
-  CONTEXT_LOADS_IN_FLIGHT,
+  CONTEXT_LOADS_IN_FLIGHT, GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS,
   ...engineAdapter.expectations,
 };
 
@@ -1698,6 +1826,8 @@ module.exports = {
   contextFileSelector,
   lineCardSelector,
   inAnnotationGroup,
+  expectLineCardsInPane,
+  ensureMounted,
   // files
   fileWrapper,
   contextFile,
@@ -1741,6 +1871,7 @@ module.exports = {
   hunkContaining,
   expandHunkBy,
   redisplayBaseDiff,
+  redrawFile,
   holdWorkerResults,
   // pointer
   waitForDiffSettled,
@@ -1767,6 +1898,7 @@ module.exports = {
   flashedLines,
   syntaxTokens,
   wrapInfo,
+  setLineLayout,
   clickExpandControl,
   parkPointerOnLine,
   // context files
@@ -1778,7 +1910,7 @@ module.exports = {
   REVEALED_LINE_KEEPS_FLASH,
   BASE_CHANGE_KEEPS_CARDS,
   THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY,
-  GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS,
+  SUGGESTION_BLOCK_HAS_EMPTY_LINE,
   SMALL_CONTEXT_GAP,
   contextGapLabel,
   expectedContextRanges,

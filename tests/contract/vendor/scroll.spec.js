@@ -173,7 +173,10 @@ test('F11: a line target set while that line\'s diff swap is pending is not retr
     const { roles } = H.workload;
     const T = roles.large;
     await H.appLike({ parse: { cacheKeyPrefix: 'contract:1' }, build: { only: [T, roles.noNewline] }, pool: true });
-    await H.until(() => H.shape(T).tokens > 0, 30000);
+    // Not yet mounted reads as "not yet": with the pool nothing is mounted
+    // until its workers are up (G7), which under load is after the bring-up's
+    // quiet period.
+    await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
     const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);

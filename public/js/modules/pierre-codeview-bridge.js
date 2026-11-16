@@ -116,8 +116,10 @@
    * again when the window grows (vendor fact F26,
    * tests/contract/vendor/row-window.spec.js). A window that does not move is
    * never trimmed. What is left of the defect: in a file that shows more
-   * than this many rows, a card on the last row of a window (row 5000,
-   * 10000, ...). Which items are mounted is still the viewer's.
+   * than this many rows the window still moves, in steps of this many rows,
+   * and the cards of the row a moved window ended at (row 5000, 10000, ...)
+   * are gone when the window covers that row again. _restoreTrimmedCards
+   * draws such a file again. Which items are mounted is still the viewer's.
    */
   const ROWS_PER_ITEM_WINDOW = 5000;
   const FALLBACK_HEADER_HEIGHT = 53;
@@ -241,6 +243,7 @@
       // Pointer tracking for hover restore and the gutter.
       this._lastPointer = null;
       this._gutterHiddenByScroll = false;
+      this._scrollRestWatched = false;
       this._ownScrollUntil = 0;
       this._hoverRestoreQueued = new Set();
 
@@ -251,9 +254,14 @@
       this.workerManager = this.available && options.useWorkerPool !== false ? this._createWorkerManager() : null;
 
       this._onPointerMove = (event) => this._handlePointerMove(event);
-      this._onPointerUp = () => this._handlePointerUp();
-      this._onRootPointerDown = () => { this._pointerDownOnRoot = true; };
+      this._onPointerUp = (event) => this._handlePointerUp(event);
+      this._onRootPointerDown = (event) => this._handleRootPointerDown(event);
+      this._onRootClick = () => { if (this._press) this._press.clicked = true; };
+      this._onRootPressKind = (event) => this._notePressKind(event);
       this._onRootScroll = () => this._handleRootScroll();
+      // How often each file's element was drawn, and the press in progress (_handleRootPointerDown).
+      this._hostDraws = new WeakMap();
+      this._press = null;
       document.addEventListener('pointermove', this._onPointerMove, { passive: true });
       document.addEventListener('pointerup', this._onPointerUp, { passive: true });
       document.addEventListener('pointercancel', this._onPointerUp, { passive: true });
@@ -361,6 +369,9 @@
     /** @private */
     _bindRoot() {
       this.root.addEventListener('pointerdown', this._onRootPointerDown, { passive: true });
+      this.root.addEventListener('click', this._onRootClick, { capture: true, passive: true });
+      this.root.addEventListener('mousedown', this._onRootPressKind, { capture: true, passive: true });
+      this.root.addEventListener('touchstart', this._onRootPressKind, { capture: true, passive: true });
       this.root.addEventListener('scroll', this._onRootScroll, { passive: true });
     }
 
@@ -791,6 +802,8 @@
         _gutter: null,
         _getHoveredLine: null,
         _splitLayoutQueued: false,
+        _trimCheckQueued: false,
+        _trimAttempt: null,
       };
       if (kind === 'context') {
         record.upgraded = true;
@@ -1530,6 +1543,7 @@
         this._notifyLifecycle(record, phase);
         return;
       }
+      if (host) this._hostDraws.set(host, (this._hostDraws.get(host) || 0) + 1);
       record._element = host || null;
       record._instance = context?.instance || instance || record._instance;
       this._stampHost(record, host);
@@ -1537,7 +1551,83 @@
       if (record._flash) this._applyFlash(record);
       this._queueSplitLayout(record);
       this._queueHoverRestore(id);
+      this._queueTrimmedCardCheck(record);
       this._notifyLifecycle(record, phase);
+    }
+
+    /**
+     * After every draw of a file: look for cards the viewer dropped, once
+     * the pass is over (the next frame; never inside a viewer callback).
+     * @private
+     */
+    _queueTrimmedCardCheck(record) {
+      if (record._trimCheckQueued) return;
+      record._trimCheckQueued = true;
+      schedule(() => {
+        record._trimCheckQueued = false;
+        this._restoreTrimmedCards(record);
+      });
+    }
+
+    /**
+     * Draw a file again when the viewer has dropped the cards of one of its
+     * rows (vendor fact F26, hazard H119).
+     *
+     * A file that shows ROWS_PER_ITEM_WINDOW rows or more is drawn in
+     * windows. When the window moves, the viewer updates the rows in place:
+     * it removes the rows the new window does not cover and adds the ones it
+     * newly covers. Where it removes rows after the last one it keeps, it
+     * also removes that row's annotation row; where it later adds rows after
+     * that row again, it adds them from the next line on. The annotation row
+     * is then missing in the middle of the drawn rows, with the line it
+     * belongs to on screen, and stays missing until the file is drawn from
+     * scratch. A publish draws it from scratch (the viewer never updates in
+     * place when an item's version changed), so that is what this does.
+     *
+     * "Missing" is read from the rows: the line's row is drawn, another row
+     * follows it, and that row is not an annotation row. A line at the very
+     * end of the drawn rows is left alone: the window ends there, and the
+     * viewer draws that row's cards when the window covers what follows.
+     *
+     * One attempt per state: when the cards are still missing after the
+     * draw this asked for (same rows, same lines), it does not ask again
+     * until the rows or the lines change.
+     * @private
+     */
+    _restoreTrimmedCards(record) {
+      if (!this._isListed(record) || record.collapsed) return;
+      const shadowRoot = record._element?.isConnected ? record._element.shadowRoot : null;
+      if (!shadowRoot) return;
+      // Fewer rows than a window: drawn whole, never trimmed.
+      const column = shadowRoot.querySelector('[data-content]');
+      if (!column || column.children.length < ROWS_PER_ITEM_WINDOW) {
+        record._trimAttempt = null;
+        return;
+      }
+      // The old diff is still on screen: its rows are not this record's lines.
+      if (!this.isDiffDisplayed(record.id)) return;
+      const missing = [];
+      const seen = new Set();
+      for (const annotation of record.annotations) {
+        if (!(annotation.lineNumber > 0)) continue;
+        const key = `${annotation.side}:${annotation.lineNumber}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const row = this._findRow(record, annotation.lineNumber, annotation.side);
+        let next = row?.nextElementSibling;
+        // "No newline at end of file" is a row of its own next to the line's.
+        if (next?.hasAttribute('data-no-newline')) next = next.nextElementSibling;
+        if (next && !next.hasAttribute('data-line-annotation')) missing.push(key);
+      }
+      if (missing.length === 0) {
+        record._trimAttempt = null;
+        return;
+      }
+      const rows = shadowRoot.querySelectorAll('[data-content] > [data-line-index]');
+      const state = `${rows[0]?.getAttribute('data-line-index')}|${rows[rows.length - 1]?.getAttribute('data-line-index')}|${missing.join(',')}`;
+      if (record._trimAttempt === state) return;
+      record._trimAttempt = state;
+      this._publish(record.id);
     }
 
     /**
@@ -1674,8 +1764,156 @@
       }
     }
 
-    /** @private */
-    _handlePointerUp() {
+    /**
+     * A press began on the pane. Remembered when it is on something the
+     * page put into a file (its header, its comment zone, a card, the
+     * gutter buttons), with the elements it was inside of at that moment:
+     * see _handlePointerUp.
+     * @private
+     */
+    _handleRootPointerDown(event) {
+      this._pointerDownOnRoot = true;
+      this._press = null;
+      if (!event || event.isPrimary === false || event.button !== 0) return;
+      const target = typeof event.composedPath === 'function' ? event.composedPath()[0] : event.target;
+      // Not the viewer's own rows, which are in its shadow tree. Lines and
+      // line numbers work on pointer events. Its expand controls work on
+      // `click` and lose one to a draw exactly as they do with one viewer
+      // per file, where every draw re-creates the rows too: nothing is
+      // added for them here.
+      if (!target || target.nodeType !== 1 || target.getRootNode() !== target.ownerDocument) return;
+      const host = target.closest('diffs-container');
+      if (!host) return;
+      // The pressed element and what it is inside of, up to the file's own
+      // element, as it is now: a draw may take an inner one away for good.
+      const path = [];
+      for (let element = target; element && element !== host; element = element.parentElement) path.push(element);
+      this._press = {
+        target,
+        path,
+        host,
+        draws: this._hostDraws.get(host) || 0,
+        clicked: false,
+        pointerType: event.pointerType || 'mouse',
+        mouseDown: false,
+        touchStart: false,
+      };
+    }
+
+    /**
+     * The event the browser sends right after a `pointerdown`, in the same
+     * task, says which of its two ways of making a click the press is on:
+     * `mousedown` for a mouse press, `touchstart` for a touch. See
+     * _isMousePress.
+     * @private
+     */
+    _notePressKind(event) {
+      const press = this._press;
+      if (!press || !event || event.isTrusted === false) return;
+      if (event.type === 'mousedown') press.mouseDown = true;
+      else if (event.type === 'touchstart') press.touchStart = true;
+    }
+
+    /**
+     * Whether the browser makes this press's click the way it does for a
+     * mouse. It has two ways, and only one of them can lose a click to a
+     * draw (measured in Chromium with a mouse, a pen and a touch, each with
+     * a draw of the file between the press and the release):
+     *
+     * - A mouse press, and a pen the platform reports as one. `mousedown`
+     *   follows `pointerdown` at once, the browser remembers the element
+     *   that was pressed, and at the release it sends `click` only if that
+     *   element never left the document. A draw in between: no click.
+     * - A touch, and a pen the platform reports as one. `touchstart`
+     *   follows `pointerdown`; nothing is remembered. The tap is recognized
+     *   after the release, and `mousedown`, `mouseup` and `click` are then
+     *   sent to whatever is under the point at that moment, a few
+     *   milliseconds after `pointerup`. A draw in between changes nothing:
+     *   the click arrives, once.
+     *
+     * A click added to the second kind would be a second click, which
+     * undoes the first on a toggle. So the kind is read from what the
+     * browser did, not guessed from the device: `mousedown` during the
+     * press is a mouse press, `touchstart` is a touch. When neither was
+     * sent (a `pointerdown` listener that prevents the default takes
+     * `mousedown` away, and the click with a draw is lost all the same),
+     * the pointer's type decides: a touch is a touch, anything else is a
+     * mouse press.
+     * @private
+     */
+    _isMousePress(press) {
+      if (press.mouseDown) return true;
+      if (press.touchStart) return false;
+      return press.pointerType !== 'touch';
+    }
+
+    /**
+     * What a click belongs to when a press that began on `press.path[0]`
+     * ends on `releaseTarget`: the innermost element the press was inside
+     * of that is still in the document and has the release inside it. That
+     * is the browser's own rule (a click goes to the nearest common
+     * ancestor of the press and the release), read with the press's
+     * ancestors as they were when it began, because the page re-stamps a
+     * header's contents on every draw: the chevron's icon is a new element
+     * each time (PRManager._syncFileHeader), so the icon that was pressed is
+     * not the icon under the pointer at the release, and it is not coming
+     * back. The button both are in is the same one.
+     *
+     * Null when there is no such element inside the file's own element: the
+     * release was on a line of code, on another control, on another file,
+     * or the control itself was replaced by another.
+     * @private
+     */
+    _pressedControl(press, releaseTarget) {
+      if (!releaseTarget || releaseTarget.nodeType !== 1) return null;
+      for (const element of press.path) {
+        if (element.isConnected && press.host.contains(element) && element.contains(releaseTarget)) return element;
+      }
+      return null;
+    }
+
+    /**
+     * A press ended. Two things wait for that.
+     *
+     * A change of the list that was asked for while the button was down
+     * runs now (reconcile).
+     *
+     * And a click the browser did not deliver is delivered. Every draw of a
+     * file takes what the page put into it (header, comment zone, cards)
+     * out of the document and puts it back. For a mouse press a browser
+     * sends `click` only if the element that was pressed stayed in the
+     * document from the press to the release; when a draw of the file
+     * falls between the two (the file's contents arrive, a comment reload,
+     * a suggestion that lands), it sends no click at all, to anything. With
+     * one file per viewer the header and the comment zone are elements of
+     * the page and never leave it. So: when the press was a mouse press
+     * (_isMousePress: the click of a touch is not lost, and must not be
+     * added to), the file was drawn between the press and the release,
+     * both were on the same control (_pressedControl), and no click has
+     * arrived by the end of the release's task, that control is clicked.
+     * @private
+     */
+    _handlePointerUp(event) {
+      const press = this._press;
+      if (press && event && event.type === 'pointerup' && event.button === 0) {
+        const target = typeof event.composedPath === 'function' ? event.composedPath()[0] : event.target;
+        const drawn = (this._hostDraws.get(press.host) || 0) !== press.draws;
+        const control = drawn && this._isMousePress(press) ? this._pressedControl(press, target) : null;
+        if (control) {
+          setTimeout(() => {
+            if (this._press === press) this._press = null;
+            if (press.clicked || this._destroyed || !control.isConnected) return;
+            // An icon inside a button is not an element that can be clicked.
+            let element = control;
+            while (element && element !== press.host && typeof element.click !== 'function') element = element.parentElement;
+            if (element && element !== press.host) element.click();
+          }, 0);
+        } else {
+          this._press = null;
+        }
+      } else if (press && event && event.type === 'pointercancel') {
+        this._press = null;
+      }
       if (!this._pointerDownOnRoot) return;
       this._pointerDownOnRoot = false;
       this._runPendingReconcile();
@@ -1684,15 +1922,102 @@
     /**
      * The viewer's hover does not follow a scroll under a resting pointer:
      * the row it marks, and the gutter buttons on it, are where the pointer
-     * was. Hide the buttons until the pointer really moves.
+     * was. The buttons are hidden while the pane moves. When it has come to
+     * rest the viewer is told where the pointer is, so the buttons are back
+     * on the row that is under it now (or gone, when no row is). A real
+     * pointer move in between does the same at once.
      * @private
      */
     _handleRootScroll() {
-      if (this._gutterHiddenByScroll || performance.now() < this._ownScrollUntil) return;
-      this._gutterHiddenByScroll = true;
-      for (const record of this._listed.values()) {
-        if (record._gutter) record._gutter.style.visibility = 'hidden';
+      if (performance.now() < this._ownScrollUntil) return;
+      if (!this._gutterHiddenByScroll) {
+        this._gutterHiddenByScroll = true;
+        for (const record of this._listed.values()) {
+          if (record._gutter) record._gutter.style.visibility = 'hidden';
+        }
       }
+      this._watchScrollRest();
+    }
+
+    /**
+     * Wait until the pane has not moved for two frames, then re-derive the
+     * hover from the resting pointer.
+     * @private
+     */
+    _watchScrollRest() {
+      if (this._scrollRestWatched) return;
+      this._scrollRestWatched = true;
+      let last = this.root ? this.root.scrollTop : 0;
+      let still = 0;
+      const tick = () => {
+        if (!this._gutterHiddenByScroll || !this.root || this._destroyed) {
+          // A real pointer move showed the buttons already, or the viewer is gone.
+          this._scrollRestWatched = false;
+          return;
+        }
+        const now = this.root.scrollTop;
+        if (now !== last) {
+          last = now;
+          still = 0;
+        } else {
+          still++;
+        }
+        if (still < 2) {
+          schedule(tick);
+          return;
+        }
+        this._scrollRestWatched = false;
+        this._rederiveHoverAtRest();
+      };
+      schedule(tick);
+    }
+
+    /**
+     * The pane is at rest after a scroll: tell the file under the pointer
+     * where the pointer is, so that it marks the row that is under it now,
+     * and show the buttons again. A file the pointer is no longer over has
+     * been told so by the browser (it reports a pointer that an element
+     * moved away from as having left it), and marks no row.
+     * @private
+     */
+    _rederiveHoverAtRest() {
+      const pos = this._lastPointer;
+      if (pos) {
+        for (const record of this._listed.values()) {
+          const host = record._element;
+          if (host && host.isConnected && this._tellPointer(host, pos)) break;
+        }
+      }
+      this._gutterHiddenByScroll = false;
+      for (const record of this._listed.values()) record._gutter?.style.removeProperty('visibility');
+    }
+
+    /**
+     * Dispatch a pointer move at `pos` into a file's rows, when `pos` is over
+     * them. The viewer handles it in the same task.
+     * @returns {boolean} whether the move was dispatched into the file's rows
+     * @private
+     */
+    _tellPointer(host, pos) {
+      const box = host.getBoundingClientRect();
+      if (pos.clientX < box.left || pos.clientX > box.right || pos.clientY < box.top || pos.clientY > box.bottom) return false;
+      const target = host.shadowRoot?.elementFromPoint?.(pos.clientX, pos.clientY);
+      if (!target || typeof window.PointerEvent !== 'function') return false;
+      // The viewer listens on the code block; a point on the header is not in it.
+      if (typeof target.closest !== 'function' || !target.closest('pre')) return false;
+      target.dispatchEvent(new window.PointerEvent('pointermove', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX: pos.clientX,
+        clientY: pos.clientY,
+        screenX: pos.screenX || 0,
+        screenY: pos.screenY || 0,
+        pointerId: pos.pointerId,
+        pointerType: pos.pointerType,
+        isPrimary: true,
+      }));
+      return true;
     }
 
     /**
@@ -1731,22 +2056,7 @@
         const pos = this._lastPointer;
         const host = this.files.get(id)?._element;
         if (!pos || !host || !host.isConnected || this._gutterHiddenByScroll) return;
-        const box = host.getBoundingClientRect();
-        if (pos.clientX < box.left || pos.clientX > box.right || pos.clientY < box.top || pos.clientY > box.bottom) return;
-        const target = host.shadowRoot?.elementFromPoint?.(pos.clientX, pos.clientY);
-        if (!target || typeof window.PointerEvent !== 'function') return;
-        target.dispatchEvent(new window.PointerEvent('pointermove', {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          clientX: pos.clientX,
-          clientY: pos.clientY,
-          screenX: pos.screenX || 0,
-          screenY: pos.screenY || 0,
-          pointerId: pos.pointerId,
-          pointerType: pos.pointerType,
-          isPrimary: true,
-        }));
+        this._tellPointer(host, pos);
       });
     }
 
@@ -2556,6 +2866,9 @@
       document.removeEventListener('pointercancel', this._onPointerUp);
       if (this.root) {
         this.root.removeEventListener('pointerdown', this._onRootPointerDown);
+        this.root.removeEventListener('click', this._onRootClick, { capture: true });
+        this.root.removeEventListener('mousedown', this._onRootPressKind, { capture: true });
+        this.root.removeEventListener('touchstart', this._onRootPressKind, { capture: true });
         this.root.removeEventListener('scroll', this._onRootScroll);
       }
       for (const record of new Set([...this._listed.values(), ...this.files.values()])) this._discardRecord(record);

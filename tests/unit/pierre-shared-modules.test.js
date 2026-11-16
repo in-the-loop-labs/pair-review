@@ -417,11 +417,11 @@ describe('PierreGutter.createGutterButtons', () => {
 describe('PierreStyles', () => {
   const styles = load('pierre-styles.js');
 
-  it('carries the four blocks and joins them in cascade order', () => {
+  it('carries the five blocks and joins them in cascade order', () => {
     expect(styles.ANNOTATION_CSS).toContain('.pr-annotation-fullwidth');
     expect(styles.ANNOTATION_CSS).toContain('pierre-line-highlight-flash');
     expect(styles.ROWLESS_FIX.split('\n')).toHaveLength(2);
-    expect(styles.unsafeCSS()).toBe([styles.ANNOTATION_CSS, styles.ROWLESS_FIX, styles.CONTEXT_CSS, styles.FRAME_CSS].join('\n'));
+    expect(styles.unsafeCSS()).toBe([styles.ANNOTATION_CSS, styles.ROWLESS_FIX, styles.CONTEXT_CSS, styles.FRAME_CSS, styles.ZONE_CSS].join('\n'));
   });
 
   describe('FRAME_CSS, the frame of a file under the virtualized viewer', () => {
@@ -435,7 +435,15 @@ describe('PierreStyles', () => {
       expect(frame).toContain('border: 1px solid var(--color-border-default, transparent)');
       expect(frame).toContain('border-top: 0');
       expect(frame).toContain('border-radius: 0 0 6px 6px');
-      expect(frame).toContain('overflow: clip');
+      // Nothing clips the block: the file's comment zone is drawn over the
+      // side borders (ZONE_CSS), which `overflow: clip` would cut off at the
+      // padding box, and `clip-path` thins the bottom border of a file at a
+      // fractional offset. What keeps the corners clear instead: the code
+      // columns have no background of their own, and the block's own is
+      // clipped to its rounded padding box.
+      expect(styles.FRAME_CSS).not.toMatch(/(^|[\s;{])(overflow|clip-path)\s*:/);
+      expect(frame).toContain('background-clip: padding-box');
+      expect(styles.ZONE_CSS).toContain(':host(:not(.context-file)) pre[data-diff] > code { background-color: transparent; }');
     });
 
     it('the height it adds is what the viewer is told: 1 px of bottom border on every file with lines, context files included', () => {
@@ -453,6 +461,8 @@ describe('PierreStyles', () => {
     it('a file without lines has no bottom border (the viewer counts no bottom padding for it) and no code background', () => {
       const rowless = 'pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))';
       expect(bodyOf(rowless)).toContain('border-bottom: 0 !important');
+      // No frame at all: the side borders keep their width and are not drawn.
+      expect(bodyOf(rowless)).toContain('border-color: transparent !important');
       expect(bodyOf(rowless)).toContain('background-color: transparent !important');
       expect(bodyOf(`${rowless} *`)).toContain('background-color: transparent !important');
       // The same condition as ROWLESS_FIX, which removes the vendor's padding there.
@@ -463,6 +473,82 @@ describe('PierreStyles', () => {
       expect(bodyOf('[data-diffs-header]')).toContain('background-color: transparent !important');
       expect(bodyOf(':host')).toContain('background-color: transparent !important');
       expect(bodyOf(':host(:not(.context-file)) pre[data-diff]')).toContain('background-clip: padding-box');
+    });
+  });
+
+  describe('ZONE_CSS, the file\'s comment zone from edge to edge under the virtualized viewer', () => {
+    const withoutComments = styles.ZONE_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = withoutComments.split('}').map((rule) => rule.trim()).filter(Boolean)
+      .map((rule) => ({
+        // Commas between selectors, not the one inside the attribute value '-1,-1'.
+        selectors: rule.split('{')[0].split(/,(?![^[]*\])/).map((selector) => selector.trim().replace(/\s+/g, ' ')),
+        body: rule.split('{')[1],
+      }));
+    const bodyOf = (selector) => rules.filter((rule) => rule.selectors.includes(selector)).map((rule) => rule.body).join(' ');
+    const ROW = "[data-line-annotation='-1,-1']";
+    // What is under every other line's annotation row: the cards.
+    const CARDS = `:host(:not(.context-file)) [data-line-annotation]:not(${ROW}) > [data-annotation-content]`;
+
+    it('stretches nothing but the row of line 0, where the zone is', () => {
+      const setup = [
+        ':host(:not(.context-file)) pre[data-diff]',
+        ':host(:not(.context-file)) pre[data-diff] > code',
+        ':host(:not(.context-file)) pre[data-diff] > code[data-unified]',
+      ];
+      for (const rule of rules) {
+        for (const selector of rule.selectors) {
+          if (setup.includes(selector) || selector === CARDS) continue;
+          // The row itself is the subject of the selector, not something in it or after it.
+          expect(selector.endsWith(ROW) || selector.endsWith(`${ROW}.pr-annotation-fullwidth`), selector).toBe(true);
+        }
+      }
+      // Every layout the comment in pierre-styles.js names has its rule.
+      expect(bodyOf(`pre[data-diff] [data-unified] > [data-content] > ${ROW}`)).toContain('100cqw');
+      expect(bodyOf(`:host(.context-file) pre[data-diff] [data-additions] > [data-content] > ${ROW}`)).toContain('100cqw');
+      expect(bodyOf(`[data-diff-type='split'] [data-additions] ${ROW}.pr-annotation-fullwidth`)).toContain('--pr-split-gutter-width');
+      expect(bodyOf(`:host(:not(.context-file)) [data-diff-type='single'] [data-additions] ${ROW}.pr-annotation-fullwidth`)).toContain('--pr-split-gutter-width');
+      expect(bodyOf(`:host(:not(.context-file)) [data-diff-type='single'] [data-deletions] ${ROW}.pr-annotation-fullwidth`)).toContain('--pr-split-gutter-width');
+    });
+
+    it('adds no height: only inline sizes, inline margins and inline padding', () => {
+      const properties = [...withoutComments.matchAll(/(?:^|[;{\s])([a-z-]+)\s*:/g)].map((match) => match[1]);
+      const allowed = new Set(['--pr-frame-inline', 'background-color', 'margin-inline', 'padding-inline', 'margin-left', 'width', 'z-index', 'clip-path']);
+      expect(properties.filter((property) => !allowed.has(property))).toEqual([]);
+    });
+
+    it('the side border it reaches under is the frame\'s: 1 px on a changed file, none on a context file', () => {
+      expect(bodyOf(':host(:not(.context-file)) pre[data-diff]')).toContain('--pr-frame-inline: 1px');
+      expect(styles.FRAME_CSS).toContain('border: 1px solid var(--color-border-default, transparent)');
+      // The widened unified column keeps its rows where they are.
+      const column = bodyOf(':host(:not(.context-file)) pre[data-diff] > code[data-unified]');
+      expect(column).toContain('margin-inline: -1px');
+      expect(column).toContain('padding-inline: 1px');
+      // No rule gives a context file the variable: its fallback is 0.
+      expect(styles.ZONE_CSS).not.toMatch(/:host\(\.context-file\)[^{]*\{[^}]*--pr-frame-inline\s*:/);
+      expect(withoutComments.match(/var\(--pr-frame-inline, 0px\)/g).length).toBeGreaterThan(0);
+      expect(withoutComments).not.toMatch(/var\(--pr-frame-inline\)/);
+    });
+
+    it('the row is above the line-number column and shows what is under it', () => {
+      const unified = bodyOf(`pre[data-diff] [data-unified] > [data-content] > ${ROW}`);
+      expect(unified).toContain('z-index: 4');
+      expect(unified).toContain('background-color: transparent !important');
+      expect(bodyOf(`[data-diff-type='split'] [data-additions] ${ROW}.pr-annotation-fullwidth`)).toContain('background-color: transparent !important');
+      // The widened column must not paint over the frame's translucent borders.
+      expect(bodyOf(':host(:not(.context-file)) pre[data-diff] > code')).toContain('background-color: transparent');
+    });
+
+    it('a card under a line is clipped at its right edge only, where the per-file body clips it', () => {
+      // Top, bottom and left are left open (further than anything a card draws around itself or opens over its neighbours).
+      expect(bodyOf(CARDS)).toContain('clip-path: inset(-10000px 0 -10000px -10000px)');
+      // The zone itself is not clipped, and nothing else is.
+      expect(withoutComments.match(/clip-path/g)).toHaveLength(1);
+      expect(withoutComments).not.toMatch(/(^|[\s;{])overflow[a-z-]*\s*:/);
+    });
+
+    it('the old bridge does not serve it', () => {
+      const PierreBridge = load('pierre-bridge.js');
+      expect(PierreBridge.ANNOTATION_CSS).not.toContain('--pr-frame-inline');
     });
   });
 

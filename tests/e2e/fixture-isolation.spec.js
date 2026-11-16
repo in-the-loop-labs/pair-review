@@ -17,7 +17,8 @@
 
 import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender, seedComment, seedSuggestions } from './helpers.js';
-import { filesInPane, layoutValidatorState, ENGINE } from './diff-dom.js';
+import { filesInPane, layoutValidator, layoutValidatorState, waitForDiffSettled, ENGINE } from './diff-dom.js';
+import { allCorpora, routeDiff } from './fixtures/diffs.js';
 
 /** Rows of one review in the worker's database, counted the way the reset checks them. */
 function rowsOf(testServer, reviewId) {
@@ -84,6 +85,113 @@ test.describe('The layout validator of a development-bundle run', () => {
       await page.goto(mode.path);
       await waitForDiffToRender(page);
       expect(await layoutValidatorState(page)).toEqual({ developmentBundle: wanted, validator: wanted });
+    });
+
+    // The one report the fixture does not fail a test on (vendor fact F27;
+    // tests/e2e/diff-dom-codeview.js, installInPage). The report itself is
+    // pinned on the real viewer by the contract suite (vendor/layout.spec.js,
+    // bridge/view.spec.js); here it is the fixture's rule that is tested, so
+    // the viewer's message is logged by the test.
+    test.describe(`what the fixture does with a report of the viewer (${mode.name})`, () => {
+      test.skip(!wanted, 'the layout validator exists only in a development-bundle run on the virtualized viewer');
+
+      const report = (page, message) => page.evaluate(async (message) => {
+        console.error(message, { delta: 90 });
+        const sameTask = { ...window.__layoutValidator };
+        for (let frames = 0; frames < 4; frames++) await new Promise((resolve) => requestAnimationFrame(resolve));
+        return { sameTask, later: { ...window.__layoutValidator } };
+      }, message);
+
+      test('a sticky-height report is held and counted as followed when the layout agrees in the frames after it', async ({ page }) => {
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+        await waitForDiffSettled(page);
+        expect(await page.evaluate(() => ({ ...window.__layoutValidator }))).toEqual({ reports: 0, followed: 0 });
+        const state = await report(page, 'CodeView: sticky container height does not match computed layout');
+        // Not decided in the task of the report ...
+        expect(state.sameTask).toEqual({ reports: 0, followed: 0 });
+        // ... and the pane is exact two frames later: nothing reaches the console guard.
+        expect(state.later).toEqual({ reports: 0, followed: 1 });
+      });
+
+      test.describe('a sticky-height report with the pane at rest and the layout still off', () => {
+        test.use({ expectedConsoleErrors: [/\[console\.error\] CodeView: sticky container height does not match computed layout \(then: 50 items /] });
+
+        test('reaches the console guard two frames later, with what the pane was doing', async ({ page }) => {
+          await page.goto(mode.path);
+          await waitForDiffToRender(page);
+          await waitForDiffSettled(page);
+          // The viewer's own number for the drawn files reads 50 px short
+          // for as long as the test looks, whatever the viewer writes to it
+          // meanwhile, and nothing moves: the comparison the fixture repeats
+          // stays unequal.
+          const state = await layoutValidator.reportWithTheLayoutOff(page, 50);
+          // Not decided in the task of the report, nor one frame later ...
+          expect(state.sameTask).toEqual({ reports: 0, followed: 0 });
+          expect(state.oneFrame).toEqual({ reports: 0, followed: 0 });
+          // ... and after two frames at rest it is a mismatch. (The viewer
+          // reports the same number itself if it renders meanwhile.)
+          expect(state.later.followed).toBe(0);
+          expect(state.later.reports).toBeGreaterThanOrEqual(1);
+        });
+      });
+
+      test('a frame in which the pane\'s box changed does not count: a report made while the review panel opens over a long file is followed', async ({ page }) => {
+        // The review panel's width animates for 0.2 s; the pane gets
+        // narrower in every frame of it and the lines of the drawn files
+        // wrap again. A render forced in such a frame reports heights the
+        // viewer follows later in the same frame. Two frames after the
+        // first report the pane is still moving and the layout is off by
+        // another amount: that is not a mismatch.
+        const { eviction } = allCorpora();
+        await routeDiff(page, eviction);
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+        await waitForDiffSettled(page);
+        const state = await layoutValidator.openReviewPanelUnderForcedRenders(page);
+        // The pane's width did change over several frames, the viewer did report, and every report was followed.
+        expect(state.widths).toBeGreaterThan(3);
+        expect(state.after.followed).toBeGreaterThan(state.before.followed);
+        expect(state.after.reports).toBe(state.before.reports);
+      });
+
+      test('a frame in which a drawn file\'s height changed does not count either: a report followed by such a change before its second frame is not decided there', async ({ page }) => {
+        // What a test does that undoes a change right away: the edit form
+        // of a file comment opens (the file grows 99.5 px), a render is
+        // forced in that task, and the edit is cancelled between the two
+        // frames that follow. The viewer follows the growth in the first
+        // frame and the shrinking in the second, each before it is painted,
+        // so the comparison is unequal at the callbacks of both and equal
+        // from the third. Counted from the report, that was a mismatch
+        // "still there two frames later" (ledger H141, measured). Here the
+        // same shape with the fixture's rule alone under test: the layout
+        // reads 50 px short for two frames, and a form opens between them.
+        await page.goto(mode.path);
+        await waitForDiffToRender(page);
+        await waitForDiffSettled(page);
+        const state = await layoutValidator.reportThenChangeHeightBetweenFrames(page, 50);
+        // The drawn files did grow between the two frames.
+        expect(state.grew).toBeGreaterThan(50);
+        // Not decided one frame after the report, nor at the second: its box had changed ...
+        expect(state.oneFrame).toEqual(state.before);
+        expect(state.twoFrames).toEqual(state.before);
+        // ... and followed once the layout agreed: nothing reaches the console guard.
+        expect(state.later.followed).toBeGreaterThan(state.before.followed);
+        expect(state.later.reports).toBe(state.before.reports);
+      });
+
+      test.describe('any other report', () => {
+        test.use({ expectedConsoleErrors: [/\[console\.error\] CodeView: reconciled item height does not match DOM height/] });
+
+        test('is counted at once and reaches the console guard, which fails a test that does not expect it', async ({ page }) => {
+          await page.goto(mode.path);
+          await waitForDiffToRender(page);
+          await waitForDiffSettled(page);
+          const state = await report(page, 'CodeView: reconciled item height does not match DOM height');
+          expect(state.sameTask).toEqual({ reports: 1, followed: 0 });
+          expect(state.later).toEqual({ reports: 1, followed: 0 });
+        });
+      });
     });
   }
 });

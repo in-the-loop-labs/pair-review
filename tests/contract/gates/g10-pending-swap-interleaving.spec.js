@@ -20,7 +20,10 @@ async function prepare(page) {
     const { roles } = H.workload;
     const T = roles.large;
     await H.appLike({ parse: { cacheKeyPrefix: 'contract:1' }, build: { only: [T, roles.noNewline] }, pool: true });
-    await H.until(() => H.shape(T).tokens > 0, 30000);
+    // Not yet mounted reads as "not yet": with the pool nothing is mounted
+    // until its workers are up (G7), which under load is after the bring-up's
+    // quiet period.
+    await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
     await H.settle();
     const base = H.cv.getItem(T).fileDiff;
     window.__hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));

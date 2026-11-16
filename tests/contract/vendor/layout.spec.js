@@ -7,6 +7,11 @@
  *        header slot is never absorbed; growth inside annotations is
  *   F10  a lineNumber-0 annotation is measured; an always-present empty one
  *        costs 0 px, also on row-less items with one CSS rule
+ *   F27  the development validator reports when a forced render that does
+ *        not draw an item runs after an annotation of that item changed its
+ *        height and before the viewer has followed the change; the viewer
+ *        follows it when the browser reports the resize, which is before
+ *        the next frame is painted
  *
  * "Validator 0" is asserted by the fixture: any console.error fails the test.
  */
@@ -141,6 +146,156 @@ test('F9: the extent follows growth inside an annotation with no API call, also 
   expect(result.textareaBottomAboveViewportBottom).toBeGreaterThan(0);
   expect(result.atMax).toBe(true);
   expect(result.clean).toBe(true);
+});
+
+for (const change of ['grows', 'shrinks']) {
+  test(`F27 (vendor constraint): a file-level annotation that ${change}, then a forced render of another item before the next frame: one validator report, and an exact layout before the next frame is painted`, async ({ harness }) => {
+    // Depends on it: a publish on file B right after the comment zone of
+    // file A changed its height (a form opened or closed, a comment saved)
+    // makes the development validator report, although nothing wrong is ever
+    // painted. The E2E fixture of a development-bundle run tells this report
+    // from a real mismatch by the state one frame later (tests/e2e/fixtures.js).
+    const page = await harness.open();
+    harness.allowErrors(page, VALIDATOR_PATTERN);
+    const result = await page.evaluate(async (change) => {
+      const H = window.H;
+      const { roles } = H.workload;
+      await H.appLike({ build: { only: [roles.small, roles.medium] } });
+      const A = roles.small;
+      const B = roles.medium;
+      H.update(A, { annotations: [{ side: 'additions', lineNumber: 0, metadata: { key: 'zone', kind: 'zone' } }] });
+      H.cv.render(true);
+      await H.settle();
+      const zone = H.annEls.get('zone');
+      const form = document.createElement('div');
+      form.style.cssText = 'height: 120px; margin: 0;';
+      if (change === 'shrinks') {
+        zone.appendChild(form);
+        await H.settle();
+      }
+      const out = { cleanBefore: H.auditClean() };
+      const heightBefore = H.itemHeight(A);
+
+      // One task: the zone of A changes its height, and B is published and flushed.
+      if (change === 'shrinks') form.remove();
+      else zone.appendChild(form);
+      H.update(B, { annotations: [{ side: 'additions', lineNumber: H.item(B).fileDiff.hunks[0].additionStart, metadata: { key: 'b', kind: 'card' } }] });
+      H.cv.render(true);
+      out.sameTask = H.heightAudit().map((a) => [a.dH, a.dTop]);
+      // Resize observations are delivered in the next frame, before it is
+      // painted, in the order the observers were created: this one hears of
+      // the change right after the viewer's own.
+      out.cleanWhenResizeObserved = await new Promise((resolve) => {
+        const observer = new ResizeObserver(() => {
+          observer.disconnect();
+          resolve(H.auditClean());
+        });
+        observer.observe(zone);
+      });
+      await H.settle();
+      out.cleanAtRest = H.auditClean();
+      out.heightDelta = H.itemHeight(A) - heightBefore;
+      return out;
+    }, change);
+    const reports = harness.validatorErrors(page);
+    const by = change === 'shrinks' ? -120 : 120;
+
+    expect(result.cleanBefore).toBe(true);
+    // A's element is `by` px off the viewer's layout, and B is drawn that far from where the viewer has it.
+    expect(result.sameTask).toEqual([[by, 0], [0, by]]);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('sticky container height does not match computed layout');
+    // Followed without an API call, and before a frame could show it.
+    expect(result.cleanWhenResizeObserved).toBe(true);
+    expect(result.cleanAtRest).toBe(true);
+    expect(result.heightDelta).toBe(by);
+  });
+}
+
+test('F27 (vendor constraint): the pane gets narrower frame after frame; in a frame in which lines wrap again a forced render reports, and the layout is exact before every frame is painted', async ({ harness }) => {
+  // Depends on it: a panel beside the diff that opens with a width
+  // transition (the review panel, 0.2 s) makes the pane narrower in every
+  // frame of it. The lines of every drawn file wrap again, the viewer hears
+  // of it from its resize observer in that frame, and a render forced before
+  // that (a publish) makes the development validator report a height that is
+  // never painted. Over a long file that happens in several frames in a
+  // row, so two frames after the first report the viewer is behind by
+  // another amount; the E2E fixture of a development-bundle run therefore
+  // counts its two frames from when the pane's box last changed
+  // (tests/e2e/diff-dom-codeview.js; fixture-isolation.spec.js runs it with
+  // the application's panel over a 4,000-line file).
+  const page = await harness.open();
+  harness.allowErrors(page, VALIDATOR_PATTERN);
+  const result = await page.evaluate(async () => {
+    const H = window.H;
+    const { roles } = H.workload;
+    await H.appLike({ build: { limit: 12, exclude: [roles.hugeAdded, roles.hugeModified] } });
+    await H.settle();
+    const out = { cleanBefore: H.auditClean(), frames: [] };
+    const from = H.root.getBoundingClientRect().width;
+    const drawn = H.mounted();
+    const heightOfDrawn = () => drawn.reduce((sum, id) => sum + H.itemHeight(id), 0);
+    const heightBefore = heightOfDrawn();
+    for (let step = 1; step <= 6; step++) {
+      await H.raf(1);
+      // One frame: the pane is narrower, and a render is forced before the browser reports the resize.
+      H.root.style.width = `${Math.round(from * (1 - step * 0.1))}px`;
+      H.cv.render(true);
+      const cleanAfterForcedRender = H.auditClean();
+      const cleanWhenResizeObserved = await new Promise((resolve) => {
+        const observer = new ResizeObserver(() => {
+          observer.disconnect();
+          resolve(H.auditClean());
+        });
+        observer.observe(H.root);
+      });
+      out.frames.push({ cleanAfterForcedRender, cleanWhenResizeObserved });
+    }
+    await H.settle();
+    out.cleanAtRest = H.auditClean();
+    out.grewBy = heightOfDrawn() - heightBefore;
+    out.widths = [from, H.root.getBoundingClientRect().width];
+    return out;
+  });
+  const reports = harness.validatorErrors(page);
+
+  expect(result.cleanBefore).toBe(true);
+  // Lines did wrap again (the drawn files are taller): in the frame in which
+  // they did, the forced render left the viewer's layout behind the DOM ...
+  expect(result.grewBy).toBeGreaterThan(0);
+  const behind = result.frames.filter((frame) => !frame.cleanAfterForcedRender).length;
+  expect(behind).toBeGreaterThanOrEqual(1);
+  // ... and that was reported, once per such frame ...
+  expect(reports).toHaveLength(behind);
+  for (const report of reports) expect(report).toContain('sticky container height does not match computed layout');
+  // ... and in every frame the viewer had followed by the time a later observer was called, before the paint.
+  expect(result.frames.map((frame) => frame.cleanWhenResizeObserved)).toEqual([true, true, true, true, true, true]);
+  expect(result.cleanAtRest).toBe(true);
+});
+
+test('F27: the same change followed by a forced render of the SAME item is measured in that render, and nothing is reported', async ({ harness }) => {
+  const page = await harness.open();
+  const result = await page.evaluate(async () => {
+    const H = window.H;
+    const { roles } = H.workload;
+    await H.appLike({ build: { only: [roles.small, roles.medium] } });
+    const A = roles.small;
+    const zoneAnnotation = { side: 'additions', lineNumber: 0, metadata: { key: 'zone', kind: 'zone' } };
+    H.update(A, { annotations: [zoneAnnotation] });
+    H.cv.render(true);
+    await H.settle();
+    const form = document.createElement('div');
+    form.style.cssText = 'height: 120px; margin: 0;';
+    H.annEls.get('zone').appendChild(form);
+    H.update(A, { annotations: [zoneAnnotation, { side: 'additions', lineNumber: H.item(A).fileDiff.hunks[0].additionStart + 3, metadata: { key: 'a2', kind: 'card' } }] });
+    H.cv.render(true);
+    const cleanSameTask = H.auditClean();
+    await H.settle();
+    return { cleanSameTask, cleanAtRest: H.auditClean() };
+  });
+  // No allowance: the fixture fails this test on any validator report.
+  expect(result.cleanSameTask).toBe(true);
+  expect(result.cleanAtRest).toBe(true);
 });
 
 test('F9: the sticky header is the vendor shadow header, pinned at the top while scrolled inside an item', async ({ harness }) => {

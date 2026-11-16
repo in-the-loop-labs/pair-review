@@ -163,6 +163,7 @@ describe('SuggestionManager.clearAISuggestions', () => {
     `;
     pm.pierreBridge = {
       files: new Map([['src/a.js', {}], ['src/b.js', {}]]),
+      batch: (fn) => fn(),
       removeAnnotationsByType: vi.fn()
     };
 

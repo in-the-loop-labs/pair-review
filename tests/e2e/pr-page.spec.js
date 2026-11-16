@@ -10,7 +10,7 @@ import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 import {
   fileWrapper, lineNumberCells, rowsOfType, separators, expandableSeparators, expandControls,
-  waitForContentUpgrade, clickExpandControl, headerLanding, scrollState
+  waitForContentUpgrade, waitForDiffSettled, clickExpandControl, headerLanding, scrollState
 } from './diff-dom.js';
 
 const DIFF_MODES = [
@@ -159,6 +159,13 @@ test.describe('PR Page', () => {
         await expect
           .poll(async () => expandable.count(), { timeout: 5000 })
           .toBeGreaterThan(0);
+
+        // Not while the diff is still drawing itself: every draw of a file
+        // re-creates its rows and separators, and a click whose press and
+        // release fall on either side of one is not delivered, on either
+        // engine (ledger H43, H143; 1 of 120 executions under load).
+        await waitForContentUpgrade(page, 'src/utils.js');
+        await waitForDiffSettled(page);
 
         // Record the pre-expansion count of rendered line-number cells in this file.
         const numberCells = lineNumberCells(utilsSection);

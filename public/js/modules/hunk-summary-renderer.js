@@ -224,10 +224,15 @@ class HunkSummaryRenderer {
     }
     this._mounted.clear();
     const bridge = this.prManager?.pierreBridge;
-    if (bridge) {
-      for (const { fileName, id } of this._pierreMounted.values()) {
-        bridge.removeAnnotation(fileName, id);
-      }
+    if (bridge && this._pierreMounted.size > 0) {
+      // One change of the diff, not one per summary.
+      const removeAll = () => {
+        for (const { fileName, id } of this._pierreMounted.values()) {
+          bridge.removeAnnotation(fileName, id);
+        }
+      };
+      if (typeof bridge.batch === 'function') bridge.batch(removeAll);
+      else removeAll();
     }
     this._pierreMounted.clear();
   }

@@ -305,9 +305,12 @@ class SuggestionManager {
     // clearing them here can leave those cards without a rendered anchor.
     const pierreBridge = this.prManager?.pierreBridge;
     if (pierreBridge) {
-      for (const [fileName] of pierreBridge.files) {
-        pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
-      }
+      // Every file of the pane has a record, drawn or not: one change.
+      pierreBridge.batch(() => {
+        for (const [fileName] of pierreBridge.files) {
+          pierreBridge.removeAnnotationsByType(fileName, 'suggestion');
+        }
+      });
     }
 
     // An empty suggestions list clears the file-level AI cards; null
