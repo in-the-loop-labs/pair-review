@@ -365,6 +365,21 @@ async function clickTargets(page) {
   });
 }
 
+/**
+ * The clicks of the mouse gestures made since `window.__clicks` was last
+ * emptied. Nothing is waited out: a click is made on the sentinel (a spot
+ * that is nobody's control, outside the pane). The browser delivers what
+ * gestures produce in their order, so when the sentinel's click is there,
+ * every click the earlier gestures were going to get from the browser is
+ * there; and a timer set after that runs after every timer their releases
+ * set (the bridge decides in one).
+ */
+async function clicksBehindSentinel(page, sentinel) {
+  await page.mouse.click(sentinel.x, sentinel.y);
+  await expect.poll(() => page.evaluate(() => window.__clicks.includes('sentinel'))).toBe(true);
+  return page.evaluate(() => new Promise((resolve) => setTimeout(() => resolve(window.__clicks.filter((entry) => entry !== 'sentinel')), 0)));
+}
+
 test('a click whose press and release straddle a draw of the file still reaches the control, once: header, comment zone and card', async ({ harness }) => {
   // Every draw of a file takes its header, its comment zone and its cards
   // out of the document and puts them back, and a browser sends no click at
@@ -382,9 +397,7 @@ test('a click whose press and release straddle a draw of the file still reaches 
     await page.mouse.down();
     if (drawBetween) await page.evaluate((id) => { window.BH.bridge._publish(id); }, setup.id);
     await page.mouse.up();
-    // The bridge decides at the end of the release's task.
-    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30)));
-    return page.evaluate(() => window.__clicks.slice());
+    return clicksBehindSentinel(page, setup.sentinel);
   };
 
   for (const target of ['header', 'restamped', 'zone', 'card']) {
@@ -406,8 +419,7 @@ test('a click whose press and release straddle a draw of the file still reaches 
     await page.mouse.move(setup.at[to].x, setup.at[to].y, { steps: 3 });
     if (drawBetween) await page.evaluate((id) => { window.BH.bridge._publish(id); }, setup.id);
     await page.mouse.up();
-    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30)));
-    return page.evaluate(() => window.__clicks.slice());
+    return clicksBehindSentinel(page, setup.sentinel);
   };
   const plain = await drag('header', 'restamped', false);
   expect(plain).toEqual(['any:div']);
@@ -586,15 +598,18 @@ test('without the bridge, a draw of the file between press and release leaves th
     el.textContent = 'header';
     el.addEventListener('click', () => window.__clicks.push('header'));
     header.appendChild(el);
-    document.addEventListener('click', () => window.__clicks.push('any'), true);
+    // A spot that is nobody's control, outside the pane (clicksBehindSentinel).
+    const sentinel = document.createElement('div');
+    sentinel.style.cssText = 'position: fixed; right: 0; bottom: 0; width: 24px; height: 24px; z-index: 2147483647;';
+    document.body.appendChild(sentinel);
+    document.addEventListener('click', (event) => window.__clicks.push(event.composedPath()[0] === sentinel ? 'sentinel' : 'any'), true);
     await H.settle(200);
-    const r = el.getBoundingClientRect();
-    return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    const centre = (target) => { const r = target.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+    return { id, ...centre(el), sentinel: centre(sentinel) };
   });
   await page.mouse.move(setup.x, setup.y);
   await page.mouse.down();
   await page.evaluate((id) => { window.BH.bridge._publish(id); }, setup.id);
   await page.mouse.up();
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30)));
-  expect(await page.evaluate(() => window.__clicks.slice())).toEqual([]);
+  expect(await clicksBehindSentinel(page, setup.sentinel)).toEqual([]);
 });

@@ -33,7 +33,10 @@
  * ready. So "the card is not in the DOM" never means "there is no such
  * annotation" or "the line is not shown". Ask getAnnotationElement for the
  * card (it can build one that is not attached) and isLineVisible for the line
- * (it answers from data).
+ * (it answers from data). And "the card is in the DOM" never means "the card
+ * is on screen somewhere": a file of ROWS_PER_ITEM_WINDOW rows or more has
+ * rows for a window of its lines, and the card of a line outside it is
+ * connected without a place. Ask isElementDrawn.
  *
  * THE LIST IS REPLACED, NEVER SPLICED. The viewer cannot insert or remove an
  * item above a mounted one without corrupting its layout. `_writeList` is the
@@ -133,6 +136,9 @@
   const NOTICE_ID = 'notice';
   /** How long a line flashes: the length of the pierre-line-highlight-flash animation (pierre-styles.js). */
   const FLASH_DURATION_MS = 3500;
+  // A flashed range is a handful of lines; a link to a whole file's worth is
+  // flashed up to here.
+  const MAX_FLASHED_LINES = 500;
 
   const schedule = (fn) => (typeof requestAnimationFrame === 'function'
     ? requestAnimationFrame(fn)
@@ -256,7 +262,14 @@
       this._onPointerMove = (event) => this._handlePointerMove(event);
       this._onPointerUp = (event) => this._handlePointerUp(event);
       this._onRootPointerDown = (event) => this._handleRootPointerDown(event);
-      this._onRootClick = () => { if (this._press) this._press.clicked = true; };
+      // Only the browser's own click answers "did the press get its click":
+      // the click the bridge sends for an earlier press (_handlePointerUp)
+      // arrives here too, and by then a later press may be the one in progress.
+      this._onRootClick = (event) => { if (this._press && event?.isTrusted !== false) this._press.clicked = true; };
+      // A press that opens the context menu (the secondary button; on macOS
+      // also Control with the primary button) gets no click from the browser
+      // and must get none from the bridge.
+      this._onRootContextMenu = () => { this._press = null; };
       this._onRootPressKind = (event) => this._notePressKind(event);
       this._onRootScroll = () => this._handleRootScroll();
       // How often each file's element was drawn, and the press in progress (_handleRootPointerDown).
@@ -313,25 +326,42 @@
     /**
      * How a changed file's metadata is derived once its full contents are
      * known, by the type of the diff.
-     *   'hydrate': keep git's hunks and add the file's other lines (changes
-     *              and renames with changes).
+     *   'rediff':  diff the two contents again (changes and renames with
+     *              changes), which is what the per-file renderer did: the
+     *              vendor's own context around every change (four lines),
+     *              the lines of the patch kept on screen by
+     *              upgradeFileContents. The reader
+     *              sees the same rows after the contents have loaded as with
+     *              that renderer.
      *   'none':    the patch already is everything there is to show: an added
-     *              or deleted file (the patch is the whole file). The vendor's
-     *              hydration throws for these.
-     *   'reparse': a file without a hunk (pure rename, mode change). The
-     *              vendor's hydration throws for it too, and its patch holds
-     *              no line. Its two contents are diffed instead; when they
-     *              are the same text, as they are for these files, the result
-     *              has no hunk either and holds the file's lines, so a line
-     *              of it can still be revealed. The file stays header-only
-     *              until then.
+     *              or deleted file (the patch is the whole file).
+     *   'reparse': a file without a hunk (pure rename, mode change). Its
+     *              patch holds no line. Its two contents are diffed; when
+     *              they are the same text, as they are for these files, the
+     *              result has no hunk either and holds the file's lines, so a
+     *              line of it can still be revealed. The file stays
+     *              header-only until then.
      * @param {Object} metadata - the metadata parsed from the patch
-     * @returns {'hydrate'|'none'|'reparse'}
+     * @returns {'rediff'|'none'|'reparse'}
      */
     static upgradeStrategy(metadata) {
       if (!metadata || !Array.isArray(metadata.hunks)) return 'none';
       if (metadata.hunks.length === 0) return 'reparse';
-      return metadata.type === 'change' || metadata.type === 'rename-changed' ? 'hydrate' : 'none';
+      return metadata.type === 'change' || metadata.type === 'rename-changed' ? 'rediff' : 'none';
+    }
+
+    /**
+     * The lines of the new file that a patch shows, one range per hunk that
+     * has any. The diff of the two contents can draw fewer lines of context
+     * than the patch did; these ranges keep every line the reader, a comment
+     * or a suggestion was already on.
+     * @param {Object} metadata - the metadata parsed from the patch
+     * @returns {Array<{startLine: number, endLine: number}>}
+     */
+    static patchParityRanges(metadata) {
+      return (metadata?.hunks || [])
+        .filter((hunk) => hunk.additionCount > 0)
+        .map((hunk) => ({ startLine: hunk.additionStart, endLine: hunk.additionStart + hunk.additionCount - 1 }));
     }
 
     /**
@@ -370,6 +400,7 @@
     _bindRoot() {
       this.root.addEventListener('pointerdown', this._onRootPointerDown, { passive: true });
       this.root.addEventListener('click', this._onRootClick, { capture: true, passive: true });
+      this.root.addEventListener('contextmenu', this._onRootContextMenu, { capture: true, passive: true });
       this.root.addEventListener('mousedown', this._onRootPressKind, { capture: true, passive: true });
       this.root.addEventListener('touchstart', this._onRootPressKind, { capture: true, passive: true });
       this.root.addEventListener('scroll', this._onRootScroll, { passive: true });
@@ -781,6 +812,9 @@
         diffPositions: new Map(),
         contextRanges: [],
         storedRanges: [],
+        // A changed file whose contents are loaded: the lines its patch
+        // showed (patchParityRanges). Never changed afterwards.
+        parityRanges: [],
         baseKey: '',
         derivation: 0,
         version: 0,
@@ -799,6 +833,11 @@
         _instance: null,
         _headerSlot: null,
         _flash: null,
+        // Set while the viewer still draws the diff whose manual expansions
+        // were folded into ranges: that diff (see _retireExpansions).
+        _expansionsOf: null,
+        // The row renderer callback taken over meanwhile (_watchForNextDiff).
+        _expansionWatch: null,
         _gutter: null,
         _getHoveredLine: null,
         _splitLayoutQueued: false,
@@ -837,6 +876,7 @@
       record.patchMetadata = metadata;
       record.metadata = metadata;
       record.baseMetadata = null;
+      record.parityRanges = [];
       record.upgraded = false;
       record.diffPositions = record.deferred ? new Map() : this.computeDiffPositions(metadata);
     }
@@ -875,7 +915,7 @@
     _derive(record) {
       const base = record.baseMetadata;
       if (!base) return false;
-      const ranges = [...record.storedRanges, ...record.contextRanges];
+      const ranges = [...record.storedRanges, ...(record.parityRanges || []), ...record.contextRanges];
       const merge = window.PierreContext?.mergeContextRanges;
       // A base that holds none of the file's lines (a patch without a hunk
       // whose contents could not be read) has nothing a range could show.
@@ -961,7 +1001,7 @@
       record._getHoveredLine = null;
       record._headerSlot = null;
       record._element = null;
-      record._instance = null;
+      this._forgetInstance(record);
       record.annotations = [];
     }
 
@@ -1101,7 +1141,6 @@
       if (!contentsChanged && !rangesChanged) return false;
       if (contentsChanged) {
         // Other lines now: what was expanded by hand is not carried over.
-        this._clearExpansions(record);
         this._setContextContents(record, entry.contents, entry.contentsSeq);
       } else {
         this._foldManualExpansions(record);
@@ -1110,6 +1149,9 @@
       // The base is new, or the hunks are: publish under a new key either way.
       record.metadata = null;
       this._derive(record);
+      // The viewer's own record of the expansions is of the diff it draws,
+      // and goes with that diff (not before: H120).
+      this._retireExpansions(record);
       return true;
     }
 
@@ -1203,8 +1245,13 @@
         // with them an empty expansion map: what the reader expanded by hand
         // becomes part of the record's revealed ranges first. (A new diff's
         // records have no instance: a re-render starts from the patch.)
-        if (this._foldManualExpansions(record)) this._derive(record);
-        record._instance = null;
+        if (this._foldManualExpansions(record)) {
+          this._derive(record);
+          // The instance that holds the viewer's record of them goes with
+          // the old list, in this task.
+          this._expansionMap(record)?.clear();
+        }
+        this._forgetInstance(record);
       }
       const items = [...this.files.values()].map((record) => this._itemFor(record));
       // From here to the end of the view restore the page's hooks run (the
@@ -1546,6 +1593,7 @@
       if (host) this._hostDraws.set(host, (this._hostDraws.get(host) || 0) + 1);
       record._element = host || null;
       record._instance = context?.instance || instance || record._instance;
+      this._dropRetiredExpansions(record);
       this._stampHost(record, host);
       // The rows are new: a flash in progress goes on the new row.
       if (record._flash) this._applyFlash(record);
@@ -2043,6 +2091,21 @@
     }
 
     /**
+     * Whether the reader is typing in a file: the keyboard focus is in a
+     * text field of one of its cards or forms. Every update of a file's diff
+     * re-creates its rows and takes the focus away from what is slotted into
+     * it (the text is kept), so a background update asks this first.
+     * @param {string} fileName
+     * @returns {boolean}
+     */
+    isEditingInside(fileName) {
+      if (!this.hasFocusInside(fileName)) return false;
+      const active = document.activeElement;
+      return typeof active.matches === 'function'
+        && active.matches('textarea, input, select, [contenteditable=""], [contenteditable="true"]');
+    }
+
+    /**
      * After an item is drawn again its rows are new: the hovered-row mark and
      * the gutter buttons are gone until the pointer moves. When the pointer
      * rests on the item, tell the viewer where it is.
@@ -2148,17 +2211,39 @@
       const record = this._record(fileName);
       if (!record) return false;
       if (record.collapsed === !!collapsed) return true;
+      // The reader is inside the file: its top edge is above the pane and
+      // its header is pinned at the pane's top. Collapsed, the file is its
+      // header alone, and that header stays where the reader was looking,
+      // with the files after it below. (Left to itself the viewer anchors
+      // on a row that no longer exists and the pane ends up somewhere else.)
+      const readerInside = !!collapsed && this._isReaderInside(record);
       record.collapsed = !!collapsed;
       this._publish(record.id);
+      if (readerInside) this._scrollTo({ type: 'item', id: record.id, align: 'start', behavior: 'instant' });
       return true;
+    }
+
+    /**
+     * Whether the pane's top edge is inside a file's item: the file is
+     * mounted, starts above the pane and ends below its top.
+     * @private
+     */
+    _isReaderInside(record) {
+      const element = record._element;
+      if (!element?.isConnected || !this.root) return false;
+      const paneTop = this.root.getBoundingClientRect().top;
+      const box = element.getBoundingClientRect();
+      return box.top < paneTop - 0.5 && box.bottom > paneTop;
     }
 
     // ─── Contents, ranges, visibility ────────────────────────────────
 
     /**
      * Give a changed file its full contents, which is what makes its hidden
-     * lines expandable. Git's hunks are kept. Files whose patch already is
-     * everything (added, deleted, no hunks) are only marked as upgraded.
+     * lines expandable. The two contents are diffed again and the lines the
+     * patch showed are kept, as the per-file renderer did, so the file shows
+     * the same rows as with that renderer. Files whose patch already is
+     * everything (added, deleted) are only marked as upgraded.
      * @param {string} fileName
      * @param {{name: string, contents: string}|null} oldFile
      * @param {{name: string, contents: string}|null} newFile
@@ -2171,31 +2256,50 @@
       const patchMetadata = record.patchMetadata;
       const strategy = PierreCodeViewBridge.upgradeStrategy(patchMetadata);
       const plain = (file) => (file && record.forcePlainText ? { ...file, lang: 'text' } : file);
-      if (strategy === 'hydrate') {
-        let hydrated;
-        try {
-          hydrated = window.PierreDiffs.hydratePartialDiff('clone', patchMetadata, {
-            oldFile: plain(oldFile),
-            newFile: plain(newFile),
-          });
-        } catch (err) {
-          console.warn(`[PierreCodeViewBridge] Could not load the full contents of ${record.id}; its hidden lines stay hidden.`, err);
-          return false;
-        }
-        hydrated.name = record.id;
-        if (record.forcePlainText) hydrated.lang = 'text';
-        record.baseMetadata = PierreCodeViewBridge.rekey(record, hydrated);
+      if (strategy === 'rediff') {
+        const rediffed = this._rediff(record, plain(oldFile), plain(newFile));
+        if (!rediffed) return false;
+        record.baseMetadata = rediffed;
+        record.parityRanges = PierreCodeViewBridge.patchParityRanges(patchMetadata);
       } else {
         record.baseMetadata = (strategy === 'reparse' && this._reparseUnchanged(record, plain(oldFile), plain(newFile)))
           || patchMetadata;
       }
       record.upgraded = true;
-      // Ranges asked for before the contents were there are applied now.
+      // The lines of the patch, and ranges asked for before the contents
+      // were there, are applied now.
       if (this._derive(record)) {
-        this._clearExpansions(record);
+        this._retireExpansions(record);
         this._publish(record.id);
       }
       return true;
+    }
+
+    /**
+     * The diff of a changed file's two contents, made by the vendor.
+     * Null when a side is missing or the contents cannot be diffed (they
+     * are the same text, which a patch with hunks contradicts): the file
+     * keeps the diff of its patch and its hidden lines stay hidden.
+     * @private
+     */
+    _rediff(record, oldFile, newFile) {
+      const hasText = (file) => !!file && typeof file.contents === 'string';
+      if (!hasText(oldFile) || !hasText(newFile)) return null;
+      let rediffed;
+      try {
+        const key = `${record.baseKey}:contents`;
+        rediffed = window.PierreDiffs.parseDiffFromFile(
+          { ...oldFile, cacheKey: `${key}:old` },
+          { ...newFile, cacheKey: `${key}:new` }
+        );
+      } catch (err) {
+        console.warn(`[PierreCodeViewBridge] Could not load the full contents of ${record.id}; its hidden lines stay hidden.`, err);
+        return null;
+      }
+      if (!rediffed || !Array.isArray(rediffed.hunks) || rediffed.hunks.length === 0) return null;
+      rediffed.name = record.id;
+      if (record.forcePlainText) rediffed.lang = 'text';
+      return rediffed;
     }
 
     /**
@@ -2258,21 +2362,158 @@
       this._publish(record.id);
     }
 
-    /** @private */
+    /**
+     * The viewer's own record of what the reader expanded by hand in a file,
+     * by hunk index of the diff the record publishes. Null when there is
+     * none, and while the viewer still draws an older diff whose expansions
+     * have already been folded into the record's ranges (_retireExpansions):
+     * the map then belongs to that older diff.
+     * @private
+     */
     _expansionMap(record) {
+      if (record._expansionsOf) return null;
       return record._instance?.hunksRenderer?.expandedHunks || null;
     }
 
-    /** @private */
-    _clearExpansions(record) {
-      // The map is keyed by hunk index: it must not outlive the hunks.
-      const map = this._expansionMap(record);
+    /**
+     * The record's metadata has been derived again and the viewer's
+     * expansion map, which is keyed by hunk index, must not be applied to
+     * the new hunks (its lines are ranges of the record by now). Called
+     * after the derive and before the publish, by everything that derives a
+     * mounted record again: addContextRanges, upgradeFileContents, and a
+     * context record whose stored ranges or contents changed
+     * (_applyContextEntry).
+     *
+     * A file that is not drawing anything loses the map at once, and so
+     * does one whose next draw is the new diff (plain text, a diff the
+     * viewer has a result for, a file whose present diff has not been
+     * highlighted yet: _drawsNextDiffAtOnce). Otherwise the file goes on
+     * drawing its present diff until the new one has been highlighted, and
+     * it draws that diff with this map: emptied now, the lines the reader
+     * expanded would leave the screen for that long and come back with the
+     * new diff. So the map is kept for the diff it belongs to, and dropped
+     * at the moment the viewer has the new diff ready to draw
+     * (_watchForNextDiff).
+     * @private
+     */
+    _retireExpansions(record) {
+      const map = record._instance?.hunksRenderer?.expandedHunks;
       if (!map || !map.size) return;
+      if (record._expansionsOf) return; // already retired, for a diff still on screen
+      const drawn = record._element?.isConnected ? record._instance.getRenderedDiff?.() : null;
+      if (drawn && drawn !== record.metadata && !this._drawsNextDiffAtOnce(record)) {
+        record._expansionsOf = drawn;
+        this._watchForNextDiff(record);
+        return;
+      }
+      this._clearExpansionMap(record, map);
+    }
+
+    /**
+     * Whether the viewer's next draw of a mounted file is the record's
+     * metadata, rather than the diff it draws now. The row renderer answers
+     * (`getDiffForNextRender`, which the viewer's own render asks for the
+     * same purpose): the new diff when it can be drawn without waiting for
+     * a highlight result, the present one otherwise. False when the
+     * renderer cannot be asked: the map is then kept and dropped by
+     * _watchForNextDiff or its fallback.
+     * @private
+     */
+    _drawsNextDiffAtOnce(record) {
+      const renderer = record._instance?.hunksRenderer;
+      if (!record.metadata || typeof renderer?.getDiffForNextRender !== 'function') return false;
+      return renderer.getDiffForNextRender(record.metadata) === record.metadata;
+    }
+
+    /**
+     * Drop a retired expansion map when the viewer is about to draw another
+     * diff of the file.
+     *
+     * The viewer's row renderer is told when a diff it was asked to draw
+     * has been highlighted (`onRenderUpdate`, its one callback), and draws
+     * that diff in its next pass. That callback is the last moment at which
+     * the map still belongs to what is on screen and the first at which it
+     * must be gone, so it is taken over for this one call. A vendor internal,
+     * like the map itself; should the callback go away, _dropRetiredExpansions
+     * does the same one draw later (the file is drawn once with the old map
+     * and again without it, in one task).
+     * @private
+     */
+    _watchForNextDiff(record) {
+      const instance = record._instance;
+      const renderer = instance?.hunksRenderer;
+      this._unwatchNextDiff(record);
+      if (!renderer || typeof renderer.onRenderUpdate !== 'function') return;
+      const original = renderer.onRenderUpdate;
+      const hook = (...args) => {
+        const staged = renderer.pendingHighlightResult?.diff;
+        // A result for the diff that is on screen (its theme changed, say)
+        // leaves the map with it.
+        if (record._instance === instance && record._expansionsOf && staged !== record._expansionsOf) {
+          this._unwatchNextDiff(record);
+          record._expansionsOf = null;
+          const map = renderer.expandedHunks;
+          if (map && map.size) this._clearExpansionMap(record, map);
+        } else if (record._instance !== instance || !record._expansionsOf) {
+          // Nothing left to watch for on this renderer.
+          if (renderer.onRenderUpdate === hook) renderer.onRenderUpdate = original;
+          if (record._expansionWatch?.hook === hook) record._expansionWatch = null;
+        }
+        return original.apply(renderer, args);
+      };
+      renderer.onRenderUpdate = hook;
+      record._expansionWatch = { renderer, original, hook };
+    }
+
+    /**
+     * Give the row renderer its own callback back (_watchForNextDiff).
+     * @private
+     */
+    _unwatchNextDiff(record) {
+      const watch = record._expansionWatch;
+      if (!watch) return;
+      record._expansionWatch = null;
+      if (watch.renderer.onRenderUpdate === watch.hook) watch.renderer.onRenderUpdate = watch.original;
+    }
+
+    /**
+     * The record's instance is the viewer's no longer (a new list, a
+     * discarded record): nothing of it is kept or watched.
+     * @private
+     */
+    _forgetInstance(record) {
+      this._unwatchNextDiff(record);
+      record._instance = null;
+      record._expansionsOf = null;
+    }
+
+    /**
+     * The fallback of _watchForNextDiff, from _onPostRender: the viewer has
+     * drawn a diff other than the one a retired expansion map belonged to.
+     * Drop the map and draw the file once more without it. Runs inside the
+     * viewer's render pass: the second draw is in the same task, so nothing
+     * is painted in between.
+     * @private
+     */
+    _dropRetiredExpansions(record) {
+      const of = record._expansionsOf;
+      if (!of) return;
+      const drawn = record._instance?.getRenderedDiff?.();
+      if (drawn === of) return;
+      this._unwatchNextDiff(record);
+      record._expansionsOf = null;
+      const map = record._instance?.hunksRenderer?.expandedHunks;
+      if (!map || !map.size) return;
+      this._clearExpansionMap(record, map);
+      this._publish(record.id);
+    }
+
+    /** @private */
+    _clearExpansionMap(record, map) {
       map.clear();
-      // Until the new diff is displayed the viewer goes on drawing the old
-      // one, now without those lines, and it has the item's height cached
-      // with them. Nothing but a row window that moves makes it compute
-      // that height again, and an item's window does not move here
+      // The viewer has the item's height cached with the expanded lines.
+      // Nothing but a row window that moves makes it compute that height
+      // again, and an item's window does not move here
       // (ROWS_PER_ITEM_WINDOW), so it is told to.
       record._instance?.resetLayoutCache?.({ includeEstimatedHeights: true });
     }
@@ -2294,9 +2535,12 @@
 
     /**
      * Make what the reader expanded by hand part of the record's revealed
-     * ranges, and forget the viewer's own record of it. Done before the
-     * metadata is derived again (its hunk indices change) and before a list
-     * replace (the viewer's record is lost).
+     * ranges. Done before the metadata is derived again (its hunk indices
+     * change) and before a list replace (the viewer's record is lost). The
+     * viewer's own record of the expansions is left as it is: it belongs to
+     * the diff on screen, and the caller says when it goes
+     * (_retireExpansions after the derive; a list write replaces the
+     * instance that holds it).
      * @returns {boolean} whether there was a manual expansion to fold
      * @private
      */
@@ -2307,7 +2551,6 @@
       if (merge) {
         record.contextRanges = merge([...record.contextRanges, ...this._expandedRanges(record, 'RIGHT')]);
       }
-      map.clear();
       return true;
     }
 
@@ -2331,7 +2574,7 @@
       record.contextRanges = merge([...record.contextRanges, ...expanded, ...(ranges || [])]);
       if (!record.baseMetadata) return false;
       if (this._derive(record)) {
-        this._clearExpansions(record);
+        this._retireExpansions(record);
         this._publish(record.id);
       }
       return true;
@@ -2481,31 +2724,143 @@
      * @param {string} [side='RIGHT']
      * @param {Object|boolean} [options] - or, as before, a boolean `scroll`
      * @param {boolean} [options.scroll=true] - false only flashes
+     * @param {boolean} [options.ifNeeded=false] - do not scroll when the
+     *   line's row is drawn and wholly inside the pane already
      * @param {string} [options.align='center']
      * @param {string} [options.behavior='smooth']
      * @param {boolean} [options.flash=true]
+     * @param {number} [options.endLine] - flash every line from `lineNumber`
+     *   to this one (a range)
      * @returns {boolean} false when the file does not show that line (it is
      *   not in the diff's data, is hidden, or the file is collapsed), so the
      *   caller can fall back to the file
      */
     scrollToLine(fileName, lineNumber, side = 'RIGHT', options = {}) {
-      const { scroll = true, align = 'center', behavior = 'smooth', flash = true } =
+      const { scroll = true, ifNeeded = false, align = 'center', behavior = 'smooth', flash = true, endLine } =
         typeof options === 'boolean' ? { scroll: options } : (options || {});
       const record = this._record(fileName);
       if (!record || !this.codeView) return false;
       if (!this.isLineVisible(record.id, lineNumber, side)) return false;
-      if (scroll) {
+      const pierreSide = this._annotationSide(record, side);
+      if (scroll && !(ifNeeded && this._isRowInView(record, lineNumber, pierreSide))) {
+        this._scrollTo({ type: 'line', id: record.id, lineNumber, side: pierreSide, align, behavior });
+      }
+      if (flash) {
+        const lines = [lineNumber];
+        const last = Number(endLine);
+        // A range is flashed line by line; a line of it the file does not
+        // show has no row to flash.
+        for (let line = lineNumber + 1; Number.isFinite(last) && line <= last && lines.length < MAX_FLASHED_LINES; line++) {
+          if (this.isLineVisible(record.id, line, side)) lines.push(line);
+        }
+        this._flashLines(record, lines, side);
+      }
+      return true;
+    }
+
+    /**
+     * Take the pane to the line an annotation is on (to the file's header
+     * for a file-level one), so that the viewer mounts the annotation's card:
+     * a file far from the viewport has no elements, and a very long file has
+     * elements for a window of its rows only. Nothing is sent when the card
+     * is drawn already (isElementDrawn), nor when the file is on screen with
+     * a new diff awaiting display and that display draws the card
+     * (_displayWillDraw).
+     * @param {string} fileName
+     * @param {string} annotationId
+     * @param {Object} [options]
+     * @param {string} [options.align='start']
+     * @param {string} [options.behavior='instant']
+     * @returns {boolean} whether the card is, or is going to be, drawn:
+     *   false when the file does not show the annotation's line
+     */
+    scrollToAnnotation(fileName, annotationId, { align = 'start', behavior = 'instant' } = {}) {
+      const record = this._record(fileName);
+      const annotation = this._findAnnotation(record, annotationId);
+      if (!annotation || !this.codeView || !this._isAnnotationLineShown(record, annotation)) return false;
+      const element = this._elements.lookup(annotation, record.id, record.formElements, { create: false });
+      if (this.isElementDrawn(element)) return true;
+      if (this._displayWillDraw(record, element)) return true;
+      if (annotation.lineNumber === 0) {
+        this._scrollTo({ type: 'item', id: record.id, align, behavior });
+      } else {
         this._scrollTo({
-          type: 'line',
-          id: record.id,
-          lineNumber,
-          side: this._annotationSide(record, side),
-          align,
-          behavior,
+          type: 'line', id: record.id, lineNumber: annotation.lineNumber, side: annotation.side, align, behavior,
         });
       }
-      if (flash) this._flashLine(record, lineNumber, side);
       return true;
+    }
+
+    /**
+     * Whether the viewer draws an element it was handed: a card, or
+     * something inside one (a card of a file's comment zone).
+     *
+     * "In the document" does not say so. The viewer keeps the card of every
+     * annotation of a mounted file among the file element's children, and
+     * each is shown through a slot in the row under its line. A file of
+     * ROWS_PER_ITEM_WINDOW rows or more has rows for a window of its lines
+     * only: the card of a line outside that window is in the document, has
+     * no slot and no box, and scrolling to it does nothing. The same holds
+     * for a card whose row the viewer dropped (_restoreTrimmedCards) and for
+     * one of a line the diff on screen does not have yet. So the question
+     * is asked of the slot, which is also right for a card that minimize
+     * mode hides (it has a slot and no box).
+     *
+     * An element that is not a child of a file's element (or inside one) is
+     * drawn when it is in the document.
+     * @param {Element|null} element
+     * @returns {boolean}
+     */
+    isElementDrawn(element) {
+      if (!element?.isConnected) return false;
+      // The child of the file's element that holds it: what a slot takes.
+      let node = element;
+      while (node.parentElement && !node.parentElement.shadowRoot) node = node.parentElement;
+      if (!node.parentElement) return true;
+      return !!node.assignedSlot;
+    }
+
+    /**
+     * Whether a card that is in the document without being drawn is about
+     * to be drawn where the pane is: its file is on screen with a new diff
+     * that awaits display (the highlighter has not answered), and the file
+     * is one the viewer draws whole. The card of a line that was just
+     * revealed is in this state for a worker round trip; the page's scroll
+     * helper waits for its box. A file drawn in windows of its rows is not
+     * counted: its display draws the rows of the window the pane is in,
+     * which need not hold the card's line.
+     * @private
+     */
+    _displayWillDraw(record, element) {
+      if (!element?.isConnected || !record._element?.isConnected || !record._instance) return false;
+      if (this.isDiffDisplayed(record.id)) return false;
+      const column = record._element.shadowRoot?.querySelector('[data-content]');
+      return !!column && column.children.length < ROWS_PER_ITEM_WINDOW;
+    }
+
+    /**
+     * Wait until the viewer draws an element (isElementDrawn).
+     * @param {Element|null} element
+     * @param {Object} [options]
+     * @param {number} [options.timeoutMs=4000]
+     * @param {Function} [options.isCancelled] - () => boolean, checked each frame
+     * @returns {Promise<boolean>} false when there is no element, the wait
+     *   was cancelled, or the time ran out
+     */
+    whenElementDrawn(element, { timeoutMs = 4000, isCancelled } = {}) {
+      if (!element) return Promise.resolve(false);
+      if (this.isElementDrawn(element)) return Promise.resolve(true);
+      const deadline = Date.now() + timeoutMs;
+      return new Promise((resolve) => {
+        const tick = () => {
+          if (this._destroyed) return resolve(false);
+          if (typeof isCancelled === 'function' && isCancelled()) return resolve(false);
+          if (this.isElementDrawn(element)) return resolve(true);
+          if (Date.now() >= deadline) return resolve(false);
+          schedule(tick);
+        };
+        schedule(tick);
+      });
     }
 
     /**
@@ -2525,17 +2880,33 @@
     }
 
     /**
-     * Flash a line. The flash starts when the line's row is first in the DOM
-     * (the row of a line being scrolled to or revealed exists some frames
-     * later), and it survives the row: every update of an item replaces all
-     * its rows, a revealed line is drawn plain first and again when it has
-     * been highlighted, so the flash is put back on the new row, continuing
-     * from where it was (_onPostRender).
+     * Whether a line's row is drawn and wholly inside the pane, below the
+     * file header that is pinned at its top.
      * @private
      */
-    _flashLine(record, lineNumber, side, { maxFrames = 120 } = {}) {
+    _isRowInView(record, lineNumber, pierreSide) {
+      const row = this._findRow(record, lineNumber, pierreSide);
+      const root = this.root;
+      if (!row || !root) return false;
+      const box = row.getBoundingClientRect();
+      const pane = root.getBoundingClientRect();
+      if (box.height === 0) return false;
+      const header = this._metrics?.diffHeaderHeight ?? FALLBACK_HEADER_HEIGHT;
+      return box.top >= pane.top + header && box.bottom <= pane.bottom;
+    }
+
+    /**
+     * Flash lines of a file. The flash starts when the first of their rows
+     * is in the DOM (the row of a line being scrolled to or revealed exists
+     * some frames later), and it survives the rows: every update of an item
+     * replaces all its rows, a revealed line is drawn plain first and again
+     * when it has been highlighted, so the flash is put back on the new
+     * rows, continuing from where it was (_onPostRender).
+     * @private
+     */
+    _flashLines(record, lines, side, { maxFrames = 120 } = {}) {
       this._endFlash(record);
-      const flash = { lineNumber, side: this._annotationSide(record, side), startedAt: null, timer: null };
+      const flash = { lines: [...lines], side: this._annotationSide(record, side), startedAt: null, timer: null };
       record._flash = flash;
       let frames = 0;
       const tryStart = () => {
@@ -2550,15 +2921,15 @@
     }
 
     /**
-     * Put the record's flash on the row of its line, if the row is mounted.
-     * @returns {boolean} whether the row was there
+     * Put the record's flash on the rows of its lines that are mounted.
+     * @returns {boolean} whether the row of the first line was there
      * @private
      */
     _applyFlash(record) {
       const flash = record._flash;
       if (!flash) return false;
-      const row = this._findRow(record, flash.lineNumber, flash.side);
-      if (!row) return false;
+      const rows = flash.lines.map((line) => this._findRow(record, line, flash.side));
+      if (!rows[0]) return false;
       const now = performance.now();
       if (flash.startedAt == null) {
         flash.startedAt = now;
@@ -2566,10 +2937,13 @@
           if (record._flash === flash) this._endFlash(record);
         }, FLASH_DURATION_MS);
       }
-      row.classList.remove('pierre-line-highlight');
-      void row.offsetWidth; // restart the animation on this row
-      row.style.animationDelay = `-${Math.round(now - flash.startedAt)}ms`;
-      row.classList.add('pierre-line-highlight');
+      for (const row of rows) {
+        if (!row) continue;
+        row.classList.remove('pierre-line-highlight');
+        void row.offsetWidth; // restart the animation on this row
+        row.style.animationDelay = `-${Math.round(now - flash.startedAt)}ms`;
+        row.classList.add('pierre-line-highlight');
+      }
       return true;
     }
 
@@ -2579,8 +2953,9 @@
       if (!flash) return;
       record._flash = null;
       if (flash.timer) clearTimeout(flash.timer);
-      const row = this._findRow(record, flash.lineNumber, flash.side);
-      if (row) {
+      for (const line of flash.lines) {
+        const row = this._findRow(record, line, flash.side);
+        if (!row) continue;
         row.classList.remove('pierre-line-highlight');
         row.style.removeProperty('animation-delay');
       }
@@ -2760,11 +3135,17 @@
     }
 
     /**
-     * Wait until an annotation's element is attached to the document.
-     * "Attached" is all that is asked: a card that minimize mode hides has
-     * no box and is still the right element. There is nothing to wait for
-     * when the file does not show the annotation's line; the answer is null
-     * at once.
+     * Wait until an annotation's card has, or is about to get, its place on
+     * screen: the viewer draws it (isElementDrawn: its file mounted, and the
+     * row under its line among the rows the file has), or it is in the
+     * document of a file whose new diff awaits display and that display
+     * draws it (_displayWillDraw; the caller's scroll waits for its box, as
+     * it does on the per-file renderer). A card that is in the document
+     * with neither is waited for: the row of its line is outside the rows a
+     * long file draws, and it has no place until the pane is taken there
+     * (scrollToAnnotation). A card that minimize mode hides has no box and
+     * is still the right element. There is nothing to wait for when the
+     * file does not show the annotation's line; the answer is null at once.
      * @param {string} fileName
      * @param {string} annotationId
      * @param {Object} [options]
@@ -2776,12 +3157,12 @@
       const resolveNow = () => {
         const record = this._record(fileName);
         const annotation = this._findAnnotation(record, annotationId);
-        // Asked first, and from data: the viewer attaches the wrapper of an
-        // annotation whose line it does not draw, with no height, so "is
-        // connected" alone would hand back a card that is nowhere on screen.
+        // Asked first, and from data: a line the file does not show is
+        // never drawn, and its card would be waited for until the time
+        // ran out.
         if (!annotation || !this._isAnnotationLineShown(record, annotation)) return { element: null, done: true };
         const element = this.getAnnotationElement(record.id, annotationId, { create: true });
-        return { element, done: !element || element.isConnected };
+        return { element, done: !element || this.isElementDrawn(element) || this._displayWillDraw(record, element) };
       };
       const first = resolveNow();
       if (first.done) return Promise.resolve(first.element);
@@ -2867,6 +3248,7 @@
       if (this.root) {
         this.root.removeEventListener('pointerdown', this._onRootPointerDown);
         this.root.removeEventListener('click', this._onRootClick, { capture: true });
+        this.root.removeEventListener('contextmenu', this._onRootContextMenu, { capture: true });
         this.root.removeEventListener('mousedown', this._onRootPressKind, { capture: true });
         this.root.removeEventListener('touchstart', this._onRootPressKind, { capture: true });
         this.root.removeEventListener('scroll', this._onRootScroll);

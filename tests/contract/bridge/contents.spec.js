@@ -8,7 +8,7 @@
 import { test, expect, openBridge, clickExpandControl } from './bridge-test.js';
 
 for (const role of ['medium', 'renameChanged']) {
-  test(`upgradeFileContents on a ${role === 'medium' ? 'changed' : 'renamed and changed'} file keeps every patch line, moves no row, and brings the expand controls`, async ({ harness }) => {
+  test(`upgradeFileContents on a ${role === 'medium' ? 'changed' : 'renamed and changed'} file keeps every patch line, shows the vendor's diff of the two contents, and brings the expand controls`, async ({ harness }) => {
     const page = await openBridge(harness);
     const result = await page.evaluate(async (role) => {
       const { H, BH } = window;
@@ -23,18 +23,30 @@ for (const role of ['medium', 'renameChanged']) {
       const displayed = await BH.displayed(id);
       await H.settle(150);
       const after = { rows: BH.rows(id), shape: H.shape(id), key: b.files.get(id).metadata.cacheKey, partial: b.files.get(id).metadata.isPartial };
-      const has = (row) => after.rows.some((r) => r.line === row.line && r.type === row.type && r.text === row.text);
+      // Every line of the new file that the patch showed is still drawn.
+      // (A deleted line can be drawn another way: the diff of the two
+      // contents may pair the lines of a change differently from git.)
+      const newSide = (row) => !String(row.type).includes('deletion');
+      const has = (row) => after.rows.some((r) => newSide(r) && r.line === row.line && r.text === row.text);
       return {
         returned, again, displayed: displayed.ok,
-        missingPatchRows: before.rows.filter((row) => !has(row)).length,
-        patchRows: before.rows.length,
+        missingPatchRows: before.rows.filter((row) => newSide(row) && !has(row)).length,
+        patchRows: before.rows.filter(newSide).length,
         expandBefore: before.shape.expandButtons,
         expandAfter: after.shape.expandButtons,
         rowShift: H.viewportTopOf(H.host(id).shadowRoot.querySelector('[data-content] > [data-line]')) - firstRowTop,
         keyChanged: before.key !== after.key,
         partial: [before.partial, after.partial],
         baseSet: !!b.files.get(id).baseMetadata,
-        hunksKept: b.files.get(id).metadata.hunks.length === b.files.get(id).patchMetadata.hunks.length,
+        // What the per-file renderer drew: the vendor's diff of the two
+        // contents with the lines of the patch merged in.
+        hunksAsReference: (() => {
+          const spans = (metadata) => metadata.hunks.map((h) => `${h.additionStart}+${h.additionCount}/${h.deletionStart}+${h.deletionCount}`).join(' ');
+          const reference = window.PierreDiffs.parseDiffFromFile(oldFile, newFile);
+          const parity = b.files.get(id).patchMetadata.hunks.filter((h) => h.additionCount > 0)
+            .map((h) => ({ startLine: h.additionStart, endLine: h.additionStart + h.additionCount - 1 }));
+          return spans(b.files.get(id).metadata) === spans(window.PierreContext.mergeContextRanges(reference, parity));
+        })(),
         sound: BH.sound(),
       };
     }, role);
@@ -49,10 +61,48 @@ for (const role of ['medium', 'renameChanged']) {
     expect(result.keyChanged).toBe(true);
     expect(result.partial).toEqual([true, false]);
     expect(result.baseSet).toBe(true);
-    expect(result.hunksKept).toBe(true);
+    expect(result.hunksAsReference).toBe(true);
     expect(result.sound).toEqual({ orphans: 0, clean: true });
   });
 }
+
+test('the line at the top of the pane stays there when the contents of its file, and of the file above it, arrive', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const above = H.workload.roles.medium;
+    const id = H.workload.roles.large;
+    await BH.up({ entries: [BH.diffEntry(above), BH.diffEntry(id), BH.diffEntry(H.workload.roles.small)] });
+    const b = BH.bridge;
+    // Read from the first line of the file's second hunk: the rows the
+    // upgrade adds (context the patch did not have) are above it.
+    const hunk = b.files.get(id).patchMetadata.hunks[1];
+    const line = hunk.additionStart;
+    b.scrollToLine(id, line, 'RIGHT', { align: 'start', behavior: 'instant', flash: false });
+    const rowOf = () => H.host(id)?.shadowRoot?.querySelector(`[data-content] > [data-line="${line}"]`);
+    await H.until(() => !!rowOf());
+    await H.settle(150);
+    const before = { top: H.viewportTopOf(rowOf()), rows: BH.rows(id).length, scrollTop: H.root.scrollTop };
+    for (const name of [above, id]) {
+      const { oldFile, newFile } = H.contentsOf(name);
+      b.upgradeFileContents(name, oldFile, newFile);
+    }
+    await BH.displayed(id);
+    await H.settle(200);
+    return {
+      before,
+      after: { top: H.viewportTopOf(rowOf()), rows: BH.rows(id).length, scrollTop: H.root.scrollTop },
+      aboveUpgraded: b.files.get(above).upgraded,
+      sound: BH.sound(),
+    };
+  });
+  expect(result.aboveUpgraded).toBe(true);
+  expect(Math.abs(result.after.top - result.before.top)).toBeLessThanOrEqual(1);
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+  // Reported, not asserted: how many rows the upgrade added and how far the pane was scrolled to keep the line in place.
+  test.info().annotations.push({ type: 'measured', description: JSON.stringify(result) });
+});
 
 test('upgradeFileContents on added, deleted and hunk-less files does not throw and changes nothing on screen', async ({ harness }) => {
   const page = await openBridge(harness);
@@ -187,14 +237,29 @@ test('addContextRanges, isLineVisible and convertOldToNew on a mounted file', as
     // A later reveal elsewhere in the file derives the diff again: what the
     // reader expanded by hand must survive it.
     const farLine = gap.end - 3;
+    const map = b.files.get(id)._instance.hunksRenderer.expandedHunks;
+    const manualRow = () => !!H.host(id).shadowRoot.querySelector(`[data-content] > [data-line="${manual}"]`);
+    out.manualRowBefore = manualRow();
     out.added = b.addContextRanges(id, [{ startLine: farLine, endLine: farLine }]);
     out.afterLaterRange = {
       manualVisible: b.isLineVisible(id, manual, 'RIGHT'),
       farVisible: b.isLineVisible(id, farLine, 'RIGHT'),
       between: b.isLineVisible(id, Math.floor((manual + 25 + farLine) / 2), 'RIGHT'),
       keyChanged: b.files.get(id).metadata.cacheKey !== out.keyBefore,
-      expansionMapEmpty: b.files.get(id)._instance.hunksRenderer.expandedHunks.size === 0,
+      // The file goes on drawing the diff the reader expanded, with the
+      // viewer's record of it, until the new diff is ready.
+      expansionMapKept: map.size === 1,
     };
+    // Every frame until the new diff is on screen: the line the reader
+    // expanded has its row.
+    out.framesWithoutManualRow = [];
+    out.frames = 0;
+    while (!b.isDiffDisplayed(id) && out.frames < 600) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      out.frames += 1;
+      if (!manualRow()) out.framesWithoutManualRow.push(out.frames);
+    }
+    out.afterDisplay = { displayed: b.isDiffDisplayed(id), manualRow: manualRow(), expansionMapEmpty: map.size === 0, manualVisible: b.isLineVisible(id, manual, 'RIGHT') };
     // Old-file numbers convert through the file's own hunks.
     const hunk = b.files.get(id).baseMetadata.hunks[0];
     const offset = hunk.additionLines - hunk.deletionLines;
@@ -218,7 +283,11 @@ test('addContextRanges, isLineVisible and convertOldToNew on a mounted file', as
   }, setup);
   expect(result.manualVisible).toBe(true);
   expect(result.added).toBe(true);
-  expect(result.afterLaterRange).toEqual({ manualVisible: true, farVisible: true, between: false, keyChanged: true, expansionMapEmpty: true });
+  expect(result.manualRowBefore).toBe(true);
+  expect(result.afterLaterRange).toEqual({ manualVisible: true, farVisible: true, between: false, keyChanged: true, expansionMapKept: true });
+  expect(result.frames).toBeGreaterThan(0);
+  expect(result.framesWithoutManualRow).toEqual([]);
+  expect(result.afterDisplay).toEqual({ displayed: true, manualRow: true, expansionMapEmpty: true, manualVisible: true });
   expect(result.convert.got).toEqual(result.convert.want);
   expect(result.leftSideInHunk).toBe(true);
   expect(result.smallGap.size).toBeLessThanOrEqual(5);
@@ -226,6 +295,66 @@ test('addContextRanges, isLineVisible and convertOldToNew on a mounted file', as
   expect(result.collapsed).toBe(false);
   expect(result.expandedAgain).toBe(true);
   expect(result.unknown).toEqual([false, false, null]);
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+
+test('a reveal in a file drawn as plain text, after the reader expanded a gap: the new diff is drawn in the next pass, without the viewer\'s record of the expansion', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const setup = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const id = H.workload.roles.large;
+    await BH.up({ entries: [BH.diffEntry(id, { forcePlainText: true }), BH.diffEntry(H.workload.roles.small)] });
+    const b = BH.bridge;
+    const { oldFile, newFile } = H.contentsOf(id);
+    b.upgradeFileContents(id, oldFile, newFile);
+    await BH.displayed(id);
+    await H.settle(200);
+    // A gap of more than 60 lines between two hunks of what the file shows.
+    const hunks = b.files.get(id).metadata.hunks;
+    let gap = null;
+    for (let i = 1; i < hunks.length && !gap; i++) {
+      const start = hunks[i - 1].additionStart + hunks[i - 1].additionCount;
+      const end = hunks[i].additionStart - 1;
+      if (end - start >= 60) gap = { index: i, start, end };
+    }
+    return { id, gap, lang: b.files.get(id).metadata.lang ?? null };
+  });
+  expect(setup.lang).toBe('text');
+  expect(setup.gap).not.toBeNull();
+  const box = await clickExpandControl(page, setup.id, setup.gap.index, 'up');
+  expect(box && box.visible, JSON.stringify(box)).toBe(true);
+
+  const result = await page.evaluate(async ({ id, gap }) => {
+    const { H, BH } = window;
+    const b = BH.bridge;
+    const manual = gap.start; // the first line the click revealed
+    const renderer = b.files.get(id)._instance.hunksRenderer;
+    const map = renderer.expandedHunks;
+    const callback = renderer.onRenderUpdate;
+    const manualRow = () => !!H.host(id).shadowRoot.querySelector(`[data-content] > [data-line="${manual}"]`);
+    const out = { before: { manualVisible: b.isLineVisible(id, manual, 'RIGHT'), manualRow: manualRow(), map: map.size } };
+    const farLine = gap.end - 10;
+    out.added = b.addContextRanges(id, [{ startLine: farLine, endLine: farLine }]);
+    // No highlight result to wait for: the viewer's record went before the publish, and nothing was taken over.
+    out.atOnce = { map: map.size, callbackUntouched: renderer.onRenderUpdate === callback, manualVisible: b.isLineVisible(id, manual, 'RIGHT'), farVisible: b.isLineVisible(id, farLine, 'RIGHT') };
+    out.framesWithoutManualRow = [];
+    for (let frame = 1; frame <= 30; frame++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      if (!manualRow()) out.framesWithoutManualRow.push(frame);
+    }
+    await BH.displayed(id);
+    await H.settle(300);
+    out.after = { displayed: b.isDiffDisplayed(id), manualRow: manualRow(), farRow: !!H.host(id).shadowRoot.querySelector(`[data-content] > [data-line="${farLine}"]`), map: map.size };
+    out.sound = BH.sound();
+    return out;
+  }, setup);
+  expect(result.before).toEqual({ manualVisible: true, manualRow: true, map: 1 });
+  expect(result.added).toBe(true);
+  expect(result.atOnce).toEqual({ map: 0, callbackUntouched: true, manualVisible: true, farVisible: true });
+  expect(result.framesWithoutManualRow).toEqual([]);
+  expect(result.after).toEqual({ displayed: true, manualRow: true, farRow: true, map: 0 });
   expect(result.sound).toEqual({ orphans: 0, clean: true });
   expect(harness.validatorErrors(page)).toEqual([]);
 });

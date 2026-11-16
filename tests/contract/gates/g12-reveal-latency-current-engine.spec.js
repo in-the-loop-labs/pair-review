@@ -19,6 +19,7 @@
  */
 
 import { test, expect } from '../harness/contract-test.js';
+import { openBridge } from '../bridge/bridge-test.js';
 
 const RUNS = 5;
 
@@ -111,6 +112,40 @@ test('G12: reveal latency through main\'s PierreBridge (FileDiff) and through a 
     return { upgraded: upgraded.ok, upgradeMs, samples };
   }, RUNS);
 
+  // ---- the new bridge: the same reveal through PierreCodeViewBridge ----
+  // (Phase 7's bar: no worse than the current engine's median in this same
+  // run, plus 20%.)
+  const bridgePage = await openBridge(harness, { bundle: 'prod' });
+  const newBridge = await bridgePage.evaluate(async (RUNS) => {
+    const { H, BH } = window;
+    const T = H.workload.roles.large;
+    await BH.up({ entries: [BH.diffEntry(T)] });
+    const b = BH.bridge;
+    const row = (line) => H.host(T)?.shadowRoot?.querySelector(`[data-content] > [data-line="${line}"]`) || null;
+    await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
+    const { oldFile, newFile } = H.contentsOf(T);
+    const upgradeStart = performance.now();
+    b.upgradeFileContents(T, oldFile, newFile);
+    const upgraded = await H.until(() => b.isDiffDisplayed(T), 30000);
+    const upgradeMs = +(performance.now() - upgradeStart).toFixed(0);
+    const first = b.files.get(T).baseMetadata.hunks[0];
+    const samples = [];
+    for (let i = 0; i < RUNS; i++) {
+      const line = first.additionStart + first.additionCount + 60 + i * 120;
+      const start = performance.now();
+      b.addContextRanges(T, [{ startLine: line - 2, endLine: line + 5 }]);
+      const visibleByOracle = b.isLineVisible(T, line, 'RIGHT');
+      const sync = b.isDiffDisplayed(T);
+      // The pane is at the file's top; the revealed lines are further down
+      // than the pane is tall, so "displayed" is the viewer drawing the diff
+      // that has them, which is what a row of them waits for.
+      const shown = await H.until(() => b.isDiffDisplayed(T), 30000);
+      await H.raf(1);
+      samples.push({ ok: shown.ok, sync, ms: +(performance.now() - start).toFixed(0), frames: shown.frames, visibleByOracle });
+    }
+    return { upgraded: upgraded.ok, upgradeMs, samples, usesPool: !!b.workerManager };
+  }, RUNS);
+
   expect(current.usesPool).toBe(true);
   expect(current.upgraded).toBe(true);
   expect(current.chars).toBeGreaterThan(290000);
@@ -126,7 +161,27 @@ test('G12: reveal latency through main\'s PierreBridge (FileDiff) and through a 
     expect(sample.sync).toBe(false);
   }
 
+  expect(newBridge.usesPool).toBe(true);
+  expect(newBridge.upgraded).toBe(true);
+  for (const sample of newBridge.samples) {
+    expect(sample.ok).toBe(true);
+    expect(sample.visibleByOracle).toBe(true);
+    expect(sample.sync).toBe(false);
+  }
+  const currentMedian = median(current.samples.map((s) => s.ms));
+  const newBridgeMedian = median(newBridge.samples.map((s) => s.ms));
+  test.info().annotations.push({ type: 'measured', description: `reveal median: current engine ${currentMedian} ms, new bridge ${newBridgeMedian} ms` });
+  // The one timing this suite asserts on, because the plan sets it as a bar:
+  // both medians are of the same file in the same test, one after the other.
+  expect(newBridgeMedian).toBeLessThanOrEqual(currentMedian * 1.2);
+
   await harness.record('G12-reveal-latency', {
+    newBridge: {
+      upgradeMs: newBridge.upgradeMs,
+      revealMs: newBridge.samples.map((s) => s.ms),
+      revealMedianMs: newBridgeMedian,
+      revealFrames: newBridge.samples.map((s) => s.frames),
+    },
     file: { chars: current.chars, lines: 3000 },
     runs: RUNS,
     currentEngineFileDiff: {

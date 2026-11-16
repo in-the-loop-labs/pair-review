@@ -70,6 +70,11 @@ describe('findAllowance', () => {
     // Both requests of the Team Review Requests tab: the cached GET and the refresh that follows it.
     expect(findAllowance(logged('Error loading team-reviews'), null, ALLOWED, 'console.error')).not.toBeNull();
     expect(findAllowance(logged('Error refreshing team-reviews'), null, ALLOWED, 'console.error')).not.toBeNull();
+    // The two top-level loaders, cut short by a reload right after the first goto.
+    expect(findAllowance(logged('Error loading PR'), null, ALLOWED, 'console.error')).not.toBeNull();
+    expect(findAllowance(logged('Error loading local review'), null, ALLOWED, 'console.error')).not.toBeNull();
+    // A pull request that failed to load for another reason is a failure.
+    expect(findAllowance('Error loading PR: Error: Failed to load PR', null, ALLOWED, 'console.error')).toBeNull();
     // A refresh that failed for another reason is a failure.
     expect(findAllowance('Error refreshing team-reviews: Error: Refresh failed', null, ALLOWED, 'console.error')).toBeNull();
     expect(findAllowance(logged('Error refreshing my-prs'), null, ALLOWED, 'console.error')).toBeNull();

@@ -14658,6 +14658,21 @@ diffs-container {
   background: var(--color-border-default);
 }
 
+/* A tour centres its stop in the scroll container. With the per-file
+   renderer the toolbar and the tour bar are pinned inside that container, so
+   its centre is half their height above the middle of what a reader sees of
+   the diff. Here they are above the container: the stop is given that much
+   room below it, which puts it in the same place on screen. The two heights
+   are read where they still are what the page says (the scroll container
+   sets both to 0 for what is inside it). */
+.diff-view.codeview-engine {
+  --pinned-above-diff: calc(var(--toolbar-height, 0px) + var(--tour-bar-offset, 0px));
+}
+
+body.tour-active .diff-view.codeview-engine .tour-annotation-row {
+  scroll-margin-bottom: var(--pinned-above-diff);
+}
+
 /* While a message stands in place of the diff (loading, an error), the
    scroll container keeps its box and is not painted. With `display: none`
    the viewer inside it finds every item 0 px tall, and what it measures

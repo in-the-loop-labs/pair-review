@@ -195,3 +195,43 @@ test.describe('The layout validator of a development-bundle run', () => {
     });
   }
 });
+
+for (const mode of MODES) {
+  test.describe(`A page reloaded while its first request is in flight (${mode.name})`, () => {
+    // A spec that opens a review and reloads it at once (panel-resize.spec.js
+    // does, to apply a cleared localStorage) cuts the first page's own load
+    // short. The page's top-level loader logs the rejection of the request it
+    // was waiting for, as the loaders it calls do for theirs; the console
+    // guard must take that for what it is. Before `Error loading PR` and
+    // `Error loading local review` were on its list this failed a test about
+    // once in a few hundred runs, whenever the reload came before the first
+    // answer (ledger H148).
+    test('the interruption the top-level loader logs does not fail a test', async ({ page }) => {
+      const first = mode.local ? /\/api\/local\/2$/ : /\/api\/pr\/test-owner\/test-repo\/1$/;
+      let requested;
+      const firstRequested = new Promise((resolve) => { requested = resolve; });
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      let holding = true;
+      await page.route(first, async (route) => {
+        if (!holding) return route.continue();
+        holding = false;
+        requested();
+        await held;
+        // The page that asked has been reloaded: there is nothing to answer.
+        return route.abort().catch(() => {});
+      });
+      const logged = [];
+      page.on('console', (message) => { if (message.type() === 'error') logged.push(message.text()); });
+
+      await page.goto(mode.path, { waitUntil: 'commit' });
+      await firstRequested;
+      await page.reload();
+      release();
+      await waitForDiffToRender(page);
+      const line = mode.local ? /^Error loading local review: TypeError: Failed to fetch/ : /^Error loading PR: TypeError: Failed to fetch/;
+      await expect.poll(() => logged.some((text) => line.test(text))).toBe(true);
+    });
+  });
+}
+

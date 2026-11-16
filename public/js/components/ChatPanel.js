@@ -5849,8 +5849,35 @@ class ChatPanel {
     const lineStart = linkEl.dataset.lineStart ? parseInt(linkEl.dataset.lineStart, 10) : null;
     const lineEnd = linkEl.dataset.lineEnd ? parseInt(linkEl.dataset.lineEnd, 10) : null;
 
+    // A file the diff pane holds as an item of its one viewer is decided
+    // from data: it has no element while it is far from the viewport, and a
+    // context file's ranges are not in the DOM as chunks.
+    const manager = window.prManager;
+    const itemKind = manager?.pierreBridge?.files?.get?.(file)?.kind;
+    if (itemKind === 'diff') {
+      if (lineStart) {
+        await this._scrollToLine(file, lineStart, lineEnd);
+      } else if (manager.scrollToFile) {
+        manager.scrollToFile(file);
+      }
+      return;
+    }
+    if (itemKind === 'context') {
+      // The line is shown when a stored range holds it, or when the reader
+      // has revealed it by hand; then no range needs adding.
+      const rows = (manager.contextFiles || []).filter(row => row.file === file);
+      const holding = lineStart
+        ? rows.find(row => row.line_start <= lineStart && row.line_end >= lineStart)
+        : null;
+      if (!lineStart || holding || manager.pierreBridge.isLineVisible(file, lineStart, 'RIGHT')) {
+        manager.scrollToContextFile?.(file, lineStart, (holding || rows[0])?.id);
+        return;
+      }
+      // Not shown: fall through and add the range.
+    }
+
     // Check if file wrapper exists in DOM
-    const wrapper = document.querySelector(`[data-file-name="${CSS.escape(file)}"]`);
+    const wrapper = itemKind ? null : document.querySelector(`[data-file-name="${CSS.escape(file)}"]`);
 
     if (wrapper) {
       // File is already rendered — scroll to it
@@ -5913,8 +5940,11 @@ class ChatPanel {
           window.prManager.scrollToFile(file);
         }
       } else if (result.type === 'context') {
-        // Brief delay for DOM to settle after loadContextFiles
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Brief delay for DOM to settle after loadContextFiles. Not for an
+        // item of the viewer: it is in the pane when the load has settled.
+        if (window.prManager.pierreBridge?.files?.get?.(file)?.kind !== 'context') {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
         if (window.prManager.scrollToContextFile) {
           window.prManager.scrollToContextFile(file, lineStart, result.contextFile?.id);
         }
@@ -5941,6 +5971,21 @@ class ChatPanel {
    * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
    */
   async _scrollToLine(file, lineStart, lineEnd, side = 'RIGHT', fileWrapper) {
+    // The page's one navigation helper, where it serves a line target: the
+    // file need not have an element, the line is flashed once it is what
+    // the file draws, and a line the file does not show (a collapsed file)
+    // goes to the file's header.
+    const manager = window.prManager;
+    if (typeof manager?.revealInDiff === 'function') {
+      const result = await manager.revealInDiff({
+        file, line_start: lineStart, line_end: lineEnd || lineStart, side, flashLines: true
+      });
+      if (result?.handled || result?.cancelled) {
+        if (result.handled && !result.revealed && manager.scrollToFile) manager.scrollToFile(file);
+        return;
+      }
+    }
+
     if (!fileWrapper) {
       const escaped = CSS.escape(file);
       fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||

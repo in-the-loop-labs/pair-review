@@ -275,11 +275,11 @@ for (const gap of [2, 5, 6]) {
 }
 
 test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the item lay itself out from its diff again after the expansion map was emptied by hand', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge._clearExpansions. The bridge empties
-  // `instance.hunksRenderer.expandedHunks` before it publishes metadata with
-  // other hunks (the map is keyed by hunk index), and the item's cached
-  // heights were computed with the expanded lines in them. This is the
-  // second vendor internal the bridge calls (ledger H120).
+  // Depends on it: PierreCodeViewBridge._clearExpansionMap. The bridge empties
+  // `instance.hunksRenderer.expandedHunks` when the viewer is about to draw
+  // metadata with other hunks (the map is keyed by hunk index), and the
+  // item's cached heights were computed with the expanded lines in them.
+  // This is the second vendor internal the bridge calls (ledger H120).
   const page = await harness.open();
   const result = await page.evaluate(async () => {
     const H = window.H;
@@ -337,5 +337,75 @@ test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the ite
   expect(result.after.rows).toBe(result.start.rows);
   expect(result.after.height).toBe(result.start.height);
   expect(result.after.clean).toBe(true);
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+test('hunksRenderer.getDiffForNextRender names the diff the next draw will be, and onRenderUpdate is called when an awaited diff has its result staged, before it is drawn', async ({ harness }) => {
+  // Depends on it: PierreCodeViewBridge._retireExpansions (ledger F28, H146).
+  // The expansion map is keyed by hunk index and belongs to the diff on
+  // screen. When the bridge publishes a diff with other hunks it has to know
+  // whether the viewer's next draw is that diff (the map must be empty before
+  // the publish) or still the old one (the map must stay until the new diff
+  // is about to be drawn). The row renderer answers the first question, and
+  // its one callback marks the moment of the second.
+  const page = await harness.open({ scripts: ['/app/js/modules/pierre-context.js'] });
+  const result = await page.evaluate(async () => {
+    const H = window.H;
+    const { roles } = H.workload;
+    const T = roles.large;
+    await H.appLike({ parse: { cacheKeyPrefix: 'contract:1' }, build: { only: [T, roles.noNewline] }, pool: true });
+    await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
+    const instance = H.instance(T);
+    const renderer = instance.hunksRenderer;
+    const base = H.cv.getItem(T).fileDiff;
+    const out = {
+      has: {
+        getDiffForNextRender: typeof renderer.getDiffForNextRender === 'function',
+        onRenderUpdate: typeof renderer.onRenderUpdate === 'function',
+      },
+    };
+
+    // A highlighted file: a new diff waits for its highlight result.
+    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));
+    out.beforePublish = { nextIsOnScreen: renderer.getDiffForNextRender(hydrated) === base, nextIsNew: renderer.getDiffForNextRender(hydrated) === hydrated };
+    const calls = [];
+    const original = renderer.onRenderUpdate;
+    renderer.onRenderUpdate = (...args) => {
+      calls.push({ staged: renderer.pendingHighlightResult?.diff === hydrated, drawn: instance.getRenderedDiff() === hydrated });
+      return original.apply(renderer, args);
+    };
+    H.update(T, { fileDiff: hydrated });
+    H.cv.render(true);
+    out.pending = { drawn: instance.getRenderedDiff() === hydrated, nextIsOnScreen: renderer.getDiffForNextRender(hydrated) === base, callsSoFar: calls.length };
+    await H.until(() => instance.getRenderedDiff() === hydrated, 30000);
+    renderer.onRenderUpdate = original;
+    out.calls = { stagedBeforeDrawn: calls.filter((call) => call.staged && !call.drawn).length, afterDrawn: calls.filter((call) => call.drawn).length };
+    await H.settle();
+
+    // The same file as plain text, with other hunks: nothing to wait for.
+    const first = hydrated.hunks[0];
+    const gapLine = first.additionStart + first.additionCount + 30;
+    const plain = {
+      ...window.PierreContext.mergeContextRanges(hydrated, [{ startLine: gapLine, endLine: gapLine + 9 }]),
+      lang: 'text',
+      cacheKey: `${hydrated.cacheKey}|plain`,
+    };
+    out.plain = { nextIsNew: renderer.getDiffForNextRender(plain) === plain };
+    H.update(T, { fileDiff: plain });
+    H.cv.render(true);
+    out.plain.drawnInTheSameTask = instance.getRenderedDiff() === plain;
+    out.plain.rowInDom = !!H.findRow(T, gapLine);
+    await H.settle();
+    out.clean = H.auditClean();
+    return out;
+  });
+  expect(result.has).toEqual({ getDiffForNextRender: true, onRenderUpdate: true });
+  expect(result.beforePublish).toEqual({ nextIsOnScreen: true, nextIsNew: false });
+  expect(result.pending).toEqual({ drawn: false, nextIsOnScreen: true, callsSoFar: 0 });
+  // Called with the new diff's result staged while the old diff is still what is drawn; never after the draw.
+  expect(result.calls.stagedBeforeDrawn).toBeGreaterThanOrEqual(1);
+  expect(result.calls.afterDrawn).toBe(0);
+  expect(result.plain).toEqual({ nextIsNew: true, drawnInTheSameTask: true, rowInDom: true });
+  expect(result.clean).toBe(true);
   expect(harness.validatorErrors(page)).toEqual([]);
 });

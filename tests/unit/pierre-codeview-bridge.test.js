@@ -818,7 +818,8 @@ describe('a list write asked for inside a viewer callback', () => {
     expect(bridge.isLineVisible('src/a.js', 130, 'RIGHT')).toBe(true);
     await Promise.resolve();
     expect(map.size).toBe(0);
-    expect(record.contextRanges).toEqual([{ startLine: 124, endLine: 143 }]);
+    // The diff of the two contents has its first hunk on lines 116-124.
+    expect(record.contextRanges).toEqual([{ startLine: 125, endLine: 144 }]);
     expect(record.metadata.cacheKey).not.toBe(key);
     expect(record._instance).toBeNull();
     expect(bridge.isLineVisible('src/a.js', 130, 'RIGHT')).toBe(true);
@@ -846,8 +847,8 @@ describe('contents and derived metadata', () => {
 
   it('upgradeStrategy: by the type of the diff', () => {
     const strategy = PierreCodeViewBridge.upgradeStrategy;
-    expect(strategy({ type: 'change', hunks: [{}] })).toBe('hydrate');
-    expect(strategy({ type: 'rename-changed', hunks: [{}] })).toBe('hydrate');
+    expect(strategy({ type: 'change', hunks: [{}] })).toBe('rediff');
+    expect(strategy({ type: 'rename-changed', hunks: [{}] })).toBe('rediff');
     expect(strategy({ type: 'new', hunks: [{}] })).toBe('none');
     expect(strategy({ type: 'deleted', hunks: [{}] })).toBe('none');
     expect(strategy({ type: 'rename-pure', hunks: [] })).toBe('reparse');
@@ -856,7 +857,7 @@ describe('contents and derived metadata', () => {
     expect(strategy({ type: 'change' })).toBe('none');
   });
 
-  it('a changed file is hydrated: git\'s hunks kept, no longer partial, published under a new key', () => {
+  it('a changed file\'s two contents are diffed again: the vendor\'s hunks of them, every line of the patch still shown, a new key', () => {
     bridge.renderAll([diffEntry(A)]);
     const record = bridge.files.get('src/a.js');
     const patchKey = record.metadata.cacheKey;
@@ -864,15 +865,58 @@ describe('contents and derived metadata', () => {
     expect(bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile)).toBe(true);
     expect(record.upgraded).toBe(true);
     expect(record.metadata.isPartial).toBe(false);
-    expect(record.metadata.hunks.map((h) => [h.additionStart, h.additionCount])).toEqual(record.patchMetadata.hunks.map((h) => [h.additionStart, h.additionCount]));
+    // What the per-file renderer drew: the vendor's diff of the two contents...
+    const reference = vendor.parseDiffFromFile(A.oldFile, A.newFile);
+    const spans = (metadata) => metadata.hunks.map((h) => [h.additionStart, h.additionCount, h.deletionStart, h.deletionCount]);
+    expect(spans(record.baseMetadata)).toEqual(spans(reference));
+    // ...with the lines the patch showed kept on screen.
+    const patchRanges = record.patchMetadata.hunks.map((h) => ({ startLine: h.additionStart, endLine: h.additionStart + h.additionCount - 1 }));
+    expect(record.parityRanges).toEqual(patchRanges);
+    expect(spans(record.metadata)).toEqual(spans(env.window.PierreContext.mergeContextRanges(reference, patchRanges)));
+    for (const range of patchRanges) {
+      for (let line = range.startLine; line <= range.endLine; line++) expect(bridge.isLineVisible('src/a.js', line, 'RIGHT'), `line ${line}`).toBe(true);
+    }
     expect(record.metadata.additionLines).toHaveLength(401);
+    expect(record.metadata.name).toBe('src/a.js');
     expect(record.metadata.cacheKey).not.toBe(patchKey);
-    expect(record.metadata.cacheKey.startsWith(`${record.baseKey}|d`)).toBe(true);
+    expect(record.metadata.cacheKey).toBeTruthy();
+    expect(record.baseMetadata.cacheKey).toBeTruthy();
     expect(viewer().count('updateItem')).toBe(1);
     expect(viewer().last('updateItem').args[0].fileDiff).toBe(record.metadata);
     // A second call changes nothing.
     expect(bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile)).toBe(true);
     expect(viewer().count('updateItem')).toBe(1);
+  });
+
+  it('a patch with more context than the diff of the contents keeps every one of its lines on screen', () => {
+    // Ten lines of context around one changed line; the vendor's diff has four.
+    const oldLines = numberedLines(80);
+    const newLines = oldLines.slice();
+    newLines[39] = 'line 40 changed';
+    const hunk = [
+      ...oldLines.slice(29, 39).map((line) => ` ${line}`),
+      `-${oldLines[39]}`,
+      `+${newLines[39]}`,
+      ...oldLines.slice(40, 50).map((line) => ` ${line}`),
+    ];
+    const patch = `diff --git a/wide.js b/wide.js\n--- a/wide.js\n+++ b/wide.js\n@@ -30,21 +30,21 @@\n${hunk.join('\n')}\n`;
+    bridge.renderAll([{ id: 'wide.js', kind: 'diff', patch }]);
+    const record = bridge.files.get('wide.js');
+    expect(bridge.upgradeFileContents('wide.js', { name: 'wide.js', contents: `${oldLines.join('\n')}\n` }, { name: 'wide.js', contents: `${newLines.join('\n')}\n` })).toBe(true);
+    expect(record.baseMetadata.hunks.map((h) => [h.additionStart, h.additionCount])).toEqual([[36, 9]]);
+    expect(record.parityRanges).toEqual([{ startLine: 30, endLine: 50 }]);
+    expect([29, 30, 35, 45, 50, 51].map((line) => bridge.isLineVisible('wide.js', line, 'RIGHT'))).toEqual([false, true, true, true, true, false]);
+    // A later reveal keeps them too.
+    bridge.addContextRanges('wide.js', [{ startLine: 70, endLine: 72 }]);
+    expect([30, 50, 71].map((line) => bridge.isLineVisible('wide.js', line, 'RIGHT'))).toEqual([true, true, true]);
+  });
+
+  it('patchParityRanges: one range per hunk that shows a line of the new file', () => {
+    const ranges = PierreCodeViewBridge.patchParityRanges;
+    expect(ranges({ hunks: [{ additionStart: 5, additionCount: 7 }, { additionStart: 40, additionCount: 0 }, { additionStart: 90, additionCount: 1 }] }))
+      .toEqual([{ startLine: 5, endLine: 11 }, { startLine: 90, endLine: 90 }]);
+    expect(ranges({ hunks: [] })).toEqual([]);
+    expect(ranges(null)).toEqual([]);
   });
 
   it('an added and a deleted file are marked as upgraded without a publish', () => {
@@ -913,15 +957,36 @@ describe('contents and derived metadata', () => {
     }
   });
 
-  it('hydration that throws leaves the file as it was and says so', () => {
+  it('contents the vendor cannot diff leave the file as it was and say so', () => {
     bridge.renderAll([diffEntry(A)]);
-    env.window.PierreDiffs.hydratePartialDiff = () => { throw new Error('contents do not match'); };
+    const parse = env.window.PierreDiffs.parseDiffFromFile;
+    env.window.PierreDiffs.parseDiffFromFile = () => { throw new Error('contents do not match'); };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile)).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('src/a.js'), expect.any(Error));
     warn.mockRestore();
-    expect(bridge.files.get('src/a.js').upgraded).toBe(false);
-    expect(bridge.files.get('src/a.js').metadata).toBe(bridge.files.get('src/a.js').patchMetadata);
+    env.window.PierreDiffs.parseDiffFromFile = parse;
+    const record = bridge.files.get('src/a.js');
+    expect(record.upgraded).toBe(false);
+    expect(record.metadata).toBe(record.patchMetadata);
+    expect(record.parityRanges).toEqual([]);
+  });
+
+  it('a changed file with one side of its contents missing, or with both sides the same, keeps the diff of its patch', () => {
+    bridge.renderAll([diffEntry(A), diffEntry(B)]);
+    viewer().calls.length = 0;
+    expect(bridge.upgradeFileContents('src/a.js', null, A.newFile)).toBe(false);
+    expect(bridge.upgradeFileContents('src/a.js', A.oldFile, null)).toBe(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(bridge.upgradeFileContents('src/b.js', B.newFile, B.newFile)).toBe(false);
+    warn.mockRestore();
+    for (const id of ['src/a.js', 'src/b.js']) {
+      expect(bridge.files.get(id).upgraded, id).toBe(false);
+      expect(bridge.files.get(id).metadata, id).toBe(bridge.files.get(id).patchMetadata);
+    }
+    expect(viewer().count('updateItem')).toBe(0);
+    // The contents can still arrive later.
+    expect(bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile)).toBe(true);
   });
 
   it('a file the bridge does not hold, a context file and a deferred file are not upgraded', () => {
@@ -931,7 +996,7 @@ describe('contents and derived metadata', () => {
     expect(bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile)).toBe(false);
   });
 
-  it('forcePlainText: the patch\'s metadata and the hydrated one are both plain text', () => {
+  it('forcePlainText: the patch\'s metadata and the one made from the contents are both plain text', () => {
     bridge.renderAll([diffEntry(A, { forcePlainText: true })]);
     expect(bridge.files.get('src/a.js').metadata.lang).toBe('text');
     bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile);
@@ -1023,13 +1088,13 @@ describe('the visibility oracle', () => {
   it('counts what the reader expanded by hand, read from the viewer instance\'s own record, and gaps of five lines or fewer', () => {
     bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile);
     const record = bridge.files.get('src/a.js');
-    // Gap 1 is new lines 124-246. The instance is what the bridge learns from the viewer's mount callback.
+    // Gap 1 is new lines 125-245. The instance is what the bridge learns from the viewer's mount callback.
     record._instance = { hunksRenderer: { expandedHunks: new Map([[1, { fromStart: 20, fromEnd: 0 }]]) } };
-    expect(bridge.isLineVisible('src/a.js', 124, 'RIGHT')).toBe(true);
-    expect(bridge.isLineVisible('src/a.js', 143, 'RIGHT')).toBe(true);
-    expect(bridge.isLineVisible('src/a.js', 144, 'RIGHT')).toBe(false);
-    // Old numbering on the left: the same lines are old 124-143 (nothing was inserted above them).
-    expect(bridge.isLineVisible('src/a.js', 143, 'LEFT')).toBe(true);
+    expect(bridge.isLineVisible('src/a.js', 125, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('src/a.js', 144, 'RIGHT')).toBe(true);
+    expect(bridge.isLineVisible('src/a.js', 145, 'RIGHT')).toBe(false);
+    // Old numbering on the left: the same lines are old 125-144 (nothing was inserted above them).
+    expect(bridge.isLineVisible('src/a.js', 144, 'LEFT')).toBe(true);
 
     // A range that leaves a gap of five lines before the second hunk: the viewer paints such a gap in full.
     record._instance.hunksRenderer.expandedHunks.clear();
@@ -1047,13 +1112,12 @@ describe('the visibility oracle', () => {
     record._instance.resetLayoutCache = resetLayoutCache;
     bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
     expect(map.size).toBe(0);
-    // The viewer still draws the old diff, now without those lines: it is
-    // told to compute the item's height again, once.
+    // The file is not on screen: its height is computed again when it is, once.
     expect(resetLayoutCache.mock.calls).toEqual([[{ includeEstimatedHeights: true }]]);
-    // Infinity is the whole gap (124-246), clamped to it; ten lines before the first hunk.
-    expect(record.contextRanges).toEqual([{ startLine: 107, endLine: 116 }, { startLine: 124, endLine: 246 }, { startLine: 300, endLine: 302 }]);
+    // Infinity is the whole gap (125-245), clamped to it; ten lines before the first hunk.
+    expect(record.contextRanges).toEqual([{ startLine: 106, endLine: 115 }, { startLine: 125, endLine: 245 }, { startLine: 300, endLine: 302 }]);
     expect(bridge.isLineVisible('src/a.js', 200, 'RIGHT')).toBe(true);
-    expect(bridge.isLineVisible('src/a.js', 106, 'RIGHT')).toBe(false);
+    expect(bridge.isLineVisible('src/a.js', 105, 'RIGHT')).toBe(false);
   });
 
   it('a reveal on a file with nothing expanded by hand does not touch the viewer\'s layout', () => {
@@ -1268,7 +1332,7 @@ describe('reconcile', () => {
     recordB._instance = { hunksRenderer: { expandedHunks: new Map() } };
     const [keyA, keyB, metadataB] = [recordA.metadata.cacheKey, recordB.metadata.cacheKey, recordB.metadata];
     bridge.reconcile([diffEntry(A), contextEntry('ctx/c.js'), diffEntry(B)]);
-    expect(recordA.contextRanges).toEqual([{ startLine: 124, endLine: 143 }]);
+    expect(recordA.contextRanges).toEqual([{ startLine: 125, endLine: 144 }]);
     expect(recordA.metadata.cacheKey).not.toBe(keyA);
     expect(map.size).toBe(0);
     expect(bridge.isLineVisible('src/a.js', 130, 'RIGHT')).toBe(true);
@@ -1403,6 +1467,551 @@ describe('scroll targets, selection, code text', () => {
     expect(bridge.getCodeFromLines('src/a.js', 120, 120, 'LEFT').trim()).toBe('line 120');
     expect(bridge.getCodeFromLines('src/a.js', 10, 12, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines('nope.js', 1, 2, 'RIGHT')).toBeNull();
+  });
+});
+
+describe('navigation to what is not mounted, a collapse while inside a file, a flashed range', () => {
+  /** A host for a file, as the viewer's mount callback hands it over: an element in the document, `box` its place. */
+  function mount(id, { box = { top: 0, bottom: 400 }, renderedDiff } = {}) {
+    const host = env.window.document.createElement('div');
+    env.window.document.body.appendChild(host);
+    host.getBoundingClientRect = () => ({ top: box.top, bottom: box.bottom, height: box.bottom - box.top, left: 0, right: 100, width: 100 });
+    const instance = { hunksRenderer: { expandedHunks: new Map() }, getRenderedDiff: () => renderedDiff ?? bridge.files.get(id).metadata };
+    const context = { item: { id }, element: host, instance };
+    viewer().options.onPostRender(host, instance, 'mount', context);
+    return { host, instance, context };
+  }
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A), diffEntry(B)]);
+    viewer().calls.length = 0;
+  });
+
+  it('scrollToAnnotation sends a line target for a card that is not in the document, an item target for a file-level one', () => {
+    bridge.addAnnotation('src/a.js', { lineNumber: 120, side: 'LEFT', type: 'card', data: {}, id: 'on-line' });
+    bridge.addAnnotation('src/a.js', { lineNumber: 0, side: 'RIGHT', type: 'card', data: {}, id: 'file-level' });
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'on-line')).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'line', id: 'src/a.js', lineNumber: 120, side: 'deletions', align: 'start', behavior: 'instant' });
+    expect(bridge.scrollToAnnotation('./src/a.js', 'file-level', { behavior: 'smooth' })).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', behavior: 'smooth' });
+    expect(viewer().calls.some((c) => c.name === 'scrollTo' && c.args[0].type === 'position')).toBe(false);
+  });
+
+  it('scrollToAnnotation moves nothing for a card that is in the document, and answers false where the file does not show the line', () => {
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation('src/a.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'shown' });
+    bridge.addAnnotation('src/a.js', { lineNumber: 10, side: 'RIGHT', type: 'card', data: {}, id: 'hidden-line' });
+    const card = bridge.getAnnotationElement('src/a.js', 'shown', { create: true });
+    env.window.document.body.appendChild(card);
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'shown')).toBe(true);
+    expect(bridge.scrollToAnnotation('src/a.js', 'hidden-line')).toBe(false);
+    expect(bridge.scrollToAnnotation('src/a.js', 'no-such-card')).toBe(false);
+    expect(bridge.scrollToAnnotation('nope.js', 'shown')).toBe(false);
+    bridge.setCollapsed('src/a.js', true);
+    card.remove();
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'shown')).toBe(false);
+    expect(viewer().count('scrollTo')).toBe(0);
+  });
+
+  /**
+   * A file's element as the viewer builds it: the card of every annotation
+   * is a child of the element, in a wrapper that names a slot; the slot is
+   * in the row under the card's line, and only the rows of the row window
+   * exist. `drawRow(name)` adds the slot of a row to the shadow tree.
+   */
+  function fileElement(id, { renderedDiff, rows = 3 } = {}) {
+    const { host } = mount(id, { renderedDiff });
+    const shadow = host.attachShadow({ mode: 'open' });
+    const column = env.window.document.createElement('div');
+    column.setAttribute('data-content', '');
+    for (let i = 0; i < rows; i++) column.appendChild(env.window.document.createElement('div'));
+    shadow.appendChild(column);
+    const wrap = (card, name) => {
+      const wrapper = env.window.document.createElement('div');
+      wrapper.slot = name;
+      wrapper.appendChild(card);
+      host.appendChild(wrapper);
+      return wrapper;
+    };
+    const drawRow = (name) => {
+      const slot = env.window.document.createElement('slot');
+      slot.name = name;
+      shadow.appendChild(slot);
+      return slot;
+    };
+    return { host, wrap, drawRow };
+  }
+
+  it('isElementDrawn: a card in a file\'s element is drawn when the row under its line is, not when it is in the document', () => {
+    const doc = env.window.document;
+    const { wrap, drawRow } = fileElement('src/a.js');
+    const card = doc.createElement('div');
+    const inner = doc.createElement('span');
+    card.appendChild(inner);
+    expect(bridge.isElementDrawn(null)).toBe(false);
+    expect(bridge.isElementDrawn(card)).toBe(false);
+    // In the document, with no row to be shown in: a line outside the row window.
+    wrap(card, 'annotation-additions-8000');
+    expect(card.isConnected).toBe(true);
+    expect(bridge.isElementDrawn(card)).toBe(false);
+    expect(bridge.isElementDrawn(inner)).toBe(false);
+    // The window moves over the line.
+    const slot = drawRow('annotation-additions-8000');
+    expect(bridge.isElementDrawn(card)).toBe(true);
+    expect(bridge.isElementDrawn(inner)).toBe(true);
+    // And away again.
+    slot.remove();
+    expect(bridge.isElementDrawn(card)).toBe(false);
+    // An element that is in no file's element: in the document is all there is to ask.
+    const loose = doc.createElement('div');
+    expect(bridge.isElementDrawn(loose)).toBe(false);
+    doc.body.appendChild(loose);
+    expect(bridge.isElementDrawn(loose)).toBe(true);
+  });
+
+  it('scrollToAnnotation sends the line target for a card that is in the document and not drawn, and nothing once it is drawn', () => {
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation('src/a.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'far' });
+    bridge.addAnnotation('src/a.js', { lineNumber: 0, side: 'RIGHT', type: 'card', data: {}, id: 'file-level' });
+    const { wrap, drawRow } = fileElement('src/a.js');
+    wrap(bridge.getAnnotationElement('src/a.js', 'far', { create: true }), 'annotation-additions-120');
+    wrap(bridge.getAnnotationElement('src/a.js', 'file-level', { create: true }), 'annotation-additions-0');
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'far')).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'line', id: 'src/a.js', lineNumber: 120, side: 'additions', align: 'start', behavior: 'instant' });
+    expect(bridge.scrollToAnnotation('src/a.js', 'file-level')).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', behavior: 'instant' });
+    drawRow('annotation-additions-120');
+    drawRow('annotation-additions-0');
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'far')).toBe(true);
+    expect(bridge.scrollToAnnotation('src/a.js', 'file-level')).toBe(true);
+    expect(viewer().count('scrollTo')).toBe(0);
+  });
+
+  it('whenAnnotationRendered waits for a card that is in the document until the viewer draws it', async () => {
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation('src/a.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'far' });
+    const { wrap, drawRow } = fileElement('src/a.js');
+    const card = bridge.getAnnotationElement('src/a.js', 'far', { create: true });
+    wrap(card, 'annotation-additions-120');
+    const waiting = bridge.whenAnnotationRendered('src/a.js', 'far');
+    let settled;
+    waiting.then((value) => { settled = value; });
+    await Promise.resolve();
+    expect(settled).toBeUndefined();
+    drawRow('annotation-additions-120');
+    expect(await waiting).toBe(card);
+    // Drawn: at once.
+    expect(await bridge.whenAnnotationRendered('src/a.js', 'far')).toBe(card);
+    // Never drawn: null when the time runs out, not the card that is merely in the document.
+    bridge.addAnnotation('src/a.js', { lineNumber: 121, side: 'RIGHT', type: 'card', data: {}, id: 'never' });
+    wrap(bridge.getAnnotationElement('src/a.js', 'never', { create: true }), 'annotation-additions-121');
+    expect(await bridge.whenAnnotationRendered('src/a.js', 'never', { timeoutMs: 0 })).toBeNull();
+  });
+
+  it('a card that is attached while its file\'s new diff awaits display: nothing is sent and the wait answers at once, unless the file is drawn in row windows', async () => {
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation('src/a.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'revealed' });
+    bridge.addAnnotation('src/b.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'revealed-b' });
+    // The viewer still draws another diff than the one the bridge published last.
+    const small = fileElement('src/a.js', { renderedDiff: { name: 'the diff before' } });
+    const card = bridge.getAnnotationElement('src/a.js', 'revealed', { create: true });
+    small.wrap(card, 'annotation-additions-120');
+    expect(bridge.isDiffDisplayed('src/a.js')).toBe(false);
+    expect(bridge.isElementDrawn(card)).toBe(false);
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation('src/a.js', 'revealed')).toBe(true);
+    expect(viewer().count('scrollTo')).toBe(0);
+    expect(await bridge.whenAnnotationRendered('src/a.js', 'revealed', { timeoutMs: 0 })).toBe(card);
+
+    // A file of 5,000 rows or more: the display draws the rows of the window the pane is in.
+    const long = fileElement('src/b.js', { renderedDiff: { name: 'the diff before' }, rows: 5000 });
+    const far = bridge.getAnnotationElement('src/b.js', 'revealed-b', { create: true });
+    long.wrap(far, 'annotation-additions-120');
+    expect(bridge.scrollToAnnotation('src/b.js', 'revealed-b')).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'line', id: 'src/b.js', lineNumber: 120, side: 'additions', align: 'start', behavior: 'instant' });
+    expect(await bridge.whenAnnotationRendered('src/b.js', 'revealed-b', { timeoutMs: 0 })).toBeNull();
+    long.drawRow('annotation-additions-120');
+    expect(await bridge.whenAnnotationRendered('src/b.js', 'revealed-b', { timeoutMs: 0 })).toBe(far);
+  });
+
+  it('whenElementDrawn: at once for an element that is drawn and for none, else when the viewer draws it', async () => {
+    const doc = env.window.document;
+    const { wrap, drawRow } = fileElement('src/a.js');
+    expect(await bridge.whenElementDrawn(null)).toBe(false);
+    const card = doc.createElement('div');
+    wrap(card, 'annotation-additions-0');
+    const waiting = bridge.whenElementDrawn(card);
+    let settled = null;
+    waiting.then((value) => { settled = value; });
+    await Promise.resolve();
+    expect(settled).toBeNull();
+    drawRow('annotation-additions-0');
+    expect(await waiting).toBe(true);
+    expect(await bridge.whenElementDrawn(card)).toBe(true);
+  });
+
+  it('whenElementDrawn stops when cancelled, when the time runs out and when the bridge is destroyed', async () => {
+    const doc = env.window.document;
+    const { wrap } = fileElement('src/a.js');
+    const card = doc.createElement('div');
+    wrap(card, 'annotation-additions-0');
+    let cancel = false;
+    const cancelled = bridge.whenElementDrawn(card, { isCancelled: () => cancel });
+    cancel = true;
+    expect(await cancelled).toBe(false);
+    expect(await bridge.whenElementDrawn(card, { timeoutMs: 0 })).toBe(false);
+    const destroyed = bridge.whenElementDrawn(card);
+    bridge.destroy();
+    expect(await destroyed).toBe(false);
+  });
+
+  it('isEditingInside: the focus is in a text field of the file, not merely somewhere in it', () => {
+    const { host } = mount('src/a.js');
+    const textarea = env.window.document.createElement('textarea');
+    const button = env.window.document.createElement('button');
+    host.append(textarea, button);
+    const outside = env.window.document.createElement('textarea');
+    env.window.document.body.appendChild(outside);
+    expect(bridge.isEditingInside('src/a.js')).toBe(false);
+    textarea.focus();
+    expect(bridge.hasFocusInside('src/a.js')).toBe(true);
+    expect(bridge.isEditingInside('src/a.js')).toBe(true);
+    expect(bridge.isEditingInside('src/b.js')).toBe(false);
+    button.focus();
+    expect(bridge.hasFocusInside('src/a.js')).toBe(true);
+    expect(bridge.isEditingInside('src/a.js')).toBe(false);
+    outside.focus();
+    expect(bridge.isEditingInside('src/a.js')).toBe(false);
+    expect(bridge.isEditingInside('nope.js')).toBe(false);
+  });
+
+  it('collapsing a file the reader is inside keeps its header at the top of the pane', () => {
+    bridge.root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    // The file starts 300 px above the pane's top edge and ends below it.
+    mount('src/a.js', { box: { top: -200, bottom: 900 } });
+    viewer().calls.length = 0;
+    bridge.setCollapsed('src/a.js', true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', behavior: 'instant' });
+    // The collapse is published before the target is sent.
+    const names = viewer().calls.map((c) => c.name);
+    expect(names.indexOf('updateItem')).toBeLessThan(names.lastIndexOf('scrollTo'));
+  });
+
+  it('collapsing a file whose top is in view, a file below or above the pane, or an unmounted file scrolls nowhere; neither does expanding', () => {
+    bridge.root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    mount('src/a.js', { box: { top: 100, bottom: 900 } });
+    bridge.setCollapsed('src/a.js', true);
+    bridge.setCollapsed('src/a.js', false);
+    const b = mount('src/b.js', { box: { top: 900, bottom: 1500 } });
+    bridge.setCollapsed('src/b.js', true);
+    bridge.setCollapsed('src/b.js', false);
+    b.host.getBoundingClientRect = () => ({ top: -900, bottom: 50, height: 950, left: 0, right: 100, width: 100 });
+    bridge.setCollapsed('src/b.js', true);
+    // Expanding a collapsed file the pane's top edge is inside (its header).
+    b.host.getBoundingClientRect = () => ({ top: 60, bottom: 113, height: 53, left: 0, right: 100, width: 100 });
+    bridge.setCollapsed('src/b.js', false);
+    bridge.renderAll([diffEntry(A)]);
+    bridge.setCollapsed('src/a.js', true);
+    expect(viewer().count('scrollTo')).toBe(0);
+  });
+
+  it('scrollToLine with endLine flashes every line of the range the file shows, as one flash', () => {
+    expect(bridge.scrollToLine('src/a.js', 118, 'RIGHT', { endLine: 121 })).toBe(true);
+    const record = bridge.files.get('src/a.js');
+    expect(record._flash.lines).toEqual([118, 119, 120, 121]);
+    expect(viewer().count('scrollTo')).toBe(1);
+    // A range that runs out of what the file shows flashes the lines it does show.
+    const last = record.metadata.hunks[0].additionStart + record.metadata.hunks[0].additionCount - 1;
+    bridge.scrollToLine('src/a.js', last - 1, 'RIGHT', { endLine: last + 4, scroll: false });
+    expect(record._flash.lines).toEqual([last - 1, last]);
+    // One line: the flash it always was.
+    bridge.scrollToLine('src/a.js', 120, 'RIGHT', { scroll: false });
+    expect(record._flash.lines).toEqual([120]);
+    bridge._endFlash(record);
+    expect(record._flash).toBeNull();
+  });
+
+  it('scrollToLine with ifNeeded scrolls when the line has no row on screen', () => {
+    // Not mounted: no row.
+    expect(bridge.scrollToLine('src/a.js', 120, 'RIGHT', { ifNeeded: true, flash: false })).toBe(true);
+    expect(viewer().count('scrollTo')).toBe(1);
+  });
+});
+
+describe('what the reader expanded by hand, while the file still draws the diff it was expanded in (H120)', () => {
+  let record;
+  let instance;
+  let host;
+  let drawn;
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile);
+    record = bridge.files.get('src/a.js');
+    host = env.window.document.createElement('div');
+    env.window.document.body.appendChild(host);
+    drawn = record.metadata;
+    instance = {
+      hunksRenderer: { expandedHunks: new Map([[1, { fromStart: 20, fromEnd: 0 }]]) },
+      getRenderedDiff: () => drawn,
+      resetLayoutCache: vi.fn(),
+    };
+    viewer().options.onPostRender(host, instance, 'mount', { item: { id: 'src/a.js' }, element: host, instance });
+    viewer().calls.length = 0;
+  });
+
+  const draw = (phase = 'update') => viewer().options.onPostRender(host, instance, phase, { item: { id: 'src/a.js' }, element: host, instance });
+
+  it('a reveal keeps the viewer\'s record of them until the viewer draws the new diff, then drops it and draws once more', async () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    const before = record.metadata;
+    expect(bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }])).toBe(true);
+    // Folded into the file's ranges: the data is right at once...
+    expect(record.contextRanges).toEqual([{ startLine: 125, endLine: 144 }, { startLine: 300, endLine: 302 }]);
+    expect(record.metadata).not.toBe(before);
+    expect([125, 144, 145, 301].map((line) => bridge.isLineVisible('src/a.js', line, 'RIGHT'))).toEqual([true, true, false, true]);
+    // ...and the viewer, which goes on drawing the old diff, keeps what it draws it with.
+    expect(map.size).toBe(1);
+    expect(instance.resetLayoutCache).not.toHaveBeenCalled();
+    expect(viewer().count('updateItem')).toBe(1);
+
+    // Draws of the old diff meanwhile change nothing.
+    draw();
+    expect(map.size).toBe(1);
+    expect(viewer().count('updateItem')).toBe(1);
+
+    // The viewer draws the new diff: the map was the old diff's, and goes.
+    drawn = record.metadata;
+    draw();
+    expect(map.size).toBe(0);
+    expect(instance.resetLayoutCache.mock.calls).toEqual([[{ includeEstimatedHeights: true }]]);
+    expect(viewer().count('updateItem')).toBe(2);
+    expect([125, 144, 145, 301].map((line) => bridge.isLineVisible('src/a.js', line, 'RIGHT'))).toEqual([true, true, false, true]);
+
+    // Later draws leave it alone, and a later expansion by hand counts again.
+    draw();
+    expect(viewer().count('updateItem')).toBe(2);
+    const gapAfter = record.metadata.hunks.findIndex((h) => h.additionStart === 300) + 1;
+    map.set(gapAfter, { fromStart: 5, fromEnd: 0 });
+    expect(bridge.isLineVisible('src/a.js', 305, 'RIGHT')).toBe(true);
+  });
+
+  it('a second reveal before the first is drawn does not fold the old diff\'s record into the new hunks', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    bridge.addContextRanges('src/a.js', [{ startLine: 60, endLine: 62 }]);
+    // Hunk indices have moved: index 1 is now the gap before the first hunk of the patch.
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    expect(record.contextRanges).toEqual([{ startLine: 60, endLine: 62 }, { startLine: 125, endLine: 144 }, { startLine: 300, endLine: 302 }]);
+    expect(bridge.isLineVisible('src/a.js', 70, 'RIGHT')).toBe(false);
+    expect(map.size).toBe(1);
+    drawn = record.metadata;
+    draw();
+    expect(map.size).toBe(0);
+  });
+
+  it('a file that is not on screen loses the record at once', () => {
+    host.remove();
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    expect(instance.hunksRenderer.expandedHunks.size).toBe(0);
+    expect(instance.resetLayoutCache).toHaveBeenCalledTimes(1);
+    expect(record.contextRanges).toEqual([{ startLine: 125, endLine: 144 }, { startLine: 300, endLine: 302 }]);
+  });
+
+  it('a list write folds nothing twice and starts the new instances clean', () => {
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    const key = record.metadata.cacheKey;
+    bridge.reconcile([diffEntry(A), contextEntry('ctx/c.js')]);
+    expect(record.contextRanges).toEqual([{ startLine: 125, endLine: 144 }, { startLine: 300, endLine: 302 }]);
+    expect(record.metadata.cacheKey).toBe(key);
+    expect(record._instance).toBeNull();
+    expect(record._expansionsOf).toBeNull();
+  });
+
+  it('a diff the viewer draws in its next pass (plain text, an unhighlighted file) takes the record with it at once, before it is published', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    const order = [];
+    // The row renderer's own answer: the diff it is handed can be drawn without a highlight result.
+    instance.hunksRenderer.getDiffForNextRender = vi.fn((diff) => diff);
+    instance.hunksRenderer.onRenderUpdate = vi.fn();
+    const callback = instance.hunksRenderer.onRenderUpdate;
+    instance.resetLayoutCache.mockImplementation(() => order.push(`reset:${map.size}`));
+    const updateItem = viewer().updateItem.bind(viewer());
+    viewer().updateItem = (item) => { order.push(`publish:${map.size}`); return updateItem(item); };
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    expect(instance.hunksRenderer.getDiffForNextRender).toHaveBeenCalledWith(record.metadata);
+    expect(order).toEqual(['reset:0', 'publish:0']);
+    expect(record._expansionsOf).toBeNull();
+    expect(instance.hunksRenderer.onRenderUpdate).toBe(callback);
+    expect([125, 144, 145, 301].map((line) => bridge.isLineVisible('src/a.js', line, 'RIGHT'))).toEqual([true, true, false, true]);
+  });
+
+  it('a diff the viewer cannot draw yet leaves the record with the diff on screen', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    // The row renderer's answer while a highlight result is awaited: the diff it draws now.
+    instance.hunksRenderer.getDiffForNextRender = vi.fn(() => drawn);
+    bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+    expect(map.size).toBe(1);
+    expect(record._expansionsOf).toBe(drawn);
+    expect(instance.resetLayoutCache).not.toHaveBeenCalled();
+  });
+
+  describe('the row renderer\'s callback, taken over while a record waits for the next diff', () => {
+    let original;
+    beforeEach(() => {
+      original = vi.fn();
+      instance.hunksRenderer.onRenderUpdate = original;
+    });
+
+    it('is called through, drops the record when the next diff is staged, and is the renderer\'s own again', () => {
+      const map = instance.hunksRenderer.expandedHunks;
+      bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+      const hook = instance.hunksRenderer.onRenderUpdate;
+      expect(hook).not.toBe(original);
+      // A result for the diff that is on screen: the record stays.
+      instance.hunksRenderer.pendingHighlightResult = { diff: drawn };
+      hook('a', 'b');
+      expect(original).toHaveBeenLastCalledWith('a', 'b');
+      expect(map.size).toBe(1);
+      expect(instance.hunksRenderer.onRenderUpdate).toBe(hook);
+      // The result for the new diff.
+      instance.hunksRenderer.pendingHighlightResult = { diff: record.metadata };
+      let sizeAtCall = null;
+      original.mockImplementation(() => { sizeAtCall = map.size; });
+      hook();
+      expect(sizeAtCall).toBe(0);
+      expect(instance.resetLayoutCache).toHaveBeenCalledTimes(1);
+      expect(record._expansionsOf).toBeNull();
+      expect(instance.hunksRenderer.onRenderUpdate).toBe(original);
+    });
+
+    it('is the renderer\'s own again when the fallback drops the record', () => {
+      bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+      expect(instance.hunksRenderer.onRenderUpdate).not.toBe(original);
+      drawn = record.metadata;
+      draw();
+      expect(instance.hunksRenderer.expandedHunks.size).toBe(0);
+      expect(instance.hunksRenderer.onRenderUpdate).toBe(original);
+    });
+
+    it('is the renderer\'s own again when a list write takes the instance away, and when the record is discarded', () => {
+      bridge.addContextRanges('src/a.js', [{ startLine: 300, endLine: 302 }]);
+      expect(instance.hunksRenderer.onRenderUpdate).not.toBe(original);
+      bridge.reconcile([diffEntry(A), contextEntry('ctx/c.js')]);
+      expect(instance.hunksRenderer.onRenderUpdate).toBe(original);
+
+      draw('mount');
+      instance.hunksRenderer.expandedHunks.set(1, { fromStart: 5, fromEnd: 0 });
+      drawn = record.metadata;
+      bridge.addContextRanges('src/a.js', [{ startLine: 350, endLine: 352 }]);
+      expect(instance.hunksRenderer.onRenderUpdate).not.toBe(original);
+      bridge.renderAll([diffEntry(B)]);
+      expect(instance.hunksRenderer.onRenderUpdate).toBe(original);
+    });
+  });
+});
+
+describe('a context file given another range after the reader expanded a gap by hand (H120)', () => {
+  const C = 'ctx/c.js';
+  let record;
+  let instance;
+  let host;
+  let drawn;
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A), contextEntry(C)]);
+    record = bridge.files.get(C);
+    host = env.window.document.createElement('div');
+    env.window.document.body.appendChild(host);
+    drawn = record.metadata;
+    // The gap after the first range (lines 121-299), twenty lines from its start: lines 121-140.
+    instance = {
+      hunksRenderer: { expandedHunks: new Map([[1, { fromStart: 20, fromEnd: 0 }]]), onRenderUpdate: vi.fn() },
+      getRenderedDiff: () => drawn,
+      resetLayoutCache: vi.fn(),
+    };
+    viewer().options.onPostRender(host, instance, 'mount', { item: { id: C }, element: host, instance });
+    viewer().calls.length = 0;
+  });
+
+  const draw = () => viewer().options.onPostRender(host, instance, 'update', { item: { id: C }, element: host, instance });
+  const withRange = (ranges) => [diffEntry(A), contextEntry(C, { ranges })];
+  const STORED = [{ startLine: 100, endLine: 120 }, { startLine: 300, endLine: 310 }];
+
+  it('the new range and the expanded lines are the file\'s data at once; the viewer\'s record stays with the diff on screen until the next one is drawn', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    expect(bridge.isLineVisible(C, 130, 'RIGHT')).toBe(true);
+    const result = bridge.reconcile(withRange([...STORED, { startLine: 200, endLine: 210 }]));
+    expect(result).toMatchObject({ applied: true, listWritten: false, updated: [C] });
+    expect(record.contextRanges).toEqual([{ startLine: 121, endLine: 140 }]);
+    expect(record.metadata.hunks.map((h) => [h.additionStart, h.additionCount])).toEqual([[100, 41], [200, 11], [300, 11]]);
+    expect([130, 140, 141, 205].map((line) => bridge.isLineVisible(C, line, 'RIGHT'))).toEqual([true, true, false, true]);
+    // The old diff is still what the viewer draws: with its record, and the height that goes with it.
+    expect(map.size).toBe(1);
+    expect(record._expansionsOf).toBe(drawn);
+    expect(instance.resetLayoutCache).not.toHaveBeenCalled();
+    expect(viewer().count('updateItem')).toBe(1);
+    draw();
+    expect(map.size).toBe(1);
+
+    // The highlight result of the new diff is staged: the record goes, then the viewer draws.
+    const hook = instance.hunksRenderer.onRenderUpdate;
+    instance.hunksRenderer.pendingHighlightResult = { diff: record.metadata };
+    hook();
+    expect(map.size).toBe(0);
+    expect(instance.resetLayoutCache.mock.calls).toEqual([[{ includeEstimatedHeights: true }]]);
+    expect(record._expansionsOf).toBeNull();
+    drawn = record.metadata;
+    draw();
+    expect(viewer().count('updateItem')).toBe(1);
+    expect([130, 140, 141, 205].map((line) => bridge.isLineVisible(C, line, 'RIGHT'))).toEqual([true, true, false, true]);
+  });
+
+  it('a second range before the first is drawn folds nothing twice', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    bridge.reconcile(withRange([...STORED, { startLine: 200, endLine: 210 }]));
+    // Hunk indices have moved: index 1 is still the gap after the first hunk, which now ends at line 140.
+    bridge.reconcile(withRange([...STORED, { startLine: 200, endLine: 210 }, { startLine: 50, endLine: 52 }]));
+    expect(record.contextRanges).toEqual([{ startLine: 121, endLine: 140 }]);
+    expect(bridge.isLineVisible(C, 150, 'RIGHT')).toBe(false);
+    expect(map.size).toBe(1);
+    expect(record._expansionsOf).toBe(drawn);
+  });
+
+  it('new contents: what was expanded is not carried over, and the record still stays with the diff on screen', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    bridge.reconcile([diffEntry(A), contextEntry(C, { contents: `${numberedLines(380).join('\n')}\n`, contentsSeq: 2 })]);
+    expect(record.contextRanges).toEqual([]);
+    expect(bridge.isLineVisible(C, 130, 'RIGHT')).toBe(false);
+    expect(map.size).toBe(1);
+    expect(record._expansionsOf).toBe(drawn);
+    drawn = record.metadata;
+    draw();
+    expect(map.size).toBe(0);
+    expect(bridge.isLineVisible(C, 130, 'RIGHT')).toBe(false);
+  });
+
+  it('a file that is not on screen, or one whose next draw is the new diff, loses the record at once', () => {
+    const map = instance.hunksRenderer.expandedHunks;
+    instance.hunksRenderer.getDiffForNextRender = vi.fn((diff) => diff);
+    bridge.reconcile(withRange([...STORED, { startLine: 200, endLine: 210 }]));
+    expect(map.size).toBe(0);
+    expect(instance.resetLayoutCache).toHaveBeenCalledTimes(1);
+    expect(record.contextRanges).toEqual([{ startLine: 121, endLine: 140 }]);
+
+    delete instance.hunksRenderer.getDiffForNextRender;
+    map.set(1, { fromStart: 0, fromEnd: 5 });
+    host.remove();
+    bridge.reconcile(withRange([...STORED, { startLine: 200, endLine: 210 }, { startLine: 50, endLine: 52 }]));
+    expect(map.size).toBe(0);
+    expect(instance.resetLayoutCache).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1590,7 +2199,10 @@ describe('a click the browser does not deliver because the file was drawn betwee
   let host;
   let button;
   let clicks;
-  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  // The bridge decides in a 0 ms timer set by the release. A 0 ms timer set
+  // after it runs after it (timers of one delay run in the order they were
+  // set), so this is a sentinel on the bridge's own queue, not a wait.
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   const down = (target, extra = {}) => bridge._handleRootPointerDown({ isPrimary: true, button: 0, composedPath: () => [target], target, ...extra });
   const up = (target, extra = {}) => bridge._handlePointerUp({ type: 'pointerup', button: 0, composedPath: () => [target], target, ...extra });
   const drawFile = () => bridge._hostDraws.set(host, (bridge._hostDraws.get(host) || 0) + 1);
@@ -1616,6 +2228,58 @@ describe('a click the browser does not deliver because the file was drawn betwee
     expect(clicks).toBe(1);
     await tick();
     expect(clicks).toBe(1);
+  });
+
+  it('a click the bridge sent itself does not count as the click of the press in progress', async () => {
+    // Two presses with no pause: the click made up for the first arrives
+    // while the second is in progress.
+    down(button);
+    drawFile();
+    up(button);
+    down(button);
+    drawFile();
+    bridge._onRootClick({ isTrusted: false }); // the first press's made-up click, passing the pane
+    up(button);
+    await tick();
+    expect(clicks).toBe(2);
+    // The browser's own click does count.
+    down(button);
+    drawFile();
+    up(button);
+    bridge._onRootClick({ isTrusted: true });
+    await tick();
+    expect(clicks).toBe(2);
+  });
+
+  it('a press that opens the context menu gets no click from the bridge', async () => {
+    down(button, { ctrlKey: true });
+    drawFile();
+    bridge._onRootContextMenu();
+    up(button);
+    await tick();
+    expect(clicks).toBe(0);
+    expect(bridge._press).toBeNull();
+    // The next plain press is repaired as ever.
+    down(button);
+    drawFile();
+    up(button);
+    await tick();
+    expect(clicks).toBe(1);
+  });
+
+  it('the pane listens for the context menu, and stops when the bridge is destroyed', () => {
+    const added = [];
+    const removed = [];
+    const root = bridge.root;
+    const add = root.addEventListener.bind(root);
+    const remove = root.removeEventListener.bind(root);
+    root.addEventListener = (type, ...rest) => { added.push(type); return add(type, ...rest); };
+    root.removeEventListener = (type, ...rest) => { removed.push(type); return remove(type, ...rest); };
+    bridge._bindRoot();
+    expect(added).toContain('contextmenu');
+    bridge.destroy();
+    expect(removed).toContain('contextmenu');
+    bridge = null;
   });
 
   it('nothing is added when the file was not drawn, when the browser did send the click, or when the release is elsewhere', async () => {

@@ -3926,14 +3926,34 @@ class PRManager {
     }
   }
 
+  /**
+   * Hold a background content upgrade of a file back while it would get in
+   * the reader's way. The upgrade re-creates the file's rows.
+   *
+   * While the pointer rests on the file, for at most
+   * PIERRE_POINTER_UPGRADE_DELAY_MS: the row under the pointer would be
+   * replaced under it. And, where the bridge can tell
+   * (PierreCodeViewBridge.isEditingInside), for as long as the reader is
+   * typing in the file: the rows' replacement takes the keyboard focus out
+   * of a comment form, and what is typed next would go nowhere. That wait has
+   * no limit; it ends when the focus leaves the field, when the file goes
+   * out of the viewer's mounted window, or with the render (the signal).
+   *
+   * A reveal the reader asked for does not come through here
+   * (waitForPointerIdle: false).
+   * @param {string} filePath
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<void>}
+   */
   async _waitForPierrePointerIdle(filePath, signal) {
-    if (!this.pierreBridge?.isPointerOverFile?.(filePath)) return;
+    const pointerOver = () => !!this.pierreBridge?.isPointerOverFile?.(filePath);
+    const typing = () => !!this.pierreBridge?.isEditingInside?.(filePath);
+    if (!pointerOver() && !typing()) return;
 
     const start = Date.now();
     while (
       !signal?.aborted &&
-      this.pierreBridge?.isPointerOverFile?.(filePath) &&
-      Date.now() - start < PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS
+      (typing() || (pointerOver() && Date.now() - start < PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS))
     ) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -4321,8 +4341,12 @@ class PRManager {
     this._mountedDiffItems = new Set();
     this._contextItemIds = new Set();
     // A context load in flight stops, and leaves nothing for the next one.
+    // Loads that were overtaken by another load must not wait for that one
+    // and then run again (_afterOvertakenContextLoad): the pane they would
+    // put a context file back into has been emptied.
     this._contextLoadGen = (this._contextLoadGen || 0) + 1;
     this._contextLoadPending = null;
+    this._contextLoadTail = null;
     this.pierreBridge?.renderAll([], { keyPrefix: this.currentPR?.id ?? 'review' });
   }
 
@@ -6260,20 +6284,29 @@ class PRManager {
    *
    * The one navigation helper. Its callers are the review panel (a finding, a
    * comment, an external thread; the review history jumps through the
-   * comment path), the suggestion navigator and the tour. Each of them used
-   * to carry its own copy of this sequence and its own DOM lookups; here the
-   * order is fixed and the card is resolved through the bridge and the zone
-   * registry, so a card that is not attached to the document is still found:
+   * comment path), the suggestion navigator, the tour, and a file link in
+   * the chat panel (a line target, `flashLines`). Each of them used to carry
+   * its own copy of this sequence and its own DOM lookups; here the order is
+   * fixed and the card is resolved through the bridge and the zone registry,
+   * so a card that is not attached to the document is still found:
    *
-   *   1. Expand the file if it is collapsed (setFileCollapsed).
-   *   2. Render the file's body (on this engine nothing of an unrendered
-   *      file is in the DOM).
-   *   3. Reveal the line range if it is hidden (ensureLinesVisible).
+   *   1. Expand the file if it is collapsed (setFileCollapsed); not for a
+   *      line target.
+   *   2. Reveal the line range if it is hidden (ensureLinesVisible).
+   *   3. On the virtualized viewer, take the pane to the target's line when
+   *      the viewer does not draw the target: a file far from the viewport
+   *      has no elements, and a very long file has rows for a window of its
+   *      lines only. "Drawn" is asked of the bridge (isElementDrawn): the
+   *      card of a line outside that window is in the document all the
+   *      same, without a place on screen. (The bridge sends nothing for a
+   *      card that the display of a pending diff is about to draw.)
    *   4. Resolve the card: the annotation with `annotationId` (waiting until
    *      the diff has attached it), else the card matching
    *      `zoneCardSelector` in the file's comment zone, else `findElement()`.
+   *      For a line target: wait until the line is what the file draws.
    *   5. Scroll it into view with ScrollUtils.scrollIntoViewStable, after
-   *      expanding it when comments are minimized.
+   *      expanding it when comments are minimized. A line target is scrolled
+   *      to by the bridge and flashed.
    *
    * After every await the caller's `isCancelled` is asked, so a newer
    * navigation wins. Nothing is held across an await: the card is resolved
@@ -6290,6 +6323,9 @@ class PRManager {
    * @param {Function} [target.findElement] - () => Element|null; last resort
    *   for cards the bridge and the zones do not hold (rows of the table
    *   renderer in context files)
+   * @param {boolean} [target.flashLines] - The target is the line range
+   *   itself, not a card: scroll to `line_start` unless it is on screen, and
+   *   flash every line of the range
    * @param {Function} [target.prepare] - (element) => void; runs on the
    *   resolved card before it is scrolled to
    * @param {Function} [target.isCancelled] - () => boolean
@@ -6297,18 +6333,74 @@ class PRManager {
    *   only resolve the card. Default { behavior: 'smooth', block: 'start' }
    * @param {boolean} [target.expandMinimized=true] - In minimize mode, expand
    *   the card's line and scroll to that line instead of the hidden card
-   * @returns {Promise<{element: HTMLElement|null, cancelled: boolean}>}
+   * @returns {Promise<{element: HTMLElement|null, cancelled: boolean,
+   *   revealed?: boolean, handled?: boolean}>} For a line target `revealed`
+   *   says whether the line was scrolled to and flashed; `handled: false`
+   *   (and nothing done) on the per-file renderer, whose chat links keep
+   *   their own path until that renderer is removed
    */
   async revealInDiff({
-    file, line_start, line_end, side, annotationId, zoneCardSelector, findElement,
+    file, line_start, line_end, side, annotationId, zoneCardSelector, findElement, flashLines,
     prepare, isCancelled, scroll, expandMinimized = true
   } = {}) {
-    const cancelled = () => typeof isCancelled === 'function' && isCancelled() === true;
     const stop = { element: null, cancelled: true };
+    // The engine switch, read once: the virtualized viewer mounts what is
+    // near the viewport and nothing else (step 3), and it alone serves a
+    // line target.
+    const virtualized = this._diffEngine === 'codeview';
+    if (flashLines && !virtualized) return { element: null, cancelled: false, revealed: false, handled: false };
+    // On the virtualized viewer step 3 moves the pane, so two navigations
+    // cannot both run to their end: the one that started last wins, whoever
+    // asked for it. (One key press can start two: the review panel and the
+    // suggestion navigator both answer `j` and `k`, each with its own
+    // cursor. With the per-file renderer the later one won because its
+    // scroll was the later one.)
+    const navigation = scroll !== false ? (this._revealGen = (this._revealGen || 0) + 1) : null;
+    const superseded = () => virtualized && navigation !== null && this._revealGen !== navigation;
+    const cancelled = () => superseded() || (typeof isCancelled === 'function' && isCancelled() === true);
+
+    // A change of the pane's files that nobody asked for (a context file the
+    // server pushes) replaces the viewer's list, which would cut this
+    // navigation's scroll off: it waits until the navigation has landed.
+    const release = virtualized && navigation !== null ? this.pierreBridge?.holdListWrites?.() : null;
+    let landing = null;
+    try {
+      return await this._revealSteps(
+        { file, line_start, line_end, side, annotationId, zoneCardSelector, findElement, flashLines, prepare, scroll, expandMinimized },
+        { virtualized, cancelled, stop, landed: (promise) => { landing = promise; } }
+      );
+    } finally {
+      if (release) Promise.resolve(landing).then(release, release);
+    }
+  }
+
+  /**
+   * Steps 1 to 5 of revealInDiff (its only caller).
+   * @param {Object} target - revealInDiff's target
+   * @param {Object} run
+   * @param {boolean} run.virtualized - the pane is the virtualized viewer
+   * @param {Function} run.cancelled - () => boolean
+   * @param {Object} run.stop - what a cancelled navigation answers
+   * @param {Function} run.landed - (promise) => void; handed the promise of
+   *   the final scroll, which settles when the target has come to rest
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _revealSteps(
+    { file, line_start, line_end, side, annotationId, zoneCardSelector, findElement, flashLines, prepare, scroll, expandMinimized },
+    { virtualized, cancelled, stop, landed }
+  ) {
+    const start = line_start != null && line_start !== '' ? parseInt(line_start, 10) : NaN;
+    const parsedEnd = line_end != null && line_end !== '' ? parseInt(line_end, 10) : start;
+    const end = Number.isFinite(parsedEnd) ? parsedEnd : start;
+    const resolvedSide = side || 'RIGHT';
 
     if (file) {
       try {
-        if (this.isFileCollapsed(file) === true) {
+        // A card's file is opened. A line target leaves a collapsed file
+        // collapsed: its caller goes to the file's header instead, which is
+        // what a chat link to a line of a collapsed file has always done.
+        if (!flashLines && this.isFileCollapsed(file) === true) {
           await this.setFileCollapsed(file, false);
         }
         // Always: an expanded file that has not been near the viewport has
@@ -6319,24 +6411,31 @@ class PRManager {
       }
       if (cancelled()) return stop;
 
-      if (line_start != null && line_start !== '' && typeof this.ensureLinesVisible === 'function') {
-        const start = parseInt(line_start, 10);
-        const end = line_end != null && line_end !== '' ? parseInt(line_end, 10) : start;
-        if (Number.isFinite(start)) {
-          await this.ensureLinesVisible([{
-            file, line_start: start, line_end: Number.isFinite(end) ? end : start, side: side || 'RIGHT'
-          }]);
-          if (cancelled()) return stop;
-        }
+      if (Number.isFinite(start) && typeof this.ensureLinesVisible === 'function') {
+        await this.ensureLinesVisible([{ file, line_start: start, line_end: end, side: resolvedSide }]);
+        if (cancelled()) return stop;
       }
     }
 
-    let element = null;
     const bridge = this.pierreBridge;
+    if (flashLines) {
+      const revealed = await this._revealLines({ file, start, end, side: resolvedSide, cancelled });
+      if (cancelled()) return stop;
+      return { element: null, cancelled: false, revealed, handled: true };
+    }
+
+    let element = null;
     const annotationFile = annotationId != null && bridge?.findAnnotationFile
       ? bridge.findAnnotationFile(annotationId, file)
       : null;
     if (annotationFile) {
+      // Step 3: a card the viewer does not draw is brought into its
+      // mounted window. Nothing moves when it is drawn already.
+      if (virtualized && !bridge.isElementDrawn(bridge.getAnnotationElement(annotationFile, annotationId))) {
+        await this._afterInputHandlers();
+        if (cancelled()) return stop;
+        bridge.scrollToAnnotation(annotationFile, annotationId);
+      }
       element = await bridge.whenAnnotationRendered(annotationFile, annotationId, { isCancelled: cancelled });
       if (cancelled()) return stop;
     }
@@ -6352,8 +6451,23 @@ class PRManager {
     if (!element && typeof findElement === 'function') {
       element = findElement() || null;
     }
+    if (virtualized && element && !bridge.isElementDrawn(element)) {
+      // Step 3 for a card in a file's comment zone: the zone is drawn under
+      // the file's header, so the pane is taken to the file.
+      const zoneFile = element.closest?.('.file-comments-zone')?.dataset?.fileName;
+      if (zoneFile && bridge.files.has(zoneFile)) {
+        await this._afterInputHandlers();
+        if (cancelled()) return stop;
+        bridge.scrollToItem(zoneFile, { align: 'start', behavior: 'instant' });
+        const drawn = await bridge.whenElementDrawn(element, { isCancelled: cancelled });
+        if (cancelled()) return stop;
+        if (!drawn) element = null;
+      }
+    }
     // On this engine a card that is still not attached after the wait has no
     // place on screen (its line is not in the diff): nothing to scroll to.
+    // (A card of a file whose new diff awaits display is attached and not
+    // drawn yet: the scroll below waits for its box.)
     if (!element || !element.isConnected) return { element: null, cancelled: false };
     if (typeof prepare === 'function') prepare(element);
 
@@ -6372,12 +6486,62 @@ class PRManager {
       // and shift the layout. Fire-and-forget.
       const options = scroll && typeof scroll === 'object' ? scroll : { behavior: 'smooth', block: 'start' };
       if (window.ScrollUtils?.scrollIntoViewStable) {
-        window.ScrollUtils.scrollIntoViewStable(scrollTarget, options);
+        landed(window.ScrollUtils.scrollIntoViewStable(scrollTarget, options));
       } else {
         scrollTarget.scrollIntoView(options);
       }
     }
     return { element, cancelled: false };
+  }
+
+  /**
+   * Let every handler of the input event that is being handled start before
+   * going on. revealInDiff waits this out before it moves the pane to a
+   * target that is not mounted: one key press can start two navigations
+   * (the review panel and the suggestion navigator both answer `j` and `k`),
+   * and the one that started first must not have moved the pane by the time
+   * the second, which wins, looks for its card.
+   * @returns {Promise<void>}
+   * @private
+   */
+  _afterInputHandlers() {
+    return new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  /**
+   * Steps 3 to 5 of revealInDiff for a line target, on the virtualized
+   * viewer: bring the line into the mounted window, wait until it is what
+   * the file draws (a line that was just revealed is drawn a worker round
+   * trip later, and a scroll sent before that lands on the separator), then
+   * scroll to it unless it is on screen, and flash the range.
+   * @param {Object} target
+   * @param {string} target.file
+   * @param {number} target.start - first line of the range
+   * @param {number} target.end - last line of the range
+   * @param {string} target.side
+   * @param {Function} target.cancelled - () => boolean
+   * @returns {Promise<boolean>} false when the file does not show the line
+   * @private
+   */
+  async _revealLines({ file, start, end, side, cancelled }) {
+    const bridge = this.pierreBridge;
+    const path = this._canonicalFilePath(file);
+    if (!bridge || !path || !bridge.files.has(path) || !Number.isFinite(start)) return false;
+    if (!bridge.isLineVisible(path, start, side)) return false;
+    if (!bridge.findFileElement(path)) {
+      // Not mounted: go to the line now, so that the file is mounted and
+      // the wait below has something to wait for.
+      await this._afterInputHandlers();
+      if (cancelled()) return false;
+      bridge.scrollToLine(path, start, side, { align: 'center', behavior: 'instant', flash: false });
+    }
+    if (!bridge.isDiffDisplayed(path)) {
+      await bridge.whenLineDisplayed(path, start, side, { isCancelled: cancelled });
+      if (cancelled()) return false;
+    }
+    return bridge.scrollToLine(path, start, side, {
+      align: 'center', behavior: 'smooth', ifNeeded: true, endLine: end,
+    });
   }
 
   /**
@@ -10979,6 +11143,16 @@ class PRManager {
 
     // 4. Check existing context files — expand range if needed
     const existingEntries = this.contextFiles?.filter(cf => cf.file === file) || [];
+    // A context file that is an item of the viewer: lines the reader has
+    // revealed by hand are shown without a stored range, and need none. A
+    // line inside a stored range goes on to the range logic below.
+    if (existingEntries.length > 0 && lineStart != null
+        && !existingEntries.some(cf => cf.line_start <= lineStart && cf.line_end >= lineStart)
+        && this.pierreBridge?.files?.get?.(file)?.kind === 'context'
+        && this.pierreBridge.isLineVisible(file, lineStart, 'RIGHT')
+        && (lineEnd == null || this.pierreBridge.isLineVisible(file, lineEndVal, 'RIGHT'))) {
+      return { type: 'context', contextFile: existingEntries[0] };
+    }
     if (existingEntries.length > 0 && lineStart != null) {
       const covering = existingEntries.find(cf =>
         cf.line_start <= lineStartVal && cf.line_end >= lineEndVal

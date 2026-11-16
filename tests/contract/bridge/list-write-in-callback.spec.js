@@ -268,7 +268,11 @@ test('a new diff asked for from a hook: the records are new at once, nothing of 
     const oldRecord = b.files.get(file);
     const hunks = oldRecord.metadata.hunks;
     const last = hunks[hunks.length - 1];
-    const line = last.additionStart;
+    // A line of the patch's last hunk: the new diff starts from the patch
+    // again, and shows the lines of the patch, not the context the diff of
+    // the two contents added around them.
+    const patchHunks = oldRecord.patchMetadata.hunks;
+    const line = patchHunks[patchHunks.length - 1].additionStart;
     const firstExpanded = last.additionStart + last.additionCount;
     const rowTop = () => { const row = H.findRow(file, line, 'additions'); return row ? H.viewportTopOf(row) : null; };
     b.addAnnotation(file, { lineNumber: line + 1, side: 'RIGHT', type: 'card', id: 'old-card', data: { text: 'on the old diff' } });

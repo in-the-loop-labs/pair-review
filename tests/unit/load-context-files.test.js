@@ -362,6 +362,45 @@ describe('loadContextFiles on the virtualized viewer', () => {
       expect(manager._contextLoadPending).toBe(null);
     });
 
+    it('two loads in flight when the diff is emptied: neither puts the context file back, in whichever order they answer', async () => {
+      server.rows = [row(1, 'ctx.js')];
+      server.contents['ctx.js'] = numberedLines(10);
+      for (const order of ['first-then-second', 'second-then-first']) {
+        rowRequests = 0;
+        const first = heldLoad();
+        const second = heldLoad();
+        manager._clearDiffItems();
+        expect(manager._contextLoadTail).toBe(null);
+        const [early, late] = order === 'first-then-second' ? [first, second] : [second, first];
+        early.hold.release();
+        await tick();
+        late.hold.release();
+        await Promise.all([first.promise, second.promise]);
+        await tick();
+        expect(paneIds(), order).toEqual([]);
+        // The two requests that were in flight, and no load after them.
+        expect(rowRequests, order).toBe(2);
+        expect(manager._contextLoadPending, order).toBe(null);
+      }
+    });
+
+    it('a load that is already waiting for the load that overtook it stops there when the diff is emptied', async () => {
+      server.rows = [row(1, 'ctx.js')];
+      server.contents['ctx.js'] = numberedLines(10);
+      const first = heldLoad();
+      const second = heldLoad();
+      // The first answers, finds itself overtaken and waits for the second.
+      first.hold.release();
+      await tick();
+      expect(first.settled).toBe(false);
+      manager._clearDiffItems();
+      second.hold.release();
+      await Promise.all([first.promise, second.promise]);
+      await tick();
+      expect(paneIds()).toEqual([]);
+      expect(rowRequests).toBe(2);
+    });
+
     it('settles after the new diff\'s own load when the diff was replaced meanwhile, and applies nothing itself', async () => {
       server.rows = [row(1, 'ctx.js')];
       server.contents['ctx.js'] = numberedLines(10);

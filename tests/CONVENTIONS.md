@@ -370,6 +370,38 @@ because violating it produced a real, observed flake or measurable waste.
   of the same kind on an element of the test's own, then a timer once its
   click has arrived (`clicksOfPressDrawRelease`).
 
+- **"This click goes nowhere" is asserted with a sentinel too.** Two frames
+  without a scroll prove nothing: navigation scrolls smoothly and starts a
+  frame or more after the click. Make the same kind of click on something
+  that does go somewhere, wait for the page to ask for that scroll
+  (`watchScrollRequests` / `scrollRequests` in `diff-dom.js`: every
+  `scrollIntoView` on an element of the pane and every scroll target given to
+  the virtualized viewer, by the file it is for), and assert that nothing was
+  asked for before it (N5 "has a sidebar entry and nothing in the pane").
+- **"It stayed on screen throughout" is asserted frame by frame.** A read
+  before and a read after cannot see a line that left the screen for a few
+  frames and came back, which is what a re-render that waits for the
+  highlighter looks like. Start a watch in the page before the action
+  (`watchContextLines` in `diff-dom.js`, or a `requestAnimationFrame` loop in
+  a contract test), wait for the end state by its own signal, end the watch
+  (`contextLinesWatched` ends it after one more frame, so at least one frame
+  is always seen) and assert that no frame lacked the rows (N5 "a range added
+  to a file after the reader expanded a gap in it ...").
+- **"In the document" is not "on screen" on the virtualized viewer.** A file
+  of 5,000 rows or more has rows for a window of its lines, and the card of a
+  line outside it is connected with no box. A test that proves a navigation
+  arrived asserts `toBeInViewport()` on the card, never `toBeAttached()` or a
+  count; a test of such a file needs more than 5,000 rows for a target the
+  reader's window does not cover, and more than 10,000 for a file whose top
+  is not drawn while the reader is at its end (N11 "Navigation to a card far
+  down a file longer than the rows the viewer draws").
+- **Two navigations can start from one key press.** The review panel and the
+  suggestion navigator both answer `j` and `k`, each with its own cursor, so
+  a test that presses a key and expects one card in view depends on which of
+  the two wins. On both engines it is the one that started last
+  (`PRManager.revealInDiff`); a test must not assume the other's target was
+  never asked for.
+
 ## Vendor contract suite (`tests/contract`)
 
 - **The real vendor in a real browser is the only arbiter of what the vendor

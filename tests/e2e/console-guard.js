@@ -58,6 +58,13 @@ const ALLOWED = [
       'Error loading context files',
       'Failed to fetch file contents for [^:]+',
       'Failed to load viewed state from API',
+      // The two top-level loaders, each waiting for the first request of its
+      // page: a spec that reloads right after its first goto (panel-resize
+      // does) cuts that request short. Reproduced on demand by
+      // fixture-isolation.spec.js, "A page reloaded while its first request
+      // is in flight".
+      'Error loading PR',
+      'Error loading local review',
       'Error loading files',
       'Error loading local diff',
       'Error loading AI suggestions',

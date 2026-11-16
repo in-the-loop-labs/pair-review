@@ -28,11 +28,11 @@ import {
   MODES, waitForDiffToRender, seedComment, seedSuggestions, reloadComments, cleanupAllComments, expectResponse,
   setMinimize, mockAppConfig, mockHunkSummaries, pushHunkSummaries, mockTour, mockExternalComments, externalThread
 } from './helpers.js';
-import { allCorpora, changedLines, hunkHashes, routeDiff } from './fixtures/diffs.js';
+import { allCorpora, changedLines, customCorpus, hunkHashes, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, inlineComment, inlineSuggestion, lineCards, fileSelector, inAnnotationGroup, scrollFileIntoView, scrollFileOutOfView,
   waitForFileRendered, waitForFileSettled, isLineVisible, revealOffHunkLine, lineNumberCell, assertNoOrphanHosts, expectLineCardsInPane,
-  openLineCommentForm, hasRenderedBody, waitForDiffSettled, DELETED_COMMENT_RETURNS_ON_RERENDER
+  openLineCommentForm, hasRenderedBody, waitForDiffSettled, scrollDiffToEdge, DELETED_COMMENT_RETURNS_ON_RERENDER
 } from './diff-dom.js';
 
 const { eviction: EVICTION, edge: EDGE } = allCorpora();
@@ -47,6 +47,35 @@ const TAIL_LINE = TAIL_LINES.additions[0];
 const HASHES = hunkHashes(EVICTION.diff);
 // A line hidden between the first two hunks of the target.
 const HIDDEN_LINE = Math.floor((TARGET_LINES.hunks[0].newStart + TARGET_LINES.hunks[0].newCount + TARGET_LINES.hunks[1].newStart) / 2);
+
+/**
+ * A small changed file and an added file of 12,000 lines. The virtualized
+ * viewer draws a file of 5,000 rows or more in windows of its rows (5,000
+ * at the top of the file, at most two such blocks elsewhere; pinned on the
+ * real viewer in tests/contract/bridge/annotations.spec.js). With the
+ * reader at the top of the long file a card on line 11,000 belongs to a
+ * file that is mounted and to a row that is not drawn; with the reader on
+ * line 11,200 the same holds for the file's comment zone and for a card on
+ * line 40. (The 4,000-line file of the eviction corpus is drawn whole.)
+ */
+const LONG = (() => {
+  const small = 'aa/small.js';
+  const long = 'long/added.js';
+  const before = Array.from({ length: 40 }, (_, i) => `const v${i + 1} = ${i + 1};`);
+  const after = before.slice();
+  after[9] = 'const v10 = 100;';
+  const context = (from, to) => before.slice(from, to).map((line) => ` ${line}`).join('\n');
+  const smallHunk = `@@ -7,7 +7,7 @@\n${context(6, 9)}\n-${before[9]}\n+${after[9]}\n${context(10, 13)}\n`;
+  const lines = Array.from({ length: 12000 }, (_, i) => `export const row${i + 1} = compute(${i + 1}); // line ${i + 1}`);
+  const diff = `diff --git a/${small} b/${small}\nindex 1111111..2222222 100644\n--- a/${small}\n+++ b/${small}\n${smallHunk}`
+    + `diff --git a/${long} b/${long}\nnew file mode 100644\nindex 0000000..3333333\n--- /dev/null\n+++ b/${long}\n@@ -0,0 +1,${lines.length} @@\n`
+    + `${lines.map((line) => `+${line}`).join('\n')}\n`;
+  const corpus = customCorpus({ name: 'long-file-row-window', diff, files: {
+    [small]: { old: `${before.join('\n')}\n`, new: `${after.join('\n')}\n` },
+    [long]: { old: null, new: `${lines.join('\n')}\n` },
+  } });
+  return { corpus, small, long, nearLine: 10, topLine: 40, farLine: 11000, fartherLine: 11200 };
+})();
 
 const api = (page, method, url, body) => page.evaluate(async (r) => {
   const response = await fetch(r.url, {
@@ -651,6 +680,95 @@ for (const mode of MODES) {
         await expect(targetComments(page)).toHaveCount(1);
       });
     }
+  });
+
+  test.describe(`Navigation to a card far down a file longer than the rows the viewer draws (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await routeDiff(page, LONG.corpus);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await cleanupAllComments(page, mode.reviewId);
+      await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
+      await page.evaluate(() => window.aiPanel?.expand());
+    });
+
+    test.afterEach(async ({ page }) => {
+      await cleanupAllComments(page, mode.reviewId);
+    });
+
+    /** The reader at the top of the pane: the long file is the second file, its first rows on screen. */
+    async function toTheTop(page) {
+      await scrollDiffToEdge(page, 'top');
+      await expect(fileWrapper(page, LONG.long)).toBeInViewport();
+      await waitForDiffSettled(page);
+    }
+
+    test('a finding and a comment thousands of lines down are reached from the review panel and with the navigator keys', async ({ page }) => {
+      const [near, far] = await seedSuggestions(page, mode.reviewId, [
+        { file: LONG.small, line_start: LONG.nearLine, title: 'Near', body: 'Near body' },
+        { file: LONG.long, line_start: LONG.farLine, title: 'Far', body: 'Far body' }
+      ]);
+      const comment = await seedComment(page, mode.reviewId, { file: LONG.long, line: LONG.fartherLine, body: 'Far down the long file' });
+      await reloadComments(page);
+      await expect(inlineSuggestion(page, near)).toBeVisible();
+
+      // A click on the finding in the review panel.
+      await toTheTop(page);
+      await page.locator(`.finding-item[data-id="${far}"]`).click();
+      await expect(inlineSuggestion(page, far)).toBeInViewport();
+
+      // The navigator keys, pressed from the toolbar pinned above the diff.
+      await toTheTop(page);
+      await page.locator('.diff-toolbar').click({ position: { x: 5, y: 5 } });
+      await page.keyboard.press('j');
+      await expect(inlineSuggestion(page, near)).toBeInViewport();
+      await page.keyboard.press('j');
+      await expect(inlineSuggestion(page, far)).toBeInViewport();
+      await page.keyboard.press('k');
+      await expect(inlineSuggestion(page, near)).toBeInViewport();
+
+      // A click on the comment in the review panel's User segment.
+      await toTheTop(page);
+      await userSegment(page).click();
+      const item = page.locator(`.finding-item.finding-comment[data-id="${comment}"]`);
+      await expect(item).toBeVisible();
+      await item.click();
+      await expect(inlineComment(page, comment)).toBeInViewport();
+
+      await expect(page.locator('.toast-error, .toast-warning')).toHaveCount(0);
+      await assertNoOrphanHosts(page);
+    });
+
+    test('from far down the long file, a file-level comment and a card near its top are reached from the review panel', async ({ page }) => {
+      const far = await seedComment(page, mode.reviewId, { file: LONG.long, line: LONG.fartherLine, body: 'Far down the long file' });
+      const top = await seedComment(page, mode.reviewId, { file: LONG.long, line: LONG.topLine, body: 'Near the top of the long file' });
+      const fileLevel = await seedComment(page, mode.reviewId, { file: LONG.long, body: 'About the whole long file', fileLevel: true });
+      await reloadComments(page);
+      await userSegment(page).click();
+      const item = (id) => page.locator(`.finding-item.finding-comment[data-id="${id}"]`);
+      await expect(item(far)).toBeVisible();
+
+      // Go far down first: the rows at the top of the file are not what the viewer draws there.
+      await toTheTop(page);
+      await item(far).click();
+      await expect(inlineComment(page, far)).toBeInViewport();
+      await waitForDiffSettled(page);
+
+      await item(fileLevel).click();
+      const zoneCard = fileWrapper(page, LONG.long).locator('.file-comment-card');
+      await expect(zoneCard).toContainText('About the whole long file');
+      await expect(zoneCard).toBeInViewport();
+
+      await item(far).click();
+      await expect(inlineComment(page, far)).toBeInViewport();
+      await waitForDiffSettled(page);
+
+      await item(top).click();
+      await expect(inlineComment(page, top)).toBeInViewport();
+
+      await expect(page.locator('.toast-error, .toast-warning')).toHaveCount(0);
+      await assertNoOrphanHosts(page);
+    });
   });
 
   test.describe(`File comment zones of one-sided files (${mode.name})`, () => {

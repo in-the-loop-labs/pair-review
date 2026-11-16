@@ -215,6 +215,160 @@ test('whenAnnotationRendered answers null at once for a line the file does not s
   expect(result.shownAgain).toEqual({ isNull: false, fast: true });
 });
 
+test('a card on a row the viewer does not draw is in the document and not drawn; scrollToAnnotation and whenAnnotationRendered bring it on screen', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async () => {
+    const { H, BH } = window;
+    // An added file of 20,000 lines: the viewer draws it in blocks of 5,000 rows.
+    const id = H.workload.roles.hugeAdded;
+    await BH.up({ entries: [BH.diffEntry(H.workload.roles.small), BH.diffEntry(id)] });
+    const b = BH.bridge;
+    const total = b.files.get(id).metadata.hunks.reduce((n, hunk) => n + hunk.additionCount, 0);
+    const farLine = total - 100;
+    b.addAnnotation(id, { lineNumber: 0, side: 'RIGHT', type: 'card', id: 'file-level', data: { text: 'file-level card.', height: 30 } });
+    b.addAnnotation(id, { lineNumber: 120, side: 'RIGHT', type: 'card', id: 'near', data: { text: 'near card.', height: 30 } });
+    b.addAnnotation(id, { lineNumber: farLine, side: 'RIGHT', type: 'card', id: 'far', data: { text: 'far card.', height: 30 } });
+    await H.settle(300);
+    const pane = () => H.root.getBoundingClientRect();
+    const card = (annotationId) => {
+      const element = b.getAnnotationElement(id, annotationId);
+      const box = element.getBoundingClientRect();
+      return {
+        connected: element.isConnected,
+        drawn: b.isElementDrawn(element),
+        height: Math.round(box.height),
+        inPane: box.height > 0 && box.top >= pane().top && box.bottom <= pane().bottom,
+      };
+    };
+    const rows = () => {
+      const all = H.host(id).shadowRoot.querySelectorAll('[data-content] > [data-line]');
+      return { count: all.length, first: Number(all[0].getAttribute('data-line')), last: Number(all[all.length - 1].getAttribute('data-line')) };
+    };
+    const go = async (annotationId) => {
+      const sent = b.scrollToAnnotation(id, annotationId);
+      const element = await b.whenAnnotationRendered(id, annotationId, { timeoutMs: 8000 });
+      await H.settle(300);
+      return { sent, resolved: element === b.getAnnotationElement(id, annotationId), ...card(annotationId) };
+    };
+    const out = { total };
+    // The reader at the top of the file.
+    out.atTop = { rows: rows(), near: card('near'), far: card('far') };
+    // Asked for without a scroll: the wait does not hand back a card that is merely in the document.
+    const waited = await b.whenAnnotationRendered(id, 'far', { timeoutMs: 100 });
+    out.farWithoutScroll = waited === null;
+    out.far = await go('far');
+    // The reader near the end of the file: the rows at its top are not drawn there.
+    out.atEnd = { rows: rows(), fileLevel: card('file-level'), near: card('near') };
+    out.near = await go('near');
+    b.scrollToLine(id, farLine, 'RIGHT', { align: 'center', behavior: 'instant', flash: false });
+    await H.settle(300);
+    out.atEndAgain = { fileLevel: card('file-level') };
+    out.fileLevel = await go('file-level');
+    // Drawn already: nothing is sent, and the wait answers at once.
+    const before = H.root.scrollTop;
+    out.again = await go('file-level');
+    out.movedWhenDrawn = Math.round(H.root.scrollTop - before);
+    out.sound = BH.sound();
+    return out;
+  });
+  expect(result.total).toBe(20000);
+  // In the document, without a row to be shown in.
+  expect(result.atTop.rows).toEqual({ count: 5000, first: 1, last: 5000 });
+  expect(result.atTop.near).toEqual({ connected: true, drawn: true, height: 30, inPane: expect.any(Boolean) });
+  expect(result.atTop.far).toEqual({ connected: true, drawn: false, height: 0, inPane: false });
+  expect(result.farWithoutScroll).toBe(true);
+  expect(result.far).toEqual({ sent: true, resolved: true, connected: true, drawn: true, height: 30, inPane: true });
+  expect(result.atEnd.rows.first).toBeGreaterThan(120);
+  expect(result.atEnd.fileLevel).toEqual({ connected: true, drawn: false, height: 0, inPane: false });
+  expect(result.atEnd.near).toEqual({ connected: true, drawn: false, height: 0, inPane: false });
+  expect(result.near).toEqual({ sent: true, resolved: true, connected: true, drawn: true, height: 30, inPane: true });
+  expect(result.atEndAgain.fileLevel).toEqual({ connected: true, drawn: false, height: 0, inPane: false });
+  expect(result.fileLevel).toEqual({ sent: true, resolved: true, connected: true, drawn: true, height: 30, inPane: true });
+  expect(result.again).toEqual({ sent: true, resolved: true, connected: true, drawn: true, height: 30, inPane: true });
+  expect(result.movedWhenDrawn).toBe(0);
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+test('a card on a line that was just revealed: its file\'s display draws it where the pane is, unless the file is drawn in row windows, where the pane is taken to it first', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const result = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const SHORT = 'ctx/short.js';
+    const LONG = 'ctx/long.js';
+    // Two coloured context files (under 400 KB each). The long one shows 6,000 of its 7,000 lines: it is drawn in windows of its rows.
+    await BH.up({ entries: [
+      BH.contextEntry(SHORT, { contents: BH.numberedLines(400), ranges: [{ startLine: 100, endLine: 120 }] }),
+      BH.contextEntry(LONG, { contents: BH.numberedLines(7000), ranges: [{ startLine: 1, endLine: 6000 }] }),
+    ], quietMs: 400 });
+    const b = BH.bridge;
+    await H.until(() => (H.shape(SHORT)?.tokens ?? 0) > 0 && (H.shape(LONG)?.tokens ?? 0) > 0, 30000);
+    const pane = () => H.root.getBoundingClientRect();
+    const state = (file, id) => {
+      const element = b.getAnnotationElement(file, id);
+      const box = element ? element.getBoundingClientRect() : null;
+      return {
+        connected: !!element && element.isConnected,
+        drawn: b.isElementDrawn(element),
+        hasBox: !!box && box.height > 0,
+      };
+    };
+    const inPane = (file, id) => {
+      const box = b.getAnnotationElement(file, id).getBoundingClientRect();
+      return box.height > 0 && box.top >= pane().top && box.bottom <= pane().bottom;
+    };
+    const reveal = async (file, line, id) => {
+      b.addAnnotation(file, { lineNumber: line, side: 'RIGHT', type: 'card', id, data: { text: `${id}.`, height: 30 } });
+      const out = { shownBefore: b.isLineVisible(file, line, 'RIGHT') };
+      // The line is revealed: a new diff of the file, which the viewer draws when it has been highlighted.
+      b.addContextRanges(file, [{ startLine: line - 5, endLine: line + 5 }]);
+      out.pending = !b.isDiffDisplayed(file);
+      out.whilePending = state(file, id);
+      const before = H.root.scrollTop;
+      out.sent = b.scrollToAnnotation(file, id);
+      const element = await b.whenAnnotationRendered(file, id, { timeoutMs: 8000 });
+      out.resolved = element === b.getAnnotationElement(file, id);
+      out.resolvedWhilePending = out.resolved && !b.isDiffDisplayed(file);
+      // Whether the pane had been taken somewhere by the time the card was handed over.
+      out.paneMoved = H.root.scrollTop !== before;
+      await BH.displayed(file);
+      await H.settle(300);
+      out.after = state(file, id);
+      // What the page does next: the browser's own scroll to the card, which needs the card to have a place.
+      b.getAnnotationElement(file, id).scrollIntoView({ block: 'center' });
+      await H.settle(300);
+      out.inPaneAfterTheScroll = inPane(file, id);
+      return out;
+    };
+    const out = {};
+    // The short file, on screen at the top of the pane.
+    out.short = await reveal(SHORT, 300, 'short-card');
+    // The long file, the reader at its first rows; the card's line is beyond the rows drawn there.
+    b.scrollToItem(LONG);
+    await H.settle(300);
+    out.longRows = H.host(LONG).shadowRoot.querySelectorAll('[data-content] > [data-line]').length;
+    out.long = await reveal(LONG, 6500, 'long-card');
+    out.sound = BH.sound();
+    return out;
+  });
+  // Drawn whole: nothing is sent, the wait hands the card over while the diff is still on its way, and the display draws it.
+  expect(result.short.shownBefore).toBe(false);
+  expect(result.short.pending).toBe(true);
+  expect(result.short.whilePending).toEqual({ connected: true, drawn: false, hasBox: false });
+  expect(result.short).toMatchObject({ sent: true, resolved: true, resolvedWhilePending: true, paneMoved: false });
+  expect(result.short.after).toEqual({ connected: true, drawn: true, hasBox: true });
+  expect(result.short.inPaneAfterTheScroll).toBe(true);
+  // Drawn in windows: the pane is taken to the line, and the card is waited for until it is drawn there.
+  expect(result.longRows).toBe(5000);
+  expect(result.long.pending).toBe(true);
+  expect(result.long.whilePending).toEqual({ connected: true, drawn: false, hasBox: false });
+  expect(result.long).toMatchObject({ sent: true, resolved: true, resolvedWhilePending: false, paneMoved: true });
+  expect(result.long.after).toEqual({ connected: true, drawn: true, hasBox: true });
+  expect(result.long.inPaneAfterTheScroll).toBe(true);
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
 test('a renderer that publishes while the viewer is drawing does not corrupt the layout (flush guard)', async ({ harness }) => {
   const page = await openBridge(harness);
   const { file, line, far } = await up(page);

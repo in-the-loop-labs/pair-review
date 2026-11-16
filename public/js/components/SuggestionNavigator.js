@@ -265,6 +265,9 @@ class SuggestionNavigator {
     // displayed, and displaying them reveals their lines.
     const pm = window.prManager;
     let card = null;
+    // A navigation that another one took over (a click in the review panel
+    // right after the key) found no card because it stopped looking.
+    let superseded = false;
     if (pm?.revealInDiff && suggestion) {
       try {
         const result = await pm.revealInDiff({
@@ -276,6 +279,7 @@ class SuggestionNavigator {
           isCancelled: () => myGen !== this._navGen
         });
         card = result.element;
+        superseded = result.cancelled === true;
       } catch (err) {
         console.warn('[SuggestionNavigator] could not reveal suggestion', suggestion?.id, err);
       }
@@ -284,7 +288,7 @@ class SuggestionNavigator {
     // this.currentSuggestionIndex — let it own the highlight.
     if (myGen !== this._navGen) return;
     this.highlightCurrentSuggestion();
-    if (!card && suggestion && !pm?.suggestionManager?._isDisplayingSuggestions) {
+    if (!card && suggestion && !superseded && !pm?.suggestionManager?._isDisplayingSuggestions) {
       // The finding has no card in the diff (file or line not shown).
       // Say so instead of silently doing nothing. Not while suggestions
       // are being redisplayed: every card is removed first and re-added

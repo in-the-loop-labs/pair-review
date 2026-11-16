@@ -22,6 +22,7 @@ const ALLOWED_SITES = {
   renderDiff: 'the two renderers',
   _removeRenderedFiles: 'the renderer\'s own teardown: wrappers are removed, the viewer is given an empty list',
   scrollToFile: 'a wrapper is scrolled to; an item is addressed by id',
+  revealInDiff: 'step 3: a target the viewer has not mounted is brought into its mounted window first; a line target is the viewer\'s alone',
   handleDiffViewChange: 'the viewer keeps the first visible line itself',
   _isDiffFileRendered: 'the upgrade enqueue trigger: a rendered body, or a mounted item',
   loadContextFiles: 'wrappers drawn by hand, or items synced from data',
@@ -49,7 +50,8 @@ function engineReads() {
   const reads = [];
   let method = null;
   lines.forEach((line, index) => {
-    const declaration = /^  (?:async )?(?:static )?(?:get )?([A-Za-z_$][\w$]*)\(.*\) \{$/.exec(line);
+    // `name(...) {`, or `name({` when the parameters are destructured over several lines.
+    const declaration = /^  (?:async )?(?:static )?(?:get )?([A-Za-z_$][\w$]*)\((?:.*\) \{|\{)$/.exec(line);
     if (declaration) method = declaration[1];
     if (!/_diffEngine/.test(line)) return;
     // Prose about the switch is not a read of it.

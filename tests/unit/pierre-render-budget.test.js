@@ -261,6 +261,64 @@ describe('PRManager Pierre render budgeting', () => {
     expect(resolved).toBe(true);
   });
 
+  it('waits for as long as the reader is typing in the file, past the pointer\'s limit, and goes on when the focus leaves', async () => {
+    vi.useFakeTimers();
+    const manager = createManager({ worker: true });
+    let typing = true;
+    manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
+    manager.pierreBridge.isEditingInside = vi.fn(() => typing);
+
+    let resolved = false;
+    const waitPromise = manager
+      ._waitForPierrePointerIdle('src/typed-in.js', { aborted: false })
+      .then(() => {
+        resolved = true;
+      });
+
+    // Three times the limit a resting pointer has.
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(resolved).toBe(false);
+    expect(manager.pierreBridge.isEditingInside).toHaveBeenCalledWith('src/typed-in.js');
+
+    typing = false;
+    await vi.advanceTimersByTimeAsync(100);
+    await waitPromise;
+    expect(resolved).toBe(true);
+  });
+
+  it('the wait for typing ends with the render, and a pointer that stays is let go after its limit', async () => {
+    vi.useFakeTimers();
+    const manager = createManager({ worker: true });
+    manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
+    manager.pierreBridge.isEditingInside = vi.fn(() => true);
+    const signal = { aborted: false };
+    let resolved = false;
+    const typingWait = manager._waitForPierrePointerIdle('src/typed-in.js', signal).then(() => { resolved = true; });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(resolved).toBe(false);
+    signal.aborted = true;
+    await vi.advanceTimersByTimeAsync(100);
+    await typingWait;
+    expect(resolved).toBe(true);
+
+    manager.pierreBridge.isPointerOverFile = vi.fn(() => true);
+    manager.pierreBridge.isEditingInside = vi.fn(() => false);
+    let pointerDone = false;
+    const pointerWait = manager._waitForPierrePointerIdle('src/hovered.js', { aborted: false }).then(() => { pointerDone = true; });
+    await vi.advanceTimersByTimeAsync(9900);
+    expect(pointerDone).toBe(false);
+    await vi.advanceTimersByTimeAsync(300);
+    await pointerWait;
+    expect(pointerDone).toBe(true);
+  });
+
+  it('a bridge that cannot tell whether the reader is typing is not asked', async () => {
+    const manager = createManager({ worker: true });
+    manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
+    delete manager.pierreBridge.isEditingInside;
+    await manager._waitForPierrePointerIdle('src/any.js', { aborted: false });
+  });
+
   it('forces a full-content upgrade when hidden Pierre line anchoring needs metadata', async () => {
     const manager = createManager({ worker: true });
     const file = fileWithPatch('x'.repeat(45));

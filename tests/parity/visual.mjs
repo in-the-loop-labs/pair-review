@@ -16,6 +16,16 @@
  * a file whose diff is held back for its size (the box of every card as
  * numbers, and the pane as pixels).
  *
+ * A second page per configuration lets the file contents arrive, and compares
+ * what a reader sees from then on: every file once its contents are loaded
+ * (numbers, and the pane as pixels), a hidden gap expanded by one step and
+ * then in full, a line revealed by a navigation, a flashed line (the
+ * animation stopped at a fixed time), and where navigation lands: a sidebar
+ * click, a chat link to a line, a tour's first stop, a click on a finding in
+ * the review panel, and that click on a finding in a collapsed file (each as
+ * a number, the target's distance from what is pinned above the diff, and as
+ * pixels).
+ *
  * Both engines are opened against one test server in one run, with the
  * file-contents requests held back, so every changed file shows the rows of
  * its patch on both engines and the two screenshots of a position can be
@@ -106,8 +116,20 @@ const ACCEPTED = [
   },
   {
     where: 'number',
-    test: ({ kind, path: key, a, b }) => kind === 'diff' && /^frame(\.|$)/.test(key) && !!a.frame && a.frame.h === 1 && !b.frame,
+    test: ({ kind, path: key, a, b }) => (kind === 'diff' || kind === 'upgraded') && /^frame(\.|$)/.test(key) && !!a.frame && a.frame.h === 1 && !b.frame,
     why: 'a diff without a line: the 1 px line under the header is the empty code block\'s border on the default engine (a frame 1 px high) and is drawn in the file\'s comment zone on codeview, where a file without lines has no frame (the viewer counts no bottom padding for an item without lines); the pixels are compared',
+  },
+  {
+    where: 'number',
+    test: ({ kind, path: key, a, b }) => kind === 'landing' && /BelowPinned$/.test(key)
+      && typeof a[key] === 'number' && typeof b[key] === 'number' && Math.abs(a[key] - b[key]) <= 1,
+    why: 'a landing within one pixel, the rule the golden comparison has for landings. A navigation\'s scroll ends on a whole pixel of the scroll offset, the target itself is at a fraction of one (wrapped rows above it have heights that are not whole pixels), and the two engines scroll two different containers, whose contents start at different fractions: the target is the same fraction of a pixel off on each, in different directions (measured: 0.56 to 0.68 px, edge corpus, a click on a finding). Landings that are not bounded this way are equal to the hundredth',
+  },
+  {
+    where: 'pixels',
+    test: ({ config, position, visible }) => config.corpusName === 'edge' && config.style === 'unified' && config.theme === 'light'
+      && /^landing-finding/.test(position) && visible <= 4,
+    why: 'the landing above, 0.68 px apart: the first row of pixels under the pinned file header shows the next slice of a text line on one engine (2 pixels of one glyph outside the tolerance, at the header\'s lower edge); no line, box or colour differs',
   },
 ];
 
@@ -411,11 +433,251 @@ async function capture(args, engine) {
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
     }
   };
-  const shoot = async (page, name, position) => {
+  const shoot = async (page, name, position, { animations = 'disabled' } = {}) => {
     // The pointer is parked outside the pane: no hover state in any shot.
     await page.mouse.move(2, 2);
     await settle(page);
-    await page.locator('.diff-view').screenshot({ path: path.join(outDir, `${name}.${position}.png`), animations: 'disabled' });
+    await page.locator('.diff-view').screenshot({ path: path.join(outDir, `${name}.${position}.png`), animations });
+  };
+
+  /**
+   * The second page of a configuration: the file contents arrive, so every
+   * changed file is drawn from its two contents, hidden lines can be
+   * expanded and revealed, and navigation lands on what it will stay on.
+   */
+  const upgradedStage = async ({ context, config, corpus, order, tourStop, annotated, result, shoot, settle, alignFile }) => {
+    const reviewId = MODES[config.mode].reviewId;
+    const page = await context.newPage();
+    const round = (value) => (value == null ? null : Math.round(value * 100) / 100);
+    const frames = (count) => page.evaluate((n) => new Promise((resolve) => {
+      const tick = (left) => (left <= 0 ? resolve() : requestAnimationFrame(() => tick(left - 1)));
+      tick(n);
+    }), count);
+    /** Until the pane has been at one scroll position for 30 frames (navigation scrolls smoothly, then corrects itself). */
+    const scrollAtRest = async () => {
+      const deadline = Date.now() + 15000;
+      let still = 0;
+      let last = null;
+      while (still < 30 && Date.now() < deadline) {
+        const { top } = await dom.scrollState(page);
+        still = top === last ? still + 1 : 0;
+        last = top;
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      }
+    };
+    /** How far below what is pinned above the diff an element's top edge is. */
+    const belowPinned = async (locator) => {
+      const box = await locator.first().boundingBox().catch(() => null);
+      const pinned = await dom.inPage(page, (D) => D.pinnedBottom());
+      return box ? round(box.y - pinned) : null;
+    };
+    const rowTopBelowPinned = (file, line) => dom.inPage(page, (D, { f, l }) => {
+      const box = D.rowBox ? D.rowBox(f, l, 'additions') : null;
+      return box ? Math.round((box.top - D.pinnedBottom()) * 100) / 100 : null;
+    }, { f: file, l: line }).catch(() => null);
+    const open = async () => {
+      await corpora.routeDiff(page, corpus);
+      if (tourStop) {
+        await helpers.mockAppConfig(page, { tours: { enabled: true }, summaries: { enabled: true } });
+        await helpers.mockTour(page, [{ ...tourStop, title: 'A stop', description: 'A stop of the tour.' }]);
+        await helpers.mockHunkSummaries(page, []);
+      }
+      if (config.mode === 'pr') await helpers.mockExternalComments(page, []);
+      await page.goto(`${baseURL}${MODES[config.mode].path}`);
+      await page.waitForSelector('#diff-container .d2h-file-wrapper[data-file-name]', { timeout: 15000 });
+      for (const file of order) {
+        await alignFile(page, file, 40);
+        await dom.ensureContentUpgrade(page, file).catch(() => false);
+        await dom.waitForFileSettled(page, file).catch(() => {});
+      }
+      await dom.waitForDiffSettled(page).catch(() => {});
+      await dom.scrollDiffToEdge(page, 'top');
+      await settle(page);
+    };
+    const upgradedShot = async (position, options) => {
+      await shoot(page, config.name, position, options);
+      result.positions.push(position);
+    };
+
+    await open();
+    result.upgraded = { files: {}, landings: {}, gap: {} };
+
+    // Every changed file with its contents loaded: numbers, and the two ends of the pane.
+    for (const file of order) {
+      await alignFile(page, file, 40);
+      result.upgraded.files[file] = await dom.inPage(page, measureFile, file);
+    }
+    await dom.scrollDiffToEdge(page, 'top');
+    await upgradedShot('upgraded-top');
+    await dom.scrollDiffToEdge(page, 'bottom');
+    await upgradedShot('upgraded-end');
+
+    // A hidden gap: expanded by one step, then in full. The first file that
+    // has an expand control once its contents are loaded.
+    let gapFile = null;
+    for (const file of order) {
+      await alignFile(page, file, 40);
+      if (await dom.expandControls(dom.fileWrapper(page, file), 'directional').count()) { gapFile = file; break; }
+    }
+    const rowsOf = async (file) => (await dom.dumpFile(page, file)).columns.reduce((n, column) => n + column.rows.length, 0);
+    const separatorsOf = async (file) => (await dom.dumpFile(page, file)).separators;
+    if (gapFile) {
+      const before = await rowsOf(gapFile);
+      await dom.clickExpandControl(page, gapFile, 0);
+      const deadline = Date.now() + 10000;
+      while ((await rowsOf(gapFile)) === before && Date.now() < deadline) await frames(2);
+      await dom.waitForDiffSettled(page).catch(() => {});
+      await alignFile(page, gapFile, 40);
+      result.upgraded.gap.partial = { file: gapFile, rows: await rowsOf(gapFile), separators: await separatorsOf(gapFile), geometry: await dom.inPage(page, measureFile, gapFile) };
+      await upgradedShot('gap-partial');
+      // Until the file has no separator with a control left (at most a few steps).
+      for (let step = 0; step < 12 && await dom.expandControls(dom.fileWrapper(page, gapFile), 'directional').count(); step++) {
+        const rows = await rowsOf(gapFile);
+        await dom.clickExpandControl(page, gapFile, 0);
+        const until = Date.now() + 10000;
+        while ((await rowsOf(gapFile)) === rows && Date.now() < until) await frames(2);
+      }
+      await dom.waitForDiffSettled(page).catch(() => {});
+      await alignFile(page, gapFile, 40);
+      result.upgraded.gap.expanded = { file: gapFile, rows: await rowsOf(gapFile), separators: await separatorsOf(gapFile), geometry: await dom.inPage(page, measureFile, gapFile) };
+      await upgradedShot('gap-expanded');
+    }
+
+    // The landings start from a page as it loads: nothing expanded.
+    await page.reload();
+    await open();
+
+    // A line revealed by a navigation (what a click on a finding or a link
+    // does first): the middle of the first gap of the gap file.
+    if (gapFile) {
+      // A line the file does not show: the middle of the gap between its
+      // first two hunks, or a line well after (or before) its only hunk.
+      const hunks = corpus.files[gapFile] ? corpora.changedLines(corpus, gapFile).hunks : [];
+      const candidates = hunks.length > 1
+        ? [Math.floor((hunks[0].newStart + hunks[0].newCount + hunks[1].newStart) / 2)]
+        : hunks.length === 1 ? [hunks[0].newStart + hunks[0].newCount + 12, hunks[0].newStart - 12].filter((n) => n > 0) : [];
+      let line = null;
+      for (const candidate of candidates) {
+        if (!(await dom.isLineVisible(page, gapFile, candidate))) { line = candidate; break; }
+      }
+      if (line) {
+        await page.evaluate(({ f, l }) => window.prManager.ensureLinesVisible([{ file: f, line_start: l, line_end: l, side: 'RIGHT' }]), { f: gapFile, l: line });
+        await dom.waitForDiffSettled(page).catch(() => {});
+        await alignFile(page, gapFile, 40);
+        result.upgraded.gap.revealed = { file: gapFile, line, rows: await rowsOf(gapFile), separators: await separatorsOf(gapFile), geometry: await dom.inPage(page, measureFile, gapFile) };
+        await upgradedShot('revealed');
+        await page.reload();
+        await open();
+      }
+    }
+
+    const target = order[order.length - 1];
+    const targetLine = corpus.files[target] && !corpus.files[target].binary ? corpora.changedLines(corpus, target).additions[0] : null;
+
+    // Landing: a click on a file in the sidebar.
+    {
+      const item = page.locator(`.file-item[data-path=${JSON.stringify(target)}]`).first();
+      if (await item.count()) {
+        await item.click();
+        await scrollAtRest();
+        const landed = await dom.headerLanding(page, target);
+        result.upgraded.landings.sidebar = { file: target, headerBelowPinned: landed ? round(landed.belowPinned) : null };
+        await upgradedShot('landing-sidebar');
+      }
+    }
+
+    // Landing: a chat link to a line, and the flash on that line. The flash
+    // fades for 3.5 s: it is stopped half a second in on both engines.
+    if (targetLine) {
+      await dom.scrollDiffToEdge(page, 'top');
+      await settle(page);
+      await helpers.enableChat(page);
+      await page.waitForFunction(() => !!window.chatPanel);
+      await page.evaluate(({ f, l }) => {
+        const link = document.createElement('a');
+        link.dataset.file = f;
+        link.dataset.lineStart = String(l);
+        return window.chatPanel._handleFileLinkClick(link);
+      }, { f: target, l: targetLine });
+      const flashed = async () => (await dom.flashedLines(page, target)).includes(targetLine);
+      const until = Date.now() + 10000;
+      while (!(await flashed()) && Date.now() < until) await frames(1);
+      const paused = await page.evaluate(() => {
+        // The flashed rows are inside the viewer's shadow trees.
+        const roots = [document, ...[...document.querySelectorAll('#diff-container diffs-container')].map((host) => host.shadowRoot).filter(Boolean)];
+        const flashes = roots.flatMap((root) => root.getAnimations()).filter((animation) => animation.animationName === 'pierre-line-highlight-flash');
+        for (const animation of flashes) { animation.pause(); animation.currentTime = 500; }
+        window.__flashes = flashes;
+        return new Set(flashes).size;
+      });
+      await scrollAtRest();
+      result.upgraded.landings.chatLink = { file: target, line: targetLine, flashedRows: paused, rowBelowPinned: await rowTopBelowPinned(target, targetLine) };
+      await upgradedShot('landing-chat-link', { animations: 'allow' });
+      // Let the flash run out as it does for a reader: each engine takes it
+      // off the line in its own way when it ends, and the next positions are
+      // of the pane without it.
+      await page.evaluate(() => {
+        for (const animation of window.__flashes || []) { animation.currentTime = 3400; animation.play(); }
+        window.__flashes = null;
+      });
+      const gone = Date.now() + 10000;
+      while ((await dom.flashedLines(page, target)).length && Date.now() < gone) await frames(2);
+    }
+
+    // Landing: the first stop of a tour.
+    if (tourStop) {
+      await dom.scrollDiffToEdge(page, 'bottom');
+      await settle(page);
+      await page.locator('#tour-toggle-btn').click();
+      await page.locator('.tour-bar .tour-bar__progress').waitFor({ state: 'visible', timeout: 10000 });
+      const stop = page.locator('.tour-annotation-row').first();
+      await stop.waitFor({ state: 'visible', timeout: 10000 });
+      await scrollAtRest();
+      result.upgraded.landings.tourStop = { file: tourStop.file_path, stopBelowPinned: await belowPinned(stop) };
+      await upgradedShot('landing-tour-stop');
+      await page.locator('.tour-bar .tour-bar__exit').click();
+      await page.locator('.tour-bar').waitFor({ state: 'detached', timeout: 10000 });
+      await scrollAtRest();
+    }
+
+    // Landings: a click on a finding in the review panel, with its file
+    // open and with its file collapsed (the click opens it).
+    if (targetLine) {
+      const [suggestionId] = await helpers.seedSuggestions(page, reviewId, [
+        { file: target, line_start: targetLine, title: 'A finding to go to', body: 'Its body.' },
+      ]);
+      const card = dom.inlineSuggestion(page, suggestionId);
+      await alignFile(page, target, 40);
+      await card.waitFor({ state: 'attached', timeout: 15000 });
+      await page.evaluate(() => window.aiPanel && window.aiPanel.expand());
+      const item = page.locator(`.finding-item[data-id="${suggestionId}"]`);
+      await item.waitFor({ state: 'visible', timeout: 10000 });
+      const finished = () => page.evaluate(() => Promise.all(document.getAnimations()
+        .filter((animation) => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime))
+        .map((animation) => animation.finished.catch(() => {}))));
+      const clickFinding = async (name) => {
+        await dom.scrollDiffToEdge(page, 'top');
+        await settle(page);
+        await item.click();
+        const reached = await card.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false);
+        await scrollAtRest();
+        await finished();
+        // The card is marked as the one just gone to for two seconds.
+        await page.evaluate(() => document.querySelectorAll('.current-suggestion').forEach((el) => el.classList.remove('current-suggestion')));
+        result.upgraded.landings[name] = {
+          file: target, line: targetLine, reached,
+          cardBelowPinned: reached ? await belowPinned(card) : null,
+          collapsed: await page.evaluate((f) => window.prManager.isFileCollapsed(f), target),
+        };
+        await upgradedShot(`landing-${name}`);
+      };
+      await clickFinding('finding');
+      await page.evaluate((f) => window.prManager.setFileCollapsed(f, true), target);
+      await settle(page);
+      await clickFinding('finding-collapsed');
+      await helpers.cleanupAllComments(page, reviewId);
+    }
+    await page.close();
   };
 
   try {
@@ -642,6 +904,9 @@ async function capture(args, engine) {
         await helpers.cleanupAllComments(page, MODES[config.mode].reviewId);
       }
 
+      await page.close();
+      await upgradedStage({ context, config, corpus, order, tourStop, annotated, result, shoot, settle, alignFile });
+
       fs.writeFileSync(path.join(outDir, `${config.name}.json`), `${JSON.stringify(result, null, 1)}\n`);
       console.log(JSON.stringify({ engine, config: config.name, files: order.length, positions: result.positions.length }));
       await context.close();
@@ -806,13 +1071,19 @@ async function compare(args) {
       report.numbers.push(...numberDifferences(scope('end of the pane'), 'end', a.end, b.end));
       for (const position of Object.keys(a.cards || {})) report.numbers.push(...numberDifferences(scope(`${position} on the annotated file`), 'cards', a.cards[position], (b.cards || {})[position]));
       for (const file of Object.keys(a.contextCards || {})) report.numbers.push(...numberDifferences(scope(`comment zone of context ${file}`), 'contextCards', a.contextCards[file], (b.contextCards || {})[file]));
+      // With the file contents loaded: every file, the gap as it is expanded, the landings.
+      const upgradedA = a.upgraded || { files: {}, gap: {}, landings: {} };
+      const upgradedB = b.upgraded || { files: {}, gap: {}, landings: {} };
+      for (const file of Object.keys(upgradedA.files)) report.numbers.push(...numberDifferences(scope(`${file} with its contents loaded`), 'upgraded', upgradedA.files[file], upgradedB.files[file]));
+      for (const state of Object.keys(upgradedA.gap)) report.numbers.push(...numberDifferences(scope(`gap ${state}`), 'gap', upgradedA.gap[state], upgradedB.gap[state]));
+      for (const name of Object.keys(upgradedA.landings)) report.numbers.push(...numberDifferences(scope(`landing ${name}`), 'landing', upgradedA.landings[name], upgradedB.landings[name]));
 
       for (const position of a.positions) {
         const data = ENGINES.map((engine) => `data:image/png;base64,${fs.readFileSync(path.join(args.out, engine, `${config.name}.${position}.png`)).toString('base64')}`);
         const result = await page.evaluate(diffImages, { a: data[0], b: data[1] });
         fs.writeFileSync(path.join(compareDir, `${config.name}.${position}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
         const compared = !position.startsWith('context-');
-        const decided = ACCEPTED.find((entry) => entry.where === 'pixels' && entry.test({ config, position }));
+        const decided = ACCEPTED.find((entry) => entry.where === 'pixels' && entry.test({ config, position, visible: result.visible }));
         report.pixels.push({
           scope: `${config.name} ${position}`,
           differing: result.count,

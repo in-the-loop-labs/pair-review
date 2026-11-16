@@ -507,6 +507,35 @@ function installInPage() {
     return '';
   };
 
+  /**
+   * Record, from now on, every request the page makes to scroll something of
+   * the diff pane into view, by the file it is for (null when it is for
+   * nothing of a file). A request is a call of `scrollIntoView` on an
+   * element of the pane, and on the virtualized viewer also a scroll target
+   * given to the viewer (D.watchViewerScrollRequests).
+   */
+  D.watchScrollRequests = () => {
+    if (D.scrollRequestLog) {
+      D.scrollRequestLog.length = 0;
+    } else {
+      D.scrollRequestLog = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoViewWatched(...args) {
+        const pane = document.getElementById('diff-container');
+        // Up through shadow roots: a row of the viewer is inside one.
+        let owner = null;
+        let inPane = false;
+        for (let node = this; node; node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null) {
+          if (node === pane) { inPane = true; break; }
+          if (!owner && node.dataset && node.dataset.fileName) owner = node.dataset.fileName;
+        }
+        if (inPane) D.scrollRequestLog.push(owner);
+        return original.apply(this, args);
+      };
+    }
+    if (D.watchViewerScrollRequests) D.watchViewerScrollRequests(D.scrollRequestLog);
+  };
+
   window.__diffDom = D;
 }
 /* eslint-enable no-undef */
@@ -1262,6 +1291,64 @@ async function scrollState(page) {
   });
 }
 
+/**
+ * Start noting, in every frame the page draws, whether each of `lines` of a
+ * context file has its row in the document (see contextLinesWatched). What a
+ * spec asks when it has to say "these lines stayed on screen throughout":
+ * a read before and a read after cannot see a line that left for a few
+ * frames and came back. A page navigation ends the watch.
+ */
+async function watchContextLines(page, file, lines) {
+  await inPage(page, (D, a) => {
+    if (D.contextLineWatch) D.contextLineWatch.stopped = true;
+    const watch = D.contextLineWatch = { frames: 0, framesWithout: [], stopped: false };
+    const tick = () => {
+      if (watch.stopped) return;
+      watch.frames += 1;
+      if (!a.lines.every((line) => !!D.contextLineRow(a.file, line))) watch.framesWithout.push(watch.frames);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, { file, lines });
+}
+
+/**
+ * End the watch started by watchContextLines, after the next frame: the
+ * state the page is in when this is called is always among the frames seen
+ * (the watch's own callback for that frame was registered first and runs
+ * first).
+ * @returns {Promise<{frames: number, framesWithout: number[]}>} how many
+ *   frames were seen, and which of them lacked a row of a watched line
+ */
+async function contextLinesWatched(page) {
+  return inPage(page, async (D) => {
+    const watch = D.contextLineWatch;
+    if (!watch) return null;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    watch.stopped = true;
+    return { frames: watch.frames, framesWithout: watch.framesWithout.slice() };
+  });
+}
+
+/**
+ * Start recording the page's requests to scroll something of the diff pane
+ * into view (see scrollRequests). A page navigation ends the recording.
+ */
+async function watchScrollRequests(page) {
+  await inPage(page, (D) => { D.watchScrollRequests(); });
+}
+
+/**
+ * The file each request to scroll the diff pane was for, in the order the
+ * page made them since watchScrollRequests. What a spec asks when it has to
+ * say "this click went nowhere" without waiting to see nothing happen: it
+ * makes the same click on something that does go somewhere, and looks at
+ * what was asked for by the time that request is there.
+ */
+async function scrollRequests(page) {
+  return inPage(page, (D) => (D.scrollRequestLog || []).slice());
+}
+
 /** Set the diff's scroll position directly (no smooth scrolling). */
 async function scrollDiffTo(page, top) {
   await inPage(page, (D, t) => { D.setScrollTop(t); }, top);
@@ -1511,22 +1598,6 @@ async function parkPointerOnLine(page, file, line, { side = 'additions' } = {}) 
 const LAYOUT_TOGGLE_KEEPS = 'scroll-offset';
 
 /**
- * Which hunks a changed file has once its contents are loaded (decision D5).
- *
- *   'rediff'  the two contents are diffed again: three lines of context
- *             around every change, so lines next to a hunk that the patch
- *             did not show are drawn, and the last lines of a file are drawn
- *             when few enough are left (the current behaviour)
- *   'patch'   git's hunks are kept and every other line is behind a
- *             separator, the end of the file included (the virtualized
- *             viewer: no row moves when the contents arrive)
- *
- * A spec that counts separators or names the rows next to a hunk after the
- * upgrade asks this.
- */
-const UPGRADED_DIFF_HUNKS = 'rediff';
-
-/**
  * What the diff pane shows when the viewer's bundle did not load (decision
  * D1): 'table', every file drawn by the application's table renderer (the
  * current behaviour), or 'message', an error in place of the diff (the
@@ -1569,8 +1640,11 @@ const DELETED_COMMENT_RETURNS_ON_RERENDER = false;
 
 /**
  * Two defects of chat file links on main, characterized as they are
- * (chat-file-links.spec.js). Phase 7 of the migration routes these links
- * through one reveal helper and flips both.
+ * (chat-file-links.spec.js). On the virtualized viewer these links go
+ * through the page's one navigation helper (PRManager.revealInDiff) and both
+ * are true (tests/e2e/diff-dom-codeview.js): the viewer scrolls to a file and
+ * a line it has not mounted, and the flash is put on the line once it is what
+ * the file draws and follows the line onto every row drawn for it.
  *
  * CHAT_LINK_REACHES_UNRENDERED_FILE (false today): a link to a line of a
  * changed file whose body has never been rendered (it has not been near the
@@ -1588,6 +1662,20 @@ const DELETED_COMMENT_RETURNS_ON_RERENDER = false;
  */
 const CHAT_LINK_REACHES_UNRENDERED_FILE = false;
 const REVEALED_LINE_KEEPS_FLASH = false;
+
+/**
+ * What collapsing a file does to the view when the reader is scrolled some
+ * way into it (scroll-landing.spec.js).
+ *
+ *   'scroll-offset'  nothing scrolls: the collapsed header is left above the
+ *                    viewport, about as far as the reader had scrolled into
+ *                    the file, and a later file is on screen (the current
+ *                    behaviour; ledger H48)
+ *   'header'         the header of the file that was just collapsed is where
+ *                    it was, pinned at the top of the pane, and the files
+ *                    after it follow (the virtualized viewer; ledger H111)
+ */
+const COLLAPSE_INSIDE_FILE = 'scroll-offset';
 
 /**
  * Where an external review thread is drawn when its list is answered while
@@ -1808,8 +1896,9 @@ const engineAdapter = (ENGINE === 'codeview' ? codeviewEngine.createCodeViewAdap
   { inPage, waitInPage, contextFile, fileWrapper, waitForContentUpgrade }
 );
 const engineExpectations = {
-  LAYOUT_TOGGLE_KEEPS, UPGRADED_DIFF_HUNKS, MISSING_VIEWER_BUNDLE, WORKER_LOAD_FAILURE_ERROR, SMALL_CONTEXT_GAP, contextGapLabel,
+  LAYOUT_TOGGLE_KEEPS, MISSING_VIEWER_BUNDLE, WORKER_LOAD_FAILURE_ERROR, SMALL_CONTEXT_GAP, contextGapLabel,
   CONTEXT_LOADS_IN_FLIGHT, GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS,
+  CHAT_LINK_REACHES_UNRENDERED_FILE, REVEALED_LINE_KEEPS_FLASH, UPGRADE_WAITS_FOR_FOCUS, COLLAPSE_INSIDE_FILE,
   ...engineAdapter.expectations,
 };
 
@@ -1892,6 +1981,10 @@ module.exports = {
   headerPosition,
   headerLanding,
   firstFileBelowToolbar,
+  watchScrollRequests,
+  scrollRequests,
+  watchContextLines,
+  contextLinesWatched,
   firstVisibleRow,
   rowBox,
   selectedText,
@@ -1908,6 +2001,7 @@ module.exports = {
   DELETED_COMMENT_RETURNS_ON_RERENDER,
   CHAT_LINK_REACHES_UNRENDERED_FILE,
   REVEALED_LINE_KEEPS_FLASH,
+  COLLAPSE_INSIDE_FILE,
   BASE_CHANGE_KEEPS_CARDS,
   THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY,
   SUGGESTION_BLOCK_HAS_EMPTY_LINE,
