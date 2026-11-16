@@ -167,6 +167,20 @@ describe('SuggestionNavigator.goToSuggestion: reveal and report', () => {
     expect(window.toast.showError).toHaveBeenCalledWith('Could not reveal this finding');
   });
 
+  it('does not report a miss when another navigation took this one over', async () => {
+    // A click in the review panel right after the key: the navigator's own
+    // navigation stops looking for its card and says so.
+    window.toast = { showError: vi.fn() };
+    window.prManager = makePageManager();
+    window.prManager.revealInDiff = vi.fn(async () => ({ element: null, cancelled: true }));
+    const nav = new SuggestionNavigator();
+    nav.suggestions = [{ id: 'taken-over', file: 'a.js' }];
+
+    await nav.goToSuggestion(0);
+    expect(window.prManager.revealInDiff).toHaveBeenCalledTimes(1);
+    expect(window.toast.showError).not.toHaveBeenCalled();
+  });
+
   it('falls back to a generic message without a display error', async () => {
     window.toast = { showError: vi.fn() };
     window.prManager = makePageManager();

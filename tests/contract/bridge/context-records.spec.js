@@ -234,10 +234,20 @@ test('the reader expands a context file with real clicks: a step, Shift+click, "
     // into the file's revealed ranges first, clamped to the gaps.
     b.addContextRanges(CONTEXT, [{ startLine: 390, endLine: 395 }]);
     out.revealed = b.files.get(CONTEXT).contextRanges;
+    // The viewer's record of them stays with the diff that is on screen...
     out.mapAfterFold = map.size;
     const lines = [1, 99, 121, 299, 311, 330, 331, 389, 392, 396];
     out.afterFold = lines.map((n) => b.isLineVisible(CONTEXT, n, 'RIGHT'));
+    const rowOf = (line) => !!H.host(CONTEXT).shadowRoot.querySelector(`[data-content] > [data-line="${line}"]`);
+    out.framesWithoutExpandedRows = [];
+    for (let frame = 1; !b.isDiffDisplayed(CONTEXT) && frame < 600; frame++) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      if (!rowOf(121) || !rowOf(299) || !rowOf(330)) out.framesWithoutExpandedRows.push(frame);
+    }
     await BH.displayed(CONTEXT);
+    // ...and is gone when the folded diff is.
+    out.mapAfterDisplay = map.size;
+    out.afterDisplay = lines.map((n) => b.isLineVisible(CONTEXT, n, 'RIGHT'));
     await H.settle(200);
     out.soundAfterFold = BH.sound();
     // A new diff starts again from the stored ranges.
@@ -255,15 +265,87 @@ test('the reader expands a context file with real clicks: a step, Shift+click, "
   expect(result.expansionMap[2]).toEqual([2, 20, 0]);
   // 1-99 and 121-299 touch the stored ranges; 311-330 and 390-395 are after the last.
   expect(result.revealed).toEqual([{ startLine: 1, endLine: 99 }, { startLine: 121, endLine: 299 }, { startLine: 311, endLine: 330 }, { startLine: 390, endLine: 395 }]);
-  expect(result.mapAfterFold).toBe(0);
+  expect(result.mapAfterFold).toBe(3);
   //                               1     99    121   299   311   330   331    389    392   396
   expect(result.afterFold).toEqual([true, true, true, true, true, true, false, false, true, true]);
+  expect(result.framesWithoutExpandedRows).toEqual([]);
+  expect(result.mapAfterDisplay).toBe(0);
+  expect(result.afterDisplay).toEqual(result.afterFold);
   expect(result.soundAfterFold).toEqual({ orphans: 0, clean: true });
   expect(result.afterRenderAll).toEqual([false, false, false, false, false, false, false, false, false, false]);
   expect(result.revealedAfterRenderAll).toEqual([]);
   expect(result.sound).toEqual({ orphans: 0, clean: true });
   expect(harness.validatorErrors(page)).toEqual([]);
 });
+
+for (const plain of [false, true]) {
+  test(`a stored range added to ${plain ? 'an uncoloured' : 'a'} context file after the reader expanded a gap: the expanded lines stay on screen until the new diff is drawn`, async ({ harness }) => {
+    const page = await openBridge(harness);
+    // A NUL character makes the file one the viewer draws uncoloured, without waiting for a highlight result.
+    const contents = await page.evaluate((plain) => (plain ? window.BH.numberedLines(400).replace('line 3\n', 'line 3\u0000\n') : null), plain);
+    const { diffA, diffB } = await up(page, { contents });
+    // Gap 1 is between the ranges (121-299): the control that grows the range above it reveals lines 121-140.
+    const step = await clickExpandControl(page, CONTEXT, 1, 'up');
+    expect(step && step.visible, JSON.stringify(step)).toBe(true);
+
+    const result = await page.evaluate(async ({ CONTEXT, RANGES, diffA, diffB, contents }) => {
+      const { H, BH } = window;
+      const b = BH.bridge;
+      const record = b.files.get(CONTEXT);
+      const renderer = record._instance.hunksRenderer;
+      const map = renderer.expandedHunks;
+      const callback = renderer.onRenderUpdate;
+      const rowOf = (line) => !!H.host(CONTEXT).shadowRoot.querySelector(`[data-content] > [data-line="${line}"]`);
+      const out = { lang: record.metadata.lang ?? null, before: { map: map.size, row130: rowOf(130), row141: rowOf(141), visible: b.isLineVisible(CONTEXT, 130, 'RIGHT') } };
+      // What the page does when a range is added to the file: the same entries, the file with one more stored range.
+      const entry = BH.contextEntry(CONTEXT, { contents: contents ?? BH.numberedLines(400), ranges: [...RANGES, { startLine: 200, endLine: 210 }] });
+      out.reconcile = b.reconcile([BH.diffEntry(diffA), entry, BH.diffEntry(diffB)]);
+      out.afterReconcile = {
+        map: map.size,
+        revealed: record.contextRanges,
+        visible: [130, 140, 141, 205].map((n) => b.isLineVisible(CONTEXT, n, 'RIGHT')),
+        displayedAtOnce: b.isDiffDisplayed(CONTEXT),
+      };
+      out.framesWithoutExpandedRows = [];
+      out.frames = 0;
+      while (!b.isDiffDisplayed(CONTEXT) && out.frames < 600) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        out.frames += 1;
+        if (!rowOf(121) || !rowOf(130) || !rowOf(140)) out.framesWithoutExpandedRows.push(out.frames);
+      }
+      await BH.displayed(CONTEXT);
+      await H.settle(300);
+      out.after = {
+        map: map.size,
+        rows: [121, 130, 140, 141, 199, 200, 210, 211].map(rowOf),
+        visible: [130, 140, 141, 205].map((n) => b.isLineVisible(CONTEXT, n, 'RIGHT')),
+        callbackRestored: renderer.onRenderUpdate === callback,
+        runs: BH.lineRuns(CONTEXT),
+      };
+      out.sound = BH.sound();
+      return out;
+    }, { CONTEXT, RANGES, diffA, diffB, contents });
+    expect(result.lang).toBe(plain ? 'text' : null);
+    expect(result.before).toEqual({ map: 1, row130: true, row141: false, visible: true });
+    expect(result.reconcile).toMatchObject({ applied: true, listWritten: false, updated: [CONTEXT] });
+    // The data is right at once: the expanded lines are ranges of the file, next to the new one.
+    expect(result.afterReconcile.revealed).toEqual([{ startLine: 121, endLine: 140 }]);
+    expect(result.afterReconcile.visible).toEqual([true, true, false, true]);
+    // A coloured file goes on drawing the old diff, with the viewer's record of the expansion;
+    // an uncoloured one draws the new diff in its next pass and the record goes at once.
+    expect(result.afterReconcile.displayedAtOnce).toBe(plain);
+    expect(result.afterReconcile.map).toBe(plain ? 0 : 1);
+    if (!plain) expect(result.frames).toBeGreaterThan(0);
+    expect(result.framesWithoutExpandedRows).toEqual([]);
+    expect(result.after.map).toBe(0);
+    expect(result.after.rows).toEqual([true, true, true, false, false, true, true, false]);
+    expect(result.after.visible).toEqual([true, true, false, true]);
+    expect(result.after.callbackRestored).toBe(true);
+    expect(result.after.runs).toEqual([[100, 140], [200, 210], [300, 310]]);
+    expect(result.sound).toEqual({ orphans: 0, clean: true });
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}
 
 test('in split layout a context file is one column as wide as the pane, with every line once and its cards full width', async ({ harness }) => {
   const page = await openBridge(harness);

@@ -39,7 +39,8 @@ import {
   mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound, setDiffView
 } from './helpers.js';
 import {
-  contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText, ensureMounted,
+  contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText,
+  watchScrollRequests, scrollRequests, watchContextLines, contextLinesWatched, waitForDiffSettled,
   contextGapLabel, expectedContextRanges,
   expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
@@ -265,6 +266,35 @@ for (const mode of MODES) {
       await expandContextGapFully(page, MIDDLE, 0);
       await expect.poll(async () => (await contextFileState(page, MIDDLE)).ranges).toEqual([{ start: 1, end: SHORT_LINES }]);
       expect((await contextFileState(page, MIDDLE)).gaps).toEqual([]);
+    });
+
+    test('a range added to a file after the reader expanded a gap in it: the expanded lines stay on screen throughout', async ({ page }) => {
+      await open(page);
+      await addContextRange(page, LONG, 100, 120);
+      await expandContextGap(page, LONG, 1, 'down');
+      await expect.poll(async () => (await contextFileState(page, LONG)).ranges).toEqual([{ start: 100, end: 140 }]);
+      await expect(contextLine(page, LONG, 130)).toBeVisible();
+      await waitForDiffSettled(page);
+
+      // What a chat link or a tour stop elsewhere in the file does: one more
+      // range of it. Every frame until the file shows it, the lines the
+      // reader expanded by hand have their rows.
+      await watchContextLines(page, LONG, [121, 130, 140]);
+      const result = await addContextRange(page, LONG, 200, 210);
+      expect(result.type).toBe('context');
+      await expect.poll(async () => (await contextFileState(page, LONG)).ranges).toEqual([{ start: 100, end: 140 }, { start: 200, end: 210 }]);
+      await expect(contextLine(page, LONG, 205)).toBeVisible();
+      await waitForDiffSettled(page);
+      const watched = await contextLinesWatched(page);
+      expect(watched.frames).toBeGreaterThan(0);
+      expect(watched.framesWithout).toEqual([]);
+
+      // The file shows what it showed, and the new range: nothing else, and nothing twice.
+      await expect(contextLine(page, LONG, 130)).toBeVisible();
+      const state = await contextFileState(page, LONG);
+      expect(state.ranges).toEqual([{ start: 100, end: 140 }, { start: 200, end: 210 }]);
+      expect(state.separators).toBe(1);
+      await assertNoOrphanHosts(page);
     });
 
     test('a comment on a context line is saved against that file and line and survives a reload', async ({ page }) => {
@@ -603,10 +633,17 @@ for (const mode of MODES) {
         ]);
 
         // Its entry has nothing to go to: the pane stays where it is.
+        // "Nothing happens" is not waited for. The same click is then made
+        // on the entry of the file that is there; the page handles the two
+        // in their order, so when it has asked for that file to be scrolled
+        // to, a request for the other one would be on record before it.
         const before = await scrollState(page);
+        await watchScrollRequests(page);
         await page.locator(`.file-item.context-file-item[data-path="${GONE}"]`).first().click();
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         expect((await scrollState(page)).top).toBe(before.top);
+        await page.locator(`.file-item.context-file-item[data-path="${MIDDLE}"]`).first().click();
+        await expect.poll(() => scrollRequests(page)).not.toEqual([]);
+        expect([...new Set(await scrollRequests(page))]).toEqual([MIDDLE]);
         await expectNoContextFile(page, GONE);
       });
     });
@@ -628,11 +665,9 @@ for (const mode of MODES) {
       await open(page);
       await page.locator('#tour-toggle-btn').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 1 of 2');
-      // The first stop is drawn in its file. Whether the tour itself brings
-      // a stop into view is not this spec's subject (offscreen-mutations.spec.js
-      // has the tour across files far apart): with a context file above it,
-      // the stop's file can be outside what a virtualized viewer has drawn.
-      await ensureMounted(page, TOUR_STOPS[0].file_path);
+      // The first stop is drawn in its file, and the tour has brought it
+      // into view (with a context file above it, the stop's file can be
+      // outside what a virtualized viewer had drawn).
       await expect(tourStop(page, 0)).toBeVisible();
     }
     const added = () => api.requests.filter((r) => r.method === 'POST').map((r) => r.body);
@@ -735,10 +770,7 @@ for (const mode of MODES) {
 
       await page.locator('.tour-bar .tour-bar__next').click();
       await expect(page.locator('.tour-bar .tour-bar__progress')).toHaveText('Stop 2 of 2');
-      // As in openWithTour: on a virtualized viewer the context file, which
-      // is above the first stop's file, may have no element at this point. A
-      // no-op where the tour has brought the stop into view itself.
-      await ensureMounted(page, LONG);
+      // The tour brings the stop into view itself, wherever its file is.
       await expect(contextFile(page, LONG).locator('.tour-annotation-row')).toHaveCount(1);
       await expect(tourStop(page, 1)).toBeInViewport();
       // The stored range already covers the stop: nothing is added or changed.

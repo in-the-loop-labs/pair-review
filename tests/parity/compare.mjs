@@ -6,11 +6,10 @@
  *
  * Rules (plans/codeview-virtualized-diff.md, parity rule 3):
  *   - pre-upgrade stage: everything must be identical.
- *   - post-upgrade stage: changed rows (additions and deletions) must be
- *     identical. Context rows may differ only where decision D5 applies (the
- *     reference engine re-diffs the full contents and can show a context line
- *     more or less next to a hunk); every file where they differ is LISTED,
- *     not failed, so a reviewer reads the list.
+ *   - post-upgrade stage: everything must be identical too. Both engines
+ *     diff a file's two contents again when they arrive and keep the lines of
+ *     the patch (decision D5a of the ledger), so a reader sees the same rows,
+ *     separators and expand controls on both.
  *   - context stage (context files): the place of each context file in the
  *     pane, its ranges, the text of its lines, the number of lines each gap
  *     hides and the line each card is under must be identical, with two
@@ -21,7 +20,12 @@
  *   - landings: within 1 px, measured from whatever is pinned above the diff
  *     when both dumps have that measurement (the toolbar is inside the
  *     scroll container on one engine and above it on the other), else from
- *     the top of the scroll container.
+ *     the top of the scroll container. One landing differs by decision and is
+ *     LISTED: collapsing a file while scrolled inside it leaves its header
+ *     above the viewport on the per-file renderer (nothing scrolls) and
+ *     flush under the toolbar on the virtualized viewer (ledger H111, H145,
+ *     `COLLAPSE_INSIDE_FILE`). Listed only in that form: the candidate is
+ *     the virtualized viewer, its header is flush, the reference's is above.
  *   - `classes` on the file wrapper are engine bookkeeping and are reported
  *     as notes only; `collapsed` is compared.
  *
@@ -73,8 +77,7 @@ function compareFile(label, stage, a, b) {
   const contextDiffers = !same(contextA, contextB) || !same(rest.separators[0], rest.separators[1]) || rest.expandControls[0] !== rest.expandControls[1];
   if (contextDiffers) {
     const message = `${where}: context rows ${contextA.length} vs ${contextB.length}, separators ${a.separators.length} vs ${b.separators.length}, expand controls ${a.expandControls} vs ${b.expandControls}`;
-    if (stage === 'pre') regressions.push(message);
-    else listed.push(message);
+    regressions.push(message);
   }
 }
 
@@ -210,7 +213,11 @@ for (const name of names) {
       const pb = pinned ? lb.belowPinned : (lb.headerTop ?? lb.cardBelowPinned);
       if (pa == null || pb == null || Math.abs(pa - pb) > 1) {
         // A landing at the very end of the diff is bounded by the scroll extent, not by the target.
-        if (!(la.atEnd && lb.atEnd)) regressions.push(`${name}: landing ${key}: ${pa} vs ${pb}`);
+        if (la.atEnd && lb.atEnd) continue;
+        const headerKept = key === 'collapseInside' && (b.meta?.engine === 'codeview') && (a.meta?.engine || 'filediff') !== 'codeview'
+          && pa != null && pb != null && pa < -1 && Math.abs(pb) <= 1;
+        if (headerKept) listed.push(`${name}: landing collapseInside: the collapsed file's header is ${pa} px from the toolbar on the per-file renderer (above the viewport) and ${pb} px on the virtualized viewer (flush under it)`);
+        else regressions.push(`${name}: landing ${key}: ${pa} vs ${pb}`);
       }
     }
   }
@@ -218,7 +225,7 @@ for (const name of names) {
 
 console.log(`compared ${names.length} dump(s)`);
 if (notes.length) console.log(`\nNotes (${notes.length}):\n  ${notes.join('\n  ')}`);
-if (listed.length) console.log(`\nListed differences: post-upgrade context rows, to be read against decision D5, and context files against the small-gap rule (${listed.length}):\n  ${listed.join('\n  ')}`);
+if (listed.length) console.log(`\nListed differences, each decided: context files against the small-gap rule and a file's final newline, and the collapse of a file the reader is inside (${listed.length}):\n  ${listed.join('\n  ')}`);
 if (regressions.length) {
   console.log(`\nREGRESSIONS (${regressions.length}):\n  ${regressions.join('\n  ')}`);
   process.exit(1);

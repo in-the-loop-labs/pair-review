@@ -36,7 +36,10 @@ let manager;
 let host;
 let header;
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+// The bridge decides in a 0 ms timer set by the release. A 0 ms timer set
+// after it runs after it (timers of one delay run in the order they were
+// set), so this is a sentinel on the bridge's own queue, not a wait.
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const down = (target) => bridge._handleRootPointerDown({ isPrimary: true, button: 0, composedPath: () => [target], target });
 const up = (target) => bridge._handlePointerUp({ type: 'pointerup', button: 0, composedPath: () => [target], target });
 

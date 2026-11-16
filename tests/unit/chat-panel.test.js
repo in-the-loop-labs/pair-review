@@ -8397,6 +8397,135 @@ describe('ChatPanel', () => {
   });
 
   // -------------------------------------------------------------------------
+  // File links when the pane's files are items of one viewer: decided from
+  // data, because an item far from the viewport has no element and a context
+  // file's ranges are not chunks in the DOM.
+  // -------------------------------------------------------------------------
+  describe('_handleFileLinkClick with files that are items of the viewer', () => {
+    let savedQuerySelector;
+    let savedCSS;
+    let files;
+
+    beforeEach(() => {
+      savedQuerySelector = global.document.querySelector;
+      savedCSS = global.CSS;
+      global.CSS = { escape: vi.fn((s) => s) };
+      // Nothing of any file is in the document.
+      global.document.querySelector = vi.fn(() => null);
+      files = new Map([['src/app.js', { kind: 'diff' }], ['lib/ctx.js', { kind: 'context' }]]);
+      global.window.prManager = {
+        pierreBridge: { files, isLineVisible: vi.fn(() => false) },
+        contextFiles: [{ id: 5, file: 'lib/ctx.js', line_start: 100, line_end: 120 }, { id: 6, file: 'lib/ctx.js', line_start: 200, line_end: 210 }],
+        ensureContextFile: vi.fn(),
+        scrollToFile: vi.fn(),
+        scrollToContextFile: vi.fn(),
+      };
+      chatPanel._scrollToLine = vi.fn();
+      chatPanel._showToast = vi.fn();
+    });
+
+    afterEach(() => {
+      global.document.querySelector = savedQuerySelector;
+      global.CSS = savedCSS;
+      global.window.prManager = null;
+    });
+
+    const link = (file, lineStart = null, lineEnd = null) => createMockElement('a', {
+      dataset: { file, lineStart: lineStart != null ? String(lineStart) : '', lineEnd: lineEnd != null ? String(lineEnd) : '' },
+    });
+
+    it('a changed file that has no element: the line is gone to, without asking the document or the server', async () => {
+      await chatPanel._handleFileLinkClick(link('src/app.js', 10, 12));
+      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10, 12);
+      expect(global.document.querySelector).not.toHaveBeenCalled();
+      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('a changed file without a line: the file is gone to', async () => {
+      await chatPanel._handleFileLinkClick(link('src/app.js'));
+      expect(global.window.prManager.scrollToFile).toHaveBeenCalledWith('src/app.js');
+      expect(chatPanel._scrollToLine).not.toHaveBeenCalled();
+    });
+
+    it('a line inside a stored range of a context file: that range is gone to, nothing is added', async () => {
+      await chatPanel._handleFileLinkClick(link('lib/ctx.js', 205));
+      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('lib/ctx.js', 205, 6);
+      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('a line the reader has revealed by hand is shown too: the file is gone to, nothing is added', async () => {
+      global.window.prManager.pierreBridge.isLineVisible.mockReturnValue(true);
+      await chatPanel._handleFileLinkClick(link('lib/ctx.js', 150));
+      expect(global.window.prManager.pierreBridge.isLineVisible).toHaveBeenCalledWith('lib/ctx.js', 150, 'RIGHT');
+      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('lib/ctx.js', 150, 5);
+      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('a context file without a line: its first range', async () => {
+      await chatPanel._handleFileLinkClick(link('lib/ctx.js'));
+      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('lib/ctx.js', null, 5);
+    });
+
+    it('a line the context file does not show: the range is added, then gone to without the wait a wrapper needs', async () => {
+      vi.useFakeTimers();
+      try {
+        global.window.prManager.ensureContextFile.mockResolvedValue({ type: 'context', contextFile: { id: 9 } });
+        const done = chatPanel._handleFileLinkClick(link('lib/ctx.js', 300, 310));
+        // No timer is advanced: the 100 ms wait is for wrappers drawn by hand.
+        await done;
+        expect(global.window.prManager.ensureContextFile).toHaveBeenCalledWith('lib/ctx.js', 300, 310);
+        expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('lib/ctx.js', 300, 9);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('_scrollToLine through the page\'s navigation helper', () => {
+    let savedQuerySelector;
+    let savedCSS;
+
+    beforeEach(() => {
+      savedQuerySelector = global.document.querySelector;
+      savedCSS = global.CSS;
+      global.CSS = { escape: vi.fn((s) => s) };
+      global.document.querySelector = vi.fn(() => null);
+    });
+
+    afterEach(() => {
+      global.document.querySelector = savedQuerySelector;
+      global.CSS = savedCSS;
+      global.window.prManager = null;
+    });
+
+    it('asks the helper for the line range, flashed, and does nothing more when it was revealed', async () => {
+      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: true, handled: true }));
+      global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
+      await chatPanel._scrollToLine('src/app.js', 4, 6);
+      expect(revealInDiff).toHaveBeenCalledWith({ file: 'src/app.js', line_start: 4, line_end: 6, side: 'RIGHT', flashLines: true });
+      expect(global.window.prManager.scrollToFile).not.toHaveBeenCalled();
+      expect(global.document.querySelector).not.toHaveBeenCalled();
+    });
+
+    it('a single line is a range of one; a line the file does not show goes to the file', async () => {
+      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: false, handled: true }));
+      global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
+      await chatPanel._scrollToLine('src/app.js', 30, null, 'LEFT');
+      expect(revealInDiff).toHaveBeenCalledWith({ file: 'src/app.js', line_start: 30, line_end: 30, side: 'LEFT', flashLines: true });
+      expect(global.window.prManager.scrollToFile).toHaveBeenCalledWith('src/app.js');
+    });
+
+    it('where the helper does not serve a line target, the link takes its own path', async () => {
+      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: false, handled: false }));
+      global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
+      await chatPanel._scrollToLine('src/app.js', 30);
+      // Its own path starts by looking for the file's wrapper in the document.
+      expect(global.document.querySelector).toHaveBeenCalled();
+      expect(global.window.prManager.scrollToFile).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // _findLineRows
   // -------------------------------------------------------------------------
 

@@ -94,11 +94,27 @@ async function clicksOfPressDrawRelease(page, pointer, control) {
   const box = await control.boundingBox();
   await page.evaluate(() => { window.__clicksSeen.length = 0; });
   await gesture(page, pointer, { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) }, () => redrawFile(page, UTILS));
+  return clicksBehindSentinel(page, pointer);
+}
+
+/**
+ * How many clicks the gestures made since `window.__clicksSeen` was emptied
+ * have produced, on anything: a gesture on the sentinel, and what was seen
+ * by the time its click and a timer set after it have run (see
+ * clicksOfPressDrawRelease).
+ */
+async function clicksBehindSentinel(page, pointer) {
   await gesture(page, pointer, SENTINEL_POINT(page));
   await expect.poll(() => page.evaluate(() => window.__clicksSeen.includes('sentinel'))).toBe(true);
   const seen = await page.evaluate(() => new Promise((resolve) => setTimeout(() => resolve(window.__clicksSeen.slice()), 0)));
   expect(seen.filter((entry) => entry === 'sentinel')).toHaveLength(1);
   return seen.filter((entry) => entry === 'click').length;
+}
+
+/** The middle of a control, in whole pixels. */
+async function centreOf(control) {
+  const box = await control.boundingBox();
+  return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 }
 
 for (const mode of MODES) {
@@ -288,6 +304,62 @@ for (const mode of MODES) {
           expect(await clicksOfPressDrawRelease(page, pointer, wrapper.locator('.d2h-file-name'))).toBe(1);
           await expect(wrapper).toHaveClass(/collapsed/);
         });
+
+        if (pointer === 'mouse') {
+          test('two presses on the chevron with no pause between them, the file drawn in each: two clicks, and the file is as it was', async ({ page }) => {
+            // The click that is made up for the first press arrives when the
+            // second press is already in progress, and must not be taken for
+            // the second press's own.
+            const chevron = fileWrapper(page, UTILS).locator('.file-collapse-toggle');
+            const at = await centreOf(chevron);
+            await page.evaluate(() => { window.__clicksSeen.length = 0; });
+            await page.mouse.move(at.x, at.y);
+            for (const clickCount of [1, 2]) {
+              await page.mouse.down({ clickCount });
+              await redrawFile(page, UTILS);
+              await page.mouse.up({ clickCount });
+            }
+            expect(await clicksBehindSentinel(page, pointer)).toBe(2);
+            // Collapsed by the first, expanded by the second.
+            expect(await page.evaluate((file) => window.prManager.isFileCollapsed(file), UTILS)).toBe(false);
+            await expect(chevron).toHaveAttribute('title', 'Collapse file');
+          });
+
+          test('a press that opens the context menu acts as it does without a draw: Control held, and the secondary button', async ({ page }) => {
+            // With Control held a primary-button press is the context-menu
+            // gesture on macOS and a plain click elsewhere; the secondary
+            // button never clicks. Whatever the browser makes of each press,
+            // a draw of the file between press and release must not change it.
+            const chevron = fileWrapper(page, UTILS).locator('.file-collapse-toggle');
+            const collapsed = () => page.evaluate((file) => window.prManager.isFileCollapsed(file) === true, UTILS);
+            const session = await page.context().newCDPSession(page);
+            const press = async (button, modifiers, draw) => {
+              const at = await centreOf(chevron);
+              const before = await collapsed();
+              await page.evaluate(() => { window.__clicksSeen.length = 0; });
+              const event = { x: at.x, y: at.y, button, clickCount: 1, modifiers };
+              await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y });
+              await session.send('Input.dispatchMouseEvent', { ...event, type: 'mousePressed', buttons: button === 'left' ? 1 : 2 });
+              if (draw) await redrawFile(page, UTILS);
+              await session.send('Input.dispatchMouseEvent', { ...event, type: 'mouseReleased', buttons: 0 });
+              const clicks = await clicksBehindSentinel(page, pointer);
+              const toggled = (await collapsed()) !== before;
+              await waitForDiffSettled(page);
+              return { clicks, toggled };
+            };
+            try {
+              const CONTROL = 2;
+              const controlPlain = await press('left', CONTROL, false);
+              // One click toggles, none does not: the page did what the browser sent.
+              expect(controlPlain.toggled).toBe(controlPlain.clicks === 1);
+              expect(await press('left', CONTROL, true)).toEqual(controlPlain);
+              expect(await press('right', 0, false)).toEqual({ clicks: 0, toggled: false });
+              expect(await press('right', 0, true)).toEqual({ clicks: 0, toggled: false });
+            } finally {
+              await session.detach();
+            }
+          });
+        }
       });
     }
   });

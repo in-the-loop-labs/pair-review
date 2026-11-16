@@ -21,7 +21,7 @@ import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, rowCount, scrollDiffTo,
   scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts, clickExpandControl,
-  scrollThroughDiff, LAYOUT_TOGGLE_KEEPS
+  scrollThroughDiff, ensureMounted, LAYOUT_TOGGLE_KEEPS, COLLAPSE_INSIDE_FILE
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -200,6 +200,10 @@ for (const mode of MODES) {
 
       await page.evaluate(() => window.aiPanel?.expand());
       await page.locator(`.finding-item[data-id="${id}"]`).click();
+      // The finding has no card, so nothing scrolls to the file: it is opened
+      // where it is, 30 files below. What follows needs its element.
+      await expect.poll(() => page.evaluate((f) => window.prManager.isFileCollapsed(f), middle)).toBe(false);
+      await ensureMounted(page, middle);
       await expect(fileWrapper(page, middle)).not.toHaveClass(/collapsed/);
       await expect.poll(() => rowCount(page, middle)).toBe(rowsShown);
       await expect(toggle).toHaveAttribute('title', 'Collapse file');
@@ -255,7 +259,7 @@ for (const mode of MODES) {
       await assertNoOrphanHosts(page);
     });
 
-    test('collapsing the file being read keeps the scroll position; what follows moves up into view', async ({ page }) => {
+    test('collapsing the file being read: what follows moves up into view', async ({ page }) => {
       await sidebarItem(page, middle).click();
       await expectHeaderFlush(page, middle);
       await waitForFileRendered(page, middle);
@@ -268,19 +272,36 @@ for (const mode of MODES) {
       await expect(wrapper.locator('.d2h-file-header')).toBeInViewport();
 
       await wrapper.locator('.file-collapse-toggle').click();
-      await expect(wrapper).toHaveClass(/collapsed/);
-      // Characterization of main (ledger H48): nothing scrolls. The collapsed
-      // header is left above the viewport, about as far as the reader had
-      // scrolled into the file (measured: 359 px above the toolbar's bottom
-      // edge, the 300 scrolled plus the toolbar's own height), and a later
-      // file is on screen.
-      await scrollSettled(page);
-      expect(Math.abs((await scrollState(page)).top - inside)).toBeLessThan(2);
-      const landing = await headerLanding(page, middle);
-      expect(landing.belowPinned).toBeLessThan(-250);
-      expect(landing.belowPinned).toBeGreaterThan(-400);
-      const top = await firstFileBelowToolbar(page);
-      expect(MANY.order.indexOf(top)).toBeGreaterThan(MANY.order.indexOf(middle));
+      const next = MANY.order[MANY.order.indexOf(middle) + 1];
+      if (COLLAPSE_INSIDE_FILE === 'header') {
+        // The header of the file that was collapsed is where the reader was
+        // looking, flush under the toolbar, and the next file follows it.
+        await expect(wrapper).toHaveClass(/collapsed/);
+        await scrollSettled(page);
+        const landing = await headerLanding(page, middle);
+        expect(Math.abs(landing.belowPinned)).toBeLessThan(2);
+        expect(landing.inViewport).toBe(true);
+        expect(await firstFileBelowToolbar(page)).toBe(middle);
+        const following = await headerLanding(page, next);
+        expect(following.inViewport).toBe(true);
+        // The collapsed header (53 px) and the 24 px between two files.
+        expect(following.belowPinned).toBeGreaterThan(60);
+        expect(following.belowPinned).toBeLessThan(100);
+      } else {
+        await expect(wrapper).toHaveClass(/collapsed/);
+        // Characterization of main (ledger H48): nothing scrolls. The collapsed
+        // header is left above the viewport, about as far as the reader had
+        // scrolled into the file (measured: 359 px above the toolbar's bottom
+        // edge, the 300 scrolled plus the toolbar's own height), and a later
+        // file is on screen.
+        await scrollSettled(page);
+        expect(Math.abs((await scrollState(page)).top - inside)).toBeLessThan(2);
+        const landing = await headerLanding(page, middle);
+        expect(landing.belowPinned).toBeLessThan(-250);
+        expect(landing.belowPinned).toBeGreaterThan(-400);
+        const top = await firstFileBelowToolbar(page);
+        expect(MANY.order.indexOf(top)).toBeGreaterThan(MANY.order.indexOf(middle));
+      }
     });
   });
 }

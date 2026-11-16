@@ -50,6 +50,19 @@ function extendInPage() {
     if (root) root.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 0 }));
   };
 
+  /** D.watchScrollRequests on this engine: a scroll target given to the viewer is a request too. */
+  D.watchViewerScrollRequests = (log) => {
+    const viewer = bridge() && bridge().codeView;
+    if (!viewer || viewer.scrollToWatchedBy === log) return;
+    const original = viewer.scrollToUnwatched || viewer.scrollTo.bind(viewer);
+    viewer.scrollToUnwatched = original;
+    viewer.scrollToWatchedBy = log;
+    viewer.scrollTo = (target) => {
+      log.push(target && target.id != null ? target.id : null);
+      return original(target);
+    };
+  };
+
   /** The bridge's record of a file of the pane (changed or context), or null. */
   D.record = (file) => {
     const b = bridge();
@@ -386,10 +399,15 @@ function extendInPage() {
             : code.hasAttribute('data-unified') ? 'unified' : 'unknown';
         const rows = [];
         // The index of the row before a separator places it in the file. In
-        // a window that does not start at the file's top, a separator with
-        // no row before it cannot be placed: the window before this one,
-        // which overlaps it, has that row.
-        const atFileTop = host.getBoundingClientRect().top - D.scroller().getBoundingClientRect().top >= -1;
+        // a window that does not start at the file's first row, a separator
+        // with no row before it cannot be placed: the window before this
+        // one, which overlaps it, has that row. Where the window starts is
+        // the viewer's own record of it, not where the file is in the pane:
+        // the pane moves by the rows added above the line in view when a
+        // file's contents arrive under the reader, and a file's first
+        // separator is then a few pixels under the pinned header, not gone.
+        const drawnFrom = D.record(file) && D.record(file)._instance && D.record(file)._instance.renderRange;
+        const atFileTop = !(drawnFrom && drawnFrom.startingLine > 0);
         let previous = null;
         for (const el of code.querySelectorAll('[data-content] > *')) {
           if (el.hasAttribute('data-line')) {
@@ -815,9 +833,18 @@ function createCodeViewAdapter(base) {
   async function contextFileState(page, file) {
     await ensureMounted(page, file);
     // Rows are replaced when a new diff of the item is displayed; read once
-    // what is on screen is what the bridge last published.
-    await waitInPage(page, (D, f) => !D.record(f) || !D.contextWrapper(f) || D.isDisplayCurrent(f), file);
-    return inPage(page, (D, f) => D.contextDump(f), file);
+    // what is on screen is what the bridge last published. The wait and the
+    // read are one evaluation: between a wait and a separate read another
+    // diff of the item can be published (the data moves at once, the rows a
+    // worker round trip later), and the read would compare one with the
+    // other.
+    const handle = await waitInPage(page, (D, f) => {
+      if (D.record(f) && D.contextWrapper(f) && !D.isDisplayCurrent(f)) return false;
+      return { state: D.contextDump(f) };
+    }, file);
+    const { state } = await handle.jsonValue();
+    await handle.dispose();
+    return state;
   }
 
   /** Locator of the row showing `line` of a context file. */
@@ -1018,7 +1045,7 @@ function createCodeViewAdapter(base) {
       if (!record || !record.upgraded || !record.baseMetadata) throw new Error(`redisplayBaseDiff: ${f} is not upgraded`);
       // A new key: the viewer never displays derived metadata under a key it has seen.
       record.metadata = bridge.constructor.rekey(record, record.baseMetadata);
-      bridge._clearExpansions(record);
+      bridge._retireExpansions(record);
       bridge._publish(record.id);
     }, file);
   }
@@ -1063,12 +1090,21 @@ function createCodeViewAdapter(base) {
       LAYOUT_TOGGLE_KEEPS: 'first-visible-line',
       // No second renderer: an error in place of the diff (decision D1).
       MISSING_VIEWER_BUNDLE: 'message',
-      // The upgrade keeps git's hunks (decision D5).
-      UPGRADED_DIFF_HUNKS: 'patch',
       // The vendor's line, and the pool's report of the worker it lost. The
       // same viewer goes on highlighting on the main thread.
       WORKER_LOAD_FAILURE_ERROR:
         /\[console\.error\] (Worker error: Event|WorkerPoolWorkerError: WorkerPoolManager: worker failed: the worker script failed to load)/,
+      // A chat link goes through the page's navigation helper: the viewer
+      // scrolls to a file it has not mounted, and the flash follows the line
+      // onto the rows drawn for it (ledger H96).
+      CHAT_LINK_REACHES_UNRENDERED_FILE: true,
+      REVEALED_LINE_KEEPS_FLASH: true,
+      // A background content upgrade waits while the reader is typing in
+      // the file (PRManager._waitForPierrePointerIdle).
+      UPGRADE_WAITS_FOR_FOCUS: true,
+      // Collapsing the file being read keeps its header where it was, at
+      // the top of the pane (ledger H111).
+      COLLAPSE_INSIDE_FILE: 'header',
       // A hidden gap of five lines or fewer is drawn (the rule changed files have).
       SMALL_CONTEXT_GAP: 'shown',
       // Of two loads of the context files in flight the later one wins.
