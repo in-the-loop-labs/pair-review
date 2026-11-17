@@ -114,7 +114,6 @@ function createTestCouncilProgressModal() {
   modal._wsUnsub = null;
   modal._onReconnect = null;
   modal.statusCheckInterval = null;
-  modal.isRunningInBackground = false;
   modal.councilConfig = null;
   modal._voiceStates = {};
   modal._executableVoices = new Set();
@@ -895,6 +894,33 @@ describe('CouncilProgressModal', () => {
     });
   });
 
+  describe('hide', () => {
+    it('keeps listening for progress so a completed analysis resets the analyze button', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-closed-while-running';
+
+      let subscribed = false;
+      let progressHandler = null;
+      window.wsClient.subscribe = vi.fn((_topic, handler) => {
+        subscribed = true;
+        progressHandler = handler;
+        return () => { subscribed = false; };
+      });
+      window.prManager = { setButtonComplete: vi.fn() };
+
+      modal.startProgressMonitoring();
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+      modal.hide();
+
+      if (subscribed) {
+        progressHandler({ type: 'progress', status: 'completed', levels: {} });
+      }
+
+      expect(window.prManager.setButtonComplete).toHaveBeenCalled();
+    });
+  });
+
   describe('reopenFromBackground', () => {
     it('re-shows modal for single-model analysis (councilConfig is null)', () => {
       const { modal, modalContainer } = createTestCouncilProgressModal();
@@ -902,14 +928,12 @@ describe('CouncilProgressModal', () => {
       // Simulate a single-model analysis: councilConfig is null
       modal.currentAnalysisId = 'test-analysis-123';
       modal.councilConfig = null;
-      modal.isRunningInBackground = true;
       modalContainer.style.display = 'none';
 
       modal.reopenFromBackground();
 
       expect(modal.isVisible).toBe(true);
       expect(modalContainer.style.display).toBe('flex');
-      expect(modal.isRunningInBackground).toBe(false);
     });
 
     it('re-shows modal for council analysis (councilConfig is set)', () => {
@@ -917,28 +941,24 @@ describe('CouncilProgressModal', () => {
 
       modal.currentAnalysisId = 'test-analysis-456';
       modal.councilConfig = { levels: { '1': { enabled: true } } };
-      modal.isRunningInBackground = true;
       modalContainer.style.display = 'none';
 
       modal.reopenFromBackground();
 
       expect(modal.isVisible).toBe(true);
       expect(modalContainer.style.display).toBe('flex');
-      expect(modal.isRunningInBackground).toBe(false);
     });
 
     it('does not re-show modal when no analysis is running', () => {
       const { modal, modalContainer } = createTestCouncilProgressModal();
 
       modal.currentAnalysisId = null;
-      modal.isRunningInBackground = true;
       modalContainer.style.display = 'none';
 
       modal.reopenFromBackground();
 
       expect(modal.isVisible).toBeFalsy();
       expect(modalContainer.style.display).toBe('none');
-      expect(modal.isRunningInBackground).toBe(false);
     });
 
     it('hides status indicator when reopening', () => {
@@ -949,7 +969,6 @@ describe('CouncilProgressModal', () => {
       window.statusIndicator = mockStatusIndicator;
 
       modal.currentAnalysisId = 'test-analysis-789';
-      modal.isRunningInBackground = true;
 
       modal.reopenFromBackground();
 
@@ -964,7 +983,6 @@ describe('CouncilProgressModal', () => {
       window.statusIndicator = mockStatusIndicator;
 
       modal.currentAnalysisId = null;
-      modal.isRunningInBackground = true;
 
       modal.reopenFromBackground();
 
