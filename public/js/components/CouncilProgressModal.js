@@ -17,7 +17,6 @@ class CouncilProgressModal {
     this._wsUnsub = null;
     this._onReconnect = null;
     this.statusCheckInterval = null;
-    this.isRunningInBackground = false;
     this.councilConfig = null;
 
     // Track per-voice completion state
@@ -93,22 +92,18 @@ class CouncilProgressModal {
   }
 
   /**
-   * Hide the modal.
+   * Hide the modal. Progress monitoring continues so the analyze button
+   * still completes when the analysis finishes.
    */
   hide() {
     this.isVisible = false;
     this.modal.style.display = 'none';
-
-    if (!this.isRunningInBackground) {
-      this.stopProgressMonitoring();
-    }
   }
 
   /**
    * Run analysis in background.
    */
   runInBackground() {
-    this.isRunningInBackground = true;
     this.hide();
   }
 
@@ -116,7 +111,6 @@ class CouncilProgressModal {
    * Reopen the modal from background execution.
    */
   reopenFromBackground() {
-    this.isRunningInBackground = false;
     if (this.currentAnalysisId) {
       // Don't rebuild — just re-show the existing DOM
       this.isVisible = true;
@@ -1432,7 +1426,6 @@ class CouncilProgressModal {
     if (cancelBtn) {
       cancelBtn.textContent = 'Cancel';
     }
-    this.isRunningInBackground = false;
   }
 
   // ---------------------------------------------------------------------------
