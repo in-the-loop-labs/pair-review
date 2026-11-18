@@ -149,7 +149,7 @@ Output JSON with this structure:
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit this field for praise items - no action needed)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "summary": "Brief summary of findings"
 }

@@ -204,7 +204,7 @@ Output JSON with this structure:
       "description": "Detailed explanation",
       "suggestion": "How to fix/improve (omit for praise)",
       "confidence": 0.0-1.0,
-      "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+      "reasoning": ["Concise code evidence and impact supporting this issue"]
     }
   ],
   "fileLevelSuggestions": [{
@@ -215,7 +215,7 @@ Output JSON with this structure:
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "summary": "Formatted markdown summary following the Summary Synthesis Guidance above."
 }

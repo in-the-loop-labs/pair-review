@@ -24,7 +24,7 @@ const ORCHESTRATION_INPUT_SCHEMA_DOCS = `Each level provides suggestions as a JS
 - suggestion: remediation advice
 - severity: "critical", "medium", or "minor" (omit for praise items)
 - confidence: 0.0-1.0 score
-- reasoning: (optional) array of strings with step-by-step reasoning
+- reasoning: (optional) array of strings with concise code evidence and impact
 - is_file_level: true if this is a file-level suggestion (no line numbers)`;
 
 /**

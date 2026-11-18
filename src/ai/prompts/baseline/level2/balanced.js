@@ -123,7 +123,7 @@ Omit severity for praise items.
     "description": "Explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
+    "reasoning": ["Concise code evidence and impact supporting this issue (optional)"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -133,7 +133,7 @@ Omit severity for praise items.
     "description": "File-level observation (architecture, organization, naming, etc.)",
     "suggestion": "How to address (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
+    "reasoning": ["Concise code evidence and impact supporting this issue (optional)"]
   }],
   "summary": "Brief summary of file context findings"
 }

@@ -843,6 +843,26 @@ describe('OmpProvider', () => {
       await expect(executePromise).rejects.toThrow(/OMP CLI exited with code 2.*boom: something broke/s);
     });
 
+    it('should include the model error from stdout on non-zero exit', async () => {
+      const fakeChild = makeFakeChild();
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new OmpProvider('default');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const refusal = 'Refusal (reasoning_extraction): This request was blocked';
+      const assistant = { role: 'assistant', content: [], stopReason: 'error', errorMessage: refusal };
+      fakeChild.stderr.emit('data', Buffer.from('Tool Gateway: 9 direct tools loaded\n'));
+      fakeChild.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'message_end', message: assistant })}\n`));
+      // The final agent_end event has no trailing newline.
+      fakeChild.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'agent_end', messages: [assistant] })));
+      fakeChild.emit('close', 1);
+
+      await expect(executePromise).rejects.toThrow(
+        /OMP CLI exited with code 1: Refusal \(reasoning_extraction\): This request was blocked\nTool Gateway/
+      );
+    });
+
     it('should use a single shell command string in shell mode', async () => {
       const fakeChild = makeFakeChild();
       mockSpawn.mockReturnValueOnce(fakeChild);

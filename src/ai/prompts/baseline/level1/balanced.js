@@ -125,7 +125,7 @@ Omit severity for praise items.
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
+    "reasoning": ["Concise code evidence and impact supporting this issue (optional)"]
   }],
   "summary": "Brief summary of findings"
 }

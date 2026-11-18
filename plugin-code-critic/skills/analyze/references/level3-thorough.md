@@ -146,7 +146,7 @@ Output JSON with this structure:
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -156,7 +156,7 @@ Output JSON with this structure:
     "description": "Explanation of the file-level observation from codebase perspective",
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "summary": "Brief summary of how these changes connect to and impact the codebase"
 }
