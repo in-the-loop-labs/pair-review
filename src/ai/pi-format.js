@@ -204,6 +204,33 @@ function extractPiEventText(event, seenTexts) {
 }
 
 /**
+ * Extract the model error message from a Pi JSONL event.
+ *
+ * Pi and OMP report a failed model request (for example, a provider refusal)
+ * as an assistant message with an `errorMessage`. The CLI writes this message
+ * only to stdout, so stderr alone does not explain the failure.
+ *
+ * @param {Object} event - Parsed Pi event object
+ * @returns {string|null} The last assistant error message in the event, or null
+ */
+function extractPiEventError(event) {
+  let messages = [];
+  if (event.type === 'agent_end' && Array.isArray(event.messages)) {
+    messages = event.messages;
+  } else if (event.type === 'message_end' || event.type === 'turn_end') {
+    messages = [event.message];
+  }
+
+  let errorMessage = null;
+  for (const msg of messages) {
+    if (msg?.role === 'assistant' && typeof msg.errorMessage === 'string' && msg.errorMessage.trim()) {
+      errorMessage = msg.errorMessage.trim();
+    }
+  }
+  return errorMessage;
+}
+
+/**
  * Accumulate only raw lines that could plausibly help the direct JSON fallback.
  * Pi JSONL event envelopes are intentionally excluded because they are noisy
  * transport records, not the final review result.
@@ -251,7 +278,7 @@ function accumulatePiRawFallbackLine(line, state, levelPrefix, parseResult, cliN
  * Parse a single Pi JSONL line into accumulated assistant text.
  *
  * @param {string} line - One JSONL line
- * @param {{textContent: string, seenTexts: Set<string>, rawOutput: string, rawOutputTruncated: boolean}} state - Parse state
+ * @param {{textContent: string, seenTexts: Set<string>, rawOutput: string, rawOutputTruncated: boolean, errorMessage?: string|null}} state - Parse state
  * @param {string} levelPrefix - Prefix used in logs
  * @param {string} [cliName='Pi'] - CLI name used in log messages
  */
@@ -262,6 +289,8 @@ function accumulatePiResponseLine(line, state, levelPrefix, cliName = 'Pi') {
   try {
     const event = JSON.parse(line);
     state.textContent += extractPiEventText(event, state.seenTexts);
+    const errorMessage = extractPiEventError(event);
+    if (errorMessage) state.errorMessage = errorMessage;
     parseResult = { status: 'parsed', value: event };
   } catch {
     logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);

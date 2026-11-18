@@ -65,7 +65,7 @@ Map the tool's output to this exact JSON schema:
 }
 
 Rules:
-- Include a "reasoning" array with step-by-step reasoning about how you mapped the tool output
+- Include a "reasoning" array with concise evidence for how you mapped the tool output
 - Map each review finding to one suggestion object
 - Use "NEW" for old_or_new (external tools review the new version)
 - Preserve severity if the tool provides it

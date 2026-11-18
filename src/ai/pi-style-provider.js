@@ -132,7 +132,8 @@ class PiStyleProvider extends AIProvider {
         textContent: '',
         seenTexts: new Set(),
         rawOutput: '',
-        rawOutputTruncated: false
+        rawOutputTruncated: false,
+        errorMessage: null
       };
 
       const settle = (fn, value) => {
@@ -224,6 +225,15 @@ class PiStyleProvider extends AIProvider {
           return;
         }
 
+        // Process any remaining buffered line before the exit check, so that a
+        // final unterminated event can still supply the model error message.
+        if (lineBufferState.buffer.trim()) {
+          lineCount++;
+          emitStreamLine(lineBufferState.buffer);
+          this.logStreamLine(lineBufferState.buffer, lineCount, levelPrefix);
+          accumulatePiResponseLine(lineBufferState.buffer, responseState, levelPrefix, this.cliName);
+        }
+
         const stderr = formatHeadTailBuffer(stderrCapture);
 
         // Always log stderr if present
@@ -237,16 +247,13 @@ class PiStyleProvider extends AIProvider {
 
         if (code !== 0) {
           logger.error(`${levelPrefix} ${this.cliName} CLI exited with code ${code}`);
-          settle(reject, new Error(`${levelPrefix} ${this.cliName} CLI exited with code ${code}: ${stderr}`));
+          // The model error (for example, a provider refusal) is only on stdout.
+          if (responseState.errorMessage) {
+            logger.error(`${levelPrefix} ${this.cliName} model error: ${responseState.errorMessage}`);
+          }
+          const details = [responseState.errorMessage, stderr.trim()].filter(Boolean).join('\n');
+          settle(reject, new Error(`${levelPrefix} ${this.cliName} CLI exited with code ${code}: ${details}`));
           return;
-        }
-
-        // Process any remaining buffered line
-        if (lineBufferState.buffer.trim()) {
-          lineCount++;
-          emitStreamLine(lineBufferState.buffer);
-          this.logStreamLine(lineBufferState.buffer, lineCount, levelPrefix);
-          accumulatePiResponseLine(lineBufferState.buffer, responseState, levelPrefix, this.cliName);
         }
 
         logger.info(`${levelPrefix} ${this.cliName} CLI completed - received ${lineCount} JSONL events`);

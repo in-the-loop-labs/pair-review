@@ -55,7 +55,7 @@ Each level provides suggestions as a JSON array with the following schema per it
 - suggestion: remediation advice
 - severity: "critical", "medium", or "minor" (omit for praise items)
 - confidence: 0.0-1.0 score
-- reasoning: (optional) array of strings with step-by-step reasoning
+- reasoning: (optional) array of strings with concise code evidence and impact
 - is_file_level: true if this is a file-level suggestion (no line numbers)
 
 **Level 1 - Diff Analysis ([N] suggestions):**
@@ -213,7 +213,7 @@ Output JSON with this structure:
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -223,7 +223,7 @@ Output JSON with this structure:
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0,
-    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
+    "reasoning": ["Concise code evidence and impact supporting this issue"]
   }],
   "summary": "Formatted markdown summary following the Summary Synthesis Guidance above."
 }
