@@ -20,6 +20,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 const { PRManager } = require('../../public/js/pr.js');
 const { SmartTruncate } = require('../../public/js/utils/smart-truncate.js');
+const HeaderAnchor = require('../../public/js/utils/header-anchor.js');
 
 // jsdom exposes CSS.escape via window; make sure the global exists for code
 // that references bare `CSS`.
@@ -76,6 +77,7 @@ describe('context entry collapse independence (#540)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="diff-container"></div>';
     window.DiffRenderer = DiffRenderer;
+    window.HeaderAnchor = HeaderAnchor;
 
     manager = createManager();
     diffWrapper = buildWrapper(FILE);
