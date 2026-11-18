@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const SuggestionNavigator = require('../../public/js/components/SuggestionNavigator.js');
-const { makePageManager } = require('../utils/page-manager.js');
+const { makePageManager, PRManager } = require('../utils/page-manager.js');
 
 /** Build a navigator with the list-rendering DOM stubbed out. */
 function makeNavigator() {
@@ -76,7 +76,7 @@ describe('SuggestionNavigator.updateSuggestions selection', () => {
   });
 });
 
-/** A suggestion card attached to the document, as the table renderer leaves one. */
+/** A suggestion card attached to the document. */
 function addCard(id) {
   const target = document.createElement('div');
   target.className = 'ai-suggestion';
@@ -84,6 +84,26 @@ function addCard(id) {
   target.scrollIntoView = vi.fn();
   document.body.appendChild(target);
   return target;
+}
+
+/**
+ * A bridge whose wait for a card ends when the test says so: `resolvers`
+ * gets one function per wait that was started, in order.
+ * @param {Object<string, Element>} cards - annotation id to card
+ */
+function waitingBridge(cards) {
+  const resolvers = [];
+  const bridge = {
+    files: new Map(),
+    findAnnotationFile: (annotationId, file) => (cards[annotationId] ? file : null),
+    getAnnotationElement: (file, annotationId) => cards[annotationId] || null,
+    isElementDrawn: (element) => !!element?.isConnected,
+    scrollToAnnotation: vi.fn(() => true),
+    whenAnnotationRendered: vi.fn((file, annotationId) => new Promise((resolve) => {
+      resolvers.push(() => resolve(cards[annotationId] || null));
+    })),
+  };
+  return { bridge, resolvers };
 }
 
 describe('SuggestionNavigator.goToSuggestion: reveal and report', () => {
@@ -134,7 +154,10 @@ describe('SuggestionNavigator.goToSuggestion: reveal and report', () => {
     detached.className = 'ai-suggestion';
     window.prManager = makePageManager({
       pierreBridge: {
+        files: new Map([['a.js', {}]]),
         findAnnotationFile: () => 'a.js',
+        isElementDrawn: (element) => !!element?.isConnected,
+        scrollToAnnotation: vi.fn(() => false),
         whenAnnotationRendered: vi.fn(async () => null),
         findAnnotationByData: () => ({ fileName: 'a.js', annotation: { metadata: { id: 'suggestion-7' } } }),
         getAnnotationElement: () => detached,
@@ -224,9 +247,11 @@ describe('SuggestionNavigator.goToSuggestion', () => {
       changedFilesByPath: new Map([['a.js', { file: 'a.js' }]]),
       collapsedFiles: new Set(['a.js']),
       findFileElement: vi.fn(() => wrapper),
-      ensureFileBodyRendered: vi.fn(async () => { order.push('render'); }),
     });
-    const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed');
+    const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed').mockImplementation(async function (...args) {
+      order.push('expand');
+      return PRManager.prototype.setFileCollapsed.apply(this, args);
+    });
     const nav = makeNavigator();
     nav.highlightCurrentSuggestion.mockImplementation(() => order.push('highlight'));
     nav.suggestions = [{ id: 's1', file: 'a.js' }];
@@ -237,17 +262,16 @@ describe('SuggestionNavigator.goToSuggestion', () => {
 
     // Through the page's one collapse writer, to "expanded".
     expect(setCollapsed).toHaveBeenCalledWith('a.js', false);
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
-    // The body renders (inside the expand, then for the reveal itself)
-    // strictly before the scroll and the highlight.
-    expect(order).toEqual(['render', 'render', 'scroll', 'highlight']);
+    expect(window.prManager.isFileCollapsed('a.js')).toBe(false);
+    // The file is opened strictly before the scroll and the highlight.
+    expect(order).toEqual(['expand', 'scroll', 'highlight']);
   });
 
-  it('renders the lazy body for a non-collapsed file', async () => {
+  it('leaves a file that is not collapsed as it is', async () => {
     const wrapper = addWrapper('a.js');
     window.prManager = makePageManager({
+      changedFilesByPath: new Map([['a.js', { file: 'a.js' }]]),
       findFileElement: vi.fn(() => wrapper),
-      ensureFileBodyRendered: vi.fn(async () => {}),
     });
     const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed');
     const nav = makeNavigator();
@@ -256,7 +280,6 @@ describe('SuggestionNavigator.goToSuggestion', () => {
 
     await nav.goToSuggestion(0);
 
-    expect(window.prManager.ensureFileBodyRendered).toHaveBeenCalledWith('a.js');
     expect(setCollapsed).not.toHaveBeenCalled();
     expect(nav.highlightCurrentSuggestion).toHaveBeenCalled();
     expect(card.scrollIntoView).toHaveBeenCalled();
@@ -276,15 +299,15 @@ describe('SuggestionNavigator.goToSuggestion', () => {
   it('skips file prep when the suggestion has no file', async () => {
     window.prManager = makePageManager({
       findFileElement: vi.fn(),
-      ensureFileBodyRendered: vi.fn(),
     });
+    const setCollapsed = vi.spyOn(window.prManager, 'setFileCollapsed');
     const nav = makeNavigator();
     nav.suggestions = [{ id: 's1' }]; // no file
 
     await nav.goToSuggestion(0);
 
     expect(window.prManager.findFileElement).not.toHaveBeenCalled();
-    expect(window.prManager.ensureFileBodyRendered).not.toHaveBeenCalled();
+    expect(setCollapsed).not.toHaveBeenCalled();
     // Still navigates — best effort falls through to the lookup.
     expect(nav.highlightCurrentSuggestion).toHaveBeenCalled();
   });
@@ -301,30 +324,24 @@ describe('SuggestionNavigator.goToSuggestion', () => {
   });
 
   it('lets a newer goToSuggestion supersede an older in-flight one', async () => {
-    // Each ensureFileBodyRendered call hands back a resolver we control, so we
-    // can interleave two goToSuggestion calls across their awaits.
-    const resolvers = [];
-    window.prManager = makePageManager({
-      findFileElement: vi.fn(() => {
-        const w = document.createElement('div');
-        w.className = 'd2h-file-wrapper';
-        return w;
-      }),
-      ensureFileBodyRendered: vi.fn(() => new Promise((res) => resolvers.push(res))),
-    });
+    // Each wait for a card hands back a resolver we control, so we can
+    // interleave two goToSuggestion calls across their awaits.
+    const first = addCard('s1');
+    const second = addCard('s2');
+    const { bridge, resolvers } = waitingBridge({ 'suggestion-s1': first, 'suggestion-s2': second });
+    window.prManager = makePageManager({ pierreBridge: bridge });
     const nav = makeNavigator();
     const highlighted = [];
     nav.highlightCurrentSuggestion.mockImplementation(() => highlighted.push(nav.currentSuggestionIndex));
     nav.suggestions = [{ id: 's1', file: 'a.js' }, { id: 's2', file: 'b.js' }];
-    const first = addCard('s1');
-    const second = addCard('s2');
 
-    const pA = nav.goToSuggestion(0); // _navGen = 1, awaits resolvers[0]
-    const pB = nav.goToSuggestion(1); // _navGen = 2, awaits resolvers[1]
+    const pA = nav.goToSuggestion(0); // _navGen = 1
+    const pB = nav.goToSuggestion(1); // _navGen = 2
+    await vi.waitFor(() => expect(resolvers.length).toBeGreaterThan(0));
 
-    // Resolve the OLDER call first; it must still bail because gen moved on.
-    resolvers[0]();
-    resolvers[1]();
+    // Let every wait that was started end, the OLDER call's first; that call
+    // must still bail because gen moved on.
+    resolvers.forEach((resolve) => resolve());
     await Promise.all([pA, pB]);
 
     // Only the latest call scrolls and highlights, and it sees its own
@@ -336,24 +353,23 @@ describe('SuggestionNavigator.goToSuggestion', () => {
   });
 
   it('keeps the selected suggestion when suggestions refresh during a pending jump', async () => {
-    let release;
-    window.prManager = makePageManager({
-      ensureFileBodyRendered: vi.fn(() => new Promise(resolve => { release = resolve; })),
-    });
+    const card = addCard('selected');
+    const other = addCard('first');
+    const { bridge, resolvers } = waitingBridge({ 'suggestion-selected': card, 'suggestion-first': other });
+    window.prManager = makePageManager({ pierreBridge: bridge });
     const nav = makeNavigator();
     const highlighted = [];
     nav.highlightCurrentSuggestion.mockImplementation(() => highlighted.push(nav.currentSuggestionIndex));
     nav.suggestions = [{ id: 'first', file: 'a.js', line_start: 20 },
       { id: 'selected', file: 'a.js', line_start: 40 }];
-    const card = addCard('selected');
-    const other = addCard('first');
 
     const pending = nav.goToSuggestion(1);
-    // A refresh lands while the file body is still rendering and moves the
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+    // A refresh lands while the navigation waits for the card and moves the
     // selected suggestion to the front.
     nav.updateSuggestions([{ id: 'selected', file: 'a.js', line_start: 40 },
       { id: 'first', file: 'a.js', line_start: 20 }]);
-    release();
+    resolvers[0]();
     await pending;
 
     expect(nav.currentSuggestionIndex).toBe(0);

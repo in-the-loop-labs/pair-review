@@ -178,26 +178,6 @@ class SuggestionManager {
   }
 
   /**
-   * Resolve a diff file wrapper for the provided path.
-   * @param {string} file - File path
-   * @returns {Element|null} Matching file wrapper
-   */
-  findFileElement(file) {
-    if (this.prManager?.findFileElement) {
-      return this.prManager.findFileElement(file);
-    }
-    if (window.DiffRenderer?.findFileElement) {
-      return window.DiffRenderer.findFileElement(file);
-    }
-    try {
-      const escaped = globalThis.CSS?.escape ? CSS.escape(file) : file;
-      return document.querySelector(`[data-file-name="${escaped}"]`);
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * Normalize the `is_file_level` flag to a boolean.
    * This field arrives in two shapes across the codebase: boolean `true` from
    * the analyses merge path (src/routes/analyses.js) and integer `1` from the
@@ -289,17 +269,13 @@ class SuggestionManager {
   }
 
   /**
-   * Remove every rendered AI suggestion card: inline rows (legacy renderer),
-   * Pierre `suggestion` annotations and file-level AI cards. User comment
-   * cards are untouched. The navigator list is left alone; see
-   * clearAISuggestions for the full clear.
-   * @returns {number} Number of inline rows removed
+   * Remove every rendered AI suggestion card: the `suggestion` annotations
+   * of the diff viewer and the file-level AI cards. User comment cards are
+   * untouched. The navigator list is left alone; see clearAISuggestions for
+   * the full clear.
    * @private
    */
   _removeRenderedSuggestions() {
-    const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
-    existingSuggestionRows.forEach(row => row.remove());
-
     // Replace suggestion annotations, but preserve expanded context. These
     // ranges are shared with user comments, external threads and navigation;
     // clearing them here can leave those cards without a rendered anchor.
@@ -316,13 +292,11 @@ class SuggestionManager {
     // An empty suggestions list clears the file-level AI cards; null
     // comments leaves the user's file-level comment cards alone.
     this.prManager?.fileCommentManager?.loadFileComments(null, []);
-
-    return existingSuggestionRows.length;
   }
 
   /**
-   * Remove every displayed AI suggestion: the rendered cards (inline rows,
-   * Pierre annotations, file-level cards) and the navigator list. Used when a
+   * Remove every displayed AI suggestion: the rendered cards (annotations of
+   * the diff viewer, file-level cards) and the navigator list. Used when a
    * new analysis starts, so nothing from the previous run stays on screen
    * while it runs. User comments are untouched.
    *
@@ -333,8 +307,8 @@ class SuggestionManager {
     this._displayEpoch = (this._displayEpoch || 0) + 1;
     this._pendingSuggestions = null;
     this._closeReasoningPopover();
-    const removed = this._removeRenderedSuggestions();
-    console.log(`[UI] Cleared AI suggestions (${removed} inline rows)`);
+    this._removeRenderedSuggestions();
+    console.log('[UI] Cleared AI suggestions');
 
     const navigator = this.prManager?.suggestionNavigator;
     if (navigator) {
@@ -391,30 +365,7 @@ class SuggestionManager {
       // Clear the previous set's cards before displaying new ones. The
       // navigator keeps its list (and selection) until the new list replaces
       // it below.
-      const removedRows = this._removeRenderedSuggestions();
-      console.log(`[UI] Removed ${removedRows} existing suggestion rows`);
-
-      // Only inline (line-targeted) suggestions need the diff body rendered
-      // ahead of time. File-level findings (is_file_level === 1 or no
-      // line_start) are handed to FileCommentManager and rendered above the
-      // diff — they never need inline code rows, so forcing their bodies to
-      // render would recreate the eager-render cost
-      // the lazy-body change removed (reviews dominated by file-level analyses
-      // are a common repository-wide pattern). Filter once and reuse below.
-      const inlineSuggestions = suggestions.filter(
-        s => s.file && s.line_start != null && s.is_file_level !== 1
-      );
-
-      // Render the lazy body of every file an INLINE suggestion targets before
-      // anchoring cards. An unrendered file has no code rows for insertion.
-      // ensureFileBodyRendered is a cheap no-op for files already rendered or
-      // not in the diff. Both rendering engines can have lazy file bodies.
-      if (this.prManager?.ensureFileBodyRendered) {
-        const targetFiles = new Set(inlineSuggestions.map(s => s.file));
-        for (const file of targetFiles) {
-          await this.prManager.ensureFileBodyRendered(file);
-        }
-      }
+      this._removeRenderedSuggestions();
 
       const lineTargets = suggestions
         .filter(suggestion =>
@@ -439,9 +390,9 @@ class SuggestionManager {
         return;
       }
 
-      // For files rendered by @pierre/diffs, use annotation-based display.
-      // Deferred files may have been materialized by ensureLinesVisible() above,
-      // so group after that step.
+      // A line-level suggestion is an annotation of the diff viewer. A diff
+      // that was held back for its size may have been shown by
+      // ensureLinesVisible() above, so group after that step.
       if (this.prManager.pierreBridge) {
         // Group suggestions by file
         const suggestionsByFile = new Map();
@@ -454,7 +405,7 @@ class SuggestionManager {
           suggestionsByFile.get(file).push(suggestion);
         }
 
-        // Add suggestion annotations for pierre-bridge managed files
+        // Add suggestion annotations for the files the viewer holds.
         // File-level suggestions without line numbers are skipped here;
         // they are routed to FileCommentManager via the fileLevelSuggestions path below
         for (const [file, fileSuggestions] of suggestionsByFile) {
@@ -538,7 +489,9 @@ class SuggestionManager {
 
       console.log('[UI] Grouped line-level suggestions by location:', Object.keys(suggestionsByLocation));
 
-      // Find diff rows and insert line-level suggestions
+      // Every location in a file the viewer holds got its annotation above.
+      // What is left names a file the viewer does not hold under that path:
+      // those suggestions are listed in the navigator and have no card.
       Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
         // Parse the location key: "file:line:side"
         // We parse from the end because file paths may contain colons (e.g., Windows C:\path
@@ -550,84 +503,33 @@ class SuggestionManager {
         const file = parts.join(':'); // Remaining parts are file path (may contain colons)
         const line = parseInt(lineStr);
 
-        // Skip files managed by PierreBridge - they use annotation-based display
         if (this.prManager.pierreBridge?.files.has(file)) {
-          return; // Already handled via PierreBridge annotations above
+          return; // Shown as an annotation above
         }
 
-        // Use helper method for file lookup
-        const fileElement = this.findFileElement(file);
-
-        if (!fileElement) {
-          // No element is not "not in the diff": that is asked of the data.
-          // A file of the pane without an element has nowhere to put a row,
-          // and nothing to report.
-          if (this.prManager?.isFileInDiffPane?.(file)) {
-            console.warn(`[UI] No rendered element for "${file}"; its suggestions are not shown inline`);
-            return;
-          }
-          // This can happen when AI suggests a file path that doesn't exist in the diff
-          // Common with level 3 (codebase context) analysis which may reference files outside the PR
-          const availableFiles = [
-            ...(this.prManager?.changedFilesByPath ? this.prManager.changedFilesByPath.keys() : []),
-            ...(this.prManager?.contextFiles || []).map(contextFile => contextFile.file)
-          ];
-          console.warn(`[UI] File not found in diff: "${file}". This suggestion may reference a file outside the PR or an incorrectly analyzed path. Available files:`, availableFiles);
-          // Mark these suggestions as needing attention - they'll appear in the navigator but not inline
-          locationSuggestions.forEach(s => {
-            if (!s._displayError) s._displayError = `File "${file}" not found in diff`;
-          });
-          return;
-        }
-
-        // Find the line in the diff using helper method
-        // Must match both line number AND side to correctly place suggestions
-        // on deleted (LEFT) vs added/context (RIGHT) lines
-        const lineRows = fileElement.querySelectorAll('tr');
-        let suggestionInserted = false;
-        const lineTracker = this.prManager?.lineTracker;
-
-        for (const row of lineRows) {
-          if (suggestionInserted) break;
-
-          // Pass side to getLineNumber() to get the correct coordinate system
-          // This allows context lines (which have BOTH old and new line numbers) to be found
-          // when searching by either LEFT (old) or RIGHT (new) side
-          const lineNum = lineTracker ? lineTracker.getLineNumber(row, side) : null;
-
-          // Match the line number returned for the requested side
-          // For context lines, getLineNumber(row, 'LEFT') returns oldLineNumber
-          // and getLineNumber(row, 'RIGHT') returns newLineNumber
-          // This correctly handles the case where we're looking for a LEFT-side line number
-          // that happens to be on a context line (not a deleted line)
-          if (lineNum === line) {
-            console.log(`[UI] Found line ${line} (${side}) in file ${file}, inserting suggestion`);
-            // Insert suggestion after this row
-            // Pass target info so getFileAndLineInfo can retrieve it without DOM traversal
-            const diffPosition = row.dataset.diffPosition;
-            const suggestionRow = this.createSuggestionRow(locationSuggestions, {
-              fileName: file,
-              lineNumber: line,
-              side: side,
-              diffPosition: diffPosition,
-              isFileLevel: false
-            });
-            row.parentNode.insertBefore(suggestionRow, row.nextSibling);
-            suggestionInserted = true;
-          }
-        }
-
-        if (!suggestionInserted) {
-          // Line not found - this could happen if:
-          // 1. The expansion didn't reveal the target line
-          // 2. The line number is outside the diff hunks
-          // 3. The AI suggested an incorrect line number
-          // 4. The side doesn't match (e.g., suggestion targets deleted line but row is added)
+        // "Not in the diff" is asked of the data, never of the DOM: a file
+        // of the pane need not have an element.
+        if (this.prManager?.isFileInDiffPane?.(file)) {
+          // The pane has the file, under another form of the path or without
+          // lines (its contents could not be loaded): no line to sit under.
           console.warn(`[UI] Line ${line} (${side}) not found in file "${file}" after expansion. The line may be outside the diff context or the AI may have suggested an incorrect line number/side.`);
           locationSuggestions.forEach(s => {
             if (!s._displayError) s._displayError = `Line ${line} (${side}) not found in diff for file "${file}"`;
           });
+          return;
         }
+
+        // This can happen when AI suggests a file path that doesn't exist in the diff
+        // Common with level 3 (codebase context) analysis which may reference files outside the PR
+        const availableFiles = [
+          ...(this.prManager?.changedFilesByPath ? this.prManager.changedFilesByPath.keys() : []),
+          ...(this.prManager?.contextFiles || []).map(contextFile => contextFile.file)
+        ];
+        console.warn(`[UI] File not found in diff: "${file}". This suggestion may reference a file outside the PR or an incorrectly analyzed path. Available files:`, availableFiles);
+        // Mark these suggestions as needing attention - they'll appear in the navigator but not inline
+        locationSuggestions.forEach(s => {
+          if (!s._displayError) s._displayError = `File "${file}" not found in diff`;
+        });
       });
 
       // Update AI panel with findings
@@ -841,120 +743,51 @@ class SuggestionManager {
   }
 
   /**
-   * Helper function to find the target diff row by skipping non-diff rows.
-   * Walks backward through siblings, skipping ai-suggestion-row, user-comment-row,
-   * and context-expand-row elements to find the actual diff line.
-   * @private
-   * @param {HTMLElement|null} startRow - The row to start searching from
-   * @returns {HTMLElement|null} The target diff row, or null if not found
-   */
-  _findTargetDiffRow(startRow) {
-    let targetRow = startRow;
-    while (targetRow && (
-      targetRow.classList.contains('ai-suggestion-row') ||
-      targetRow.classList.contains('user-comment-row') ||
-      targetRow.classList.contains('context-expand-row')
-    )) {
-      targetRow = targetRow.previousElementSibling;
-    }
-    return targetRow;
-  }
-
-  /**
-   * Helper function to find target row and extract file/line info.
+   * The file and line a suggestion's card is for, read from the data
+   * attributes the card was built with (createSuggestionRow for a line
+   * suggestion, FileCommentManager.displayAISuggestion for a file-level one).
    *
    * IMPORTANT: Callers must check the `isFileLevel` property in the return value.
-   * When `isFileLevel` is true, `lineNumber`, `diffPosition`, `side`, and `targetRow`
-   * will all be null. File-level suggestions should be handled via FileCommentManager
+   * When `isFileLevel` is true, `lineNumber`, `diffPosition` and `side` are
+   * null. File-level suggestions should be handled via FileCommentManager
    * rather than line-level comment APIs.
    *
    * @param {HTMLElement} suggestionDiv - The suggestion element
    * @returns {Object} File and line information
-   * @returns {HTMLElement|null} returns.targetRow - The target diff row (null for file-level)
-   * @returns {HTMLElement} returns.suggestionRow - The suggestion's containing row
    * @returns {number|null} returns.lineNumber - Line number as integer (null for file-level)
+   * @returns {number|null} [returns.lineEnd] - Last line of a range
    * @returns {string} returns.fileName - The file path
    * @returns {string|null} returns.diffPosition - Diff position for GitHub API (null for file-level)
    * @returns {string|null} returns.side - 'LEFT' or 'RIGHT' (null for file-level)
    * @returns {boolean} returns.isFileLevel - True if this is a file-level suggestion
+   * @throws {Error} when the card carries no file or no line
    */
   getFileAndLineInfo(suggestionDiv) {
-    // First, try to read from data attributes stored at creation time
-    // This is the reliable method that works even with gap rows between suggestion and target
     const storedFileName = suggestionDiv.dataset.fileName;
     const storedLineNumber = suggestionDiv.dataset.lineNumber;
     const storedLineEnd = suggestionDiv.dataset.lineEnd;
-    const storedSide = suggestionDiv.dataset.side;
-    const storedDiffPosition = suggestionDiv.dataset.diffPosition;
-    const storedIsFileLevel = suggestionDiv.dataset.isFileLevel;
 
-    // If we have stored data attributes, use them (reliable path)
-    if (storedFileName) {
-      const suggestionRow = suggestionDiv.closest('tr');
-
-      // For file-level suggestions, there is no target row
-      if (storedIsFileLevel === 'true') {
-        return {
-          targetRow: null,
-          suggestionRow,
-          lineNumber: null,
-          fileName: storedFileName,
-          diffPosition: null,
-          side: null,
-          isFileLevel: true
-        };
-      }
-
-      // For line-level suggestions with stored data, find the target row for display purposes
-      // but use stored values for the actual data
-      if (storedLineNumber) {
-        // DOM traversal is still done for targetRow even when using stored data.
-        // targetRow is needed for UI operations like highlighting and scrolling,
-        // but is not critical if it fails - the stored data has the authoritative values.
-        const targetRow = this._findTargetDiffRow(suggestionRow?.previousElementSibling);
-
-        return {
-          targetRow,
-          suggestionRow,
-          lineNumber: parseInt(storedLineNumber, 10),
-          lineEnd: storedLineEnd ? parseInt(storedLineEnd, 10) : null,
-          fileName: storedFileName,
-          diffPosition: storedDiffPosition || null,
-          side: storedSide || 'RIGHT',
-          isFileLevel: false
-        };
-      }
+    if (storedFileName && suggestionDiv.dataset.isFileLevel === 'true') {
+      return {
+        lineNumber: null,
+        fileName: storedFileName,
+        diffPosition: null,
+        side: null,
+        isFileLevel: true
+      };
     }
-
-    // Fallback: DOM traversal for backward compatibility with suggestions created before this fix
-    // This method fails when gap rows (context-expand-row) are between the suggestion and target
-    const suggestionRow = suggestionDiv.closest('tr');
-    const targetRow = this._findTargetDiffRow(suggestionRow?.previousElementSibling);
-
-    if (!targetRow) {
-      throw new Error('Could not find target line for comment');
-    }
-
-    // Get diff position and side from the target row (for GitHub API)
-    const diffPosition = targetRow.dataset.diffPosition;
-    const side = targetRow.dataset.side || 'RIGHT';
-
-    // Get line number based on side - deleted lines (LEFT) use .line-num1, others use .line-num2
-    const lineNumSelector = side === 'LEFT' ? '.line-num1' : '.line-num2';
-    const lineNumberText = targetRow.querySelector(lineNumSelector)?.textContent?.trim();
-    const fileWrapper = targetRow.closest('.d2h-file-wrapper');
-    const fileName = fileWrapper?.dataset?.fileName || '';
-
-    if (!lineNumberText || !fileName) {
+    if (!storedFileName || !storedLineNumber) {
       throw new Error('Could not determine file and line information');
     }
-
-    // Parse line number to integer for type consistency with stored-data path
-    const lineNumber = parseInt(lineNumberText, 10);
-
-    return { targetRow, suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel: false };
+    return {
+      lineNumber: parseInt(storedLineNumber, 10),
+      lineEnd: storedLineEnd ? parseInt(storedLineEnd, 10) : null,
+      fileName: storedFileName,
+      diffPosition: suggestionDiv.dataset.diffPosition || null,
+      side: suggestionDiv.dataset.side || 'RIGHT',
+      isFileLevel: false
+    };
   }
-
 }
 
 // Make SuggestionManager available globally

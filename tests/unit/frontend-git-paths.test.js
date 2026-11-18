@@ -1,6 +1,5 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { JSDOM } from 'jsdom';
 
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +11,7 @@ const vm = require('vm');
 // with the shared fixtures and compare against the server's parse.
 const GitPaths = require('../../public/js/utils/git-paths.js');
 const { parseUnifiedDiffPatches } = require('../../src/utils/diff-file-list');
+const { loadCodeViewBridge } = require('../utils/pierre-bridge-harness.js');
 const {
   DIFF_HEADER_CASES,
   QUOTEPATH_FALSE_DIFF,
@@ -91,32 +91,25 @@ describe('PRManager.parseUnifiedDiff', () => {
 });
 
 describe('PierreBridge.parsePatch', () => {
-  const BRIDGE_PATH = '../../public/js/modules/pierre-bridge.js';
-  let parsePatchFiles;
+  let vendor;
+  let env;
 
   beforeAll(async () => {
     // The real @pierre/diffs parser (the vendor bundle is built from it).
-    ({ parsePatchFiles } = await import('../../node_modules/@pierre/diffs/dist/utils/parsePatchFiles.js'));
+    vendor = await import('@pierre/diffs');
   });
 
+  // The production bridge with its modules, on a viewer that never renders
+  // (tests/utils/pierre-bridge-harness.js): parsePatch is the bridge's own.
   function loadBridge({ withGitPaths = true } = {}) {
-    delete require.cache[require.resolve(BRIDGE_PATH)];
-    const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
-    global.document = dom.window.document;
-    global.window = {
-      PierreDiffs: { parsePatchFiles, getSingularPatch: () => null },
-      ...(withGitPaths ? { GitPaths } : {}),
-      matchMedia: () => ({ matches: false })
-    };
-    global.requestAnimationFrame = () => {};
-    const PierreBridge = require(BRIDGE_PATH);
-    return new PierreBridge({});
+    env = loadCodeViewBridge(vendor);
+    if (withGitPaths) env.window.GitPaths = GitPaths;
+    return new env.PierreBridge({ useWorkerPool: false });
   }
 
   afterEach(() => {
-    delete global.window;
-    delete global.document;
-    delete global.requestAnimationFrame;
+    env?.restore();
+    env = null;
   });
 
   it('reports the decoded name for a header git quoted', () => {

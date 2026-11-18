@@ -2,11 +2,10 @@
 // @vitest-environment jsdom
 
 /**
- * renderDiff and the functions around it on the virtualized viewer
- * (PRManager._renderDiffCodeView): what the page gives the bridge and what
- * it keeps, decided from data. The bridge here is a recording stub: it
- * stores calls and answers booleans. What the viewer draws is
- * tests/contract/bridge and the E2E suite under PR_ENGINE=codeview.
+ * PRManager.renderDiff and the functions around it: what the page gives the
+ * bridge and what it keeps, decided from data. The bridge here is a
+ * recording stub: it stores calls and answers booleans. What the viewer
+ * draws is tests/contract/bridge and the E2E suite.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -38,7 +37,6 @@ function makeBridge() {
 
 function makeManager(overrides = {}) {
   return makePageManager({
-    _diffEngine: 'codeview',
     pierreBridge: makeBridge(),
     generatedFiles: new Map(),
     summariesHiddenFiles: new Set(),
@@ -186,15 +184,26 @@ describe('around renderDiff on the virtualized viewer', () => {
     return manager;
   }
 
-  it('_removeRenderedFiles gives the viewer an empty list and never touches the container\'s children', () => {
+  it('_clearDiffItems gives the viewer an empty list, releases the comment zones and never touches the container\'s children', () => {
     const manager = rendered();
     const container = document.getElementById('diff-container');
     const viewerChild = container.appendChild(document.createElement('diffs-container'));
-    manager._removeRenderedFiles(container);
+    const releaseAllZones = vi.fn();
+    manager.fileCommentManager = { ...(manager.fileCommentManager || {}), releaseAllZones };
+    manager._clearDiffItems();
     expect(manager.pierreBridge.renderAll).toHaveBeenLastCalledWith([], expect.anything());
+    expect(releaseAllZones).toHaveBeenCalledTimes(1);
     expect(viewerChild.parentNode).toBe(container);
     expect(manager.changedFilesByPath.size).toBe(0);
     expect(manager.isFileCollapsed('src/a.js')).toBeNull();
+  });
+
+  it('_clearDiffItems does not throw without a bridge or a file comment manager', () => {
+    const manager = rendered();
+    manager.pierreBridge = null;
+    manager.fileCommentManager = null;
+    expect(() => manager._clearDiffItems()).not.toThrow();
+    expect(manager.changedFilesByPath.size).toBe(0);
   });
 
   it('scrollToFile addresses the item by its canonical path, mounted or not', async () => {

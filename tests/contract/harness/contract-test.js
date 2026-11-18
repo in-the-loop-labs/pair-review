@@ -92,6 +92,8 @@ const test = base.extend({
         await page.goto(`${ORIGIN}/harness.html`);
         for (const href of styles) await page.addStyleTag({ url: `${ORIGIN}${href}` });
         await page.addScriptTag({ url: `${ORIGIN}/vendor/${bundle === 'prod' ? 'pierre-diffs.js' : 'pierre-diffs.dev.js'}` });
+        // Vendor functions only this suite calls: window.VendorTestExtras (vendor-extras.js).
+        await page.addScriptTag({ url: `${ORIGIN}/vendor/pierre-diffs-test-extras.js` });
         await page.addScriptTag({ url: `${ORIGIN}/workload.js` });
         for (const src of scripts) await page.addScriptTag({ url: `${ORIGIN}${src}` });
         await page.evaluate(() => window.H.loadWorkload());

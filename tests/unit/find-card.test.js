@@ -7,8 +7,9 @@
  * PRManager.findCommentCard and findSuggestionCard are the one way to get a
  * card: from the bridge (which hands back the element it built whether or
  * not the diff has it on screen), then from the file-comment zone registry
- * (which also holds zones that are not attached), then from the document
- * (rows of the table renderer). patchUserComment and _setSuggestionStatus
+ * (which also holds zones that are not attached). The document is never
+ * asked: an element there that neither of the two holds is not a card of
+ * the page. patchUserComment and _setSuggestionStatus
  * write the change to the data a card is built from, so a card built later
  * is right, and a dismissed comment is not drawn again.
  *
@@ -16,10 +17,16 @@
  * (tests/utils/pierre-bridge-harness.js); nothing is ever drawn.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest';
 
 const { makePageManager } = require('../utils/page-manager.js');
-const { createBridgeHarness } = require('../utils/pierre-bridge-harness.js');
+const { createBridgeHarness, restoreBridgeHarnesses } = require('../utils/pierre-bridge-harness.js');
+
+let vendor;
+beforeAll(async () => {
+  vendor = await import('@pierre/diffs');
+});
+afterEach(() => restoreBridgeHarnesses());
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
 const PostedComment = require('../../public/js/utils/posted-comment.js');
@@ -38,7 +45,7 @@ function suggestionAnnotation(suggestion) {
 
 /** A page manager with a real bridge holding a.js and b.js, and a real zone registry. */
 function makeManager(overrides = {}) {
-  const bridge = createBridgeHarness(vi, { files: ['a.js', 'b.js'] });
+  const bridge = createBridgeHarness(vi, vendor, { files: ['a.js', 'b.js'] });
   const manager = makePageManager({ pierreBridge: bridge, ...overrides });
   manager.fileCommentManager = Object.create(FileCommentManager.prototype);
   manager.fileCommentManager.prManager = manager;
@@ -98,13 +105,15 @@ describe('PRManager.findCommentCard', () => {
     expect(manager.findCommentCard(9, { fileLevel: false })).toBeNull();
   });
 
-  it('falls back to a row of the table renderer in the document', () => {
+  it('does not ask the document: an element there that the bridge and the zones do not hold is not a card', () => {
     const { manager } = makeManager();
-    document.body.innerHTML = '<table><tbody><tr class="user-comment-row" data-comment-id="12"></tr></tbody></table>';
+    document.body.innerHTML = '<div class="user-comment-row" data-comment-id="12"></div>'
+      + '<div class="file-comment-card" data-comment-id="13"></div>';
 
-    expect(manager.findCommentCard(12)).toBe(document.querySelector('tr'));
-    // Asked for the file-level card only: a row is not one.
-    expect(manager.findCommentCard(12, { fileLevel: true })).toBeNull();
+    expect(manager.findCommentCard(12)).toBeNull();
+    expect(manager.findCommentCard(12, { fileLevel: false })).toBeNull();
+    expect(manager.findCommentCard(13)).toBeNull();
+    expect(manager.findCommentCard(13, { fileLevel: true })).toBeNull();
   });
 
   it('returns null for a missing id, an unknown comment, and without a bridge or zones', () => {
@@ -140,10 +149,10 @@ describe('PRManager._findCommentEditTextarea', () => {
     expect(manager._findCommentEditTextarea('7', card)).toBe(card.querySelector('textarea'));
   });
 
-  it('falls back to the document, and is null when no edit form is open or the comment is unknown', () => {
+  it('is null when no edit form is open, the comment is unknown, or the textarea is not in the comment\'s card', () => {
     const { manager, bridge } = makeManager();
     document.body.innerHTML = '<textarea id="edit-comment-12"></textarea>';
-    expect(manager._findCommentEditTextarea(12)).toBe(document.getElementById('edit-comment-12'));
+    expect(manager._findCommentEditTextarea(12)).toBeNull();
 
     const comment = lineComment(7);
     manager.userComments = [comment];
@@ -173,7 +182,7 @@ describe('PRManager.findSuggestionCard', () => {
     expect(manager.findSuggestionCard('3')).toBe(card);
   });
 
-  it('finds a file-level AI card in a zone that is not attached, then anything in the document', () => {
+  it('finds a file-level AI card in a zone that is not attached, and does not ask the document', () => {
     const { manager } = makeManager();
     const zone = document.createElement('div');
     zone.innerHTML = '<div class="file-comment-card ai-suggestion" data-suggestion-id="4"></div>';
@@ -181,7 +190,7 @@ describe('PRManager.findSuggestionCard', () => {
     document.body.innerHTML = '<div class="ai-suggestion" data-suggestion-id="5"></div>';
 
     expect(manager.findSuggestionCard(4)).toBe(zone.firstElementChild);
-    expect(manager.findSuggestionCard(5)).toBe(document.body.firstElementChild);
+    expect(manager.findSuggestionCard(5)).toBeNull();
   });
 
   it('returns null for a missing id and an unknown suggestion', () => {
@@ -222,8 +231,8 @@ describe('PRManager.findSuggestionCard', () => {
       const suggestion = { id: 3, file: 'a.js', line_start: 5, type: 'bug', title: 't', body: 'b', status: 'active' };
       bridge.addAnnotation('a.js', suggestionAnnotation(suggestion));
       const [annotation] = bridge.getAnnotations('a.js', 'suggestion');
-      // What the engine does when it draws the file.
-      const draw = () => bridge._renderAnnotation(annotation, 'a.js', bridge.files.get('a.js').formElements);
+      // What the viewer does when it draws the file: its render callback.
+      const draw = () => bridge._renderAnnotation(annotation, { item: { id: 'a.js' } });
       const element = draw();
       const card = element.matches('.ai-suggestion') ? element : element.querySelector('.ai-suggestion');
       // The review panel holds the same suggestion object and writes its status.
@@ -233,7 +242,7 @@ describe('PRManager.findSuggestionCard', () => {
 
     /** The adopt flow's own steps on the card and the data, as adoptSuggestion runs them. */
     function adopt(manager, suggestion) {
-      manager.collapseSuggestionForAdoption(null, suggestion.id);
+      manager.collapseSuggestionForAdoption(suggestion.id);
       const comment = lineComment(9, { line_start: 5, parent_id: suggestion.id });
       manager.pierreBridge.addAnnotation('a.js', commentAnnotation(comment));
       manager._notifyAdoption(suggestion.id, comment);

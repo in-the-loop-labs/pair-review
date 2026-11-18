@@ -125,17 +125,17 @@ describe('_buildContextFileHeader', () => {
   });
 });
 
-describe('on the virtualized viewer the context toggles need no element', () => {
-  function codeviewManager(overrides = {}) {
+describe('the context toggles need no element', () => {
+  function itemManager(overrides = {}) {
     const bridge = { files: new Map([[FILE, { kind: 'context' }]]), setCollapsed: vi.fn(), refreshHostState: vi.fn() };
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge, ...overrides });
+    const manager = makeManager({ pierreBridge: bridge, ...overrides });
     manager._contextItemIds.add(FILE);
     manager._fileCollapsed.set(`context:${FILE}`, manager.viewedFiles.has(`context:${FILE}`));
     return manager;
   }
 
   it('toggleContextFileCollapse goes through setFileCollapsed, under the context key', async () => {
-    const manager = codeviewManager();
+    const manager = itemManager();
     manager.toggleContextFileCollapse(FILE);
     await vi.waitFor(() => expect(manager.isFileCollapsed(FILE)).toBe(true));
     expect([...manager.collapsedFiles]).toEqual([`context:${FILE}`]);
@@ -148,7 +148,7 @@ describe('on the virtualized viewer the context toggles need no element', () => 
   });
 
   it('toggleContextFileViewed stores the context key, collapses, updates the context sidebar row and saves', async () => {
-    const manager = codeviewManager();
+    const manager = itemManager();
     manager.toggleContextFileViewed(FILE, true);
     await vi.waitFor(() => expect(manager.isFileCollapsed(FILE)).toBe(true));
     expect([...manager.viewedFiles]).toEqual([`context:${FILE}`]);
@@ -163,7 +163,7 @@ describe('on the virtualized viewer the context toggles need no element', () => 
   });
 
   it('un-viewing a file the reader had expanded again leaves it expanded; viewing a collapsed one leaves it collapsed', async () => {
-    const manager = codeviewManager({ viewedFiles: new Set([`context:${FILE}`]) });
+    const manager = itemManager({ viewedFiles: new Set([`context:${FILE}`]) });
     await manager.setFileCollapsed(FILE, false);
     manager.pierreBridge.setCollapsed.mockClear();
     manager.toggleContextFileViewed(FILE, false);
@@ -173,7 +173,7 @@ describe('on the virtualized viewer the context toggles need no element', () => 
   });
 
   it('the cached header is re-stamped from data: chevron, Viewed, badge title', async () => {
-    const manager = codeviewManager();
+    const manager = itemManager();
     const header = manager._renderFileHeader(FILE, 'context');
     expect(manager._renderFileHeader(FILE, 'context')).toBe(header);
     expect(header.querySelector('.file-viewed-checkbox').checked).toBe(false);
@@ -189,20 +189,19 @@ describe('on the virtualized viewer the context toggles need no element', () => 
     expect(header.querySelector('.context-badge').title).toBe('added by a tour stop');
   });
 
-  it('never writes a class on the viewer\'s host: the bridge is asked to stamp it', async () => {
+  it('never writes a class on the viewer\'s host: the bridge stamps it from the item it is given', async () => {
     const host = document.createElement('diffs-container');
     host.className = 'd2h-file-wrapper context-file';
     host.dataset.fileName = FILE;
     document.body.appendChild(host);
-    const manager = codeviewManager({ findFileElement: () => host });
+    const manager = itemManager({ findFileElement: () => host });
     await manager.setFileCollapsed(FILE, true);
     expect(host.classList.contains('collapsed')).toBe(false);
-    expect(manager.pierreBridge.refreshHostState).toHaveBeenCalledWith(FILE);
     expect(manager.pierreBridge.setCollapsed).toHaveBeenCalledWith(FILE, true);
   });
 });
 
-describe('the summary toggle of a changed file\'s cached header (virtualized viewer)', () => {
+describe('the summary toggle of a changed file\'s cached header', () => {
   // A header of the virtualized viewer is drawn again whenever its file comes
   // near the viewport, and re-stamped from data each time. The toggle must
   // then say what it says on the per-file renderer, where a header is built
@@ -214,7 +213,6 @@ describe('the summary toggle of a changed file\'s cached header (virtualized vie
   afterEach(() => { delete globalThis.CSS; });
   function setup() {
     const manager = makeManager({
-      _diffEngine: 'codeview',
       changedFilesByPath: new Map([[A, { file: A, patch: '@@ -1 +1 @@\n-a\n+b\n' }]]),
       summariesHiddenFiles: new Set(),
       _summariesEnabled: true,
@@ -247,7 +245,6 @@ describe('the summary toggle of a changed file\'s cached header (virtualized vie
 
   it('shows a hidden file as hidden once the reader used the toggle', () => {
     const { manager, toggle } = setup();
-    manager._setFileElementClass = vi.fn();
     const wrapper = document.createElement('div');
     wrapper.appendChild(toggle.cloneNode());
     manager.currentPR = null;

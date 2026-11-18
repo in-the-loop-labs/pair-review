@@ -1,7 +1,11 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * Visual parity of the diff pane between the two diff engines (layer L4 of
- * plans/codeview-virtualized-diff.md, next to the golden dump).
+ * Visual parity of the diff pane between a reference and this tree (layer L4
+ * of plans/codeview-virtualized-diff.md, next to the golden dump). The
+ * reference is the application as it was before the migration to the
+ * virtualized viewer: a capture this script made of it, saved in a directory,
+ * or a second checkout of the repository that still has it (a `git worktree`
+ * of that commit).
  *
  * The golden dump compares what a file's rows SAY. This script compares how
  * the pane LOOKS: for every changed file its geometry as numbers (header box
@@ -26,29 +30,41 @@
  * a number, the target's distance from what is pinned above the diff, and as
  * pixels).
  *
- * Both engines are opened against one test server in one run, with the
- * file-contents requests held back, so every changed file shows the rows of
- * its patch on both engines and the two screenshots of a position can be
- * compared pixel by pixel. A context file is drawn differently by decision D2;
- * its screenshots are saved and its pixels are not compared (its header,
- * frame and place are compared as numbers).
+ * Both sides are captured the same way, with the file-contents requests held
+ * back on the first page, so every changed file shows the rows of its patch
+ * on both and the two screenshots of a position can be compared pixel by
+ * pixel. A context file is drawn differently by decision D2; its screenshots
+ * are saved and its pixels are not compared (its header, frame and place are
+ * compared as numbers).
  *
  * Usage:
  *   PLAYWRIGHT_BROWSERS_PATH=... node tests/parity/visual.mjs --out <dir>
+ *     --reference <dir> | --reference-checkout <path>
  *     [--corpus default,edge,lazy] [--mode pr,local] [--style unified,split] [--theme light,dark]
+ *
+ *   --reference <dir>            a capture made earlier: the directory that
+ *                                holds its <config>.json and .png files (what
+ *                                reference.mjs saves as <out>/visual/reference)
+ *   --reference-checkout <path>  a second checkout; its own copy of this script
+ *                                captures it into <out>/reference first (one
+ *                                browser at a time: the captures run one after
+ *                                the other)
  *
  * Corpora: `default` and `edge` are the E2E fixtures' (tests/e2e/fixtures/diffs.js);
  * `lazy` is built here, a file whose diff is held back for its size.
  *
- * Writes <out>/<engine>/<config>.json and <config>.<position>.png per engine,
- * <out>/compare/<config>.<position>.png (default engine, codeview, and the
- * pixels that differ, side by side: red outside the anti-aliasing tolerance,
- * amber within it), <out>/REPORT.json and <out>/REPORT.txt.
+ * Writes <out>/candidate/<config>.json and <config>.<position>.png (this
+ * tree), <out>/compare/<config>.<position>.png (the reference, this tree, and
+ * the pixels that differ, side by side: red outside the anti-aliasing
+ * tolerance, amber within it), <out>/REPORT.json and <out>/REPORT.txt.
  * Exit code 1 when a number differs and is not in ACCEPTED below, or a
  * compared screenshot has a pixel outside the tolerance (see diffImages).
  *
- * With VISUAL_COMPARE_ONLY=1 the two captures already in <out> are compared
- * again and nothing is captured.
+ * With VISUAL_COMPARE_ONLY=1 the captures already there are compared again
+ * and nothing is captured.
+ *
+ * `--capture <name>` (what the two options above run) captures the tree the
+ * script is in into <out>/<name> and compares nothing.
  *
  * Do not run it while the E2E suite is running (a second browser).
  */
@@ -68,7 +84,6 @@ const MODES = {
   pr: { path: '/pr/test-owner/test-repo/1', reviewId: 1 },
   local: { path: '/local/2', reviewId: 2 },
 };
-const ENGINES = ['filediff', 'codeview'];
 const VIEWPORT = { width: 1440, height: 900 };
 
 /**
@@ -163,16 +178,33 @@ function corpusNamed(corpora, name) {
 }
 
 function parseArgs(argv) {
-  const args = { corpus: ['default', 'edge', 'lazy'], mode: ['pr', 'local'], style: ['unified', 'split'], theme: ['light', 'dark'], out: null, capture: null };
+  const args = {
+    corpus: ['default', 'edge', 'lazy'], mode: ['pr', 'local'], style: ['unified', 'split'], theme: ['light', 'dark'],
+    out: null, capture: null, reference: null, 'reference-checkout': null,
+  };
+  const single = new Set(['out', 'capture', 'reference', 'reference-checkout']);
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i].replace(/^--/, '');
     const value = argv[i + 1];
     if (!(key in args) || value === undefined) throw new Error(`Unknown or incomplete argument: ${argv[i]}`);
-    args[key] = key === 'out' || key === 'capture' ? value : value.split(',');
+    args[key] = single.has(key) ? value : value.split(',');
     i++;
   }
   if (!args.out) throw new Error('--out <dir> is required');
+  if (!args.capture && !args.reference && !args['reference-checkout']) {
+    throw new Error('--reference <dir> or --reference-checkout <path> is required');
+  }
+  if (args.reference && args['reference-checkout']) throw new Error('give --reference or --reference-checkout, not both');
   return args;
+}
+
+/** The environment a capture of another checkout runs in: what a browser and the test server need, and nothing this shell happens to export. */
+function captureEnvironment() {
+  const env = {};
+  for (const name of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'PLAYWRIGHT_BROWSERS_PATH']) {
+    if (process.env[name] !== undefined) env[name] = process.env[name];
+  }
+  return env;
 }
 
 function freePort() {
@@ -199,8 +231,7 @@ function configsOf(args) {
 }
 
 // ---------------------------------------------------------------------------
-// Capture (one engine per process: tests/e2e/diff-dom.js picks its engine half
-// from PR_ENGINE when it is loaded)
+// Capture (one tree per process: the tree this script is in)
 // ---------------------------------------------------------------------------
 
 /* eslint-disable no-undef */
@@ -237,26 +268,23 @@ function measureFile(D, file) {
   const collapsed = wrapper.classList.contains('collapsed');
 
   // What is drawn under the header, top to bottom: the viewer's rows and
-  // separators, or the rows of a table.
+  // separators.
   let content = [];
-  if (!collapsed) {
-    if (shadow) content = [...shadow.querySelectorAll('[data-line], [data-separator]')];
-    if (content.length === 0) content = [...wrapper.querySelectorAll('tbody tr')];
-    content = content.filter((el) => el.getBoundingClientRect().height > 0);
+  if (!collapsed && shadow) {
+    content = [...shadow.querySelectorAll('[data-line], [data-separator]')]
+      .filter((el) => el.getBoundingClientRect().height > 0);
   }
   const tops = content.map((el) => el.getBoundingClientRect().top);
   const bottoms = content.map((el) => el.getBoundingClientRect().bottom);
   const headerBox = header ? header.getBoundingClientRect() : null;
 
   // The first line of code and its number cell.
-  const firstLine = shadow ? shadow.querySelector('[data-content] [data-line], [data-line]') : wrapper.querySelector('tbody tr td:last-child');
-  const firstNumber = shadow ? shadow.querySelector('[data-column-number]') : wrapper.querySelector('tbody tr td:first-child');
+  const firstLine = shadow ? shadow.querySelector('[data-content] [data-line], [data-line]') : null;
+  const firstNumber = shadow ? shadow.querySelector('[data-column-number]') : null;
 
   // The frame: the element that draws a border around the file's lines.
   const frameCandidates = [
-    wrapper.querySelector('.pierre-diff-body'),
     shadow && shadow.querySelector('pre[data-diff]'),
-    wrapper.querySelector('.d2h-file-body'),
     wrapper,
   ].filter(Boolean);
   const hasBorder = (el) => ['left', 'right', 'bottom'].some((side) => borderOf(el, side) !== 'none');
@@ -380,12 +408,12 @@ function measurePane(D) {
 }
 /* eslint-enable no-undef */
 
-async function capture(args, engine) {
+async function capture(args, name) {
   const { startTestServer } = require('../e2e/test-server.js');
   const corpora = require('../e2e/fixtures/diffs.js');
   const dom = require('../e2e/diff-dom.js');
   const helpers = require('../e2e/helpers.js');
-  const outDir = path.join(args.out, engine);
+  const outDir = path.join(args.out, name);
   fs.mkdirSync(outDir, { recursive: true });
 
   const { server, db, port } = await startTestServer(await freePort());
@@ -685,11 +713,10 @@ async function capture(args, engine) {
       const corpus = corpusNamed(corpora, config.corpusName);
       if (!corpus) throw new Error(`Unknown corpus "${config.corpusName}"`);
       const context = await browser.newContext({ baseURL, viewport: VIEWPORT });
-      await context.addInitScript(({ style, theme, eng }) => {
+      await context.addInitScript(({ style, theme }) => {
         window.localStorage.setItem('pair-review-diff-view', style);
         window.localStorage.setItem('theme', theme);
-        if (eng) window.__PAIR_REVIEW_DIFF_ENGINE = eng;
-      }, { style: config.style, theme: config.theme, eng: engine === 'codeview' ? 'codeview' : null });
+      }, { style: config.style, theme: config.theme });
       const page = await context.newPage();
       await corpora.routeDiff(page, corpus);
       const tourStop = TOUR_STOP[config.corpusName] || null;
@@ -713,7 +740,7 @@ async function capture(args, engine) {
       await page.waitForSelector('#diff-container .d2h-file-wrapper[data-file-name]', { timeout: 15000 });
       await dom.waitForDiffSettled(page).catch(() => {});
       const order = (await dom.filesInPane(page)).filter((e) => e.kind === 'diff').map((e) => e.file);
-      const result = { meta: { ...config, engine, viewport: `${VIEWPORT.width}x${VIEWPORT.height}` }, order, files: {}, positions: [] };
+      const result = { meta: { ...config, capture: name, viewport: `${VIEWPORT.width}x${VIEWPORT.height}` }, order, files: {}, positions: [] };
 
       // Position: the top of the pane.
       await dom.scrollDiffToEdge(page, 'top');
@@ -811,7 +838,7 @@ async function capture(args, engine) {
 
         // Forms: one under a line, one in the file's comment zone. Nothing
         // has the focus (a caret blinks).
-        await page.evaluate(({ f, l }) => window.prManager.showCommentForm(null, l, f, null, null, 'RIGHT'), { f: annotated, l: line(4) });
+        await page.evaluate(({ f, l }) => window.prManager.showCommentForm(f, l, null, null, 'RIGHT'), { f: annotated, l: line(4) });
         await dom.fileWrapper(page, annotated).locator('.file-header-comment-btn').click();
         await dom.fileWrapper(page, annotated).locator('.file-comments-zone .file-comment-form textarea').waitFor({ state: 'visible', timeout: 10000 });
         await page.evaluate(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); });
@@ -908,7 +935,7 @@ async function capture(args, engine) {
       await upgradedStage({ context, config, corpus, order, tourStop, annotated, result, shoot, settle, alignFile });
 
       fs.writeFileSync(path.join(outDir, `${config.name}.json`), `${JSON.stringify(result, null, 1)}\n`);
-      console.log(JSON.stringify({ engine, config: config.name, files: order.length, positions: result.positions.length }));
+      console.log(JSON.stringify({ capture: name, config: config.name, files: order.length, positions: result.positions.length }));
       await context.close();
     }
   } finally {
@@ -938,7 +965,7 @@ function numberDifferences(scope, kind, a, b) {
   for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
     if (left[key] === right[key]) continue;
     const accepted = ACCEPTED.find((entry) => entry.where === 'number' && entry.test({ kind, path: key, a: a || {}, b: b || {} }));
-    differences.push({ scope, path: key, filediff: left[key] ?? null, codeview: right[key] ?? null, accepted: accepted ? accepted.why : null });
+    differences.push({ scope, path: key, reference: left[key] ?? null, candidate: right[key] ?? null, accepted: accepted ? accepted.why : null });
   }
   return differences;
 }
@@ -995,7 +1022,7 @@ async function diffImages({ a, b }) {
       const x = (i / 4) % w;
       const y = Math.floor(i / 4 / w);
       if (samples.length < 12 && (samples.length === 0 || y > samples[samples.length - 1].y + 20)) {
-        samples.push({ x, y, filediff: [...pa.data.slice(i, i + 3)], codeview: [...pb.data.slice(i, i + 3)] });
+        samples.push({ x, y, reference: [...pa.data.slice(i, i + 3)], candidate: [...pb.data.slice(i, i + 3)] });
       }
       rows.add(y);
       box = box ? { x0: Math.min(box.x0, x), y0: Math.min(box.y0, y), x1: Math.max(box.x1, x), y1: Math.max(box.y1, y) } : { x0: x, y0: y, x1: x, y1: y };
@@ -1043,7 +1070,7 @@ async function diffImages({ a, b }) {
     const x = (i / 4) % w;
     const y = Math.floor(i / 4 / w);
     if (visibleSamples.length < 8 && (visibleSamples.length === 0 || y > visibleSamples[visibleSamples.length - 1].y + 4)) {
-      visibleSamples.push({ x, y, filediff: [...pa.data.slice(i, i + 3)], codeview: [...pb.data.slice(i, i + 3)] });
+      visibleSamples.push({ x, y, reference: [...pa.data.slice(i, i + 3)], candidate: [...pb.data.slice(i, i + 3)] });
     }
     visibleBox = visibleBox ? { x0: Math.min(visibleBox.x0, x), y0: Math.min(visibleBox.y0, y), x1: Math.max(visibleBox.x1, x), y1: Math.max(visibleBox.y1, y) } : { x0: x, y0: y, x1: x, y1: y };
   }
@@ -1053,6 +1080,7 @@ async function diffImages({ a, b }) {
 /* eslint-enable no-undef */
 
 async function compare(args) {
+  const sides = [args.reference || path.join(args.out, 'reference'), path.join(args.out, 'candidate')];
   const compareDir = path.join(args.out, 'compare');
   fs.mkdirSync(compareDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
@@ -1060,9 +1088,9 @@ async function compare(args) {
   const report = { numbers: [], pixels: [] };
   try {
     for (const config of configsOf(args)) {
-      const [a, b] = ENGINES.map((engine) => JSON.parse(fs.readFileSync(path.join(args.out, engine, `${config.name}.json`), 'utf8')));
+      const [a, b] = sides.map((dir) => JSON.parse(fs.readFileSync(path.join(dir, `${config.name}.json`), 'utf8')));
       const scope = (what) => `${config.name} ${what}`;
-      if (JSON.stringify(a.order) !== JSON.stringify(b.order)) report.numbers.push({ scope: scope('order'), path: 'order', filediff: a.order.length, codeview: b.order.length, accepted: null });
+      if (JSON.stringify(a.order) !== JSON.stringify(b.order)) report.numbers.push({ scope: scope('order'), path: 'order', reference: a.order.length, candidate: b.order.length, accepted: null });
       report.numbers.push(...numberDifferences(scope('pane'), 'pane', a.pane, b.pane));
       report.numbers.push(...numberDifferences(scope('pane during a tour'), 'pane', a.tourPane, b.tourPane));
       for (const file of a.order) report.numbers.push(...numberDifferences(scope(file), 'diff', a.files[file], b.files[file]));
@@ -1079,7 +1107,7 @@ async function compare(args) {
       for (const name of Object.keys(upgradedA.landings)) report.numbers.push(...numberDifferences(scope(`landing ${name}`), 'landing', upgradedA.landings[name], upgradedB.landings[name]));
 
       for (const position of a.positions) {
-        const data = ENGINES.map((engine) => `data:image/png;base64,${fs.readFileSync(path.join(args.out, engine, `${config.name}.${position}.png`)).toString('base64')}`);
+        const data = sides.map((dir) => `data:image/png;base64,${fs.readFileSync(path.join(dir, `${config.name}.${position}.png`)).toString('base64')}`);
         const result = await page.evaluate(diffImages, { a: data[0], b: data[1] });
         fs.writeFileSync(path.join(compareDir, `${config.name}.${position}.png`), Buffer.from(result.png.split(',')[1], 'base64'));
         const compared = !position.startsWith('context-');
@@ -1108,7 +1136,7 @@ async function compare(args) {
   lines.push(`numbers: ${report.numbers.length} difference(s), ${failedNumbers.length} not accepted`);
   const byPath = new Map();
   for (const d of report.numbers) {
-    const key = `${d.accepted ? 'accepted' : 'DIFFERENT'} ${d.path}: default ${JSON.stringify(d.filediff)} / codeview ${JSON.stringify(d.codeview)}`;
+    const key = `${d.accepted ? 'accepted' : 'DIFFERENT'} ${d.path}: reference ${JSON.stringify(d.reference)} / this tree ${JSON.stringify(d.candidate)}`;
     byPath.set(key, [...(byPath.get(key) || []), d.scope]);
   }
   for (const [key, scopes] of [...byPath].sort()) lines.push(`  ${key}  [${scopes.length}x, e.g. ${scopes[0]}]`);
@@ -1121,7 +1149,7 @@ async function compare(args) {
       : (p.visible > 0 ? 'DIFFERENT' : (p.differing === 0 ? 'identical' : 'equal'));
     const far = Object.entries(p.byDelta || {}).reduce((n, [delta, count]) => n + (Number(delta) > 2 ? count : 0), 0);
     lines.push(`  ${state} ${p.scope}: ${p.differing} px not identical (${p.differing - far} by 1-2 of 255, ${far} by more), ${p.visible} outside tolerance${p.visibleBox ? ` box ${p.visibleBox.x0},${p.visibleBox.y0}..${p.visibleBox.x1},${p.visibleBox.y1}` : ''}`);
-    if (p.visible && !p.accepted) for (const sample of p.visibleSamples.slice(0, 6)) lines.push(`      at ${sample.x},${sample.y}: default rgb(${sample.filediff}) / codeview rgb(${sample.codeview})`);
+    if (p.visible && !p.accepted) for (const sample of p.visibleSamples.slice(0, 6)) lines.push(`      at ${sample.x},${sample.y}: reference rgb(${sample.reference}) / this tree rgb(${sample.candidate})`);
   }
   fs.writeFileSync(path.join(args.out, 'REPORT.json'), `${JSON.stringify(report, null, 1)}\n`);
   fs.writeFileSync(path.join(args.out, 'REPORT.txt'), `${lines.join('\n')}\n`);
@@ -1137,12 +1165,18 @@ async function main() {
   }
   fs.mkdirSync(args.out, { recursive: true });
   const self = fileURLToPath(import.meta.url);
-  for (const engine of process.env.VISUAL_COMPARE_ONLY ? [] : ENGINES) {
-    const env = { ...process.env };
-    if (engine === 'codeview') env.PR_ENGINE = 'codeview';
-    else delete env.PR_ENGINE;
-    const child = spawnSync(process.execPath, [self, ...process.argv.slice(2), '--capture', engine], { env, stdio: 'inherit' });
-    if (child.status !== 0) throw new Error(`capture of the ${engine} engine failed (exit ${child.status})`);
+  // What the captures are told: where to write and which configurations.
+  const matrix = ['--out', path.resolve(args.out), '--corpus', args.corpus.join(','), '--mode', args.mode.join(','), '--style', args.style.join(','), '--theme', args.theme.join(',')];
+  if (!process.env.VISUAL_COMPARE_ONLY) {
+    if (args['reference-checkout']) {
+      const checkout = path.resolve(args['reference-checkout']);
+      const script = path.join(checkout, 'tests', 'parity', 'visual.mjs');
+      if (!fs.existsSync(script)) throw new Error(`${checkout} has no tests/parity/visual.mjs`);
+      const child = spawnSync(process.execPath, [script, ...matrix, '--capture', 'reference'], { cwd: checkout, env: captureEnvironment(), stdio: 'inherit' });
+      if (child.status !== 0) throw new Error(`capture of the reference checkout failed (exit ${child.status})`);
+    }
+    const child = spawnSync(process.execPath, [self, ...matrix, '--capture', 'candidate'], { stdio: 'inherit' });
+    if (child.status !== 0) throw new Error(`capture of this tree failed (exit ${child.status})`);
   }
   const failures = await compare(args);
   if (failures > 0) process.exit(1);

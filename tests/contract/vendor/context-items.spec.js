@@ -3,7 +3,7 @@
  * Vendor contract: a file without changes, shown as ranges of its lines, as a
  * diff item of the viewer. This is what a context file is (decision D2 of
  * plans/codeview-virtualized-diff.md); the bridge builds exactly this in
- * PierreCodeViewBridge._setContextContents / _derive.
+ * PierreBridge._setContextContents / _derive.
  *
  * Facts:
  *   F20  the zero-change base and what a ranged item is made of
@@ -148,7 +148,7 @@ async function click(page, index, kind, { shift = false } = {}) {
 }
 
 test('F20: parseDiffFromFile(file, file) is a diff without hunks that holds the file; with ranges merged in it is one column of context rows between labelled separators', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge._setContextContents (the base) and
+  // Depends on it: PierreBridge._setContextContents (the base) and
   // _derive (the ranges). A context item needs no renderer of its own.
   const page = await harness.open({ scripts: SCRIPTS });
   await setUp(page, { type: null });
@@ -231,7 +231,7 @@ test('F20: hover, the gutter utility, selection, a line scroll target, annotatio
 test('F21: typed "change" the item is drawn in both columns of split layout; typed "new" in one, and only additions-side annotations are laid out', async ({ harness }) => {
   // Depends on it: the bridge publishes a context record's metadata as
   // { ...base, type: 'new' } and every annotation of it on the additions
-  // side (PierreCodeViewBridge._annotationSide).
+  // side (PierreBridge._annotationSide).
   const twoSided = await harness.open({ scripts: SCRIPTS });
   await setUp(twoSided, { diffStyle: 'split', type: null });
   const change = await twoSided.evaluate(() => {
@@ -406,7 +406,7 @@ test('F23: the vendor writes a hunk\'s line starts including the lines hidden ri
       return metadata.hunks.length > 0;
     };
     const partial = H.fileDiffs.find((d) => d.name === roles.large);
-    const hydrated = P.hydratePartialDiff('clone', partial, H.contentsOf(roles.large));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', partial, H.contentsOf(roles.large));
     const lastHunk = hydrated.hunks[hydrated.hunks.length - 1];
     const afterLast = lastHunk.additionStart + lastHunk.additionCount + 30;
     const merged = window.PierreContext.mergeContextRanges(hydrated, [{ startLine: 3, endLine: 9 }, { startLine: afterLast, endLine: afterLast + 5 }]);
@@ -452,8 +452,9 @@ for (const diffStyle of ['unified', 'split']) {
   }
 
   test(`F23 (constraint): with line starts that leave out a hunk's own hidden lines the same expansions leave the layout a row off, for good (${diffStyle})`, async ({ harness }) => {
-    // What pierre-context.js wrote before its correction. A non-virtualized
-    // FileDiff has no layout to disagree with; CodeView does: it keeps the
+    // What pierre-context.js wrote before its correction. The vendor's
+    // non-virtualized per-file component has no layout to disagree with; the
+    // virtualized viewer does: it keeps the
     // measured height of a wrapped line by the line's index in the layout,
     // which it takes from these fields. The file has wrapped lines for that
     // reason; with rows of the estimated height only, nothing shows.
@@ -468,7 +469,7 @@ for (const diffStyle of ['unified', 'split']) {
 }
 
 test('F24: a list replace with an item inserted above the reader keeps the line, the typed text with its caret and focus, and the selection; the expansion map is empty afterwards', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge._writeList / _captureView /
+  // Depends on it: PierreBridge._writeList / _captureView /
   // _restoreView, and the fold of manual expansions in reconcile.
   const page = await harness.open({ scripts: SCRIPTS });
   await setUp(page, { pool: true, extraItems: 28 });

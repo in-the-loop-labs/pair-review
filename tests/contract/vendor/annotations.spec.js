@@ -318,7 +318,7 @@ test('a focused textarea in an annotation keeps node, value and focus when anoth
   const afterReplace = await page.evaluate(async (A) => {
     const H = window.H;
     const node = H.annEls.get('form').querySelector('textarea');
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(A).fileDiff, H.contentsOf(A));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(A).fileDiff, H.contentsOf(A));
     H.update(A, { fileDiff: hydrated });
     H.cv.render(true);
     await H.settle(100);

@@ -45,7 +45,7 @@ import {
   expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
   fileWrapper, headerPosition, headerLanding, scrollState, waitForContentUpgrade, assertNoOrphanHosts, contextFileLayout,
-  waitForDiffType, scrollFileIntoView, CONTEXT_LOADS_IN_FLIGHT
+  waitForDiffType, scrollFileIntoView
 } from './diff-dom.js';
 
 const MODES = [
@@ -755,12 +755,10 @@ for (const mode of MODES) {
       await expect.poll(() => api.rows).toEqual([]);
       expect(removed()).toHaveLength(1);
       // ... and from the pane and the sidebar.
-      if (CONTEXT_LOADS_IN_FLIGHT === 'one-state') {
-        await expectNoContextFile(page, LONG);
-        expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, []));
-        expect((await sidebarEntries(page)).map((e) => e.file)).toEqual(DIFF_FILES);
-        await assertNoOrphanHosts(page);
-      }
+      await expectNoContextFile(page, LONG);
+      expect(await paneOrder(page)).toEqual(expectedPaneOrder(DIFF_FILES, []));
+      expect((await sidebarEntries(page)).map((e) => e.file)).toEqual(DIFF_FILES);
+      await assertNoOrphanHosts(page);
     });
 
     test('a context file that was there before the tour is used by the stop and stays when the tour ends', async ({ page }) => {

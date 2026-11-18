@@ -5849,9 +5849,9 @@ class ChatPanel {
     const lineStart = linkEl.dataset.lineStart ? parseInt(linkEl.dataset.lineStart, 10) : null;
     const lineEnd = linkEl.dataset.lineEnd ? parseInt(linkEl.dataset.lineEnd, 10) : null;
 
-    // A file the diff pane holds as an item of its one viewer is decided
-    // from data: it has no element while it is far from the viewport, and a
-    // context file's ranges are not in the DOM as chunks.
+    // Decided from data: a file of the diff pane has no element while it is
+    // far from the viewport, and a context file's ranges are rows of the
+    // review, not elements.
     const manager = window.prManager;
     const itemKind = manager?.pierreBridge?.files?.get?.(file)?.kind;
     if (itemKind === 'diff') {
@@ -5876,52 +5876,8 @@ class ChatPanel {
       // Not shown: fall through and add the range.
     }
 
-    // Check if file wrapper exists in DOM
-    const wrapper = itemKind ? null : document.querySelector(`[data-file-name="${CSS.escape(file)}"]`);
-
-    if (wrapper) {
-      // File is already rendered — scroll to it
-      const contextEl = wrapper.closest('.context-file');
-      if (contextEl) {
-        // Context file — find the right chunk by line number or use first chunk
-        let contextFileId = contextEl.dataset?.contextId; // legacy: on wrapper itself
-        let lineFoundInChunk = !!contextFileId; // legacy mode assumes line is present
-        if (!contextFileId && lineStart) {
-          // Merged wrapper: find chunk tbody containing this line
-          const chunks = [...contextEl.querySelectorAll('tbody.context-chunk[data-context-id]')];
-          for (const chunk of chunks) {
-            const row = chunk.querySelector(`tr[data-line-number="${lineStart}"]`);
-            if (row) {
-              contextFileId = chunk.dataset.contextId;
-              lineFoundInChunk = true;
-              break;
-            }
-          }
-        }
-
-        if (lineFoundInChunk || !lineStart) {
-          if (!contextFileId) {
-            const firstChunk = contextEl.querySelector('tbody.context-chunk[data-context-id]');
-            if (firstChunk) contextFileId = firstChunk.dataset.contextId;
-          }
-          if (window.prManager?.scrollToContextFile) {
-            window.prManager.scrollToContextFile(file, lineStart, contextFileId);
-          }
-          return;
-        }
-        // Line not found in any existing chunk — fall through to add new range
-      } else {
-        // Diff file
-        if (lineStart) {
-          await this._scrollToLine(file, lineStart, lineEnd);
-        } else if (window.prManager?.scrollToFile) {
-          window.prManager.scrollToFile(file);
-        }
-        return;
-      }
-    }
-
-    // File not in DOM — try to add as context file
+    // Not a file of the pane, or a line of a context file that is not shown:
+    // add the file (or the range) as a context file.
     if (!window.prManager?.ensureContextFile) return;
 
     linkEl.classList.add('chat-file-link--loading');
@@ -5940,11 +5896,7 @@ class ChatPanel {
           window.prManager.scrollToFile(file);
         }
       } else if (result.type === 'context') {
-        // Brief delay for DOM to settle after loadContextFiles. Not for an
-        // item of the viewer: it is in the pane when the load has settled.
-        if (window.prManager.pierreBridge?.files?.get?.(file)?.kind !== 'context') {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
+        // The file is in the pane when ensureContextFile's load has settled.
         if (window.prManager.scrollToContextFile) {
           window.prManager.scrollToContextFile(file, lineStart, result.contextFile?.id);
         }
@@ -5958,143 +5910,26 @@ class ChatPanel {
   }
 
   /**
-   * Scroll to a specific line within a file wrapper, applying a bold
-   * left-border + background highlight that fades over ~3.5s.
-   * Supports line ranges: if lineEnd is provided, all rows from
-   * lineStart to lineEnd are highlighted. If the line is in a collapsed
-   * diff chunk, expands the chunk first via ensureLinesVisible().
+   * Scroll to a line (or a range of lines) of a file of the diff pane and
+   * flash it, through the page's one navigation helper
+   * (PRManager.revealInDiff with a line target): the file need not have an
+   * element, a line hidden between hunks is revealed first, and the range
+   * is flashed once it is what the file draws. A line the file does not
+   * show (a collapsed file) goes to the file's header instead.
    * @param {string} file - File path
    * @param {number} lineStart - Target line number (start of range)
-   * @param {number|null} [lineEnd] - End of target line range (used for expansion)
+   * @param {number|null} [lineEnd] - End of the target range
    * @param {('LEFT'|'RIGHT')} [side='RIGHT'] - Diff side the line lives on.
    *   Chat file-link references point at the new file, so RIGHT is the default.
-   * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
    */
-  async _scrollToLine(file, lineStart, lineEnd, side = 'RIGHT', fileWrapper) {
-    // The page's one navigation helper, where it serves a line target: the
-    // file need not have an element, the line is flashed once it is what
-    // the file draws, and a line the file does not show (a collapsed file)
-    // goes to the file's header.
+  async _scrollToLine(file, lineStart, lineEnd, side = 'RIGHT') {
     const manager = window.prManager;
-    if (typeof manager?.revealInDiff === 'function') {
-      const result = await manager.revealInDiff({
-        file, line_start: lineStart, line_end: lineEnd || lineStart, side, flashLines: true
-      });
-      if (result?.handled || result?.cancelled) {
-        if (result.handled && !result.revealed && manager.scrollToFile) manager.scrollToFile(file);
-        return;
-      }
-    }
-
-    if (!fileWrapper) {
-      const escaped = CSS.escape(file);
-      fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
-        document.querySelector(`[data-file-name$="/${escaped}"]`);
-    }
-    if (!fileWrapper) return;
-
-    // Pierre-rendered files live inside shadow DOM; light-DOM row queries
-    // return nothing. Delegate to PierreBridge, which reaches into the shadow
-    // root, scrolls to the target line, and applies its own highlight flash.
-    const bridge = window.prManager?.pierreBridge;
-    if (bridge && bridge.files.has(file)) {
-      const end = lineEnd || lineStart;
-      // Ensure the line is visible — expand collapsed gaps if needed.
-      if (!bridge.isLineVisible(file, lineStart, side)
-          && window.prManager?.ensureLinesVisible) {
-        await window.prManager.ensureLinesVisible([
-          { file, line_start: lineStart, line_end: end, side }
-        ]);
-      }
-      // Flash each line in the requested range.
-      let scrolled = false;
-      for (let ln = lineStart; ln <= end; ln++) {
-        // Only scroll into view for the first line; highlight the rest.
-        const ok = bridge.scrollToLine(file, ln, side, ln === lineStart);
-        scrolled = scrolled || ok;
-      }
-      if (!scrolled && window.prManager?.scrollToFile) {
-        window.prManager.scrollToFile(file);
-      }
-      return;
-    }
-
-    // Collect all target rows (single line or range)
-    const end = lineEnd || lineStart;
-    let targetRows = this._findLineRows(fileWrapper, lineStart, end);
-
-    // If not found, try expanding the collapsed diff context
-    if (targetRows.length === 0 && window.prManager?.ensureLinesVisible) {
-      await window.prManager.ensureLinesVisible([
-        { file, line_start: lineStart, line_end: end, side }
-      ]);
-      const updatedBridge = window.prManager?.pierreBridge;
-      if (updatedBridge?.files?.has(file)) {
-        let scrolled = false;
-        for (let ln = lineStart; ln <= end; ln++) {
-          const ok = updatedBridge.scrollToLine(file, ln, side, ln === lineStart);
-          scrolled = scrolled || ok;
-        }
-        if (!scrolled && window.prManager?.scrollToFile) {
-          window.prManager.scrollToFile(file);
-        }
-        return;
-      }
-      targetRows = this._findLineRows(fileWrapper, lineStart, end);
-    }
-    if (targetRows.length === 0) return;
-
-    const primaryRow = targetRows[0];
-
-    // Check if the primary target row is already visible in the viewport
-    const rect = primaryRow.getBoundingClientRect();
-    const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
-
-    if (!isVisible) {
-      // Stable variant re-corrects after lazy file bodies render mid-scroll
-      // and shift the layout (plain scrollIntoView lands off target the
-      // first time on large diffs). Fire-and-forget.
-      // Land the target at the top of the diff panel (scroll-margin-top in
-      // pr.css offsets it below the sticky toolbar + file header).
-      const scrollOptions = { behavior: 'smooth', block: 'start' };
-      if (window.ScrollUtils?.scrollIntoViewStable) {
-        window.ScrollUtils.scrollIntoViewStable(primaryRow, scrollOptions);
-      } else {
-        primaryRow.scrollIntoView(scrollOptions);
-      }
-    }
-
-    // Apply the highlight to all target rows
-    for (const row of targetRows) {
-      // Remove any existing highlight first (in case of rapid re-clicks)
-      row.classList.remove('chat-line-highlight');
-      // Force reflow so re-adding the class restarts the animation
-      void row.offsetWidth;
-      row.classList.add('chat-line-highlight');
-      row.addEventListener('animationend', () => {
-        row.classList.remove('chat-line-highlight');
-      }, { once: true });
-    }
-  }
-
-  /**
-   * Find all table rows matching a line range within a file wrapper.
-   * @param {HTMLElement} fileWrapper - The file wrapper element
-   * @param {number} lineStart - Start line number
-   * @param {number} lineEnd - End line number (inclusive)
-   * @returns {HTMLElement[]} Matching rows
-   */
-  _findLineRows(fileWrapper, lineStart, lineEnd) {
-    const rows = [];
-    const lineNums = fileWrapper.querySelectorAll('.line-num2');
-    for (const ln of lineNums) {
-      const num = parseInt(ln.textContent.trim(), 10);
-      if (!isNaN(num) && num >= lineStart && num <= lineEnd) {
-        const row = ln.closest('tr');
-        if (row) rows.push(row);
-      }
-    }
-    return rows;
+    if (typeof manager?.revealInDiff !== 'function') return;
+    const result = await manager.revealInDiff({
+      file, line_start: lineStart, line_end: lineEnd || lineStart, side, flashLines: true
+    });
+    if (!result || result.cancelled) return;
+    if (!result.revealed && manager.scrollToFile) manager.scrollToFile(file);
   }
 
   /**

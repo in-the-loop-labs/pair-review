@@ -9,8 +9,10 @@
  *
  * The state is data (`_fileCollapsed`, seeded when a file is rendered): a
  * file is collapsed because it is generated, viewed or was collapsed by the
- * reader, and it need not have an element. A wrapper's `collapsed` class is
- * written from it and never read.
+ * reader, and it need not have an element. setFileCollapsed writes the data,
+ * the file's cached header and the viewer's item; the `collapsed` class of
+ * the file's element is stamped by the viewer's bridge from the item and is
+ * never read or written by the page.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -21,15 +23,19 @@ function addWrapper(fileName, { collapsed = false } = {}) {
   const wrapper = document.createElement('div');
   wrapper.className = `d2h-file-wrapper${collapsed ? ' collapsed' : ''}`;
   wrapper.dataset.fileName = fileName;
-  wrapper.innerHTML = '<div class="d2h-file-header"></div>';
   document.body.appendChild(wrapper);
   return wrapper;
 }
 
-/** A file as a render leaves it: its wrapper, and its collapsed state in the manager's data. */
+/** A file as a render leaves it: its collapsed state in the manager's data, its cached header, and (on screen) its element. */
 function addRenderedFile(manager, fileName, { collapsed = false } = {}) {
   manager._fileCollapsed.set(fileName, collapsed);
-  return addWrapper(fileName, { collapsed });
+  const header = document.createElement('div');
+  header.className = 'd2h-file-header';
+  manager._fileHeaders.set(fileName, header);
+  const wrapper = addWrapper(fileName, { collapsed });
+  wrapper.header = header;
+  return wrapper;
 }
 
 function makeManager(overrides = {}) {
@@ -38,7 +44,6 @@ function makeManager(overrides = {}) {
     pierreBridge: bridge,
     changedFilesByPath: new Map([['a.js', {}], ['unmounted.js', {}]]),
     findFileElement: (file) => document.querySelector(`.d2h-file-wrapper[data-file-name="${file}"]`),
-    ensureFileBodyRendered: vi.fn(async () => null),
     ...overrides,
   });
 }
@@ -57,14 +62,14 @@ describe('PRManager.isFileCollapsed', () => {
   it('answers from data, whatever made the file collapsed', async () => {
     const manager = makeManager();
     // A generated or viewed file is rendered collapsed without being in collapsedFiles.
-    const wrapper = addRenderedFile(manager, 'a.js', { collapsed: true });
+    addRenderedFile(manager, 'a.js', { collapsed: true });
     expect(manager.collapsedFiles.has('a.js')).toBe(false);
     expect(manager.isFileCollapsed('a.js')).toBe(true);
     // The reader expands it: the answer changes although no set says so.
     await manager.setFileCollapsed('a.js', false);
     expect(manager.collapsedFiles.has('a.js')).toBe(false);
     expect(manager.isFileCollapsed('a.js')).toBe(false);
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
+    expect(manager.pierreBridge.setCollapsed).toHaveBeenLastCalledWith('a.js', false);
   });
 
   it('never reads an element: a class on the wrapper does not answer', () => {
@@ -106,47 +111,68 @@ describe('PRManager.isFileCollapsed', () => {
 });
 
 describe('PRManager.setFileCollapsed', () => {
-  it('collapses: state, wrapper class, header and engine, without rendering the body', async () => {
+  it('collapses: state, header and the viewer\'s item; the element\'s class is the viewer\'s to write', async () => {
     const manager = makeManager();
-    const wrapper = addWrapper('a.js');
+    const wrapper = addRenderedFile(manager, 'a.js');
 
     await expect(manager.setFileCollapsed('a.js', true)).resolves.toBe(true);
 
     expect(manager.collapsedFiles.has('a.js')).toBe(true);
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
-    expect(window.DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.querySelector('.d2h-file-header'), false);
-    expect(manager.pierreBridge.setCollapsed).toHaveBeenCalledWith('a.js', true);
-    expect(manager.ensureFileBodyRendered).not.toHaveBeenCalled();
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
+    expect(window.DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.header, false);
+    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['a.js', true]]);
+    expect(wrapper.classList.contains('collapsed')).toBe(false);
   });
 
-  it('expands: renders the body first, then reveals it', async () => {
-    const order = [];
-    const manager = makeManager({
-      ensureFileBodyRendered: vi.fn(async () => { order.push('render'); }),
-    });
-    manager.pierreBridge.setCollapsed.mockImplementation(() => order.push('engine'));
+  it('expands: state, header and the viewer\'s item', async () => {
+    const manager = makeManager();
     manager.collapsedFiles.add('a.js');
-    const wrapper = addWrapper('a.js', { collapsed: true });
+    const wrapper = addRenderedFile(manager, 'a.js', { collapsed: true });
 
     await expect(manager.setFileCollapsed('a.js', false)).resolves.toBe(true);
 
-    expect(order).toEqual(['render', 'engine']);
     expect(manager.collapsedFiles.has('a.js')).toBe(false);
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
-    expect(window.DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.querySelector('.d2h-file-header'), true);
-    expect(manager.pierreBridge.setCollapsed).toHaveBeenCalledWith('a.js', false);
+    expect(manager.isFileCollapsed('a.js')).toBe(false);
+    expect(window.DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.header, true);
+    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['a.js', false]]);
+  });
+
+  it('writes everything before it returns: the state is there without awaiting the call', () => {
+    const manager = makeManager();
+    addRenderedFile(manager, 'a.js', { collapsed: true });
+    manager.collapsedFiles.add('a.js');
+
+    const expanding = manager.setFileCollapsed('a.js', false);
+    // A second request in the same task (the reader marks the file viewed) is the last word.
+    const collapsing = manager.setFileCollapsed('a.js', true);
+
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
+    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['a.js', false], ['a.js', true]]);
+    return Promise.all([expanding, collapsing]).then((results) => {
+      expect(results).toEqual([true, true]);
+      expect(manager.isFileCollapsed('a.js')).toBe(true);
+      expect(manager.collapsedFiles.has('a.js')).toBe(true);
+    });
   });
 
   it('is idempotent: setting the state a file already has leaves it there', async () => {
     const manager = makeManager();
-    const wrapper = addWrapper('a.js', { collapsed: true });
+    addRenderedFile(manager, 'a.js', { collapsed: true });
     await manager.setFileCollapsed('a.js', true);
     await manager.setFileCollapsed('a.js', true);
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
     expect(manager.collapsedFiles.has('a.js')).toBe(true);
   });
 
-  it('writes the state of a file of the diff that has no wrapper, and leaves the engine alone', async () => {
+  it('a file with no header yet (never drawn) is written in data and in the viewer\'s item', async () => {
+    const manager = makeManager();
+    await expect(manager.setFileCollapsed('a.js', true)).resolves.toBe(true);
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
+    expect(window.DiffRenderer.updateFileHeaderState).not.toHaveBeenCalled();
+    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['a.js', true]]);
+  });
+
+  it('writes the state of a file of the diff the viewer has no record of, and leaves the viewer alone', async () => {
     const manager = makeManager();
     await expect(manager.setFileCollapsed('unmounted.js', true)).resolves.toBe(true);
     expect(manager.collapsedFiles.has('unmounted.js')).toBe(true);
@@ -159,54 +185,6 @@ describe('PRManager.setFileCollapsed', () => {
     await expect(manager.setFileCollapsed('nowhere.js', true)).resolves.toBe(false);
     await expect(manager.setFileCollapsed(undefined, true)).resolves.toBe(false);
     expect(manager.collapsedFiles.size).toBe(0);
-  });
-
-  it('a later request for the same file supersedes one that is waiting for the body to render', async () => {
-    let release;
-    const manager = makeManager({
-      ensureFileBodyRendered: vi.fn(() => new Promise((resolve) => { release = resolve; })),
-    });
-    const wrapper = addWrapper('a.js', { collapsed: true });
-
-    const expanding = manager.setFileCollapsed('a.js', false);
-    // While the body renders, the reader marks the file viewed: collapse.
-    await expect(manager.setFileCollapsed('a.js', true)).resolves.toBe(true);
-    release();
-
-    await expect(expanding).resolves.toBe(false);
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
-    expect(manager.collapsedFiles.has('a.js')).toBe(true);
-    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['a.js', true]]);
-  });
-
-  it('acts on the wrapper that is there after the body rendered, not one it saw before', async () => {
-    let release;
-    const manager = makeManager({
-      ensureFileBodyRendered: vi.fn(() => new Promise((resolve) => { release = resolve; })),
-    });
-    const before = addWrapper('a.js', { collapsed: true });
-
-    const expanding = manager.setFileCollapsed('a.js', false);
-    // The diff is re-rendered meanwhile: a new wrapper replaces the old one.
-    before.remove();
-    const after = addWrapper('a.js', { collapsed: true });
-    release();
-    await expanding;
-
-    expect(after.classList.contains('collapsed')).toBe(false);
-    expect(before.classList.contains('collapsed')).toBe(true);
-  });
-
-  it('propagates a failing body render and leaves the file collapsed', async () => {
-    const manager = makeManager({
-      ensureFileBodyRendered: vi.fn(async () => { throw new Error('render failed'); }),
-    });
-    const wrapper = addWrapper('a.js', { collapsed: true });
-    manager.collapsedFiles.add('a.js');
-
-    await expect(manager.setFileCollapsed('a.js', false)).rejects.toThrow('render failed');
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
-    expect(manager.collapsedFiles.has('a.js')).toBe(true);
   });
 });
 
@@ -223,7 +201,6 @@ describe('a path that is not in the diff\'s own form', () => {
       pierreBridge: bridge,
       changedFilesByPath: new Map([['src/a.js', {}], ['src/unmounted.js', {}]]),
       findFileElement: (file) => DiffRenderer.findFileElement(file),
-      ensureFileBodyRendered: vi.fn(async () => null),
       ...overrides,
     });
   }
@@ -249,54 +226,51 @@ describe('a path that is not in the diff\'s own form', () => {
     ['./src/a.js'],
     ['/src/a.js'],
     ['src/{b.js => a.js}'],
-  ])('expanding through %s clears the state, the wrapper and the engine under the canonical path', async (variant) => {
+  ])('expanding through %s clears the state, the header and the viewer\'s item under the canonical path', async (variant) => {
     const manager = makeVariantManager();
     const wrapper = addRenderedFile(manager, 'src/a.js', { collapsed: true });
     manager.collapsedFiles.add('src/a.js');
 
     await expect(manager.setFileCollapsed(variant, false)).resolves.toBe(true);
 
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
     expect([...manager.collapsedFiles]).toEqual([]);
-    expect(manager.ensureFileBodyRendered).toHaveBeenCalledWith('src/a.js');
+    expect(manager.isFileCollapsed('src/a.js')).toBe(false);
     expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['src/a.js', false]]);
-    expect(DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.querySelector('.d2h-file-header'), true);
+    expect(DiffRenderer.updateFileHeaderState).toHaveBeenCalledWith(wrapper.header, true);
     // The next header click collapses it: one click, not two.
     await manager.toggleFileCollapse('src/a.js');
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
+    expect(manager.isFileCollapsed(variant)).toBe(true);
     expect(manager.pierreBridge.setCollapsed).toHaveBeenLastCalledWith('src/a.js', true);
   });
 
   it('collapsing through a variant writes the canonical path, never the variant', async () => {
     const manager = makeVariantManager();
-    const wrapper = addWrapper('src/a.js');
+    addRenderedFile(manager, 'src/a.js');
 
     await expect(manager.setFileCollapsed('./src/a.js', true)).resolves.toBe(true);
 
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
     expect([...manager.collapsedFiles]).toEqual(['src/a.js']);
+    expect([...manager._fileCollapsed.keys()]).toEqual(expect.arrayContaining(['src/a.js']));
+    expect(manager._fileCollapsed.has('./src/a.js')).toBe(false);
     expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['src/a.js', true]]);
   });
 
-  it('requests made under two forms of one path supersede each other', async () => {
-    let release;
-    const manager = makeVariantManager({
-      ensureFileBodyRendered: vi.fn(() => new Promise((resolve) => { release = resolve; })),
-    });
-    const wrapper = addWrapper('src/a.js', { collapsed: true });
+  it('requests made under two forms of one path address one state: the last one stands', async () => {
+    const manager = makeVariantManager();
+    addRenderedFile(manager, 'src/a.js', { collapsed: true });
     manager.collapsedFiles.add('src/a.js');
 
     const expanding = manager.setFileCollapsed('./src/a.js', false);
-    await expect(manager.setFileCollapsed('src/a.js', true)).resolves.toBe(true);
-    release();
+    const collapsing = manager.setFileCollapsed('src/a.js', true);
 
-    await expect(expanding).resolves.toBe(false);
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
-    expect(manager.collapsedFiles.has('src/a.js')).toBe(true);
-    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['src/a.js', true]]);
+    await expect(expanding).resolves.toBe(true);
+    await expect(collapsing).resolves.toBe(true);
+    expect(manager.isFileCollapsed('/src/a.js')).toBe(true);
+    expect([...manager.collapsedFiles]).toEqual(['src/a.js']);
+    expect(manager.pierreBridge.setCollapsed.mock.calls).toEqual([['src/a.js', false], ['src/a.js', true]]);
   });
 
-  it('resolves a variant of a file that has no wrapper from the list of changed files', async () => {
+  it('resolves a variant of a file that has no element from the list of changed files', async () => {
     const manager = makeVariantManager();
     expect(manager.isFileCollapsed('./src/unmounted.js')).toBe(false);
     await expect(manager.setFileCollapsed('./src/unmounted.js', true)).resolves.toBe(true);
@@ -349,11 +323,11 @@ describe('the toggles go through setFileCollapsed', () => {
       saveViewedState: vi.fn(),
     });
     const set = vi.spyOn(manager, 'setFileCollapsed');
-    const wrapper = addWrapper('a.js');
+    addRenderedFile(manager, 'a.js');
 
     await manager.toggleFileViewed('a.js', true);
     expect(manager.viewedFiles.has('a.js')).toBe(true);
-    expect(wrapper.classList.contains('collapsed')).toBe(true);
+    expect(manager.isFileCollapsed('a.js')).toBe(true);
     expect(set).toHaveBeenLastCalledWith('a.js', true);
 
     // Already collapsed: checking again writes nothing.
@@ -362,7 +336,7 @@ describe('the toggles go through setFileCollapsed', () => {
 
     await manager.toggleFileViewed('a.js', false);
     expect(manager.viewedFiles.has('a.js')).toBe(false);
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
+    expect(manager.isFileCollapsed('a.js')).toBe(false);
     expect(set).toHaveBeenLastCalledWith('a.js', false);
     expect(manager.updateFileItemViewedState).toHaveBeenLastCalledWith('a.js', false);
     expect(manager.saveViewedState).toHaveBeenCalledTimes(3);

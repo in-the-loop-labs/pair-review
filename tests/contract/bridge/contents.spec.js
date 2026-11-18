@@ -43,8 +43,7 @@ for (const role of ['medium', 'renameChanged']) {
         hunksAsReference: (() => {
           const spans = (metadata) => metadata.hunks.map((h) => `${h.additionStart}+${h.additionCount}/${h.deletionStart}+${h.deletionCount}`).join(' ');
           const reference = window.PierreDiffs.parseDiffFromFile(oldFile, newFile);
-          const parity = b.files.get(id).patchMetadata.hunks.filter((h) => h.additionCount > 0)
-            .map((h) => ({ startLine: h.additionStart, endLine: h.additionStart + h.additionCount - 1 }));
+          const parity = window.PierreBridge.patchParityRanges(b.files.get(id).patchMetadata);
           return spans(b.files.get(id).metadata) === spans(window.PierreContext.mergeContextRanges(reference, parity));
         })(),
         sound: BH.sound(),
@@ -124,7 +123,7 @@ test('upgradeFileContents on added, deleted and hunk-less files does not throw a
       await H.settle(200);
       out[id] = {
         type: b.files.get(id).patchMetadata.type,
-        strategy: window.PierreCodeViewBridge.upgradeStrategy(b.files.get(id).patchMetadata),
+        strategy: window.PierreBridge.upgradeStrategy(b.files.get(id).patchMetadata),
         returned, threw,
         rowsBefore, rowsAfter: BH.rows(id)?.length ?? null,
         expandButtons: H.shape(id)?.expandButtons ?? null,
@@ -472,4 +471,79 @@ test('whenLineDisplayed answers false at once for a line the file does not show,
   expect(result.shown).toEqual({ value: true, fast: true });
   expect(result.cancelled).toEqual({ value: false, fast: true });
   expect(result.asked).toBe(1);
+});
+
+test('a file that leaves the mounted window while a reveal awaits display, after the reader expanded a gap: the viewer\'s record of the expansion goes with the file, and its return is one draw of the new diff', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const setup = await page.evaluate(async () => {
+    const { H, BH } = window;
+    const { roles } = H.workload;
+    const id = roles.large;
+    // Enough files after it that the last of them is a window away.
+    const others = H.workload.modifiedPaths.filter((name) => name !== roles.hugeModified && name !== roles.large).slice(0, 30);
+    await BH.up({ entries: [BH.diffEntry(id), ...others.map((name) => BH.diffEntry(name))] });
+    const b = BH.bridge;
+    const { oldFile, newFile } = H.contentsOf(id);
+    b.upgradeFileContents(id, oldFile, newFile);
+    await BH.displayed(id);
+    await H.settle(200);
+    const hunks = b.files.get(id).metadata.hunks;
+    let gap = null;
+    for (let i = 1; i < hunks.length && !gap; i++) {
+      const start = hunks[i - 1].additionStart + hunks[i - 1].additionCount;
+      const end = hunks[i].additionStart - 1;
+      if (end - start >= 60) gap = { index: i, start, end };
+    }
+    return { id, gap, far: others[others.length - 1], lang: b.files.get(id).metadata.lang ?? null };
+  });
+  expect(setup.gap).not.toBeNull();
+  expect(setup.lang).not.toBe('text');
+  const box = await clickExpandControl(page, setup.id, setup.gap.index, 'up');
+  expect(box && box.visible, JSON.stringify(box)).toBe(true);
+
+  const result = await page.evaluate(async ({ id, gap, far }) => {
+    const { H, BH } = window;
+    const b = BH.bridge;
+    const record = b.files.get(id);
+    const manual = gap.start; // the first line the click revealed
+    const revealed = gap.end - 3;
+    const renderer = record._instance.hunksRenderer;
+    const map = renderer.expandedHunks;
+    const callback = renderer.onRenderUpdate;
+    const row = (line) => !!H.host(id)?.shadowRoot?.querySelector(`[data-content] > [data-line="${line}"]`);
+    await H.until(() => b.isLineVisible(id, manual, 'RIGHT'));
+    const out = { before: { map: map.size, manualRow: row(manual), revealedVisible: b.isLineVisible(id, revealed, 'RIGHT') } };
+    out.added = b.addContextRanges(id, [{ startLine: revealed, endLine: revealed }]);
+    // The file goes on drawing the diff the reader expanded, with the viewer's record of it.
+    out.published = { map: map.size, retired: !!record._expansionsOf, watched: renderer.onRenderUpdate !== callback, displayed: b.isDiffDisplayed(id) };
+    // The reader leaves before the new diff is drawn.
+    b.scrollToItem(far);
+    await H.until(() => !H.host(id));
+    await H.settle(150);
+    out.away = {
+      mounted: !!H.host(id), map: map.size, retired: !!record._expansionsOf, callbackBack: renderer.onRenderUpdate === callback,
+      manualVisible: b.isLineVisible(id, manual, 'RIGHT'), revealedVisible: b.isLineVisible(id, revealed, 'RIGHT'),
+    };
+    // And comes back: the file is drawn from the record's diff, in which
+    // the expanded lines and the revealed one are lines like any other.
+    b.scrollToItem(id);
+    await H.until(() => !!H.host(id));
+    await BH.displayed(id);
+    await H.settle(300);
+    out.back = { displayed: b.isDiffDisplayed(id), drawnIsRecord: record._instance.getRenderedDiff() === record.metadata, manualRow: row(manual), revealedRow: row(revealed), map: record._instance.hunksRenderer.expandedHunks.size, retired: !!record._expansionsOf };
+    // A scroll of a few pixels and back: the layout the viewer computed is the one on screen.
+    H.root.scrollTop += 40;
+    await H.settle(200);
+    H.root.scrollTop -= 40;
+    await H.settle(200);
+    out.sound = BH.sound();
+    return out;
+  }, setup);
+  expect(result.before).toEqual({ map: 1, manualRow: true, revealedVisible: false });
+  expect(result.added).toBe(true);
+  expect(result.published).toEqual({ map: 1, retired: true, watched: true, displayed: false });
+  expect(result.away).toEqual({ mounted: false, map: 0, retired: false, callbackBack: true, manualVisible: true, revealedVisible: true });
+  expect(result.back).toEqual({ displayed: true, drawnIsRecord: true, manualRow: true, revealedRow: true, map: 0, retired: false });
+  expect(result.sound).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(page)).toEqual([]);
 });

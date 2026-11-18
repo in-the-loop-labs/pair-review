@@ -22,7 +22,7 @@ import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, contextFile, contextFileState, contextLine, flashedLines, headerLanding, isLineVisible,
   lineNumberCell, scrollDiffToEdge, scrollThroughDiff, scrollState, waitForContentUpgrade,
-  expectedPaneOrder, filesInPane, CHAT_LINK_REACHES_UNRENDERED_FILE, REVEALED_LINE_KEEPS_FLASH
+  expectedPaneOrder, filesInPane
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -105,13 +105,7 @@ for (const mode of MODES) {
       // Once the revealed lines are what is drawn:
       await waitForContentUpgrade(page, UTILS);
       await expect(lineCell(page, UTILS, 30)).toBeInViewport();
-      if (REVEALED_LINE_KEEPS_FLASH) {
-        await expect.poll(() => flashedLines(page, UTILS)).toEqual([30]);
-      } else {
-        // Characterization of a defect on main (see diff-dom.js): the flash
-        // went with the rows that were replaced.
-        expect(await flashedLines(page, UTILS)).toEqual([]);
-      }
+      await expect.poll(() => flashedLines(page, UTILS)).toEqual([30]);
     });
 
     test('a link to a range flashes every line of it', async ({ page }) => {
@@ -214,20 +208,8 @@ for (const mode of MODES) {
       const line = changedLines(MANY, last).additions[0];
       const link = await chatLink(page, `[[file:${last}:${line}]]`);
       await link.click();
-      if (CHAT_LINK_REACHES_UNRENDERED_FILE) {
-        await expect(lineCell(page, last, line)).toBeInViewport();
-        await expect.poll(() => flashedLines(page, last)).toEqual([line]);
-      } else {
-        // Characterization of a defect on main (see diff-dom.js): the diff
-        // scrolls toward the file once, usually stopping short of it (in 9 of
-        // 10 runs the line was not on screen), and the line is never
-        // flashed. No error is shown either.
-        await expect(link).not.toHaveClass(/chat-file-link--loading/);
-        await expect.poll(async () => (await scrollState(page)).top).toBeGreaterThan(10000);
-        await scrollSettled(page);
-        expect(await flashedLines(page, last)).toEqual([]);
-        await expect(page.locator('.toast-error')).toHaveCount(0);
-      }
+      await expect(lineCell(page, last, line)).toBeInViewport();
+      await expect.poll(() => flashedLines(page, last)).toEqual([line]);
     });
   });
 }

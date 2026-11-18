@@ -1,12 +1,18 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * Compare two golden dumps written by dump.mjs (one per diff engine).
+ * Compare two golden dumps written by dump.mjs: a reference and a candidate.
+ * The reference is usually the dump of the application as it was before the
+ * migration to the virtualized viewer, saved by reference.mjs from a second
+ * checkout (its `meta.engine` is not `codeview`: its context files are drawn
+ * by the table renderer, and the rules below that name the per-file renderer
+ * apply to it). Two dumps of the virtualized viewer compare under the same
+ * rules, with nothing to list.
  *
  *   node tests/parity/compare.mjs <reference-dir> <candidate-dir>
  *
  * Rules (plans/codeview-virtualized-diff.md, parity rule 3):
  *   - pre-upgrade stage: everything must be identical.
- *   - post-upgrade stage: everything must be identical too. Both engines
+ *   - post-upgrade stage: everything must be identical too. Both renderers
  *     diff a file's two contents again when they arrive and keep the lines of
  *     the patch (decision D5a of the ledger), so a reader sees the same rows,
  *     separators and expand controls on both.
@@ -95,15 +101,18 @@ function withSmallGapsShown(ranges) {
   return out;
 }
 
+/** Whether a dump was taken of the virtualized viewer (anything else: the per-file renderer and its table of context lines). */
+const isViewer = (dump) => !!dump && !!dump.meta && dump.meta.engine === 'codeview';
+
 /**
- * The hidden-line counts an engine draws for `ranges` of a file of `total`
+ * The hidden-line counts a renderer draws for `ranges` of a file of `total`
  * lines. The table renderer gives every range a gap row above it (back to
  * line 1) and below it (on to the end of the file); the virtualized viewer
  * one separator per run of hidden lines, and none for five lines or fewer.
  */
-function hiddenAsDrawn(engine, ranges, total) {
+function hiddenAsDrawn(viewer, ranges, total) {
   const counts = [];
-  if (engine === 'codeview') {
+  if (viewer) {
     let previous = 0;
     for (const range of ranges) {
       if (range.start - previous - 1 > 0) counts.push(range.start - previous - 1);
@@ -119,7 +128,7 @@ function hiddenAsDrawn(engine, ranges, total) {
   return counts;
 }
 
-function compareContext(label, a, b, engines) {
+function compareContext(label, a, b, viewers) {
   if (!a && !b) return;
   if (!a || !b) {
     // A reference taken before the stage existed has nothing to compare with.
@@ -143,12 +152,12 @@ function compareContext(label, a, b, engines) {
     const differing = fb.lines.filter(([line, text]) => textA.has(line) && textA.get(line) !== text).map(([line]) => line);
     if (differing.length > 0) regressions.push(`${where}: the text of lines ${differing.slice(0, 10).join(', ')} differs`);
 
-    // The counts each engine draws are the ones its ranges and the file's
-    // length give under that engine's rule: the numbers on screen are right.
-    for (const [engine, f] of [[engines[0], fa], [engines[1], fb]]) {
-      const expectedCounts = hiddenAsDrawn(engine, f.ranges, f.totalLines);
+    // The counts each renderer draws are the ones its ranges and the file's
+    // length give under that renderer's rule: the numbers on screen are right.
+    for (const [viewer, f] of [[viewers[0], fa], [viewers[1], fb]]) {
+      const expectedCounts = hiddenAsDrawn(viewer, f.ranges, f.totalLines);
       if (!same(f.hidden, expectedCounts)) {
-        regressions.push(`${where}: ${engine} draws hidden-line counts ${JSON.stringify(f.hidden)} for ranges ${JSON.stringify(f.ranges)} of ${f.totalLines} lines; expected ${JSON.stringify(expectedCounts)}`);
+        regressions.push(`${where}: the ${viewer ? 'virtualized viewer' : 'table renderer'} draws hidden-line counts ${JSON.stringify(f.hidden)} for ranges ${JSON.stringify(f.ranges)} of ${f.totalLines} lines; expected ${JSON.stringify(expectedCounts)}`);
       }
     }
     if (fa.totalLines !== fb.totalLines) {
@@ -200,7 +209,7 @@ for (const name of names) {
       }
     }
   }
-  compareContext(name, a.context, b.context, [a.meta?.engine || 'filediff', b.meta?.engine || 'filediff']);
+  compareContext(name, a.context, b.context, [isViewer(a), isViewer(b)]);
   for (const key of new Set([...Object.keys(a.landings || {}), ...Object.keys(b.landings || {})])) {
     const la = (a.landings || {})[key];
     const lb = (b.landings || {})[key];
@@ -214,7 +223,7 @@ for (const name of names) {
       if (pa == null || pb == null || Math.abs(pa - pb) > 1) {
         // A landing at the very end of the diff is bounded by the scroll extent, not by the target.
         if (la.atEnd && lb.atEnd) continue;
-        const headerKept = key === 'collapseInside' && (b.meta?.engine === 'codeview') && (a.meta?.engine || 'filediff') !== 'codeview'
+        const headerKept = key === 'collapseInside' && isViewer(b) && !isViewer(a)
           && pa != null && pb != null && pa < -1 && Math.abs(pb) <= 1;
         if (headerKept) listed.push(`${name}: landing collapseInside: the collapsed file's header is ${pa} px from the toolbar on the per-file renderer (above the viewport) and ${pb} px on the virtualized viewer (flush under it)`);
         else regressions.push(`${name}: landing ${key}: ${pa} vs ${pb}`);

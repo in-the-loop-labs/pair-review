@@ -1,9 +1,9 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 // @vitest-environment node
 /**
- * Pure logic of PierreCodeViewBridge: what it decides from its own data and
+ * Pure logic of PierreBridge: what it decides from its own data and
  * what it sends to the viewer. The viewer here is a recording stub that
- * never renders (tests/utils/codeview-bridge-harness.js); what the real
+ * never renders (tests/utils/pierre-bridge-harness.js); what the real
  * viewer does is tested in a browser (tests/contract/bridge).
  */
 
@@ -11,9 +11,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import fs from 'fs';
 import path from 'path';
 
-const { loadCodeViewBridge, numberedLines, changedFileFixture } = require('../utils/codeview-bridge-harness.js');
+const { loadCodeViewBridge, numberedLines, changedFileFixture } = require('../utils/pierre-bridge-harness.js');
 
-const BRIDGE_SOURCE = path.join(__dirname, '..', '..', 'public', 'js', 'modules', 'pierre-codeview-bridge.js');
+const BRIDGE_SOURCE = path.join(__dirname, '..', '..', 'public', 'js', 'modules', 'pierre-bridge.js');
 
 let vendor;
 beforeAll(async () => {
@@ -21,11 +21,11 @@ beforeAll(async () => {
 });
 
 let env;
-let PierreCodeViewBridge;
+let PierreBridge;
 let bridge;
 
 function create(options = {}) {
-  bridge = new PierreCodeViewBridge({
+  bridge = new PierreBridge({
     root: env.window.document.getElementById('root'),
     theme: 'light',
     useWorkerPool: false,
@@ -42,7 +42,7 @@ const contextEntry = (id, extra = {}) => ({ id, kind: 'context', contents: `${nu
 
 beforeEach(() => {
   env = loadCodeViewBridge(vendor);
-  PierreCodeViewBridge = env.PierreCodeViewBridge;
+  PierreBridge = env.PierreBridge;
 });
 
 afterEach(() => {
@@ -106,7 +106,7 @@ describe('renderAll: records and the first list', () => {
     expect([...bridge.files.keys()]).toEqual(['src/a.js']);
     bridge.destroy();
 
-    const rootless = new PierreCodeViewBridge({ useWorkerPool: false });
+    const rootless = new PierreBridge({ useWorkerPool: false });
     expect(rootless.renderAll([diffEntry(A)])).toBe(false);
     rootless.destroy();
   });
@@ -170,8 +170,8 @@ describe('the options object', () => {
     warn.mockRestore();
     expect(bridge.setDiffStyle('unified')).toBe(true);
     expect(viewer().count('setOptions')).toBe(0);
-    expect(PierreCodeViewBridge.isValidDiffStyle('split')).toBe(true);
-    expect(PierreCodeViewBridge.isValidDiffStyle(undefined)).toBe(false);
+    expect(PierreBridge.isValidDiffStyle('split')).toBe(true);
+    expect(PierreBridge.isValidDiffStyle(undefined)).toBe(false);
   });
 
   it('a layout option and extra viewer options given to the bridge are passed on', () => {
@@ -846,7 +846,7 @@ describe('contents and derived metadata', () => {
   });
 
   it('upgradeStrategy: by the type of the diff', () => {
-    const strategy = PierreCodeViewBridge.upgradeStrategy;
+    const strategy = PierreBridge.upgradeStrategy;
     expect(strategy({ type: 'change', hunks: [{}] })).toBe('rediff');
     expect(strategy({ type: 'rename-changed', hunks: [{}] })).toBe('rediff');
     expect(strategy({ type: 'new', hunks: [{}] })).toBe('none');
@@ -912,7 +912,7 @@ describe('contents and derived metadata', () => {
   });
 
   it('patchParityRanges: one range per hunk that shows a line of the new file', () => {
-    const ranges = PierreCodeViewBridge.patchParityRanges;
+    const ranges = PierreBridge.patchParityRanges;
     expect(ranges({ hunks: [{ additionStart: 5, additionCount: 7 }, { additionStart: 40, additionCount: 0 }, { additionStart: 90, additionCount: 1 }] }))
       .toEqual([{ startLine: 5, endLine: 11 }, { startLine: 90, endLine: 90 }]);
     expect(ranges({ hunks: [] })).toEqual([]);
@@ -1013,7 +1013,7 @@ describe('contents and derived metadata', () => {
       keys.push(record.metadata.cacheKey);
     }
     expect(new Set(keys).size).toBe(keys.length);
-    const copy = PierreCodeViewBridge.rekey(record, record.metadata);
+    const copy = PierreBridge.rekey(record, record.metadata);
     expect(copy).not.toBe(record.metadata);
     expect(keys).not.toContain(copy.cacheKey);
   });
@@ -1201,7 +1201,7 @@ describe('context records', () => {
   });
 
   it('contextLanguage: plain text above the size limits and for a file with a NUL character', () => {
-    const lang = PierreCodeViewBridge.contextLanguage;
+    const lang = PierreBridge.contextLanguage;
     expect(lang('const a = 1;\n')).toBeUndefined();
     expect(lang('')).toBeUndefined();
     expect(lang(null)).toBeUndefined();
@@ -1640,6 +1640,131 @@ describe('navigation to what is not mounted, a collapse while inside a file, a f
     expect(await bridge.whenAnnotationRendered('src/b.js', 'revealed-b', { timeoutMs: 0 })).toBe(far);
   });
 
+  it('a new diff that awaits display and takes a file drawn whole to 5,000 rows or more: the line target is sent, the card is not taken as about to be drawn', async () => {
+    const LONG = 'lib/long.js';
+    bridge.renderAll([diffEntry(A), contextEntry(LONG, { contents: `${numberedLines(6000).join('\n')}\n`, ranges: [{ startLine: 100, endLine: 120 }] })]);
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation(LONG, { lineNumber: 110, side: 'RIGHT', type: 'card', data: {}, id: 'near' });
+    const record = bridge.files.get(LONG);
+    const before = record.metadata;
+    expect(PierreBridge.drawnRowCount(before, 'unified')).toBe(21);
+    // The file is on screen with its 21 rows, all drawn.
+    const file = fileElement(LONG, { renderedDiff: before, rows: 21 });
+    // A reveal of 150 lines: the new diff awaits display, the file is still one the viewer draws whole.
+    bridge.addContextRanges(LONG, [{ startLine: 200, endLine: 349 }]);
+    bridge.addAnnotation(LONG, { lineNumber: 300, side: 'RIGHT', type: 'card', data: {}, id: 'revealed' });
+    const card = bridge.getAnnotationElement(LONG, 'revealed', { create: true });
+    file.wrap(card, 'annotation-additions-300');
+    expect(bridge.isDiffDisplayed(LONG)).toBe(false);
+    expect(PierreBridge.drawnRowCount(record.metadata, 'unified')).toBe(171);
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation(LONG, 'revealed')).toBe(true);
+    expect(viewer().count('scrollTo')).toBe(0);
+    expect(await bridge.whenAnnotationRendered(LONG, 'revealed', { timeoutMs: 0 })).toBe(card);
+
+    // A reveal that takes the file to 5,150 rows: its display draws a window of them, which need not hold the card's line.
+    bridge.addContextRanges(LONG, [{ startLine: 1000, endLine: 5978 }]);
+    bridge.addAnnotation(LONG, { lineNumber: 5900, side: 'RIGHT', type: 'card', data: {}, id: 'far' });
+    const far = bridge.getAnnotationElement(LONG, 'far', { create: true });
+    file.wrap(far, 'annotation-additions-5900');
+    expect(PierreBridge.drawnRowCount(record.metadata, 'unified')).toBe(21 + 150 + 4979);
+    expect(file.host.shadowRoot.querySelector('[data-content]').children.length).toBe(21);
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation(LONG, 'far')).toBe(true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'line', id: LONG, lineNumber: 5900, side: 'additions', align: 'start', behavior: 'instant' });
+    expect(await bridge.whenAnnotationRendered(LONG, 'far', { timeoutMs: 0 })).toBeNull();
+    file.drawRow('annotation-additions-5900');
+    expect(await bridge.whenAnnotationRendered(LONG, 'far', { timeoutMs: 0 })).toBe(far);
+  });
+
+  it('whenAnnotationRendered takes the pane to the line once more when the diff that awaited display is displayed and the card is still not drawn', async () => {
+    const LONG = 'lib/long.js';
+    bridge.renderAll([diffEntry(A), contextEntry(LONG, { contents: `${numberedLines(9000).join('\n')}\n`, ranges: [{ startLine: 1, endLine: 100 }] })]);
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    const record = bridge.files.get(LONG);
+    const before = record.metadata;
+    const file = fileElement(LONG, { renderedDiff: before, rows: 100 });
+    // A reveal that takes the file to 8,100 rows, and a card far down them.
+    bridge.addContextRanges(LONG, [{ startLine: 1000, endLine: 8999 }]);
+    bridge.addAnnotation(LONG, { lineNumber: 8900, side: 'RIGHT', type: 'card', data: {}, id: 'far' });
+    const far = bridge.getAnnotationElement(LONG, 'far', { create: true });
+    file.wrap(far, 'annotation-additions-8900');
+    const target = { type: 'line', id: LONG, lineNumber: 8900, side: 'additions', align: 'start', behavior: 'instant' };
+    viewer().calls.length = 0;
+    expect(bridge.scrollToAnnotation(LONG, 'far')).toBe(true);
+    expect(viewer().count('scrollTo')).toBe(1);
+    const waiting = bridge.whenAnnotationRendered(LONG, 'far');
+    let settled = false;
+    waiting.then(() => { settled = true; });
+    // While the old diff is on screen nothing more is sent, however many frames pass.
+    await new Promise((resolve) => env.window.requestAnimationFrame(() => env.window.requestAnimationFrame(resolve)));
+    expect(viewer().count('scrollTo')).toBe(1);
+    // The new diff is displayed, in a window of rows that does not hold the card's line.
+    record._instance.getRenderedDiff = () => record.metadata;
+    expect(bridge.isDiffDisplayed(LONG)).toBe(true);
+    await vi.waitFor(() => expect(viewer().count('scrollTo')).toBe(2));
+    expect(viewer().last('scrollTo').args[0]).toEqual(target);
+    expect(settled).toBe(false);
+    // Once only, and the wait ends when the viewer draws the card.
+    await new Promise((resolve) => env.window.requestAnimationFrame(() => env.window.requestAnimationFrame(resolve)));
+    expect(viewer().count('scrollTo')).toBe(2);
+    file.drawRow('annotation-additions-8900');
+    expect(await waiting).toBe(far);
+    expect(viewer().count('scrollTo')).toBe(2);
+  });
+
+  it('whenAnnotationRendered sends nothing more for a file whose diff was on screen all along, nor after it was cancelled', async () => {
+    bridge.registerAnnotationRenderer('card', () => env.window.document.createElement('div'));
+    bridge.addAnnotation('src/b.js', { lineNumber: 120, side: 'RIGHT', type: 'card', data: {}, id: 'far' });
+    const file = fileElement('src/b.js', { rows: 5000 });
+    const far = bridge.getAnnotationElement('src/b.js', 'far', { create: true });
+    file.wrap(far, 'annotation-additions-120');
+    viewer().calls.length = 0;
+    const waiting = bridge.whenAnnotationRendered('src/b.js', 'far');
+    await new Promise((resolve) => env.window.requestAnimationFrame(() => env.window.requestAnimationFrame(resolve)));
+    expect(viewer().count('scrollTo')).toBe(0);
+    file.drawRow('annotation-additions-120');
+    expect(await waiting).toBe(far);
+
+    // Cancelled while the new diff awaited display: its display moves nothing.
+    const LONG = 'lib/long.js';
+    bridge.renderAll([diffEntry(A), contextEntry(LONG, { contents: `${numberedLines(9000).join('\n')}\n`, ranges: [{ startLine: 1, endLine: 100 }] })]);
+    const record = bridge.files.get(LONG);
+    const long = fileElement(LONG, { renderedDiff: record.metadata, rows: 100 });
+    bridge.addContextRanges(LONG, [{ startLine: 1000, endLine: 8999 }]);
+    bridge.addAnnotation(LONG, { lineNumber: 8900, side: 'RIGHT', type: 'card', data: {}, id: 'gone' });
+    long.wrap(bridge.getAnnotationElement(LONG, 'gone', { create: true }), 'annotation-additions-8900');
+    let cancelled = false;
+    viewer().calls.length = 0;
+    const stopped = bridge.whenAnnotationRendered(LONG, 'gone', { isCancelled: () => cancelled });
+    cancelled = true;
+    record._instance.getRenderedDiff = () => record.metadata;
+    expect(await stopped).toBeNull();
+    expect(viewer().count('scrollTo')).toBe(0);
+  });
+
+  it('drawnRowCount: the lines of the hunks in the layout asked for, and the gaps small enough to be drawn when the diff has the file\'s contents', () => {
+    const patchOnly = bridge.files.get('src/a.js').metadata;
+    // Two hunks of the patch: 3 + 1 removed + 1 added + 3, and 3 + 1 added + 3. Side by side the change is one row.
+    expect(patchOnly.isPartial).toBe(true);
+    expect(PierreBridge.drawnRowCount(patchOnly, 'unified')).toBe(8 + 7);
+    expect(PierreBridge.drawnRowCount(patchOnly, 'split')).toBe(7 + 7);
+    bridge.upgradeFileContents('src/a.js', A.oldFile, A.newFile);
+    const upgraded = bridge.files.get('src/a.js').metadata;
+    expect(upgraded.isPartial).toBe(false);
+    const hunkRows = upgraded.hunks.reduce((sum, hunk) => sum + hunk.unifiedLineCount, 0);
+    expect(PierreBridge.drawnRowCount(upgraded, 'unified')).toBe(hunkRows);
+    // A range that leaves five hidden lines before the second hunk: the viewer draws those too.
+    const firstOfSecond = upgraded.hunks[1].additionStart;
+    bridge.addContextRanges('src/a.js', [{ startLine: firstOfSecond - 16, endLine: firstOfSecond - 6 }]);
+    expect(PierreBridge.drawnRowCount(bridge.files.get('src/a.js').metadata, 'unified')).toBe(hunkRows + 11 + 5);
+    // The last five lines of a file whose last hunk ends five lines short of its end.
+    bridge.renderAll([contextEntry('lib/c.js', { ranges: [{ startLine: 380, endLine: 395 }] })]);
+    expect(PierreBridge.drawnRowCount(bridge.files.get('lib/c.js').metadata, 'unified')).toBe(16 + 5);
+    expect(PierreBridge.drawnRowCount(null, 'unified')).toBe(0);
+    expect(PierreBridge.drawnRowCount({ hunks: [] }, 'split')).toBe(0);
+  });
+
   it('whenElementDrawn: at once for an element that is drawn and for none, else when the viewer draws it', async () => {
     const doc = env.window.document;
     const { wrap, drawRow } = fileElement('src/a.js');
@@ -2041,13 +2166,113 @@ describe('diff positions', () => {
 describe('side helpers', () => {
   it('convert between the app\'s sides and the viewer\'s', () => {
     create();
-    expect(PierreCodeViewBridge.toPierreSide('LEFT')).toBe('deletions');
-    expect(PierreCodeViewBridge.toPierreSide('deletions')).toBe('deletions');
-    expect(PierreCodeViewBridge.toPierreSide('RIGHT')).toBe('additions');
-    expect(PierreCodeViewBridge.toPierreSide(undefined)).toBe('additions');
-    expect(PierreCodeViewBridge.toPairReviewSide('deletions')).toBe('LEFT');
-    expect(PierreCodeViewBridge.toPairReviewSide('additions')).toBe('RIGHT');
-    expect(PierreCodeViewBridge.normalizeSide('LEFT')).toBe('LEFT');
+    expect(PierreBridge.toPierreSide('LEFT')).toBe('deletions');
+    expect(PierreBridge.toPierreSide('deletions')).toBe('deletions');
+    expect(PierreBridge.toPierreSide('RIGHT')).toBe('additions');
+    expect(PierreBridge.toPierreSide(undefined)).toBe('additions');
+    expect(PierreBridge.toPairReviewSide('deletions')).toBe('LEFT');
+    expect(PierreBridge.toPairReviewSide('additions')).toBe('RIGHT');
+    expect(PierreBridge.normalizeSide('LEFT')).toBe('LEFT');
+  });
+});
+
+describe('the rows the viewer draws of a very long file hold what the pane shows (vendor fact F30)', () => {
+  const pane = { top: 1000, bottom: 2260 };
+
+  it('windowPastDrawnRows: a window of the same height whose middle is where the rows left out begin, when they begin above the pane\'s bottom', () => {
+    // An item at 400 that is 100,400 px tall; the viewer leaves the last 160 px out: they begin at 100,640.
+    const range = { startingLine: 0, totalLines: 5000, bufferBefore: 0, bufferAfter: 160 };
+    expect(PierreBridge.windowPastDrawnRows(range, 400, 100400, { top: 99500, bottom: 100760 })).toEqual({ top: 100640 - 630, bottom: 100640 + 630 });
+    // They begin below what the pane shows: the viewer's answer stands.
+    expect(PierreBridge.windowPastDrawnRows(range, 400, 100400, { top: 90000, bottom: 100640 })).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows(range, 400, 100400, { top: 90000, bottom: 91260 })).toBeNull();
+  });
+
+  it('windowPastDrawnRows: nothing to correct when nothing is drawn, nothing is left out, or the numbers are not numbers', () => {
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 0, bufferAfter: 900 }, 0, 1000, pane)).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 0 }, 0, 1500, pane)).toBeNull();
+    // Less than a pixel is rounding of the viewer's own sums, not rows.
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 0.4 }, 0, 1500, pane)).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 200 }, undefined, 1500, pane)).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 200 }, 0, NaN, pane)).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 200 }, 0, 1500, { top: 1000, bottom: 1000 })).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows(null, 0, 1500, pane)).toBeNull();
+    expect(PierreBridge.windowPastDrawnRows({ totalLines: 5000, bufferAfter: 200 }, 0, 1500, null)).toBeNull();
+  });
+
+  /** A stand-in for the vendor's class: answers from a list, records what it was asked. */
+  function standIn(answers) {
+    const asked = [];
+    class VirtualizedFileDiff {
+      constructor() { this.height = 100400; }
+      computeRenderRangeFromWindow(fileDiff, fileTop, windowSpecs) {
+        asked.push({ self: this, fileDiff, fileTop, windowSpecs });
+        return answers[Math.min(asked.length - 1, answers.length - 1)];
+      }
+    }
+    return { VirtualizedFileDiff, asked };
+  }
+
+  it('coverPaneWithRowWindow asks the viewer a second time, with the window past the rows it left out, and answers with that', () => {
+    const first = { startingLine: 0, totalLines: 5000, bufferBefore: 0, bufferAfter: 160 };
+    const second = { startingLine: 0, totalLines: 10000, bufferBefore: 0, bufferAfter: 0 };
+    const { VirtualizedFileDiff, asked } = standIn([first, second]);
+    expect(PierreBridge.coverPaneWithRowWindow(VirtualizedFileDiff)).toBe(true);
+    const instance = new VirtualizedFileDiff();
+    const diff = { name: 'a diff' };
+    expect(instance.computeRenderRangeFromWindow(diff, 400, { top: 99500, bottom: 100760 })).toBe(second);
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toEqual({ self: instance, fileDiff: diff, fileTop: 400, windowSpecs: { top: 99500, bottom: 100760 } });
+    expect(asked[1]).toEqual({ self: instance, fileDiff: diff, fileTop: 400, windowSpecs: { top: 100010, bottom: 101270 } });
+  });
+
+  it('coverPaneWithRowWindow leaves an answer that needs no correction alone, and keeps the first answer when the second draws nothing', () => {
+    const whole = { startingLine: 0, totalLines: 5000, bufferBefore: 0, bufferAfter: 0 };
+    const one = standIn([whole]);
+    PierreBridge.coverPaneWithRowWindow(one.VirtualizedFileDiff);
+    expect(new one.VirtualizedFileDiff().computeRenderRangeFromWindow({}, 400, pane)).toBe(whole);
+    expect(one.asked).toHaveLength(1);
+
+    const first = { startingLine: 0, totalLines: 5000, bufferBefore: 0, bufferAfter: 160 };
+    const two = standIn([first, { startingLine: 0, totalLines: 0, bufferBefore: 0, bufferAfter: 100000 }]);
+    PierreBridge.coverPaneWithRowWindow(two.VirtualizedFileDiff);
+    expect(new two.VirtualizedFileDiff().computeRenderRangeFromWindow({}, 400, { top: 99500, bottom: 100760 })).toBe(first);
+    expect(two.asked).toHaveLength(2);
+  });
+
+  it('coverPaneWithRowWindow changes a class once, however often it is called and from however many loads of the bridge', () => {
+    const first = { startingLine: 0, totalLines: 5000, bufferBefore: 0, bufferAfter: 160 };
+    const second = { startingLine: 0, totalLines: 10000, bufferBefore: 0, bufferAfter: 0 };
+    const { VirtualizedFileDiff, asked } = standIn([first, second]);
+    expect(PierreBridge.coverPaneWithRowWindow(VirtualizedFileDiff)).toBe(true);
+    const installed = VirtualizedFileDiff.prototype.computeRenderRangeFromWindow;
+    expect(PierreBridge.coverPaneWithRowWindow(VirtualizedFileDiff)).toBe(true);
+    // The bridge's script evaluated again (another page manager in the same window, a test that reloads it).
+    const again = loadCodeViewBridge(vendor, { into: env.window });
+    expect(again.PierreBridge).not.toBe(PierreBridge);
+    expect(again.PierreBridge.coverPaneWithRowWindow(VirtualizedFileDiff)).toBe(true);
+    expect(VirtualizedFileDiff.prototype.computeRenderRangeFromWindow).toBe(installed);
+    new VirtualizedFileDiff().computeRenderRangeFromWindow({}, 400, { top: 99500, bottom: 100760 });
+    expect(asked).toHaveLength(2);
+  });
+
+  it('constructing a bridge installs it on the vendor\'s class; without the class or its method the bridge says so and works', () => {
+    create();
+    const installed = env.window.PierreDiffs.VirtualizedFileDiff.prototype.computeRenderRangeFromWindow;
+    expect(installed.pairReviewRowWindowCoversPane).toBe(true);
+    create();
+    expect(env.window.PierreDiffs.VirtualizedFileDiff.prototype.computeRenderRangeFromWindow).toBe(installed);
+
+    expect(PierreBridge.coverPaneWithRowWindow(undefined)).toBe(false);
+    expect(PierreBridge.coverPaneWithRowWindow(class {})).toBe(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    env.window.PierreDiffs.VirtualizedFileDiff = class {};
+    create();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('computeRenderRangeFromWindow'));
+    warn.mockRestore();
+    expect(bridge.available).toBe(true);
+    expect(bridge.renderAll([diffEntry(A)])).toBe(true);
   });
 });
 

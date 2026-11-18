@@ -194,7 +194,6 @@ describe('PRManager.refreshPR and the status message', () => {
       renderPRHeader: vi.fn(),
       // The refreshed diff is empty: what renderDiff does for no files.
       loadAndDisplayFiles: vi.fn(async () => {
-        manager._removeRenderedFiles();
         manager._setDiffStatus(null);
         manager._setDiffStatus('<div class="no-diff">No files changed</div>', { hideScroller: false });
       }),
@@ -208,27 +207,6 @@ describe('PRManager.refreshPR and the status message', () => {
     expect(status().hidden).toBe(false);
     expect(status().textContent).toBe('No files changed');
     expect(container.hidden).toBe(false);
-    expect(container.children).toHaveLength(0);
-  });
-});
-
-describe('PRManager._removeRenderedFiles', () => {
-  it('empties the container and forgets the file-comment zones', () => {
-    const { container } = page();
-    container.innerHTML = '<div class="d2h-file-wrapper"></div><div class="d2h-file-wrapper context-file"></div>';
-    const releaseAllZones = vi.fn();
-    const manager = makePageManager({ fileCommentManager: { releaseAllZones } });
-
-    manager._removeRenderedFiles();
-
-    expect(container.childNodes).toHaveLength(0);
-    expect(releaseAllZones).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not throw without a container or a file comment manager', () => {
-    const manager = makePageManager();
-    expect(() => manager._removeRenderedFiles()).not.toThrow();
-    expect(() => manager._removeRenderedFiles(null)).not.toThrow();
   });
 });
 
@@ -276,7 +254,7 @@ describe('the pages and the sources', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('only _setDiffStatus writes the status element, and only _removeRenderedFiles empties the container', () => {
+  it('only _setDiffStatus writes the status element, and nothing empties the container, whose children are the viewer\'s', () => {
     const pr = sources().find(source => source.file === path.join('js', 'pr.js')).text;
     const all = sources().map(source => source.text).join('\n');
 
@@ -285,10 +263,12 @@ describe('the pages and the sources', () => {
     const setStatus = pr.slice(pr.indexOf('  _setDiffStatus(html'), pr.indexOf('  _clearDiffStatus(token)'));
     expect(setStatus).toContain("getElementById('diff-status')");
 
-    // One loop that removes the container's children: inside _removeRenderedFiles.
-    expect(all.match(/container\.removeChild\(container\.firstChild\)/g)).toHaveLength(1);
-    const remove = pr.slice(pr.indexOf('  _removeRenderedFiles(container'), pr.indexOf('  _contextStateKey(filePath)'));
-    expect(remove).toContain('container.removeChild(container.firstChild)');
+    // No loop that removes the container's children: an empty diff is an
+    // empty list given to the viewer (_clearDiffItems).
+    expect(all.match(/container\.removeChild\(container\.firstChild\)/g)).toBeNull();
+    const clear = pr.slice(pr.indexOf('  _clearDiffItems() {'), pr.indexOf('  /**', pr.indexOf('  _clearDiffItems() {')));
+    expect(clear).toContain('renderAll([]');
+    expect(clear).not.toMatch(/removeChild|innerHTML|replaceChildren/);
   });
 
   it('the status messages of both modes go through _setDiffStatus', () => {

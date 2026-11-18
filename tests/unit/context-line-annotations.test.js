@@ -15,13 +15,13 @@
  *   - a line of a context file has no position in the diff;
  *   - a comment reload is one change of the diff, not one per file.
  *
- * The viewer is the recording stub of tests/utils/codeview-bridge-harness.js:
+ * The viewer is the recording stub of tests/utils/pierre-bridge-harness.js:
  * what it draws is tested in a browser (tests/contract/bridge, N5).
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
-const { loadCodeViewBridge, numberedLines, changedFileFixture } = require('../utils/codeview-bridge-harness.js');
+const { loadCodeViewBridge, numberedLines, changedFileFixture } = require('../utils/pierre-bridge-harness.js');
 
 let vendor;
 beforeAll(async () => {
@@ -43,7 +43,7 @@ beforeEach(() => {
   const { makePageManager } = require('../utils/page-manager.js');
   ({ HunkSummaryRenderer } = require('../../public/js/modules/hunk-summary-renderer.js'));
   ({ SuggestionManager } = require('../../public/js/modules/suggestion-manager.js'));
-  bridge = new env.PierreCodeViewBridge({
+  bridge = new env.PierreBridge({
     root: env.window.document.getElementById('root'),
     theme: 'light',
     useWorkerPool: false,
@@ -61,7 +61,6 @@ beforeEach(() => {
   ]);
   manager = makePageManager({
     pierreBridge: bridge,
-    _diffEngine: 'codeview',
     changedFilesByPath: new Map([[A.name, { file: A.name, patch: A.patch }]]),
     contextFiles: [{ id: 5, file: CONTEXT, line_start: 100, line_end: 120 }],
   });
@@ -83,7 +82,7 @@ describe('a comment form on a context line', () => {
     // the PRManager constructor): the position is asked of the bridge.
     const position = bridge.getDiffPosition(CONTEXT, 105, 'RIGHT');
     expect(position).toBeNull();
-    manager.showCommentForm(null, 105, CONTEXT, position, null, 'RIGHT');
+    manager.showCommentForm(CONTEXT, 105, position, null, 'RIGHT');
 
     const form = bridge.getAnnotations(CONTEXT, 'comment-form');
     expect(form).toHaveLength(1);
@@ -96,7 +95,7 @@ describe('a comment form on a context line', () => {
   });
 
   it('a range is anchored on its last line and keeps its first line in the data', () => {
-    manager.showCommentForm(null, 104, CONTEXT, null, 108, 'RIGHT');
+    manager.showCommentForm(CONTEXT, 104, null, 108, 'RIGHT');
     const [form] = bridge.getAnnotations(CONTEXT, 'comment-form');
     expect(form).toMatchObject({ lineNumber: 108, side: 'additions' });
     expect(form.metadata.data).toMatchObject({ lineStart: 104, lineEnd: 108, side: 'RIGHT', diffPosition: null });
@@ -105,7 +104,7 @@ describe('a comment form on a context line', () => {
   it('on a changed file the same call keeps the side it was given and carries the diff position', () => {
     const position = bridge.getDiffPosition(A.name, 120, 'LEFT');
     expect(position).toBeGreaterThan(0);
-    manager.showCommentForm(null, 120, A.name, position, null, 'LEFT');
+    manager.showCommentForm(A.name, 120, position, null, 'LEFT');
     const [form] = bridge.getAnnotations(A.name, 'comment-form');
     expect(form).toMatchObject({ lineNumber: 120, side: 'deletions' });
     expect(form.metadata.data).toMatchObject({ side: 'LEFT', diffPosition: position });

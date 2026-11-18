@@ -6,11 +6,14 @@
  * The development flavour (tests/.cache, gitignored) is rebuilt on every run:
  * it takes about 100 ms and a stale one would validate the wrong vendor. The
  * production bundle under public/ is rebuilt only when its stamp does not
- * match, so a contract run never churns the file the app serves.
+ * match, so a contract run never churns the file the app serves. The bundle
+ * of vendor functions only this suite calls (vendor-extras.js) is rebuilt on
+ * every run too.
  */
 
 const { execFileSync } = require('child_process');
 const { PATHS, readBundleStamp, installedVendorVersion } = require('./paths');
+const { buildTestExtras } = require('./vendor-extras');
 
 function build(args) {
   execFileSync(process.execPath, [PATHS.buildScript, ...args], { cwd: PATHS.repoRoot, stdio: 'inherit' });
@@ -20,6 +23,7 @@ module.exports = async function globalSetup() {
   const installed = installedVendorVersion();
 
   build(['--dev']);
+  await buildTestExtras();
   const dev = readBundleStamp(PATHS.devBundle);
   if (!dev || dev.version !== installed || dev.mode !== 'development') {
     throw new Error(`Contract suite: development bundle is not @pierre/diffs ${installed} (stamp: ${JSON.stringify(dev)})`);

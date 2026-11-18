@@ -533,20 +533,14 @@ class LocalManager {
       // Nothing to reload if we haven't loaded a review yet
       if (!manager.currentPR) return;
 
-      const scrollY = window.scrollY;
-
-      // Re-fetch and re-render the diff (loadLocalDiff reads hideWhitespace)
+      // Re-fetch and re-render the diff (loadLocalDiff reads hideWhitespace).
+      // The viewer keeps the reader's place through the render.
       await self.loadLocalDiff();
 
-      // Re-anchor comments and suggestions on the fresh DOM, through the
+      // Re-anchor comments and suggestions on the fresh diff, through the
       // helper every whole-diff re-render shares (external comments are a
       // no-op in local mode).
       await manager._rerenderAllOverlays({ analysisRunId: manager.selectedRunId });
-
-      // Restore scroll position after the DOM settles
-      requestAnimationFrame(() => {
-        window.scrollTo(0, scrollY);
-      });
     };
 
     // Base branch override for stack-aware diff in local mode
@@ -1104,9 +1098,9 @@ class LocalManager {
           diffView: window.readPersistedDiffView
             ? window.readPersistedDiffView()
             : (localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified'),
-          // Match PR mode: only offer the control when the Pierre render path
-          // can apply the swap (see pr.js construction site).
-          diffViewAvailable: Boolean(manager.pierreBridge && !manager.pierreBridge._disabled),
+          // Match PR mode: only offer the control when there is a viewer to
+          // apply it (see pr.js construction site).
+          diffViewAvailable: Boolean(manager.pierreBridge),
           initialScope: { start: scopeStart, end: scopeEnd },
           branchAvailable
         });
@@ -1503,7 +1497,7 @@ class LocalManager {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
           // Whatever was rendered before is not this diff's.
-          manager._removeRenderedFiles(diffContainer);
+          manager._clearDiffItems();
           const reviewData = this.localData;
           const branchInfo = reviewData?.branchInfo;
           const LS = window.LocalScope;
@@ -1555,8 +1549,8 @@ class LocalManager {
           insertions: additions,
           deletions: deletions,
           generated: isGenerated,
-          // Pass through the server-computed canonical hunk hashes; renderPatch
-          // requires these to anchor persisted summaries (no client-side fallback).
+          // Pass through the server-computed canonical hunk hashes: persisted
+          // summaries are anchored by them (no client-side fallback).
           hunk_hashes: hunkHashesByFile[fileName] || null,
           // Inspect only the header (before the first @@) so file contents
           // containing "new file mode" / "deleted file mode" can't spoof status.

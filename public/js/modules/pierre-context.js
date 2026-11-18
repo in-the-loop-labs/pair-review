@@ -277,9 +277,9 @@ function mergeContextRanges(baseMetadata, ranges) {
   // the convention of the vendor's own producers (parsePatchFiles,
   // hydratePartialDiff, updateDiffHunks), and the virtualized viewer lays
   // rows out from these two fields. Writing the running total alone (as this
-  // function did before) is invisible to a non-virtualized FileDiff and puts a
-  // CodeView item one row out of step with its layout once a gap above a
-  // revealed range is expanded by hand.
+  // function did before the migration to the viewer, when nothing laid rows
+  // out from them) puts a CodeView item one row out of step with its layout
+  // once a gap above a revealed range is expanded by hand.
   let cumulativeSplit = 0;
   let cumulativeUnified = 0;
   for (const hunk of allHunks) {

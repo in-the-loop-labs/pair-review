@@ -4,23 +4,23 @@
  * Regression tests for issue #540: Context entry controls must collapse
  * independently from a same-file diff entry.
  *
- * When an LLM chat brings in a section of a file that is ALSO changed in the
- * PR, the diff panel shows two wrappers with the same data-file-name: the
- * diff entry and the `.context-file` entry. Collapse/viewed actions on the
- * context entry must target the context wrapper (via context-scoped state
- * keys), never the diff wrapper — and vice versa.
+ * A path can be a context file of the review and a changed file of the
+ * diff (an LLM chat brings in a section of a file that a later commit
+ * changes). The pane then shows the changed file only ("the diff wins",
+ * pane-entries.test.js), but the collapse and viewed state stored for the
+ * context entry must never be read or written as the changed file's, and
+ * vice versa: context state lives under context-scoped keys.
  *
- * Shared by PR mode and Local mode: Local mode reuses PRManager's
- * renderContextFile/toggle* methods and only patches viewed-state persistence,
- * so these tests cover both modes.
+ * Shared by PR mode and Local mode: Local mode reuses PRManager's toggle*
+ * methods and only patches viewed-state persistence, so these tests cover
+ * both modes. The context file's header and its controls are in
+ * context-file-header.test.js.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 const { PRManager } = require('../../public/js/pr.js');
-const { SmartTruncate } = require('../../public/js/utils/smart-truncate.js');
-const HeaderAnchor = require('../../public/js/utils/header-anchor.js');
 
 // jsdom exposes CSS.escape via window; make sure the global exists for code
 // that references bare `CSS`.
@@ -66,9 +66,9 @@ function createManager() {
   manager.collapsedFiles = new Set();
   manager.viewedFiles = new Set();
   manager.saveViewedState = vi.fn();
-  manager.ensureFileBodyRendered = vi.fn().mockResolvedValue(undefined);
+  manager.contextFiles = [];
+  manager.findFileElement = (file) => DiffRenderer.findFileElement(file);
   manager.pierreBridge = null;
-  manager._diffEngine = 'filediff';
   manager._initPaneState();
   return manager;
 }
@@ -125,106 +125,86 @@ describe('context entry collapse independence (#540)', () => {
     });
   });
 
-  describe('toggleContextFileCollapse', () => {
-    it('collapses the context entry without expanding a viewed (collapsed) diff', () => {
-      // Reproduce the issue: diff is marked viewed (collapsed), then the user
-      // collapses the context entry for the same file.
-      diffWrapper.classList.add('collapsed');
-      manager.viewedFiles.add(FILE);
-      manager.collapsedFiles.add(FILE);
+  describe('a context file\'s state is kept under its own key', () => {
+    const CONTEXT = 'lib/context.js';
 
-      manager.toggleContextFileCollapse(FILE);
+    /** A pane with the changed file FILE and the context file CONTEXT, as a render leaves it. */
+    function pane() {
+      const bridge = { files: new Map([[FILE, { kind: 'diff' }], [CONTEXT, { kind: 'context' }]]), setCollapsed: vi.fn() };
+      manager.pierreBridge = bridge;
+      manager.contextFiles = [{ id: 1, file: CONTEXT, line_start: 1, line_end: 10 }];
+      manager._contextItemIds.add(CONTEXT);
+      manager._fileCollapsed.set(`context:${CONTEXT}`, false);
+      manager.updateFileItemViewedState = vi.fn();
+      return bridge;
+    }
 
-      expect(contextWrapper.classList.contains('collapsed')).toBe(true);
-      expect(diffWrapper.classList.contains('collapsed')).toBe(true);
-      // Diff-scoped state is untouched
-      expect(manager.collapsedFiles.has(FILE)).toBe(true);
-      expect(manager.collapsedFiles.has(`context:${FILE}`)).toBe(true);
-    });
-
-    it('expands a collapsed context entry and updates its chevron', () => {
-      manager.toggleContextFileCollapse(FILE);
-      expect(contextWrapper.classList.contains('collapsed')).toBe(true);
-      expect(contextWrapper.querySelector('.file-collapse-toggle').title).toBe('Expand file');
-
-      manager.toggleContextFileCollapse(FILE);
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-      expect(contextWrapper.querySelector('.file-collapse-toggle').title).toBe('Collapse file');
-      expect(manager.collapsedFiles.has(`context:${FILE}`)).toBe(false);
-    });
-
-    it('anchors the header on collapse but not on expand', () => {
-      // A collapsed header partly under the sticky toolbar drops to the
-      // sticky line on expand; anchoring that would scroll the body under it.
-      const anchor = vi.fn((header, change) => change());
-      window.HeaderAnchor = { keepHeaderInPlace: anchor };
-      const header = contextWrapper.querySelector('.d2h-file-header');
-
-      manager.toggleContextFileCollapse(FILE);
-      expect(anchor).toHaveBeenCalledTimes(1);
-      expect(anchor).toHaveBeenCalledWith(header, expect.any(Function));
-      expect(contextWrapper.classList.contains('collapsed')).toBe(true);
-
-      manager.toggleContextFileCollapse(FILE);
-      expect(anchor).toHaveBeenCalledTimes(1);
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-      expect(manager.collapsedFiles.has(`context:${FILE}`)).toBe(false);
-    });
-
-    it('does not scroll the diff pane when expanding a partly covered header', () => {
-      // Real helper: simulate the header dropping 20px to the sticky line as
-      // the entry expands. Expand must leave the pane's scroll alone.
-      const pane = document.createElement('div');
-      pane.className = 'diff-view';
-      pane.scrollBy = vi.fn();
-      document.body.appendChild(pane);
-      pane.appendChild(document.getElementById('diff-container'));
-      contextWrapper.classList.add('collapsed');
-      manager.collapsedFiles.add(`context:${FILE}`);
-
-      const header = contextWrapper.querySelector('.d2h-file-header');
-      header.getBoundingClientRect = () => ({
-        top: contextWrapper.classList.contains('collapsed') ? -20 : 0,
-      });
-
-      manager.toggleContextFileCollapse(FILE);
-
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-      expect(pane.scrollBy).not.toHaveBeenCalled();
-    });
-
-    it('is a no-op when no context wrapper exists', () => {
+    it('toggleContextFileCollapse collapses and expands the context file under the context key, and needs no element', () => {
+      const bridge = pane();
+      diffWrapper.remove();
       contextWrapper.remove();
-      expect(() => manager.toggleContextFileCollapse(FILE)).not.toThrow();
-      expect(diffWrapper.classList.contains('collapsed')).toBe(false);
+
+      manager.toggleContextFileCollapse(CONTEXT);
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(true);
+      expect([...manager.collapsedFiles]).toEqual([`context:${CONTEXT}`]);
+      expect(bridge.setCollapsed.mock.calls).toEqual([[CONTEXT, true]]);
+
+      manager.toggleContextFileCollapse(CONTEXT);
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(false);
+      expect([...manager.collapsedFiles]).toEqual([]);
+      expect(bridge.setCollapsed).toHaveBeenLastCalledWith(CONTEXT, false);
+      // The changed file was never touched.
+      expect(manager.isFileCollapsed(FILE)).toBe(false);
     });
-  });
 
-  describe('toggleContextFileViewed', () => {
-    it('marks the context entry viewed and collapses it, leaving the diff alone', () => {
-      manager.toggleContextFileViewed(FILE, true);
+    it('is a no-op for a path that is not a file of the pane', () => {
+      const bridge = pane();
+      expect(() => manager.toggleContextFileCollapse('nowhere.js')).not.toThrow();
+      expect(bridge.setCollapsed).not.toHaveBeenCalled();
+      expect(manager.collapsedFiles.size).toBe(0);
+    });
 
-      expect(contextWrapper.classList.contains('collapsed')).toBe(true);
-      expect(diffWrapper.classList.contains('collapsed')).toBe(false);
-      expect(manager.viewedFiles.has(`context:${FILE}`)).toBe(true);
-      // The plain path key (diff entry) is untouched
-      expect(manager.viewedFiles.has(FILE)).toBe(false);
+    it('toggleContextFileViewed marks the context file viewed and collapses it, leaving every changed file alone', () => {
+      const bridge = pane();
+      manager.toggleContextFileViewed(CONTEXT, true);
+
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(true);
+      expect(manager.isFileCollapsed(FILE)).toBe(false);
+      expect([...manager.viewedFiles]).toEqual([`context:${CONTEXT}`]);
+      expect(bridge.setCollapsed.mock.calls).toEqual([[CONTEXT, true]]);
+      expect(manager.updateFileItemViewedState).toHaveBeenLastCalledWith(CONTEXT, true, { contextItem: true });
       expect(manager.saveViewedState).toHaveBeenCalled();
+
+      manager.toggleContextFileViewed(CONTEXT, false);
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(false);
+      expect([...manager.viewedFiles]).toEqual([]);
     });
 
-    it('unchecking viewed expands the context entry only', () => {
-      manager.toggleContextFileViewed(FILE, true);
-      diffWrapper.classList.add('collapsed');
+    it('state stored under the context key of a path that is now a changed file is not that file\'s state (#540)', async () => {
+      // The file was a context file when the reader marked it viewed and
+      // collapsed it; a later commit changed it, so the pane shows it as a
+      // changed file. The diff wins: its state is the plain key's.
+      pane();
+      manager.viewedFiles.add(`context:${FILE}`);
+      manager.collapsedFiles.add(`context:${FILE}`);
+      manager._fileCollapsed.set(`context:${FILE}`, true);
 
-      manager.toggleContextFileViewed(FILE, false);
+      expect(manager.fileKind(FILE)).toBe('diff');
+      expect(manager._fileStateKey(FILE)).toBe(FILE);
+      expect(manager.isFileCollapsed(FILE)).toBe(false);
 
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-      expect(manager.viewedFiles.has(`context:${FILE}`)).toBe(false);
-      // Diff stays collapsed — context actions never touch it
-      expect(diffWrapper.classList.contains('collapsed')).toBe(true);
+      await manager.toggleFileViewed(FILE, true);
+      expect(manager.viewedFiles.has(FILE)).toBe(true);
+      expect(manager.collapsedFiles.has(FILE)).toBe(true);
+      expect(manager.isFileCollapsed(FILE)).toBe(true);
+      await manager.toggleFileCollapse(FILE);
+      expect(manager.isFileCollapsed(FILE)).toBe(false);
+      // The context-scoped keys are as they were.
+      expect(manager.viewedFiles.has(`context:${FILE}`)).toBe(true);
+      expect(manager._fileCollapsed.get(`context:${FILE}`)).toBe(true);
     });
 
-    it('only updates the context sidebar row, never a same-path diff row', () => {
+    it('updateFileItemViewedState with contextItem only updates the context sidebar row, never a same-path diff row', () => {
       const diffItem = document.createElement('a');
       diffItem.className = 'file-item';
       diffItem.dataset.path = FILE;
@@ -233,142 +213,10 @@ describe('context entry collapse independence (#540)', () => {
       contextItem.dataset.path = FILE;
       document.body.append(diffItem, contextItem);
 
-      manager.toggleContextFileViewed(FILE, true);
+      manager.updateFileItemViewedState(FILE, true, { contextItem: true });
 
       expect(diffItem.classList.contains('viewed')).toBe(false);
       expect(contextItem.classList.contains('viewed')).toBe(true);
-    });
-  });
-
-  describe('diff entry actions leave the context entry alone', () => {
-    it('toggleFileViewed collapses the diff wrapper, not the context wrapper', async () => {
-      await manager.toggleFileViewed(FILE, true);
-
-      expect(diffWrapper.classList.contains('collapsed')).toBe(true);
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-      expect(manager.viewedFiles.has(FILE)).toBe(true);
-      expect(manager.viewedFiles.has(`context:${FILE}`)).toBe(false);
-    });
-
-    it('toggleFileCollapse toggles the diff wrapper, not the context wrapper', async () => {
-      await manager.toggleFileCollapse(FILE);
-
-      expect(diffWrapper.classList.contains('collapsed')).toBe(true);
-      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
-    });
-  });
-
-  describe('renderContextFile', () => {
-    function renderableManager() {
-      manager.fetchFileContent = vi.fn().mockResolvedValue({ lines: ['a', 'b', 'c'] });
-      manager._buildContextChunkTbody = vi.fn(() => {
-        const tbody = document.createElement('tbody');
-        tbody.className = 'context-chunk';
-        return tbody;
-      });
-      manager.fileCommentManager = null;
-      return manager;
-    }
-
-    beforeEach(() => {
-      // renderContextFile builds its own context wrapper
-      contextWrapper.remove();
-      renderableManager();
-    });
-
-    it('does not render the viewed checkbox checked from the diff entry state', async () => {
-      manager.viewedFiles.add(FILE); // diff marked viewed
-
-      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
-
-      const wrapper = document.querySelector('.d2h-file-wrapper.context-file');
-      expect(wrapper).not.toBeNull();
-      expect(wrapper.querySelector('.file-viewed-checkbox').checked).toBe(false);
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
-    });
-
-    it('renders collapsed and checked when the context entry itself is viewed', async () => {
-      manager.viewedFiles.add(`context:${FILE}`);
-
-      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
-
-      const wrapper = document.querySelector('.d2h-file-wrapper.context-file');
-      expect(wrapper.querySelector('.file-viewed-checkbox').checked).toBe(true);
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
-    });
-
-    it('front-truncates the file name like diff headers', async () => {
-      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
-
-      const fileName = document.querySelector('.context-file-header .d2h-file-name');
-      expect(fileName.classList.contains(SmartTruncate.START_CLASS)).toBe(true);
-      expect(fileName.querySelector(`.${SmartTruncate.TEXT_CLASS}`).textContent).toBe(FILE);
-      expect(fileName.dataset.fullText).toBe(FILE);
-    });
-
-    it('chevron click toggles the context wrapper only', async () => {
-      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
-
-      const wrapper = document.querySelector('.d2h-file-wrapper.context-file');
-      wrapper.querySelector('.file-collapse-toggle').click();
-
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
-      expect(diffWrapper.classList.contains('collapsed')).toBe(false);
-    });
-
-    it('viewed checkbox change routes to context-scoped viewed state', async () => {
-      await manager.renderContextFile({ id: 1, file: FILE, line_start: 1, line_end: 3 });
-
-      const wrapper = document.querySelector('.d2h-file-wrapper.context-file');
-      const checkbox = wrapper.querySelector('.file-viewed-checkbox');
-      checkbox.checked = true;
-      checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
-
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
-      expect(manager.viewedFiles.has(`context:${FILE}`)).toBe(true);
-      expect(manager.viewedFiles.has(FILE)).toBe(false);
-      expect(diffWrapper.classList.contains('collapsed')).toBe(false);
-    });
-  });
-
-  describe('loadContextFiles "diff wins" guard', () => {
-    beforeEach(() => {
-      manager.currentPR = { id: 1 };
-      manager.contextFiles = [];
-      manager.renderContextFile = vi.fn().mockResolvedValue(undefined);
-      manager.rebuildFileListWithContext = vi.fn();
-      manager.loadUserComments = vi.fn().mockResolvedValue(undefined);
-    });
-
-    function stubContextFilesResponse(rows) {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ contextFiles: rows }),
-      });
-    }
-
-    it('suppresses rendering a context row whose file is now in the diff', async () => {
-      manager.diffFiles = [{ file: FILE }];
-      const inDiff = { id: 1, file: FILE, line_start: 1, line_end: 10 };
-      const outside = { id: 2, file: 'src/other.js', line_start: 1, line_end: 10 };
-      stubContextFilesResponse([inDiff, outside]);
-
-      await manager.loadContextFiles();
-
-      expect(manager.renderContextFile).toHaveBeenCalledTimes(1);
-      expect(manager.renderContextFile).toHaveBeenCalledWith(outside);
-      // The DB row is only suppressed at the view layer, never dropped
-      expect(manager.contextFiles).toEqual([inDiff, outside]);
-    });
-
-    it('renders the same row again once its file leaves the diff', async () => {
-      manager.diffFiles = [];
-      const row = { id: 1, file: FILE, line_start: 1, line_end: 10 };
-      stubContextFilesResponse([row]);
-
-      await manager.loadContextFiles();
-
-      expect(manager.renderContextFile).toHaveBeenCalledWith(row);
     });
   });
 

@@ -5,11 +5,11 @@
  * Regression test for the AIPanel scroll-to navigation race.
  *
  * The three scroll methods (scrollToFinding / scrollToComment /
- * scrollToExternalThread) are async and await the target file's lazy body
- * render before scrolling. handleItemClick fires them and-forgets, so two
- * can be in flight at once. If the user moves to a NEWER item while an OLDER
- * call is still awaiting a slow render, the older call must NOT scroll when
- * its await finally resolves — otherwise it snaps the viewport back to the
+ * scrollToExternalThread) are async and await the target's file being
+ * expanded and its lines revealed before scrolling. handleItemClick fires
+ * them and-forgets, so two can be in flight at once. If the user moves to a
+ * NEWER item while an OLDER call is still awaiting, the older call must NOT
+ * scroll when its await finally resolves — otherwise it snaps the viewport back to the
  * stale target. A monotonic `_navGen` token (bumped at the top of each
  * method, handed to PRManager.revealInDiff as its cancel check) enforces
  * latest-wins at the consumer.
@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
-const { makePageManager } = require('../utils/page-manager.js');
+const { makePageManager, cardBridge } = require('../utils/page-manager.js');
 
 /** Create a deferred promise we can resolve on demand. */
 function deferred() {
@@ -61,17 +61,11 @@ afterEach(() => {
 
 describe('AIPanel scroll-to latest-wins race', () => {
   it.each([
-    ['scrollToFinding', 'ai-suggestion', 'suggestionId'],
-    ['scrollToComment', 'user-comment-row', 'commentId'],
-  ])('%s ignores a stale target after waiting for range expansion', async (method, className, idKey) => {
+    ['scrollToFinding', 'ai-suggestion', 'suggestionId', 'suggestion'],
+    ['scrollToComment', 'user-comment-row', 'commentId', 'comment'],
+  ])('%s ignores a stale target after waiting for range expansion', async (method, className, idKey, kind) => {
     const oldGate = deferred();
     const newGate = deferred();
-    window.prManager = makePageManager({
-      ensureLinesVisible: vi.fn()
-        .mockImplementationOnce(() => oldGate.promise)
-        .mockImplementationOnce(() => newGate.promise),
-    });
-    const inst = makeInstance();
     const cards = ['A', 'B'].map(id => {
       const card = document.createElement('div');
       card.className = className;
@@ -79,6 +73,13 @@ describe('AIPanel scroll-to latest-wins race', () => {
       document.body.appendChild(card);
       return card;
     });
+    window.prManager = makePageManager({
+      pierreBridge: cardBridge({ [`${kind}-A`]: cards[0], [`${kind}-B`]: cards[1] }),
+      ensureLinesVisible: vi.fn()
+        .mockImplementationOnce(() => oldGate.promise)
+        .mockImplementationOnce(() => newGate.promise),
+    });
+    const inst = makeInstance();
 
     // The older navigation is parked on its line reveal when the newer one
     // starts, and the newer one parks on its own.
@@ -102,11 +103,14 @@ describe('AIPanel scroll-to latest-wins race', () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
+    // Both targets are in files the reader collapsed: each navigation parks
+    // on the expansion of its file.
     window.prManager = makePageManager({
-      ensureFileBodyRendered: vi.fn(() => {
+      isFileCollapsed: vi.fn(() => true),
+      setFileCollapsed: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
-        return gate.promise;
+        return gate.promise.then(() => true);
       })
     });
 
@@ -119,13 +123,14 @@ describe('AIPanel scroll-to latest-wins race', () => {
     findingB.className = 'ai-suggestion';
     findingB.setAttribute('data-suggestion-id', 'B');
     document.body.append(findingA, findingB);
+    window.prManager.pierreBridge = cardBridge({ 'suggestion-A': findingA, 'suggestion-B': findingB });
 
-    // Older call starts and parks on its pending render.
+    // Older call starts and parks on the expansion of its file.
     const olderP = inst.scrollToFinding('A', 'a.js', null);
-    // Newer call starts, bumps _navGen, parks on its own render.
+    // Newer call starts, bumps _navGen, parks on its own.
     const newerP = inst.scrollToFinding('B', 'b.js', null);
 
-    // Resolve the OLDER render LAST-ish: first let it through.
+    // Let the OLDER call through first.
     oldGate.resolve();
     await olderP;
     // Older call must have bailed — no scroll.
@@ -141,11 +146,14 @@ describe('AIPanel scroll-to latest-wins race', () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
+    // Both targets are in files the reader collapsed: each navigation parks
+    // on the expansion of its file.
     window.prManager = makePageManager({
-      ensureFileBodyRendered: vi.fn(() => {
+      isFileCollapsed: vi.fn(() => true),
+      setFileCollapsed: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
-        return gate.promise;
+        return gate.promise.then(() => true);
       })
     });
 
@@ -160,6 +168,7 @@ describe('AIPanel scroll-to latest-wins race', () => {
     rowB.setAttribute('data-comment-id', 'B');
     rowB.appendChild(Object.assign(document.createElement('div'), { className: 'user-comment' }));
     document.body.append(rowA, rowB);
+    window.prManager.pierreBridge = cardBridge({ 'comment-A': rowA, 'comment-B': rowB });
 
     const olderP = inst.scrollToComment('A', 'a.js', null);
     const newerP = inst.scrollToComment('B', 'b.js', null);
@@ -177,11 +186,14 @@ describe('AIPanel scroll-to latest-wins race', () => {
     const oldGate = deferred();
     const newGate = deferred();
     let firstCall = true;
+    // Both targets are in files the reader collapsed: each navigation parks
+    // on the expansion of its file.
     window.prManager = makePageManager({
-      ensureFileBodyRendered: vi.fn(() => {
+      isFileCollapsed: vi.fn(() => true),
+      setFileCollapsed: vi.fn(() => {
         const gate = firstCall ? oldGate : newGate;
         firstCall = false;
-        return gate.promise;
+        return gate.promise.then(() => true);
       })
     });
 
@@ -213,15 +225,13 @@ describe('AIPanel scroll-to latest-wins race', () => {
     // With _navGen initialized to 0 (as the constructor does), a lone call
     // bumps it to 1 and 1 === 1, so it must NOT bail. This guards against the
     // ++undefined -> NaN bug, where NaN !== NaN would wrongly skip the scroll.
-    window.prManager = makePageManager({
-      ensureFileBodyRendered: vi.fn(() => Promise.resolve())
-    });
     const inst = makeInstance();
 
     const finding = document.createElement('div');
     finding.className = 'ai-suggestion';
     finding.setAttribute('data-suggestion-id', 'F1');
     document.body.appendChild(finding);
+    window.prManager = makePageManager({ pierreBridge: cardBridge({ 'suggestion-F1': finding }) });
 
     await inst.scrollToFinding('F1', 'a.js', null);
 

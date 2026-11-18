@@ -275,6 +275,29 @@ for (const mode of MODES) {
       await expect(cardBody).toContainText(testComment);
     });
 
+    test('the zone draws no line of its own under a file comment: its container has the background and the one line', async ({ page }) => {
+      // The page has a general rule that gives a zone with content a
+      // background and a 1px line, and the diff pane's rules, which give
+      // both to the zone's container instead (the zone element also holds the
+      // space above the first line of code). When the general rule wins, a
+      // file with a file-level comment has two lines under its zone and is a
+      // pixel taller than it was.
+      const commentId = await createFileComment(page, `Zone lines ${Date.now()}`);
+      const card = page.locator(`.file-comment-card[data-comment-id="${commentId}"]`);
+      const styles = await card.evaluate((element) => {
+        const zone = element.closest('.file-comments-zone');
+        const container = element.closest('.file-comments-container');
+        const of = (el) => {
+          const style = getComputedStyle(el);
+          return { borderBottom: style.borderBottomWidth, background: style.backgroundColor };
+        };
+        return { zone: of(zone), container: of(container) };
+      });
+      expect(styles.zone).toEqual({ borderBottom: '0px', background: 'rgba(0, 0, 0, 0)' });
+      expect(styles.container.borderBottom).toBe('1px');
+      expect(styles.container.background).not.toBe('rgba(0, 0, 0, 0)');
+    });
+
     test('should create file comment using Ctrl+Enter', async ({ page }) => {
       const fileCommentBtn = await getFileCommentButton(page);
       await fileCommentBtn.click();

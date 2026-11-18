@@ -253,14 +253,10 @@ class SuggestionNavigator {
     this.currentSuggestionIndex = index;
     this.updateCounter();
     this.updateNavigationButtons();
-    // The suggestion's row only exists once its file body has rendered
-    // (lazy bodies start empty), so render it before the highlight/scroll
-    // lookups below — otherwise both silently miss on the first attempt.
-    // A collapsed file is expanded first so the row is actually visible.
     const myGen = ++this._navGen;
     const suggestion = this.suggestions[index];
-    // Expand the file, render its body, resolve the card and scroll to it:
-    // the page's one navigation helper. The lines are not revealed here: a
+    // Expand the file, resolve the card and scroll to it: the page's one
+    // navigation helper. The lines are not revealed here: a
     // suggestion's card is on the diff only once the suggestions have been
     // displayed, and displaying them reveals their lines.
     const pm = window.prManager;

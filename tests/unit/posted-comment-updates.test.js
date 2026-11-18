@@ -14,7 +14,7 @@ const { configureMarkdownIt, createRenderMarkdown } = require('../../public/js/u
 const PostedComment = require('../../public/js/utils/posted-comment.js');
 const { CommentManager } = require('../../public/js/modules/comment-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
-const PierreBridge = require('../../public/js/modules/pierre-bridge.js');
+const PierreAnnotations = require('../../public/js/modules/pierre-annotations.js');
 const { ReviewModal } = require('../../public/js/components/ReviewModal.js');
 const ReviewHistoryModal = require('../../public/js/components/ReviewHistoryModal.js');
 const { SplitButton } = require('../../public/js/components/SplitButton.js');
@@ -126,16 +126,6 @@ describe('edited-since-posted helpers', () => {
 });
 
 describe('diff renderers show the update action only for edited posted comments', () => {
-  function renderLine(comment) {
-    const manager = Object.create(CommentManager.prototype);
-    manager.prManager = null;
-    manager.isLineInDiffHunk = () => true;
-    const table = document.createElement('table');
-    const target = table.insertRow();
-    document.body.appendChild(table);
-    manager.displayUserComment(comment, target);
-    return table.querySelector('.user-comment-row');
-  }
   function renderFile(comment) {
     const manager = Object.create(FileCommentManager.prototype);
     manager.prManager = null;
@@ -146,11 +136,13 @@ describe('diff renderers show the update action only for edited posted comments'
     manager.displayUserComment(zone, { ...comment, is_file_level: 1 });
     return zone.querySelector('.file-comment-card');
   }
-  function renderPierre(comment) {
-    return Object.create(PierreBridge.prototype)._renderCommentAnnotation(comment, 'c-7');
+  // A comment under a line of the diff: the card the viewer is given
+  // (PierreAnnotations.renderComment, with the collaborators the page hands the bridge).
+  function renderLine(comment) {
+    return PierreAnnotations.renderComment(comment, 'c-7', { PostedComment });
   }
 
-  it.each([['line', renderLine], ['file', renderFile], ['pierre', renderPierre]])('%s renderer', (_name, render) => {
+  it.each([['line', renderLine], ['file', renderFile]])('%s renderer', (_name, render) => {
     const element = render(edited());
     const note = element.querySelector('.posted-comment-edited');
     expect(note.textContent).toContain('Edited since posted');

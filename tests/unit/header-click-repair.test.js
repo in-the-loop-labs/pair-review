@@ -11,17 +11,17 @@
  * every draw of the file. The re-stamp writes the chevron's icon again, so
  * the icon a reader pressed is not the icon under the pointer at the
  * release. The bridge's repair of the click the browser withholds
- * (PierreCodeViewBridge._handlePointerUp) has to find the control, not the
+ * (PierreBridge._handlePointerUp) has to find the control, not the
  * element.
  *
- * The viewer is the recording stub of tests/utils/codeview-bridge-harness.js;
+ * The viewer is the recording stub of tests/utils/pierre-bridge-harness.js;
  * the same in a browser, on the real viewer: tests/e2e/file-controls.spec.js
  * ("A header control pressed while its file is drawn again").
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
-const { loadCodeViewBridge, changedFileFixture } = require('../utils/codeview-bridge-harness.js');
+const { loadCodeViewBridge, changedFileFixture } = require('../utils/pierre-bridge-harness.js');
 
 let vendor;
 beforeAll(async () => {
@@ -58,7 +58,7 @@ beforeEach(() => {
   const { makePageManager } = require('../utils/page-manager.js');
   const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
   env.window.DiffRenderer = DiffRenderer;
-  bridge = new env.PierreCodeViewBridge({
+  bridge = new env.PierreBridge({
     root: env.window.document.getElementById('root'),
     theme: 'light',
     useWorkerPool: false,
@@ -67,7 +67,6 @@ beforeEach(() => {
   bridge.renderAll([{ id: A.name, kind: 'diff', patch: A.patch, status: 'modified' }]);
   manager = makePageManager({
     pierreBridge: bridge,
-    _diffEngine: 'codeview',
     changedFilesByPath: new Map([[A.name, { file: A.name, patch: A.patch }]]),
     generatedFiles: new Map(),
     // What the header's controls call: outside this unit.

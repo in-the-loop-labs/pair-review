@@ -116,7 +116,6 @@
   margin-left: 8px;
 }
 
-
 .stale-badge.pr-closed {
   background: #a40e26;
 }
@@ -547,7 +546,6 @@
   background-color: #e5b430;
   border-color: #c49a27;
 }
-
 
 /* Theme toggle button specific styling */
 #theme-toggle {
@@ -1309,136 +1307,6 @@
   color: var(--color-text-secondary);
 }
 
-/* Context Expansion Controls - matches prototype .diff-hunk-header layout */
-.context-expand-row {
-  background: var(--color-bg-tertiary);
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
-  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
-}
-
-.context-expand-cell {
-  padding: 0;
-  background: var(--color-bg-tertiary);
-  text-align: center;
-  position: relative;
-}
-
-/* Expand context button - matches prototype .expand-context-btn */
-.expand-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  margin: 0;
-  cursor: pointer;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
-  font-size: 11px;
-  color: var(--color-text-tertiary, #6e7681);
-  background: var(--color-bg-elevated, #1e2329);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
-  border-radius: 4px;
-  transition: var(--transition-ui-fast);
-  line-height: 1;
-}
-
-.expand-button:hover {
-  background: var(--color-bg-primary);
-  color: var(--color-text-secondary);
-  border-color: var(--color-border-default, rgba(255, 255, 255, 0.1));
-}
-
-.expand-button svg {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-}
-
-/* Expand info text - muted color for line count */
-.expand-info {
-  color: var(--color-text-muted, #484f58);
-  font-size: 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  user-select: none;
-}
-
-/* Container for vertically stacked expand buttons */
-.expand-button-container {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  line-height: 0;
-  margin: 0 auto;
-  padding: 2px 0;
-}
-
-/* Expand content cell - matches prototype tertiary background */
-.expand-content {
-  padding: 8px 16px;
-  background: var(--color-bg-tertiary);
-  text-align: center;
-  line-height: 20px;
-  font-size: 11px;
-  position: relative;
-  vertical-align: middle; /* Standard table cell vertical centering */
-}
-
-.expand-content-wrapper {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  position: relative;
-  z-index: 1;
-  background: transparent;
-  padding: 0;
-}
-
-/* Make expand content clickable */
-.expand-content.clickable-expand {
-  cursor: pointer;
-}
-
-.expand-content.clickable-expand:hover {
-  background: var(--color-bg-elevated, #1e2329);
-}
-
-.expand-content.clickable-expand:hover .expand-content-wrapper {
-  background: transparent;
-}
-
-/* Icon in expand content area */
-.expand-icon {
-  display: inline-flex;
-  align-items: center;
-  color: var(--color-text-tertiary, #6e7681);
-}
-
-.expand-icon svg {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-}
-
-/* Divider line effect - subtle in tertiary background */
-.expand-content::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 16px;
-  right: 16px;
-  height: 1px;
-  background: linear-gradient(to right,
-    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) 0%,
-    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) calc(50% - 100px),
-    transparent calc(50% - 100px),
-    transparent calc(50% + 100px),
-    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) calc(50% + 100px),
-    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) 100%);
-  z-index: 0;
-}
-
 /* Diff styling improvements */
 .d2h-file-wrapper[data-file-name] {
   margin-bottom: 24px;
@@ -1455,9 +1323,6 @@
   border-bottom: 1px solid var(--color-border-primary);
   font-weight: 600;
   font-size: 14px;
-  position: sticky;
-  top: var(--toolbar-height, 0px);
-  z-index: 4;
 }
 
 /* Truncation also comes from .smart-truncate; kept here in case JS doesn't apply it */
@@ -1710,13 +1575,13 @@
 /* Suggestion / finding / comment / chat-line navigation lands the target at
    the TOP of the diff panel (scrollIntoView block:'start'). Offset it below
    the sticky toolbar AND the sticky file header so it isn't hidden behind
-   them. `--diff-file-header-height` is measured in JS (_measureFileHeaderHeight)
-   with a sane fallback. Suppressed during a tour, which scrolls to center and
-   manages its own sticky offsets. */
+   them. `--diff-file-header-height` is the file header's height token
+   (`--pr-file-header-height`), set on the diff's scroll container further
+   down, with a sane fallback here. Suppressed during a tour, which scrolls to
+   center and manages its own sticky offsets. */
 :root {
   --diff-scroll-offset: calc(var(--toolbar-height, 0px) + var(--diff-file-header-height, 38px));
 }
-body:not(.tour-active) .d2h-file-wrapper tr,
 body:not(.tour-active) .ai-suggestion,
 body:not(.tour-active) .file-comment-card,
 body:not(.tour-active) .user-comment-row,
@@ -1726,13 +1591,6 @@ body:not(.tour-active) .external-comment-row,
    elements above — give it the same offset so it clears the sticky toolbar. */
 body:not(.tour-active) #diff-container [data-annotation-slot] {
   scroll-margin-top: var(--diff-scroll-offset);
-}
-
-/* Hide diff content when collapsed */
-.d2h-file-wrapper.collapsed .d2h-file-body,
-.d2h-file-wrapper.collapsed .pierre-diff-body,
-.d2h-file-wrapper.collapsed .d2h-diff-table {
-  display: none;
 }
 
 /* Hide file comments zone when collapsed */
@@ -1748,102 +1606,6 @@ body:not(.tour-active) #diff-container [data-annotation-slot] {
 /* Make header clickable for collapse toggle */
 .d2h-file-wrapper .d2h-file-header {
   cursor: pointer;
-}
-
-/* Scrollable wrapper for diff tables — provides per-file horizontal scroll
-   now that .d2h-file-wrapper and .diff-container use overflow:visible for sticky headers.
-   overflow-y must be explicitly hidden: CSS spec coerces it to 'auto' when overflow-x
-   is non-visible, which creates an accidental vertical scroll trap that eats wheel events
-   at the boundary instead of propagating them to .diff-view. */
-.d2h-file-body {
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.d2h-diff-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.d2h-code-linenumber {
-  width: 50px;
-  min-width: 50px;
-  padding: 0 8px;
-  text-align: right;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-secondary);
-  border-right: 1px solid var(--color-border-primary);
-  vertical-align: top;
-  user-select: none;
-  position: relative;
-}
-
-.d2h-code-line-ctn {
-  padding: 0 8px;
-  white-space: pre-wrap; /* Preserve whitespace but allow wrapping */
-  font-family: inherit;
-  vertical-align: top;
-}
-
-/* Diff line styling */
-.d2h-ins {
-  background-color: var(--color-diff-addition);
-}
-
-.d2h-del {
-  background-color: var(--color-diff-deletion);
-}
-
-.d2h-cntx {
-  background-color: var(--color-bg-primary);
-}
-
-.d2h-ins .d2h-code-linenumber {
-  background-color: var(--color-diff-addition-num);
-}
-
-.d2h-del .d2h-code-linenumber {
-  background-color: var(--color-diff-deletion-num);
-}
-
-/* Hunk headers - GitHub-style subtle section dividers */
-.d2h-info {
-  background: var(--color-bg-subtle, #f6f8fa);
-  color: var(--color-text-muted, #656d76);
-  font-weight: 400;
-}
-
-.d2h-info td {
-  padding: 6px 16px;
-  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
-  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
-  font-size: 12px;
-  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
-  font-style: italic;
-}
-
-/* Function context indicator */
-.hunk-context-icon {
-  margin-right: 8px;
-  opacity: 0.6;
-  font-style: normal;
-}
-
-/* Divider for hunks without function context */
-.hunk-divider {
-  opacity: 0.4;
-  letter-spacing: 2px;
-}
-
-/* Hunk info - legacy support */
-.hunk-info,
-.d2h-info .d2h-code-line-ctn {
-  font-size: 12px;
-  color: var(--color-text-muted, #656d76);
-  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
 }
 
 /* Responsive Design */
@@ -1891,38 +1653,6 @@ body:not(.tour-active) #diff-container [data-annotation-slot] {
     align-items: flex-start;
     gap: 4px;
   }
-}
-
-/* Context expansion animations and styles */
-.newly-expanded {
-  animation: expandHighlight 0.8s ease-out;
-}
-
-@keyframes expandHighlight {
-  0% { 
-    background-color: rgba(255, 223, 93, 0.4);
-  }
-  100% { 
-    background-color: transparent;
-  }
-}
-
-.expand-error {
-  background-color: var(--color-attention-subtle);
-  color: var(--color-attention-fg);
-  padding: 8px 12px;
-  text-align: center;
-  font-weight: 500;
-  border: 1px solid var(--color-attention-muted);
-}
-
-/* Ensure context lines have proper styling */
-tr.newly-expanded .d2h-code-linenumber {
-  animation: expandHighlight 0.8s ease-out;
-}
-
-tr.newly-expanded .d2h-code-line-ctn {
-  animation: expandHighlight 0.8s ease-out;
 }
 
 /* AI Suggestion Styles - Amber/Gold AI Identity */
@@ -2967,7 +2697,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   }
 }
 
-
 /* Dark theme adjustments for barbershop pole */
 [data-theme="dark"] .barbershop-progress-bar {
   border-color: var(--color-border-primary);
@@ -3741,167 +3470,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-color: var(--color-border-primary);
 }
 
-
-/* User Comment Functionality */
-.line-number-content {
-  position: relative;
-  display: flex;
-  align-items: center;
-  height: 100%;
-}
-
-/* GitHub-style add comment button - positioned on boundary between line numbers and code */
-.add-comment-btn {
-  position: absolute;
-  /* Position on the right edge, overlapping the boundary */
-  right: -12px;
-  top: 50%;
-  transform: translateY(-50%);
-  /* Larger, easier to click */
-  width: 22px;
-  height: 22px;
-  /* GitHub blue with subtle depth */
-  background: #0969da;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  /* Centered plus sign */
-  font-size: 16px;
-  font-weight: 400;
-  line-height: 1;
-  cursor: pointer;
-  z-index: 20;
-  /* Smooth appearance - use opacity for visibility, keep in DOM for drag events */
-  opacity: 0;
-  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
-  /* Subtle shadow for depth */
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
-  /* Flex centering for the plus - always display flex to stay in DOM for mousedown events */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Ensure button can receive click events even when invisible (for drag start) */
-  pointer-events: auto;
-}
-
-.add-comment-btn:hover {
-  background: #0860ca;
-  transform: translateY(-50%) scale(1.08);
-  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.add-comment-btn:active {
-  transform: translateY(-50%) scale(0.96);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-/* Expanded context comment button - slightly different style to indicate limitation */
-.add-comment-btn.expanded-context-comment {
-  background: #6e7781;
-  opacity: 0;
-}
-
-.add-comment-btn.expanded-context-comment:hover {
-  background: #57606a;
-}
-
-/* Show comment button on hover - use opacity for smoother transition */
-tr:hover .add-comment-btn {
-  opacity: 1;
-}
-
-/* Gutter chat button — matches .add-comment-btn style */
-.chat-line-btn {
-  position: absolute;
-  right: 12px;                /* Left of the + button at right: -12px */
-  top: 50%;
-  transform: translateY(-50%);
-  width: 22px;
-  height: 22px;
-  background: #0969da;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
-  z-index: 20;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-  padding: 0;
-}
-
-.chat-line-btn svg {
-  width: 12px;
-  height: 12px;
-}
-
-.chat-line-btn:hover {
-  background: #0860ca;
-  transform: translateY(-50%) scale(1.08);
-  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.chat-line-btn:active {
-  transform: translateY(-50%) scale(0.96);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-tr:hover .chat-line-btn {
-  opacity: 1;
-}
-
-/* Line range selection */
-.line-range-selected,
-tr.line-range-selected,
-.line-range-start,
-tr.line-range-start {
-  background-color: var(--color-range-selection) !important;
-}
-
-/* Ensure all cells in selected rows are highlighted */
-.line-range-selected td,
-.line-range-start td,
-tr.line-range-selected td,
-tr.line-range-start td {
-  background-color: var(--color-range-selection) !important;
-}
-
-/* Override diff-specific backgrounds for selected rows */
-tr.line-range-selected.d2h-ins,
-tr.line-range-selected.d2h-del,
-tr.line-range-selected.d2h-cntx,
-tr.line-range-start.d2h-ins,
-tr.line-range-start.d2h-del,
-tr.line-range-start.d2h-cntx {
-  background-color: var(--color-range-selection) !important;
-}
-
-tr.line-range-selected.d2h-ins td,
-tr.line-range-selected.d2h-del td,
-tr.line-range-selected.d2h-cntx td,
-tr.line-range-start.d2h-ins td,
-tr.line-range-start.d2h-del td,
-tr.line-range-start.d2h-cntx td {
-  background-color: var(--color-range-selection) !important;
-}
-
-.line-range-selected .d2h-code-linenumber,
-.line-range-start .d2h-code-linenumber {
-  background-color: var(--color-range-selection-num) !important;
-}
-
-/* Override the code content cell background */
-.line-range-selected .d2h-code-line-ctn,
-.line-range-start .d2h-code-line-ctn,
-tr.line-range-selected .d2h-code-line-ctn,
-tr.line-range-start .d2h-code-line-ctn {
-  background-color: transparent !important;
-}
-
 .line-range-indicator {
   margin-left: auto;
   padding: 2px 8px;
@@ -3913,41 +3481,11 @@ tr.line-range-start .d2h-code-line-ctn {
   color: var(--color-range-indicator-text);
 }
 
-/* Comment Form */
-.comment-form-row {
-  border: none;
-}
-
-.comment-form-cell {
-  padding: 8px 16px;
-  background: #f6f8fa;
-  border: 1px solid #d1d9e0;
-  border-radius: 8px;
-  margin: 4px 0;
-}
-
 .user-comment-form {
   background: white;
   border: 1px solid #d1d9e0;
   border-radius: 8px;
   padding: 16px;
-}
-
-/* Warning for comments on expanded context lines without diff position */
-.expanded-context-warning {
-  background: #fff8c5;
-  border: 1px solid #d4a72c;
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: #6f5e00;
-}
-
-[data-theme="dark"] .expanded-context-warning {
-  background: #3b2e00;
-  border-color: #7d6600;
-  color: #e3b341;
 }
 
 .comment-form-header {
@@ -4101,13 +3639,6 @@ tr.line-range-start .d2h-code-line-ctn {
   scroll-margin-top: calc(var(--toolbar-height, 53px) + 48px);
 }
 
-.user-comment-cell {
-  padding: 4px 0;
-  /* Account for sticky toolbar + file header when scrolling to this element */
-  scroll-margin-top: calc(var(--toolbar-height, 53px) + 48px);
-  background: transparent;
-}
-
 .user-comment {
   background: #f5f0ff;
   border: 1px solid #8b5cf6;
@@ -4156,25 +3687,6 @@ tr.line-range-start .d2h-code-line-ctn {
 [data-theme="dark"] .user-comment-line-info {
   background: rgba(167, 139, 250, 0.1);
   color: #8b949e;
-}
-
-/* WORKAROUND indicator: Comments on expanded context lines will be posted as file-level
-   comments since GitHub's API doesn't support line-level comments outside diff hunks.
-   When GitHub opens their API for this, remove this indicator. */
-.expanded-context-indicator {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  color: #bf8700;
-  cursor: help;
-}
-
-.expanded-context-indicator svg {
-  fill: currentColor;
-}
-
-[data-theme="dark"] .expanded-context-indicator {
-  color: #d29922;
 }
 
 /* Adopted comment badges - HIDDEN in favor of unified badges (issue pair_review-pqb) */
@@ -4280,8 +3792,6 @@ tr.line-range-start .d2h-code-line-ctn {
   height: 12px;
   fill: currentColor;
 }
-
-
 
 .user-comment-actions {
   display: flex;
@@ -4475,7 +3985,6 @@ tr.line-range-start .d2h-code-line-ctn {
   margin-top: 8px;
 }
 
-
 /* Review Submission Panel */
 .review-panel {
   position: fixed;
@@ -4569,12 +4078,6 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 /* Body padding removed - new three-panel layout handles its own scrolling */
-
-/* Dark theme support for user comments */
-[data-theme="dark"] .comment-form-cell {
-  background: #21262d;
-  border-color: #30363d;
-}
 
 [data-theme="dark"] .user-comment-form {
   background: #161b22;
@@ -4681,11 +4184,6 @@ tr.line-range-start .d2h-code-line-ctn {
    ======================================== */
 .external-comment-row {
   border: none;
-}
-
-.external-comment-cell {
-  padding: 4px 0;
-  background: transparent;
 }
 
 /* Pierre (@pierre/diffs) path: the thread card is slotted as a light-DOM
@@ -6328,7 +5826,6 @@ a.posted-comment-icon:focus-visible {
   color: #8b949e;
 }
 
-
 /* ==========================================================================
    UI Redesign: Command Center Elegance
    Three-panel layout, sticky header, AI panel, and typography refresh
@@ -6911,11 +6408,19 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .main-layout .diff-view {
   flex: 1 1 0; /* Grow, shrink, start from 0 basis to ensure proper flex calculation */
   min-width: 0; /* Prevent flex item from expanding beyond container */
-  overflow-x: hidden; /* No horizontal scroll - content wraps instead */
-  overflow-y: auto;
+  /* Does not scroll: the toolbar and the tour bar are fixed rows of this
+     column, and #diff-container under them is the scroll container (the
+     diff viewer's root; see "The virtualized diff viewer" below). */
+  overflow: hidden;
+  /* The containing block of #diff-container while a message stands in its
+     place (see `#diff-container[hidden]` below). */
+  position: relative;
   background: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;
+  /* What is pinned above the diff, for rules inside the scroll container,
+     where both variables are 0 (see the tour stop's scroll margin below). */
+  --pinned-above-diff: calc(var(--toolbar-height, 0px) + var(--tour-bar-offset, 0px));
 }
 
 .diff-toolbar {
@@ -7904,7 +7409,6 @@ body.resizing * {
   background: var(--color-bg-tertiary);
 }
 
-
 /* --------------------------------------------------------------------------
    Comment Minimize Mode
    -------------------------------------------------------------------------- */
@@ -8870,7 +8374,6 @@ body.resizing * {
   background: rgba(52, 211, 153, 0.12);
   border-color: rgba(52, 211, 153, 0.25);
 }
-
 
 /* Tier-specific colors */
 .analysis-tier-fast {
@@ -10289,7 +9792,6 @@ body.tour-active {
   border-color: rgba(110, 118, 129, 0.4);
   color: #8b949e;
 }
-
 
 /* ==========================================================================
    File-Level Comment Card
@@ -11878,80 +11380,6 @@ body.tour-active {
   opacity: 0.6;
 }
 
-/* Unified line highlight for navigating to lines from chat/context links.
-   Applied to <tr> elements; styles target <td> children since box-shadow
-   and background-color animations don't render on <tr> in most browsers. */
-.chat-line-highlight td {
-  animation: chat-line-highlight-bg 3.5s ease-out forwards !important;
-}
-
-.chat-line-highlight > td:first-child {
-  animation: chat-line-highlight-border 3.5s ease-out forwards !important;
-}
-
-@keyframes chat-line-highlight-bg {
-  0% {
-    background-color: rgba(227, 179, 65, 0.20);
-  }
-  57% {
-    background-color: rgba(227, 179, 65, 0.08);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-@keyframes chat-line-highlight-border {
-  0% {
-    box-shadow: inset 5px 0 0 #e3b341;
-    background-color: rgba(227, 179, 65, 0.20);
-  }
-  57% {
-    /* ~2s: border still solid, background fading */
-    box-shadow: inset 5px 0 0 #e3b341;
-    background-color: rgba(227, 179, 65, 0.08);
-  }
-  100% {
-    box-shadow: inset 5px 0 0 transparent;
-    background-color: transparent;
-  }
-}
-
-[data-theme="dark"] .chat-line-highlight td {
-  animation: chat-line-highlight-bg-dark 3.5s ease-out forwards !important;
-}
-
-[data-theme="dark"] .chat-line-highlight > td:first-child {
-  animation: chat-line-highlight-border-dark 3.5s ease-out forwards !important;
-}
-
-@keyframes chat-line-highlight-bg-dark {
-  0% {
-    background-color: rgba(227, 179, 65, 0.15);
-  }
-  57% {
-    background-color: rgba(227, 179, 65, 0.06);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-@keyframes chat-line-highlight-border-dark {
-  0% {
-    box-shadow: inset 5px 0 0 #e3b341;
-    background-color: rgba(227, 179, 65, 0.15);
-  }
-  57% {
-    box-shadow: inset 5px 0 0 #e3b341;
-    background-color: rgba(227, 179, 65, 0.06);
-  }
-  100% {
-    box-shadow: inset 5px 0 0 transparent;
-    background-color: transparent;
-  }
-}
-
 .chat-file-link--loading {
   opacity: 0.6;
   pointer-events: none;
@@ -12826,16 +12254,6 @@ body.tour-active {
   color: var(--color-danger, #cf222e);
 }
 
-/* Separator between non-contiguous context chunks */
-.context-chunk-separator-row {
-  height: 8px;
-}
-
-.context-chunk-separator-cell {
-  border-top: 1px dashed var(--color-border-secondary, #d0d7de);
-  background: var(--color-bg-subtle, #f6f8fa);
-}
-
 .file-item.context-file-item .file-name {
   font-size: 11px;
   color: var(--color-text-secondary);
@@ -12854,10 +12272,6 @@ body.tour-active {
 
 [data-theme="dark"] .context-file-dismiss:hover {
   color: var(--color-danger, #f85149);
-}
-
-[data-theme="dark"] .context-chunk-separator-cell {
-  background: var(--color-bg-subtle, #161b22);
 }
 
 [data-theme="dark"] .chat-file-link {
@@ -12883,7 +12297,6 @@ body.tour-active {
 [data-chat="disabled"] .btn-chat-comment,
 [data-chat="disabled"] .external-comment-chat-btn,
 [data-chat="disabled"] .analysis-history-chat-btn,
-[data-chat="disabled"] .chat-line-btn,
 [data-chat="disabled"] .btn-chat-from-comment,
 [data-chat="disabled"] .pierre-chat-btn {
   display: none !important;
@@ -12899,7 +12312,6 @@ body.tour-active {
 [data-chat="unavailable"] .btn-chat-comment,
 [data-chat="unavailable"] .external-comment-chat-btn,
 [data-chat="unavailable"] .analysis-history-chat-btn,
-[data-chat="unavailable"] .chat-line-btn,
 [data-chat="unavailable"] .btn-chat-from-comment,
 [data-chat="unavailable"] .pierre-chat-btn {
   display: none !important;
@@ -13829,11 +13241,6 @@ body.tour-active {
   background: transparent;
 }
 
-.hunk-summary-cell {
-  padding: 4px 0;
-  border: none;
-}
-
 .hunk-summary-annotation {
   display: flex;
   align-items: flex-start;
@@ -13980,11 +13387,6 @@ body.summaries-hidden .hunk-summary-row,
   background: transparent;
 }
 
-.tour-annotation-cell {
-  padding: 4px 0;
-  border: none;
-}
-
 .tour-annotation {
   display: flex;
   flex-direction: column;
@@ -14129,18 +13531,12 @@ body.tour-active .tour-annotation-row.active-stop .tour-annotation {
   --tour-bar-offset: var(--tour-bar-rendered-height, var(--tour-bar-height));
 }
 
-/* While a tour is active, push the sticky `.diff-toolbar` and the
-   per-file `.d2h-file-header` down by the bar's height so they stack
-   below it instead of overlapping. The bar itself is `position: sticky;
-   top: 0` inside the same scroll container (.main-layout .diff-view),
-   so all three pin in order: tour bar (top: 0), diff toolbar (top:
-   --tour-bar-offset), file header (top: --toolbar-height + --tour-bar-offset). */
+/* While a tour is active, the tour bar and the `.diff-toolbar` are stacked
+   rows at the top of .main-layout .diff-view: tour bar (top: 0), diff
+   toolbar (top: --tour-bar-offset). File headers are pinned by the diff
+   viewer inside the scroll container under both. */
 body.tour-active .diff-toolbar {
   top: var(--tour-bar-offset);
-}
-
-body.tour-active .d2h-file-header {
-  top: calc(var(--toolbar-height, 0px) + var(--tour-bar-offset));
 }
 
 .tour-bar {
@@ -14335,14 +13731,6 @@ body.tour-active .d2h-file-header {
    @pierre/diffs integration
    ============================================================ */
 
-/* @pierre/diffs container */
-.pierre-diff-body {
-  overflow-x: auto;
-  border: 1px solid var(--color-border-default);
-  border-top: none;
-  border-radius: 0 0 6px 6px;
-}
-
 /* Custom elements default to display:inline — force block layout.
    text-align: start guards against inherited centering (text-align crosses
    the shadow boundary; the vendor styles never set it on code lines). */
@@ -14353,33 +13741,24 @@ diffs-container {
   --diffs-line-height: 1.45;
 }
 
-/* Dark-theme highlight: reduced opacity to match legacy chat-line-highlight-dark */
+/* Dark-theme line flash: reduced opacity */
 [data-theme="dark"] diffs-container {
   --pierre-highlight-start: 0.15;
   --pierre-highlight-mid: 0.06;
 }
 
-/* Binary file placeholder inside @pierre/diffs */
-.pierre-binary-file {
-  padding: 16px;
-  text-align: center;
-  color: var(--color-fg-muted);
-  font-style: italic;
-}
-
 /* @pierre/diffs annotation styles (light DOM — slotted into shadow DOM)
-   Suggestions, comments, and comment forms all reuse the legacy classes
-   (.ai-suggestion, .user-comment, .user-comment-form, .comment-textarea, etc.)
-   so all existing CSS applies. No custom form styles needed.
+   Suggestions, comments, and comment forms use the page's own classes
+   (.ai-suggestion, .user-comment, .user-comment-form, .comment-textarea, etc.),
+   styled above. No custom form styles needed.
 
    Split (side-by-side) layout: the two code columns live in the shadow DOM's
-   <pre data-diff-type="split"> grid; .pierre-diff-body keeps overflow-x:auto so
-   a wide split view scrolls instead of breaking the grid. @pierre/diffs slots
+   <pre data-diff-type="split"> grid. @pierre/diffs slots
    each annotation into a SINGLE column (deletions=left, additions=right).
    PierreBridge then stretches a LONE annotation across both columns by marking
    it .pr-annotation-fullwidth (injected shadow CSS repositions the subgrid
    cell); rows with annotations on BOTH sides stay side-by-side at ~half width.
-   See PierreBridge.ANNOTATION_CSS and _syncSplitAnnotationLayout. */
+   See PierreStyles.ANNOTATION_CSS and PierreAnnotations.applySplitAnnotationLayout. */
 
 /* Dual gutter buttons (chat + comment) inside @pierre/diffs */
 .pierre-gutter-buttons {
@@ -14474,21 +13853,30 @@ diffs-container {
 }
 
 /* --------------------------------------------------------------------------
-   The virtualized diff viewer (diff engine 'codeview')
+   The virtualized diff viewer
    plans/codeview-virtualized-diff.md
 
-   One viewer draws every file of the pane and lays its items out itself, so
-   the pane's geometry is the viewer's: #diff-container is the scroll
-   container, and the toolbar and the tour bar are fixed siblings above it.
-   Every rule is scoped by the class PRManager puts on .diff-view for this
-   engine; the rules above it are the other engine's until the switch goes.
+   One viewer (@pierre/diffs CodeView, through PierreBridge) draws every file
+   of the pane and lays its items out itself, so the pane's geometry is the
+   viewer's: #diff-container is the scroll container, and the toolbar and
+   the tour bar are fixed siblings above it.
 
-   The pane must LOOK as it does on the other engine, to the pixel
+   The pane LOOKS as it did before the migration to the viewer, to the pixel
    (tests/parity/visual.mjs compares the two), and the viewer must be able to
    account for every pixel of height (its development build validates that).
    Each rule below says which of the two it serves. The numbers the viewer is
-   given are in pierre-codeview-bridge.js (DEFAULT_LAYOUT, _measureMetrics)
-   and pierre-styles.js (FRAME_CSS, ITEM_PADDING_BOTTOM).
+   given are in pierre-bridge.js (DEFAULT_LAYOUT, _measureMetrics) and
+   pierre-styles.js (FRAME_CSS, ITEM_PADDING_BOTTOM).
+
+   Every selector of this block starts with `.main-layout .diff-view`, two
+   classes, and needs both: several of these rules override a general rule
+   for the same element that is itself three classes heavy (the comment
+   zone's `:has(.file-comment-card:not(...))` rule further up gives a zone
+   with content a background and a 1px line; here the zone's container has
+   them). With `.diff-view` alone that general rule wins, and every file
+   with a file-level comment is a pixel taller than before the migration
+   with a second line under its zone (tests/e2e/file-comments.spec.js,
+   "the zone draws no line of its own ...").
    -------------------------------------------------------------------------- */
 :root {
   /* The height of every file header: 12px padding, the 28px comment button,
@@ -14498,10 +13886,6 @@ diffs-container {
      must never be taller or shorter (gate G9, with every stylesheet the pages
      load). */
   --pr-file-header-height: 53px;
-}
-
-.main-layout .diff-view.codeview-engine {
-  overflow: hidden;
 }
 
 /* The scroll container. The viewer lays items out from the top edge of its
@@ -14518,7 +13902,7 @@ diffs-container {
    are shorter than the pane; the box fills the row, the list keeps the
    height the viewer gives it (a taller list would move the viewer's sticky
    element). */
-.diff-view.codeview-engine > #diff-container {
+.main-layout .diff-view > #diff-container {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
@@ -14541,7 +13925,7 @@ diffs-container {
 
 /* The pane's box: 1px border, 8px radius, and through the negative margins
    the 17px (16px padding + 1px border) to the left and right of the files. */
-.diff-view.codeview-engine > #diff-container::before {
+.main-layout .diff-view > #diff-container::before {
   content: '';
   grid-area: 1 / 1;
   margin: 0 -17px;
@@ -14554,22 +13938,22 @@ diffs-container {
 
 /* The viewer's list (its one element child of the scroll container; the
    viewer gives it its height and, as margins, the layout padding). */
-.diff-view.codeview-engine > #diff-container > div {
+.main-layout .diff-view > #diff-container > div {
   grid-area: 1 / 1;
   align-self: start;
 }
 
 /* The space between files is the viewer's layout gap: a margin on a host is
    height the viewer does not account for. */
-.diff-view.codeview-engine diffs-container.d2h-file-wrapper[data-file-name] {
+.main-layout .diff-view diffs-container.d2h-file-wrapper[data-file-name] {
   margin-bottom: 0;
 }
 
 /* The header slot has the height the viewer was told, whatever is in it. The
    viewer's own shadow header is the sticky element. A slotted element
-   inherits from the viewer's shadow tree, not from the page: what the header
-   inherits on the other engine is set here. */
-.diff-view.codeview-engine .pr-file-header-slot {
+   inherits from the viewer's shadow tree, not from the page: what a header
+   would inherit from the page is set here. */
+.main-layout .diff-view .pr-file-header-slot {
   height: var(--pr-file-header-height);
   box-sizing: border-box;
   overflow: hidden;
@@ -14581,18 +13965,17 @@ diffs-container {
   font-feature-settings: normal;
 }
 
-.diff-view.codeview-engine .pr-file-header-slot > .d2h-file-header {
-  position: static;
+.main-layout .diff-view .pr-file-header-slot > .d2h-file-header {
   height: 100%;
 }
 
 /* Between the header (and the file's comments under it) and the first line
-   of a changed file there are 8px, the top padding of the other engine's code
-   block. The viewer removes that padding under a header, and the place it
+   of a changed file there are 8px (before the migration, the top padding of
+   a file's code block). The viewer removes that padding under a header, and the place it
    offers for it (itemMetrics.paddingTop) also applies to a file without
    lines, which has none. So the 8px belong to the file's comment zone, the
    first thing every item draws: the viewer measures it. */
-.diff-view.codeview-engine diffs-container.has-diff-lines:not(.context-file) .file-comments-zone::after {
+.main-layout .diff-view diffs-container.has-diff-lines:not(.context-file) .file-comments-zone::after {
   content: '';
   display: block;
   height: 8px;
@@ -14600,12 +13983,11 @@ diffs-container {
 
 /* The file's comment zone is slotted into the viewer, so it inherits from
    the viewer's shadow tree (the code font, 12px, the code colour) and not
-   from the page as it does on the other engine. What it inherits there is
-   set here; its cards and forms take it from the zone. The same for the
+   from the page. What it would inherit from the page is set here; its cards and forms take it from the zone. The same for the
    message of a file whose diff is held back for its size ("Large diff ...
    Load diff"), which is slotted next to the zone. */
-.diff-view.codeview-engine diffs-container .file-comments-zone,
-.diff-view.codeview-engine diffs-container .large-diff-placeholder {
+.main-layout .diff-view diffs-container .file-comments-zone,
+.main-layout .diff-view diffs-container .large-diff-placeholder {
   font-family: var(--font-github);
   font-size: 14px;
   line-height: 1.5;
@@ -14618,40 +14000,36 @@ diffs-container {
 /* The zone's background and the line under it end where its content ends:
    the 8px below belong to the code (the rule above this one draws them
    inside the zone element so that the viewer measures them). */
-.diff-view.codeview-engine diffs-container .file-comments-zone {
+.main-layout .diff-view diffs-container .file-comments-zone {
   background: none;
   border-bottom: 0;
 }
 
-.diff-view.codeview-engine diffs-container .file-comments-container:has(.file-comment-card:not(.posted-comment-hidden)),
-.diff-view.codeview-engine diffs-container .file-comments-container:has(.file-comment-form),
-.diff-view.codeview-engine diffs-container .file-comments-container:has(.external-comment-row) {
+.main-layout .diff-view diffs-container .file-comments-container:has(.file-comment-card:not(.posted-comment-hidden)),
+.main-layout .diff-view diffs-container .file-comments-container:has(.file-comment-form),
+.main-layout .diff-view diffs-container .file-comments-container:has(.external-comment-row) {
   background: var(--file-comment-bg);
   border-bottom: 1px solid var(--file-comment-border);
 }
 
 /* A changed file that has a diff without any line (an empty added file, a
-   mode change, a pure rename) ends in a 1px line under its header: the other
-   engine's empty code block is its bottom border. */
-.diff-view.codeview-engine diffs-container.has-diff-body:not(.has-diff-lines) .file-comments-zone::after {
+   mode change, a pure rename) ends in a 1px line under its header (before
+   the migration, the bottom border of the file's empty code block). */
+.main-layout .diff-view diffs-container.has-diff-body:not(.has-diff-lines) .file-comments-zone::after {
   content: '';
   display: block;
   height: 1px;
   background: var(--color-border-default);
 }
 
-/* A tour centres its stop in the scroll container. With the per-file
-   renderer the toolbar and the tour bar are pinned inside that container, so
-   its centre is half their height above the middle of what a reader sees of
-   the diff. Here they are above the container: the stop is given that much
-   room below it, which puts it in the same place on screen. The two heights
-   are read where they still are what the page says (the scroll container
-   sets both to 0 for what is inside it). */
-.diff-view.codeview-engine {
-  --pinned-above-diff: calc(var(--toolbar-height, 0px) + var(--tour-bar-offset, 0px));
-}
-
-body.tour-active .diff-view.codeview-engine .tour-annotation-row {
+/* A tour centres its stop in the scroll container. Before the migration the
+   toolbar and the tour bar were pinned inside that container, so its centre
+   was half their height above the middle of what a reader sees of the diff.
+   Now they are above the container: the stop is given that much room below
+   it, which puts it in the same place on screen. The two heights are read
+   on .diff-view, where they still are what the page says (the scroll
+   container sets both to 0 for what is inside it). */
+body.tour-active .main-layout .diff-view .tour-annotation-row {
   scroll-margin-bottom: var(--pinned-above-diff);
 }
 
@@ -14659,11 +14037,7 @@ body.tour-active .diff-view.codeview-engine .tour-annotation-row {
    scroll container keeps its box and is not painted. With `display: none`
    the viewer inside it finds every item 0 px tall, and what it measures
    there is what it lays the items out with until each is measured again. */
-.diff-view.codeview-engine {
-  position: relative;
-}
-
-.diff-view.codeview-engine > #diff-container[hidden] {
+.main-layout .diff-view > #diff-container[hidden] {
   display: block;
   visibility: hidden;
   pointer-events: none;

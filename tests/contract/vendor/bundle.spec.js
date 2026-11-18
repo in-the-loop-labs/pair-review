@@ -10,6 +10,7 @@
 import { test, expect } from '../harness/contract-test.js';
 import { PATHS, readBundleStamp, installedVendorVersion } from '../harness/paths.js';
 import { readEntryExports } from '../harness/entry-exports.js';
+import { TEST_EXTRAS } from '../harness/vendor-extras.js';
 
 for (const bundle of ['prod', 'dev']) {
   test(`the ${bundle} bundle loads and exposes every entry export`, async ({ harness }) => {
@@ -22,24 +23,29 @@ for (const bundle of ['prod', 'dev']) {
 
     const kinds = await page.evaluate(() => ({
       CodeView: typeof window.PierreDiffs.CodeView,
-      FileDiff: typeof window.PierreDiffs.FileDiff,
       WorkerPoolManager: typeof window.PierreDiffs.WorkerPoolManager,
       parsePatchFiles: typeof window.PierreDiffs.parsePatchFiles,
-      getSingularPatch: typeof window.PierreDiffs.getSingularPatch,
-      hydratePartialDiff: typeof window.PierreDiffs.hydratePartialDiff,
       parseDiffFromFile: typeof window.PierreDiffs.parseDiffFromFile,
     }));
     expect(kinds).toEqual({
       CodeView: 'function',
-      FileDiff: 'function',
       WorkerPoolManager: 'function',
       parsePatchFiles: 'function',
-      getSingularPatch: 'function',
-      hydratePartialDiff: 'function',
       parseDiffFromFile: 'function',
     });
   });
 }
+
+test('the functions only this suite calls are on their own global, and not on the one the application ships', async ({ harness }) => {
+  for (const bundle of ['prod', 'dev']) {
+    const page = await harness.open({ bundle });
+    const found = await page.evaluate((names) => ({
+      extras: names.map((name) => typeof window.VendorTestExtras[name]),
+      shipped: names.filter((name) => window.PierreDiffs[name] !== undefined),
+    }), TEST_EXTRAS);
+    expect(found, bundle).toEqual({ extras: TEST_EXTRAS.map(() => 'function'), shipped: [] });
+  }
+});
 
 test('both bundles are stamped with the installed vendor version', async () => {
   const installed = installedVendorVersion();

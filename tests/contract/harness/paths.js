@@ -19,6 +19,8 @@ const PATHS = {
   bridgePage: path.join(REPO_ROOT, 'tests', 'contract', 'bridge', 'bridge-page.js'),
   // Development flavour: the only build with the vendor's height validator.
   devBundle: path.join(REPO_ROOT, 'tests', '.cache', 'pierre-diffs.dev.js'),
+  // Vendor functions that only this suite calls (see vendor-extras.js).
+  testExtras: path.join(REPO_ROOT, 'tests', '.cache', 'pierre-diffs-test-extras.js'),
   // The two files the app actually ships and serves.
   prodBundle: path.join(REPO_ROOT, 'public', 'js', 'vendor', 'pierre-diffs.js'),
   worker: path.join(REPO_ROOT, 'public', 'js', 'vendor', 'pierre-diffs-worker.js'),
@@ -76,6 +78,7 @@ function resolveVirtualPath(urlPath) {
     // Browser side of the bridge-in-browser tests (tests/contract/bridge).
     case '/bridge-page.js': return { file: PATHS.bridgePage };
     case '/vendor/pierre-diffs.dev.js': return { file: PATHS.devBundle };
+    case '/vendor/pierre-diffs-test-extras.js': return { file: PATHS.testExtras };
     case '/vendor/pierre-diffs.js': return { file: PATHS.prodBundle };
     case '/vendor/pierre-diffs-worker.js': return { file: PATHS.worker };
     // A worker that loads and never answers (gate G7).

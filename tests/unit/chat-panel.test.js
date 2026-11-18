@@ -8252,9 +8252,9 @@ describe('ChatPanel', () => {
       // Provide CSS.escape for the method
       savedCSS = global.CSS;
       global.CSS = { escape: vi.fn((s) => s) };
-      // Default: no file wrapper found in DOM
+      // The link is decided from data: the document is never asked.
       global.document.querySelector = vi.fn(() => null);
-      // Reset prManager
+      // A page whose pane does not have the file.
       global.window.prManager = {
         ensureContextFile: vi.fn(),
         scrollToFile: vi.fn(),
@@ -8281,39 +8281,7 @@ describe('ChatPanel', () => {
       return el;
     }
 
-    it('should scroll to diff file when wrapper exists in DOM (no ensureContextFile call)', async () => {
-      const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
-      wrapper.closest = vi.fn(() => null); // not inside .context-file-wrapper
-      global.document.querySelector = vi.fn(() => wrapper);
-
-      const linkEl = createLinkEl('src/app.js', 10);
-
-      await chatPanel._handleFileLinkClick(linkEl);
-
-      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10, null);
-      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
-    });
-
-    it('should scroll to context file when wrapper exists in DOM', async () => {
-      const contextWrapper = createMockElement('div', {
-        dataset: { contextId: '7' },
-      });
-      const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
-      wrapper.closest = vi.fn((sel) => {
-        if (sel === '.context-file') return contextWrapper;
-        return null;
-      });
-      global.document.querySelector = vi.fn(() => wrapper);
-
-      const linkEl = createLinkEl('src/app.js', 5);
-
-      await chatPanel._handleFileLinkClick(linkEl);
-
-      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('src/app.js', 5, '7');
-      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
-    });
-
-    it('should call ensureContextFile when file not in DOM', async () => {
+    it('should call ensureContextFile when the file is not in the pane', async () => {
       global.document.querySelector = vi.fn(() => null);
       global.window.prManager.ensureContextFile.mockResolvedValue({ type: 'diff' });
 
@@ -8499,7 +8467,7 @@ describe('ChatPanel', () => {
     });
 
     it('asks the helper for the line range, flashed, and does nothing more when it was revealed', async () => {
-      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: true, handled: true }));
+      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: true }));
       global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
       await chatPanel._scrollToLine('src/app.js', 4, 6);
       expect(revealInDiff).toHaveBeenCalledWith({ file: 'src/app.js', line_start: 4, line_end: 6, side: 'RIGHT', flashLines: true });
@@ -8508,111 +8476,11 @@ describe('ChatPanel', () => {
     });
 
     it('a single line is a range of one; a line the file does not show goes to the file', async () => {
-      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: false, handled: true }));
+      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: false }));
       global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
       await chatPanel._scrollToLine('src/app.js', 30, null, 'LEFT');
       expect(revealInDiff).toHaveBeenCalledWith({ file: 'src/app.js', line_start: 30, line_end: 30, side: 'LEFT', flashLines: true });
       expect(global.window.prManager.scrollToFile).toHaveBeenCalledWith('src/app.js');
-    });
-
-    it('where the helper does not serve a line target, the link takes its own path', async () => {
-      const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false, revealed: false, handled: false }));
-      global.window.prManager = { revealInDiff, scrollToFile: vi.fn() };
-      await chatPanel._scrollToLine('src/app.js', 30);
-      // Its own path starts by looking for the file's wrapper in the document.
-      expect(global.document.querySelector).toHaveBeenCalled();
-      expect(global.window.prManager.scrollToFile).not.toHaveBeenCalled();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // _findLineRows
-  // -------------------------------------------------------------------------
-
-  describe('_findLineRows', () => {
-    /**
-     * Build a mock fileWrapper whose querySelectorAll('.line-num2') returns
-     * elements with the given textContent values.  Each element lives inside
-     * a mock <tr> reachable via closest('tr').
-     */
-    function buildFileWrapper(lineTexts) {
-      const lineNumEls = lineTexts.map((text) => {
-        const tr = createMockElement('tr');
-        const ln = createMockElement('td');
-        ln.textContent = String(text);
-        ln.closest = vi.fn((sel) => (sel === 'tr' ? tr : null));
-        // Attach the parent row for assertion purposes
-        ln._parentRow = tr;
-        return ln;
-      });
-
-      const wrapper = createMockElement('div');
-      wrapper.querySelectorAll = vi.fn((sel) => {
-        if (sel === '.line-num2') return lineNumEls;
-        return [];
-      });
-      wrapper._lineNumEls = lineNumEls;
-      return wrapper;
-    }
-
-    it('returns matching rows for a line range', () => {
-      // Lines 10 through 20
-      const texts = [];
-      for (let i = 10; i <= 20; i++) texts.push(i);
-      const wrapper = buildFileWrapper(texts);
-
-      const rows = chatPanel._findLineRows(wrapper, 12, 15);
-
-      expect(rows).toHaveLength(4);
-      // Verify the returned rows are the <tr> elements for lines 12–15
-      const expectedRows = wrapper._lineNumEls
-        .filter((el) => {
-          const n = parseInt(el.textContent, 10);
-          return n >= 12 && n <= 15;
-        })
-        .map((el) => el._parentRow);
-      expect(rows).toEqual(expectedRows);
-    });
-
-    it('returns exactly one row for a single-line degenerate case', () => {
-      const texts = [];
-      for (let i = 10; i <= 20; i++) texts.push(i);
-      const wrapper = buildFileWrapper(texts);
-
-      const rows = chatPanel._findLineRows(wrapper, 14, 14);
-
-      expect(rows).toHaveLength(1);
-      const expected = wrapper._lineNumEls.find(
-        (el) => el.textContent.trim() === '14',
-      );
-      expect(rows[0]).toBe(expected._parentRow);
-    });
-
-    it('handles non-numeric gutter content (isNaN guard)', () => {
-      // Mix numeric lines with non-numeric entries like "..." and ""
-      const texts = [10, '...', 11, '', 12, 13];
-      const wrapper = buildFileWrapper(texts);
-
-      const rows = chatPanel._findLineRows(wrapper, 10, 13);
-
-      // Only the four numeric entries (10, 11, 12, 13) should match
-      expect(rows).toHaveLength(4);
-      // Non-numeric elements should have been skipped
-      const returnedNums = rows.map((row) => {
-        const ln = wrapper._lineNumEls.find((el) => el._parentRow === row);
-        return parseInt(ln.textContent, 10);
-      });
-      expect(returnedNums).toEqual([10, 11, 12, 13]);
-    });
-
-    it('returns empty array when no lines match the range', () => {
-      const texts = [];
-      for (let i = 10; i <= 20; i++) texts.push(i);
-      const wrapper = buildFileWrapper(texts);
-
-      const rows = chatPanel._findLineRows(wrapper, 50, 60);
-
-      expect(rows).toEqual([]);
     });
   });
 

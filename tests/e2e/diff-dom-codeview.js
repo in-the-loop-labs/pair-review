@@ -1,15 +1,15 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
- * The diff pane as E2E specs see it, on the virtualized viewer (`CodeView`,
- * engine 'codeview').
+ * The diff pane as E2E specs see it: the half of tests/e2e/diff-dom.js that
+ * knows the virtualized viewer (`CodeView`) from the inside.
  *
- * This is the engine half of tests/e2e/diff-dom.js: that module selects it
- * when the suite runs with PR_ENGINE=codeview and exports the same surface,
- * so no spec knows which engine it runs on. Like diff-dom.js it may name
- * vendor DOM; `tests/unit/e2e-vendor-dom-boundary.test.js` allows the two
- * files and no other.
+ * diff-dom.js loads it and exports its helpers under the names specs use, so
+ * no spec imports this file. Like diff-dom.js it may name vendor DOM;
+ * `tests/unit/e2e-vendor-dom-boundary.test.js` allows the two files and no
+ * other. (Two files because one would be over the repository's size
+ * guideline.)
  *
- * What is different on this engine, and so what is here:
+ * What is here:
  *  - One viewer draws every file of the pane, changed files and context
  *    files, and mounts only the files near the viewport. A file's element
  *    (`diffs-container.d2h-file-wrapper[data-file-name]`, the vendor host
@@ -19,8 +19,8 @@
  *  - A context file is an item like a changed file: rows and separators are
  *    in its host's shadow root, its hidden gaps are the vendor's separators
  *    ("N unmodified lines") with the vendor's expand controls.
- *  - The bridge's record of a file has another shape (`_instance`,
- *    `metadata`, `upgraded`, `kind`).
+ *  - The bridge's record of a file (`_instance`, `metadata`, `upgraded`,
+ *    `kind`), and whether what is on screen is what the bridge asked for.
  */
 
 const { expect } = require('@playwright/test');
@@ -646,7 +646,7 @@ const layoutValidator = {
       };
 
       let Bridge;
-      Object.defineProperty(window, 'PierreCodeViewBridge', {
+      Object.defineProperty(window, 'PierreBridge', {
         configurable: true,
         get() { return Bridge; },
         set(Real) {
@@ -1084,35 +1084,6 @@ function createCodeViewAdapter(base) {
       expandHunkBy,
       redisplayBaseDiff,
       redrawFile,
-    },
-    expectations: {
-      // The viewer keeps the first visible line where it is (plan 3.12).
-      LAYOUT_TOGGLE_KEEPS: 'first-visible-line',
-      // No second renderer: an error in place of the diff (decision D1).
-      MISSING_VIEWER_BUNDLE: 'message',
-      // The vendor's line, and the pool's report of the worker it lost. The
-      // same viewer goes on highlighting on the main thread.
-      WORKER_LOAD_FAILURE_ERROR:
-        /\[console\.error\] (Worker error: Event|WorkerPoolWorkerError: WorkerPoolManager: worker failed: the worker script failed to load)/,
-      // A chat link goes through the page's navigation helper: the viewer
-      // scrolls to a file it has not mounted, and the flash follows the line
-      // onto the rows drawn for it (ledger H96).
-      CHAT_LINK_REACHES_UNRENDERED_FILE: true,
-      REVEALED_LINE_KEEPS_FLASH: true,
-      // A background content upgrade waits while the reader is typing in
-      // the file (PRManager._waitForPierrePointerIdle).
-      UPGRADE_WAITS_FOR_FOCUS: true,
-      // Collapsing the file being read keeps its header where it was, at
-      // the top of the pane (ledger H111).
-      COLLAPSE_INSIDE_FILE: 'header',
-      // A hidden gap of five lines or fewer is drawn (the rule changed files have).
-      SMALL_CONTEXT_GAP: 'shown',
-      // Of two loads of the context files in flight the later one wins.
-      CONTEXT_LOADS_IN_FLIGHT: 'one-state',
-      // The viewer's own gutter buttons leave with the pointer, whatever the
-      // review holds (the fallback positioner is not ported; ledger H66).
-      GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS: false,
-      contextGapLabel: (n) => `${n} unmodified line${n === 1 ? '' : 's'}`,
     },
   };
 }

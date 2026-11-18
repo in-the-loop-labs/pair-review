@@ -2,9 +2,10 @@
 /**
  * E2E Tests: syntax highlighting and theme (N2 of plans/codeview-virtualized-diff.md)
  *
- * Characterization of main in both modes: code rows carry syntax tokens, a
- * theme switch re-colours them without re-fetching anything, and a worker
- * script that cannot load does not cost the user the diff.
+ * In both modes: code rows carry syntax tokens, a theme switch re-colours
+ * them without re-fetching anything, a worker script that cannot load does
+ * not cost the user the diff, and nothing is asked of the CDN that served
+ * the highlighter of the renderer the viewer replaced.
  */
 
 import { test, expect } from './fixtures.js';
@@ -112,6 +113,28 @@ for (const mode of MODES) {
         .toBeGreaterThan(0);
       // The rest of the page works: the other file rendered too.
       expect(await rowCount(page, 'src/utils.js')).toBeGreaterThan(0);
+    });
+  });
+
+  test.describe(`Highlighting needs nothing from cdnjs (${mode.name})`, () => {
+    test.use({ colorScheme: 'light' });
+
+    test('code rows are highlighted with that host out of reach, and the page asks it for nothing', async ({ page }) => {
+      // The application's own renderer of context lines used to take a
+      // highlighter and its stylesheets from cdnjs. Every line of the pane is
+      // now coloured by the viewer's bundle, which the application serves.
+      const asked = [];
+      await page.route(/^https?:\/\/cdnjs\.cloudflare\.com\//, (route) => {
+        asked.push(route.request().url());
+        return route.abort();
+      });
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await waitForContentUpgrade(page, FILE);
+      const tokens = await highlighted(page);
+      expect(tokens.highlightedRows).toBeGreaterThan(0);
+      expect(tokens.colors.length).toBeGreaterThan(1);
+      expect(asked).toEqual([]);
     });
   });
 }

@@ -20,7 +20,7 @@ import { allCorpora, checkRows } from './fixtures/diffs.js';
 import {
   fileWrapper, dumpFile, openLineCommentForm, expandControls, clickExpandControl, isLineVisible,
   waitForContentUpgrade, contentsApplied, framesWithoutUpgrade, annotationCell, gutterButtonsState, inlineComment,
-  assertNoOrphanHosts, parkPointerOnLine, UPGRADE_WAITS_FOR_FOCUS
+  assertNoOrphanHosts, parkPointerOnLine
 } from './diff-dom.js';
 
 const { default: DEFAULT } = allCorpora();
@@ -168,28 +168,14 @@ for (const mode of MODES) {
       await page.mouse.move(5, 500);
       contents.release();
 
-      if (UPGRADE_WAITS_FOR_FOCUS) {
-        // Typing is not interrupted: the upgrade waits for the focus to leave.
-        expect(await framesWithoutUpgrade(page, FILE, 60)).toBe(60);
-        expect(await focusedTag(page)).toBe('TEXTAREA');
-        await page.keyboard.type(' finished');
-        await expect(textarea).toHaveValue('half a thought finished');
-        await page.locator('.diff-toolbar').click({ position: { x: 5, y: 5 } });
-        await waitForContentUpgrade(page, FILE);
-        await expect(textarea).toHaveValue('half a thought finished');
-      } else {
-        // Characterization of main: the upgrade lands, the rows are
-        // re-created, the form and its text are kept, and the textarea is no
-        // longer focused, so further keystrokes go nowhere until it is
-        // clicked again.
-        await waitForContentUpgrade(page, FILE);
-        await expect(textarea).toHaveValue('half a thought');
-        await expect.poll(() => focusedTag(page)).not.toBe('TEXTAREA');
-        await textarea.click();
-        await page.keyboard.press('End');
-        await page.keyboard.type(' finished');
-        await expect(textarea).toHaveValue('half a thought finished');
-      }
+      // Typing is not interrupted: the upgrade waits for the focus to leave.
+      expect(await framesWithoutUpgrade(page, FILE, 60)).toBe(60);
+      expect(await focusedTag(page)).toBe('TEXTAREA');
+      await page.keyboard.type(' finished');
+      await expect(textarea).toHaveValue('half a thought finished');
+      await page.locator('.diff-toolbar').click({ position: { x: 5, y: 5 } });
+      await waitForContentUpgrade(page, FILE);
+      await expect(textarea).toHaveValue('half a thought finished');
       await expect(wrapper.locator('.user-comment-form')).toHaveCount(1);
       expect(await contentsApplied(page, FILE)).toBe(true);
     });

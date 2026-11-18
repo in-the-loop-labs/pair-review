@@ -9,11 +9,11 @@
  *
  *  - every stylesheet pr.html and local.html load, in their order, unmodified
  *    (pr.css with its block for the virtualized viewer; styles.css after it)
- *  - PierreCodeViewBridge with its own unsafeCSS (ANNOTATION_CSS, ROWLESS_FIX,
+ *  - PierreBridge with its own unsafeCSS (ANNOTATION_CSS, ROWLESS_FIX,
  *    CONTEXT_CSS, FRAME_CSS), its own metrics (the header token and a
  *    measured row height), its gutter buttons and its split card layout pass
- *  - the changed-file header built by PRManager.renderFileDiff and the
- *    context-file header built by PRManager.renderContextFile
+ *  - the changed-file header built by PRManager._buildFileHeader and the
+ *    context-file header built by PRManager._buildContextFileHeader
  *  - the file-comment zone of FileCommentManager, and comment, suggestion and
  *    form cards from the shared renderers
  *
@@ -49,39 +49,42 @@ async function setUp(page, { theme, diffStyle }) {
     manager.summariesHiddenFiles = new Set();
     manager._summaryHashesByFile = new Map();
     manager._summariesEnabled = true;
-    manager._lazyFileBodies = new Map();
     manager._renderGen = 1;
     manager.contextFiles = [];
     manager.fileCommentManager = new window.FileCommentManager(manager);
-    manager._getPierreRenderDecision = () => ({ usePierre: true, forcePlainText: false, deferDiff: false });
-    // renderContextFile builds the header, then the legacy table body. Only
-    // the header is wanted: the body builders answer empty elements.
-    manager.fetchFileContent = async () => ({ lines: ['x'] });
-    manager._buildContextChunkTbody = () => document.createElement('tbody');
 
     const diffA = roles.small;
     const diffB = roles.medium;
     const parts = new Map();
     for (const id of [diffA, diffB]) {
-      const wrapper = manager.renderFileDiff({ file: id, insertions: 12, deletions: 3, patch: H.workload.patches[id] });
-      parts.set(id, { header: wrapper.querySelector('.d2h-file-header'), zone: wrapper.querySelector('.file-comments-zone') });
+      const zone = manager.fileCommentManager.createFileCommentsZone(id);
+      const header = manager._buildFileHeader({ file: id, insertions: 12, deletions: 3, patch: H.workload.patches[id] }, { collapsed: false, zone });
+      parts.set(id, { header, zone });
     }
-    // renderContextFile appends its wrapper to #diff-container: give it a scratch one.
+    {
+      const zone = manager.fileCommentManager.createFileCommentsZone(CONTEXT, { context: true });
+      const header = manager._buildContextFileHeader(CONTEXT, { label: 'why this file is here', zone });
+      parts.set(CONTEXT, { header, zone });
+    }
+    // The context header's natural height, in a plain wrapper of the page
+    // (not in the viewer's header slot, which fixes the height).
     const scratch = document.createElement('div');
     scratch.id = 'diff-container';
     document.body.appendChild(scratch);
-    await manager.renderContextFile({ id: 1, file: CONTEXT, line_start: 100, line_end: 120, label: 'why this file is here' });
-    const contextWrapper = scratch.querySelector('.d2h-file-wrapper.context-file');
-    parts.set(CONTEXT, { header: contextWrapper.querySelector('.d2h-file-header'), zone: contextWrapper.querySelector('.file-comments-zone') });
-    const contextHeaderHeightOnMain = parts.get(CONTEXT).header.getBoundingClientRect().height;
+    const probe = document.createElement('div');
+    probe.className = 'd2h-file-wrapper context-file';
+    probe.dataset.fileName = CONTEXT;
+    scratch.appendChild(probe);
+    probe.appendChild(parts.get(CONTEXT).header);
+    const contextHeaderNaturalHeight = parts.get(CONTEXT).header.getBoundingClientRect().height;
     scratch.remove();
 
-    // ---- layout: .main-layout > main.diff-view.codeview-engine > #diff-container (pr.html) ----
+    // ---- layout: .main-layout > main.diff-view > #diff-container (pr.html) ----
     const layout = document.createElement('div');
     layout.className = 'main-layout';
     layout.style.cssText = 'height: 100vh; width: 100vw;';
     const view = document.createElement('main');
-    view.className = 'diff-view codeview-engine';
+    view.className = 'diff-view';
     const container = document.createElement('div');
     container.id = 'diff-container';
     container.className = 'diff-container';
@@ -92,7 +95,7 @@ async function setUp(page, { theme, diffStyle }) {
     // ---- the real bridge, measuring its own metrics ----
     H.root = container;
     const gutterClicks = [];
-    const bridge = new window.PierreCodeViewBridge({
+    const bridge = new window.PierreBridge({
       root: container,
       theme,
       diffStyle,
@@ -137,7 +140,7 @@ async function setUp(page, { theme, diffStyle }) {
     const host = bridge.findFileElement(CONTEXT);
     const row = host.shadowRoot.querySelector('[data-content] > [data-line]');
     return {
-      contextHeaderHeightOnMain,
+      contextHeaderNaturalHeight,
       metrics: bridge._metrics,
       renderedRowHeight: row.getBoundingClientRect().height,
       hostClasses: [...host.classList].sort(),
@@ -176,7 +179,7 @@ for (const theme of ['light', 'dark']) {
       const setup = await setUp(page, { theme, diffStyle });
 
       // The context header is as tall as a changed file's: the viewer has ONE header metric.
-      expect(setup.contextHeaderHeightOnMain).toBe(53);
+      expect(setup.contextHeaderNaturalHeight).toBe(53);
       expect(setup.metrics.diffHeaderHeight).toBe(53);
       // The bridge measured the app's row height itself, and rows are that tall.
       expect(setup.metrics.lineHeight).toBe(setup.renderedRowHeight);
@@ -264,7 +267,7 @@ for (const theme of ['light', 'dark']) {
 
       await harness.record(`G13-context-item-${theme}-${diffStyle}`, {
         metrics: setup.metrics,
-        contextHeaderHeightOnMainPx: setup.contextHeaderHeightOnMain,
+        contextHeaderNaturalHeightPx: setup.contextHeaderNaturalHeight,
         columns: before.columns,
         rows: before.rows,
         hostWidth: before.hostWidth,

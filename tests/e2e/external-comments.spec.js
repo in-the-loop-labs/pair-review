@@ -507,11 +507,11 @@ test.describe('External comments: coexistence with user + AI rows', () => {
     // Wait for user-comment rows too (loadUserComments fires async).
     await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
-    // All three row types should be present. On the @pierre/diffs branch AI
-    // suggestions slot as a light-DOM `.ai-suggestion` card (the legacy
-    // `.ai-suggestion-row` <tr> wrapper is gone — PierreBridge extracts and
-    // slots the inner `.ai-suggestion` div), while user comments and external
-    // threads keep their `.user-comment-row` / `.external-comment-row` wrappers.
+    // All three kinds of card should be present. An AI suggestion is slotted
+    // as a light-DOM `.ai-suggestion` card (PierreBridge slots the inner
+    // `.ai-suggestion` div of what the suggestion builder makes), while user
+    // comments and external threads keep their `.user-comment-row` /
+    // `.external-comment-row` wrappers.
     expect(await page.locator('.ai-suggestion').count()).toBeGreaterThan(0);
     expect(await page.locator('.user-comment-row').count()).toBeGreaterThan(0);
     expect(await page.locator('.external-comment-row').count()).toBe(1);
@@ -519,12 +519,12 @@ test.describe('External comments: coexistence with user + AI rows', () => {
     // Scope to the utils.js file wrapper and verify ordering on line 3:
     //   AI suggestion  ->  user comment  ->  external comment
     // (CLAUDE.md hazard rule: AI -> user -> external.)
-    // On the @pierre/diffs branch all three overlays render as light-DOM
-    // annotations slotted below the anchor line (not `<tr>` rows), and
-    // PierreBridge's typeOrder sorts them suggestion -> comment -> external.
+    // All three overlays render as light-DOM annotations slotted below the
+    // anchor line, and PierreBridge's typeOrder sorts them
+    // suggestion -> comment -> external.
     // The three managers (suggestions, comments, external) load and render
-    // independently and asynchronously, and each addAnnotation/clear triggers a
-    // FileDiff rerender that transiently rebuilds the slotted set — so a
+    // independently and asynchronously, and each addAnnotation/clear makes
+    // the viewer draw the file's slotted set again — so a
     // one-shot scan can catch an intermediate state where one overlay is
     // momentarily absent. Poll the scan until the contract holds; once all
     // three managers have settled the ordering is stable.

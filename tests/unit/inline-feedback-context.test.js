@@ -1,19 +1,23 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { setImmediate } from 'node:timers';
 
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
-const { makePageManager } = require('../utils/page-manager.js');
+const { makePageManager, cardBridge } = require('../utils/page-manager.js');
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
-const PierreBridge = require('../../public/js/modules/pierre-bridge.js');
-const PierreContext = require('../../public/js/modules/pierre-context.js');
+const { createBridgeHarness, restoreBridgeHarnesses, hunk } = require('../utils/pierre-bridge-harness.js');
+
+let vendor;
+beforeAll(async () => {
+  vendor = await import('@pierre/diffs');
+});
 
 afterEach(() => {
+  restoreBridgeHarnesses();
   document.body.innerHTML = '';
   delete window.prManager;
-  delete window.PierreContext;
   vi.restoreAllMocks();
 });
 
@@ -32,8 +36,9 @@ describe.each([
     card.scrollIntoView = vi.fn();
     let reveal;
     // The production navigation helper (PRManager.revealInDiff); the line
-    // reveal is the stub.
+    // reveal and the bridge's card questions are the stubs.
     window.prManager = makePageManager({
+      pierreBridge: cardBridge({ 'suggestion-1': card, 'comment-1': card }),
       ensureLinesVisible: vi.fn(() => new Promise(resolve => {
         reveal = () => { document.body.appendChild(card); resolve(); };
       })),
@@ -70,16 +75,13 @@ describe.each([
 });
 
 it('preserves comment context when refreshing to an empty suggestion list', async () => {
-  window.PierreContext = PierreContext;
-  const bridge = Object.create(PierreBridge.prototype);
-  const instance = {
-    render({ fileDiff }) { this.fileDiff = fileDiff; return false; },
-  };
-  bridge.files = new Map([['a.js', {
-    fileName: 'a.js', instance, annotations: [], formElements: new Map(),
-    baseMetadata: { hunks: [], additionLines: Array(100).fill('line') },
-  }]]);
-  bridge._updateAnnotations = vi.fn();
+  // The production bridge (on a viewer that never renders): a range revealed
+  // for a comment is the file's, not the suggestions'.
+  const numbered = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+  const bridge = createBridgeHarness(vi, vendor, { files: [{ name: 'a.js', hunks: [hunk(10, 12)] }] });
+  const changed = numbered.replace('line 11\n', 'changed 11\n');
+  bridge.upgradeFileContents('a.js', { name: 'a.js', contents: numbered }, { name: 'a.js', contents: changed });
+  expect(bridge.isLineVisible('a.js', 80, 'RIGHT')).toBe(false);
   bridge.addContextRanges('a.js', [{ startLine: 70, endLine: 80 }]);
   expect(bridge.isLineVisible('a.js', 80, 'RIGHT')).toBe(true);
 
@@ -89,41 +91,5 @@ it('preserves comment context when refreshing to an empty suggestion list', asyn
   await sm.displayAISuggestions([]);
 
   expect(bridge.isLineVisible('a.js', 80, 'RIGHT')).toBe(true);
-});
-
-it('keeps manually expanded comment anchors visible when revealing another location', () => {
-  window.PierreContext = PierreContext;
-  const bridge = Object.create(PierreBridge.prototype);
-  const baseMetadata = {
-    hunks: [{
-      additionStart: 50, additionCount: 1, additionLines: 0,
-      deletionStart: 50, deletionCount: 1, deletionLines: 0,
-      splitLineCount: 1, unifiedLineCount: 1, collapsedBefore: 49,
-    }],
-    additionLines: Array(100).fill('line'),
-    deletionLines: Array(100).fill('line'),
-  };
-  const expansions = new Map([
-    [0, { fromStart: 10, fromEnd: 10 }],
-    [1, { fromStart: 10, fromEnd: 0 }],
-  ]);
-  const instance = {
-    fileDiff: baseMetadata,
-    hunksRenderer: { expandedHunks: expansions, getExpandedHunk: i => expansions.get(i) },
-    render({ fileDiff }) { this.fileDiff = fileDiff; return false; },
-  };
-  bridge.files = new Map([['a.js', { fileName: 'a.js', instance, baseMetadata }]]);
-  expect(bridge.isLineVisible('a.js', 40, 'LEFT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 60, 'RIGHT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 10, 'RIGHT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 30, 'RIGHT')).toBe(false);
-
-  bridge.addContextRanges('a.js', [{ startLine: 90, endLine: 90 }]);
-
-  expect(expansions.size).toBe(0);
-  expect(bridge.isLineVisible('a.js', 40, 'LEFT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 60, 'RIGHT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 10, 'RIGHT')).toBe(true);
-  expect(bridge.isLineVisible('a.js', 30, 'RIGHT')).toBe(false);
-  expect(bridge.isLineVisible('a.js', 90, 'RIGHT')).toBe(true);
+  expect(bridge.isLineVisible('a.js', 70, 'RIGHT')).toBe(true);
 });

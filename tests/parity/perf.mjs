@@ -17,16 +17,20 @@
  *                    line's row being on screen (gate G12's measure, on the
  *                    300-line target file of the eviction corpus)
  *
- * The same script is run for each engine (PR_ENGINE=codeview from phase 5)
- * and the two results compared. Everything that reads the rendered diff goes
- * through tests/e2e/diff-dom.js. CSS transitions are on, as in production.
+ * The script measures the tree it is in. The numbers of the application as
+ * it was before the migration to the virtualized viewer come from that
+ * tree's own copy of this script (reference.mjs runs it in a second
+ * checkout); `--reference <file.json>` prints the two side by side.
+ * Everything that reads the rendered diff goes through tests/e2e/diff-dom.js.
+ * CSS transitions are on, as in production.
  *
  * Usage:
- *   PLAYWRIGHT_BROWSERS_PATH=... node tests/parity/perf.mjs --out <file.json> [--runs 5] [--mode pr,local]
+ *   PLAYWRIGHT_BROWSERS_PATH=... node tests/parity/perf.mjs --out <file.json>
+ *     [--runs 5] [--mode pr,local] [--reference <file.json>]
  *
  * Numbers are only comparable between runs on the same machine under the
- * same load: take both engines' numbers in one sitting, and never while the
- * E2E suite is running.
+ * same load: take the reference's numbers and this tree's in one sitting, and
+ * never while the E2E suite is running.
  */
 
 import { createRequire } from 'node:module';
@@ -45,12 +49,12 @@ const dom = require('../e2e/diff-dom.js');
 const MODES = { pr: '/pr/test-owner/test-repo/1', local: '/local/2' };
 
 function parseArgs(argv) {
-  const args = { out: null, runs: 5, mode: ['pr', 'local'] };
+  const args = { out: null, runs: 5, mode: ['pr', 'local'], reference: null };
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i].replace(/^--/, '');
     const value = argv[i + 1];
     if (!(key in args) || value === undefined) throw new Error(`Unknown or incomplete argument: ${argv[i]}`);
-    args[key] = key === 'out' ? value : key === 'runs' ? Number(value) : value.split(',');
+    args[key] = key === 'out' || key === 'reference' ? value : key === 'runs' ? Number(value) : value.split(',');
   }
   if (!args.out) throw new Error('--out <file.json> is required');
   return args;
@@ -76,9 +80,6 @@ const round = (value) => Math.round(value * 10) / 10;
 
 async function newPage(browser, baseURL) {
   const context = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 } });
-  if (process.env.PR_ENGINE === 'codeview') {
-    await context.addInitScript(() => { window.__PAIR_REVIEW_DIFF_ENGINE = 'codeview'; });
-  }
   const page = await context.newPage();
   return { context, page };
 }
@@ -176,7 +177,7 @@ async function main() {
   const baseURL = `http://localhost:${port}`;
   const result = {
     meta: {
-      engine: process.env.PR_ENGINE || 'filediff',
+      engine: 'codeview',
       runs: args.runs,
       viewport: '1440x900',
       date: new Date().toISOString(),
@@ -207,6 +208,24 @@ async function main() {
   fs.writeFileSync(args.out, `${JSON.stringify(result, null, 2)}\n`);
   console.log(`Wrote ${args.out}`);
   for (const [mode, data] of Object.entries(result.modes)) console.log(mode, JSON.stringify(data.medians));
+  if (args.reference) printComparison(JSON.parse(fs.readFileSync(args.reference, 'utf8')), result);
+}
+
+/** The medians of a reference result and of this run, side by side. */
+function printComparison(reference, result) {
+  console.log(`\nmedians: reference (${reference.meta.date}, load ${reference.meta.loadAverageStart}) against this tree (load ${result.meta.loadAverageStart})`);
+  for (const [mode, data] of Object.entries(result.modes)) {
+    const before = (reference.modes[mode] || {}).medians;
+    if (!before) {
+      console.log(`  ${mode}: not in the reference`);
+      continue;
+    }
+    for (const [key, value] of Object.entries(data.medians)) {
+      const was = before[key];
+      const ratio = typeof was === 'number' && was !== 0 ? ` (x${Math.round((value / was) * 100) / 100})` : '';
+      console.log(`  ${mode} ${key}: ${was} -> ${value}${ratio}`);
+    }
+  }
 }
 
 main().then(() => process.exit(0), (error) => {

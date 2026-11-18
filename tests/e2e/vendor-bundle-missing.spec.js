@@ -5,15 +5,14 @@
  *
  * The bundle is built at install time and served from the application's own
  * files, so a page without it is a broken installation or a failed request.
- * What the diff pane then shows is a decision of the migration (D1) and is
- * asked through `MISSING_VIEWER_BUNDLE`: the table renderer today, a message
- * in place of the diff on the virtualized viewer. Either way nothing throws
- * and the rest of the page works.
+ * The diff pane then shows a message in place of the diff (decision D1 of
+ * the migration: there is no second renderer to fall back to). Nothing
+ * throws and the rest of the page works.
  */
 
 import { test, expect } from './fixtures.js';
 import { MODES } from './helpers.js';
-import { diffStatus, fileWrapper, filesInPane, MISSING_VIEWER_BUNDLE } from './diff-dom.js';
+import { diffStatus, filesInPane } from './diff-dom.js';
 
 const FILES = ['src/main.js', 'src/utils.js'];
 
@@ -22,7 +21,7 @@ for (const mode of MODES) {
     // The browser reports the script it could not load.
     test.use({ expectedConsoleErrors: [/\[console\.error\] Failed to load resource: net::ERR_FAILED .*\/js\/vendor\/pierre-diffs\.js/] });
 
-    test('the diff pane says so or falls back, nothing throws, and the rest of the page works', async ({ page }) => {
+    test('the diff pane says so, nothing throws, and the rest of the page works', async ({ page }) => {
       let blocked = 0;
       await page.route(/\/js\/vendor\/pierre-diffs\.js(\?.*)?$/, (route) => {
         blocked++;
@@ -33,20 +32,11 @@ for (const mode of MODES) {
       await expect(page.locator('.file-item[data-path]')).toHaveCount(FILES.length);
       expect(blocked).toBe(1);
 
-      if (MISSING_VIEWER_BUNDLE === 'message') {
-        await expect(diffStatus(page)).toBeVisible();
-        await expect(diffStatus(page)).toContainText('The diff viewer could not be loaded');
-        // Nothing of a diff is drawn under the message.
-        await expect(page.locator('#diff-container')).toBeHidden();
-        expect(await filesInPane(page)).toEqual([]);
-      } else {
-        // Every file is drawn, by the application's own table renderer.
-        await expect(diffStatus(page)).toBeHidden();
-        for (const file of FILES) {
-          await expect(fileWrapper(page, file)).toBeVisible();
-        }
-        await expect(fileWrapper(page, FILES[0]).locator('.d2h-diff-table tr').first()).toBeVisible();
-      }
+      await expect(diffStatus(page)).toBeVisible();
+      await expect(diffStatus(page)).toContainText('The diff viewer could not be loaded');
+      // Nothing of a diff is drawn under the message.
+      await expect(page.locator('#diff-container')).toBeHidden();
+      expect(await filesInPane(page)).toEqual([]);
 
       // The rest of the page works: navigation does not throw, the panels
       // open, the theme switches. (An error anywhere fails the console guard.)

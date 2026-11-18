@@ -546,10 +546,6 @@ describe('PierreStyles', () => {
       expect(withoutComments).not.toMatch(/(^|[\s;{])overflow[a-z-]*\s*:/);
     });
 
-    it('the old bridge does not serve it', () => {
-      const PierreBridge = load('pierre-bridge.js');
-      expect(PierreBridge.ANNOTATION_CSS).not.toContain('--pr-frame-inline');
-    });
   });
 
   it('every rule of CONTEXT_CSS is scoped to a context file\'s host', () => {
@@ -565,10 +561,6 @@ describe('PierreStyles', () => {
     expect(split.startsWith('pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))')).toBe(true);
   });
 
-  it('the old bridge serves the same annotation CSS text', () => {
-    const PierreBridge = load('pierre-bridge.js');
-    expect(PierreBridge.ANNOTATION_CSS).toBe(styles.ANNOTATION_CSS);
-  });
 });
 
 describe('both pages load the shared modules before the bridge that needs them', () => {
@@ -583,14 +575,14 @@ describe('both pages load the shared modules before the bridge that needs them',
       // The CodeView bridge (behind the engine switch) needs all of them and
       // its gutter module; it does not need the current bridge.
       expect(at('pierre-gutter.js')).toBeGreaterThan(-1);
-      expect(at('pierre-context.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
-      expect(at('pierre-styles.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
-      expect(at('pierre-annotations.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
-      expect(at('pierre-gutter.js')).toBeLessThan(at('pierre-codeview-bridge.js'));
+      expect(at('pierre-context.js')).toBeLessThan(at('pierre-bridge.js'));
+      expect(at('pierre-styles.js')).toBeLessThan(at('pierre-bridge.js'));
+      expect(at('pierre-annotations.js')).toBeLessThan(at('pierre-bridge.js'));
+      expect(at('pierre-gutter.js')).toBeLessThan(at('pierre-bridge.js'));
       // Both are on the page before the script that constructs one of them.
       const prScript = html.indexOf('<script src="/js/pr.js"></script>');
       expect(at('pierre-bridge.js')).toBeLessThan(prScript);
-      expect(at('pierre-codeview-bridge.js')).toBeLessThan(prScript);
+      expect(at('pierre-bridge.js')).toBeLessThan(prScript);
     });
   }
 });

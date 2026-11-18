@@ -6,8 +6,10 @@
  * Unit tests for PRManager.handleDiffViewChange (Unified / Split toggle).
  *
  * The handler must NOT re-fetch the diff — it delegates to
- * pierreBridge.setDiffStyle (which preserves annotations) and restores the
- * scroll position. This handler is shared by PR mode and local mode.
+ * pierreBridge.setDiffStyle, which preserves annotations and keeps the first
+ * visible line where it is (tests/contract/bridge/view.spec.js), and it
+ * writes no scroll position of its own. This handler is shared by PR mode
+ * and local mode.
  *
  * PRManager is a browser-only file with no exports, so we load it in a vm
  * sandbox (mirroring pr-manager-set-loading.test.js). Functions compiled in
@@ -54,11 +56,10 @@ describe('PRManager.handleDiffViewChange', () => {
     ({ PRManager, sandbox } = load());
     mgr = Object.create(PRManager.prototype);
 
-    // window (== sandbox) provides scroll APIs the handler closes over.
+    // window (== sandbox): the handler must leave its scroll APIs alone.
     sandbox.scrollY = 250;
     sandbox.scrollTo = vi.fn();
-    // Run the rAF callback synchronously so scroll restore is observable.
-    sandbox.requestAnimationFrame = (cb) => cb();
+    sandbox.requestAnimationFrame = vi.fn();
   });
 
   it('delegates to pierreBridge.setDiffStyle with the requested mode', () => {
@@ -68,30 +69,6 @@ describe('PRManager.handleDiffViewChange', () => {
 
     expect(mgr.pierreBridge.setDiffStyle).toHaveBeenCalledTimes(1);
     expect(mgr.pierreBridge.setDiffStyle).toHaveBeenCalledWith('split');
-  });
-
-  it('restores the window scroll position when no .diff-view container exists', () => {
-    // Default sandbox document has no querySelector, so the handler falls back
-    // to the window scroll position.
-    mgr.pierreBridge = { setDiffStyle: vi.fn() };
-
-    mgr.handleDiffViewChange('split');
-
-    expect(sandbox.scrollTo).toHaveBeenCalledWith(0, 250);
-  });
-
-  it('captures and restores the .diff-view container scrollTop (not the window)', () => {
-    // The diff pane scrolls inside `.diff-view`, so window.scrollY is ~0 and
-    // the handler must save/restore the container's scrollTop instead. Simulate
-    // the layout swap resetting scrollTop to 0 and assert it is restored.
-    const container = { scrollTop: 420 };
-    mgr.pierreBridge = { setDiffStyle: vi.fn(() => { container.scrollTop = 0; }) };
-    sandbox.document.querySelector = vi.fn((sel) => (sel === '.diff-view' ? container : null));
-
-    mgr.handleDiffViewChange('split');
-
-    expect(container.scrollTop).toBe(420);
-    expect(sandbox.scrollTo).not.toHaveBeenCalled();
   });
 
   it('does NOT re-fetch the diff (no loadAndDisplayFiles / _rerenderAllOverlays)', () => {
@@ -119,8 +96,20 @@ describe('PRManager.handleDiffViewChange', () => {
   });
 
   it('returns true after a successful apply so the dropdown persists the selection', () => {
-    mgr.pierreBridge = { setDiffStyle: vi.fn() };
+    mgr.pierreBridge = { setDiffStyle: vi.fn(() => true) };
 
     expect(mgr.handleDiffViewChange('split')).toBe(true);
+  });
+
+  it('returns false when the viewer refuses the style, and writes no scroll position either way', () => {
+    const container = { scrollTop: 420 };
+    sandbox.document.querySelector = vi.fn((sel) => (sel === '.diff-view' ? container : null));
+    mgr.pierreBridge = { setDiffStyle: vi.fn((style) => style === 'split') };
+
+    expect(mgr.handleDiffViewChange('sideways')).toBe(false);
+    expect(mgr.handleDiffViewChange('split')).toBe(true);
+    expect(container.scrollTop).toBe(420);
+    expect(sandbox.scrollTo).not.toHaveBeenCalled();
+    expect(sandbox.requestAnimationFrame).not.toHaveBeenCalled();
   });
 });

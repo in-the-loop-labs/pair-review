@@ -598,7 +598,7 @@ test('without the worker pool, and without the vendor bundle, the bridge says so
     const warnings = [];
     const originalWarn = console.warn;
     console.warn = (...args) => warnings.push(String(args[0]));
-    const bridge = new window.PierreCodeViewBridge({ root: document.getElementById('root') });
+    const bridge = new window.PierreBridge({ root: document.getElementById('root') });
     console.warn = originalWarn;
     const missing = {
       available: bridge.available,
@@ -615,3 +615,138 @@ test('without the worker pool, and without the vendor bundle, the bridge says so
   expect(result.noPool).toEqual({ manager: null, rows: true, sound: { orphans: 0, clean: true } });
   expect(result.missing).toEqual({ available: false, warned: true, renderAll: false, reconcile: 'not-rendered', files: 0, parse: null });
 });
+
+/**
+ * Runs in the page: one coloured context file of `lines` lines, all of them
+ * shown, alone or as one of thirty-one files, and what the pane shows of it.
+ */
+const LONG_FILE = `
+  window.longFile = async ({ lines, shown = lines, position }) => {
+    const { H, BH } = window;
+    const { roles } = H.workload;
+    const LONG = 'ctx/long.js';
+    const others = position === 'only' ? [] : H.workload.modifiedPaths.filter((n) => n !== roles.hugeModified && n !== roles.large).slice(0, 30).map((n) => BH.diffEntry(n));
+    const long = BH.contextEntry(LONG, { contents: BH.numberedLines(lines), ranges: [{ startLine: 1, endLine: shown }] });
+    const entries = position === 'first' || position === 'only' ? [long, ...others] : position === 'last' ? [...others, long] : [...others.slice(0, 15), long, ...others.slice(15)];
+    await BH.up({ entries, quietMs: 400 });
+    BH.bridge.scrollToItem(LONG);
+    await H.until(() => !!H.host(LONG));
+    await H.until(() => (H.shape(LONG)?.tokens ?? 0) > 0, 30000);
+    await H.settle(400);
+    const api = { LONG };
+    const rowsOf = () => [...(H.host(LONG)?.shadowRoot.querySelectorAll('[data-content] > [data-line]') || [])];
+    const pane = () => H.root.getBoundingClientRect();
+    /** A drawn line's top edge in the pane's scroll coordinates; null when the line is not drawn. */
+    api.topOf = (line) => {
+      const row = rowsOf().find((el) => Number(el.getAttribute('data-line')) === line);
+      return row ? row.getBoundingClientRect().top - pane().top + H.root.scrollTop : null;
+    };
+    api.shows = () => {
+      const all = rowsOf();
+      const inPane = all.filter((row) => { const box = row.getBoundingClientRect(); return box.bottom > pane().top && box.top < pane().bottom; }).map((row) => Number(row.getAttribute('data-line')));
+      const gaps = inPane.filter((line, index) => index > 0 && line !== inPane[index - 1] + 1).length;
+      return {
+        drawn: all.length,
+        firstInPane: inPane[0] ?? null,
+        lastInPane: inPane[inPane.length - 1] ?? null,
+        consecutive: gaps === 0,
+        unclean: H.heightAudit().filter((a) => a.dH !== 0 || a.dTop !== 0).length,
+      };
+    };
+    return api;
+  };
+`;
+
+test('a file of more than 5,000 rows is drawn where the pane is at every position across its block boundaries: the rows after a boundary are there as soon as the pane reaches them', async ({ harness }) => {
+  // Vendor fact F30 (tests/contract/vendor/row-window.spec.js): the viewer
+  // alone leaves the rows after every 5,000th undrawn until the middle of the
+  // pane has passed, and holds the drawn rows against the pane's bottom edge
+  // meanwhile. PierreBridge.coverPaneWithRowWindow asks it a second time.
+  test.setTimeout(180000);
+  const page = await openBridge(harness);
+  await page.addScriptTag({ content: LONG_FILE });
+  const result = await page.evaluate(async () => {
+    const { H } = window;
+    const w = await window.longFile({ lines: 12000, position: 'middle' });
+    const paneHeight = H.root.clientHeight;
+    // The layout of the file's rows, from two rows that are drawn at its top.
+    const first = w.topOf(1);
+    const rowHeight = w.topOf(2) - first;
+    const steps = [];
+    const at = async (label, line, fraction) => {
+      // `line`'s top edge this far down the pane.
+      H.root.scrollTop = Math.round(first + (line - 1) * rowHeight - paneHeight * fraction);
+      await H.settle(600);
+      const top = w.topOf(line);
+      steps.push({ label, line, lineTopInPane: top === null ? null : Math.round(top - H.root.scrollTop), expected: Math.round(paneHeight * fraction), ...w.shows() });
+    };
+    await at('first boundary entering the pane', 5001, 0.95);
+    await at('first boundary three quarters down', 5001, 0.75);
+    await at('first boundary in the middle', 5001, 0.5);
+    await at('first boundary a quarter down', 5001, 0.25);
+    await at('first boundary leaving the pane', 5001, 0.02);
+    await at('back to three quarters down', 5001, 0.75);
+    await at('second boundary three quarters down', 10001, 0.75);
+    await at('second boundary a quarter down', 10001, 0.25);
+    await at('the last line at the bottom of the pane', 12000, 0.9);
+    await at('second boundary again, upward', 10001, 0.75);
+    await at('first boundary again, upward', 5001, 0.75);
+    await at('the file\'s first line', 1, 0.1);
+    return { paneHeight, rowHeight, steps };
+  });
+  expect(result.paneHeight).toBe(860);
+  expect(result.rowHeight).toBe(20);
+  expect(result.steps.map((s) => s.label)).toHaveLength(12);
+  for (const step of result.steps) {
+    // The line is drawn, and where the layout has it.
+    expect(step.lineTopInPane, step.label).not.toBeNull();
+    expect(Math.abs(step.lineTopInPane - step.expected), step.label).toBeLessThanOrEqual(1);
+    // The pane shows consecutive lines around it: from the top edge (or the file's first line) to the bottom edge (or its last).
+    expect(step.consecutive, step.label).toBe(true);
+    expect(step.firstInPane, step.label).toBe(Math.max(1, step.line - Math.ceil(step.expected / 20)));
+    expect(step.lastInPane, step.label).toBe(Math.min(12000, step.line + Math.ceil((860 - step.expected) / 20) - 1));
+    expect(step.unclean, step.label).toBe(0);
+    // Never more than two blocks of rows.
+    expect(step.drawn, step.label).toBeLessThanOrEqual(10000);
+  }
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+for (const position of ['only', 'last']) {
+  test(`the last rows of a file that ends the pane a few rows after a block boundary are drawn (${position === 'only' ? 'the only file' : 'the last of thirty-one files'})`, async ({ harness }) => {
+    // Vendor fact F30, second test: the viewer alone never draws them.
+    test.setTimeout(120000);
+    const page = await openBridge(harness);
+    await page.addScriptTag({ content: LONG_FILE });
+    const result = await page.evaluate(async (position) => {
+      const { H, BH } = window;
+      const w = await window.longFile({ lines: 5006, position });
+      const out = { atTop: w.shows() };
+      H.root.scrollTop = H.root.scrollHeight;
+      await H.settle(600);
+      out.atEnd = w.shows();
+      out.atMax = H.root.scrollTop === H.root.scrollHeight - H.root.clientHeight;
+      const lastTop = w.topOf(5006);
+      out.lastLineBottomInPane = lastTop === null ? null : Math.round(lastTop + 20 - H.root.scrollTop);
+      // And away and back: the same.
+      BH.bridge.scrollToItem(w.LONG);
+      await H.settle(600);
+      out.backAtTop = w.shows();
+      H.root.scrollTop = H.root.scrollHeight;
+      await H.settle(600);
+      out.atEndAgain = w.shows();
+      out.sound = BH.sound();
+      return out;
+    }, position);
+    // At its top the file is drawn one block of rows.
+    expect(result.atTop).toMatchObject({ drawn: 5000, firstInPane: 1, consecutive: true, unclean: 0 });
+    expect(result.atMax).toBe(true);
+    expect(result.atEnd).toMatchObject({ drawn: 5006, lastInPane: 5006, consecutive: true, unclean: 0 });
+    // Below the last line: the file's bottom padding (9 px) and the pane's (41 px).
+    expect(result.lastLineBottomInPane).toBe(860 - 50);
+    expect(result.backAtTop).toMatchObject({ drawn: 5000, firstInPane: 1, unclean: 0 });
+    expect(result.atEndAgain).toMatchObject({ drawn: 5006, lastInPane: 5006, consecutive: true, unclean: 0 });
+    expect(result.sound).toEqual({ orphans: 0, clean: true });
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}
