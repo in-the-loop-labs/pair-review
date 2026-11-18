@@ -32,7 +32,7 @@ import { allCorpora, changedLines, customCorpus, hunkHashes, routeDiff } from '.
 import {
   fileWrapper, inlineComment, inlineSuggestion, lineCards, fileSelector, inAnnotationGroup, scrollFileIntoView, scrollFileOutOfView,
   waitForFileRendered, waitForFileSettled, isLineVisible, revealOffHunkLine, lineNumberCell, assertNoOrphanHosts, expectLineCardsInPane,
-  openLineCommentForm, hasRenderedBody, waitForDiffSettled, scrollDiffToEdge, DELETED_COMMENT_RETURNS_ON_RERENDER
+  openLineCommentForm, hasRenderedBody, waitForDiffSettled, scrollDiffToEdge, scrollState
 } from './diff-dom.js';
 
 const { eviction: EVICTION, edge: EDGE } = allCorpora();
@@ -75,6 +75,31 @@ const LONG = (() => {
     [long]: { old: null, new: `${lines.join('\n')}\n` },
   } });
   return { corpus, small, long, nearLine: 10, topLine: 40, farLine: 11000, fartherLine: 11200 };
+})();
+
+/**
+ * The same shape with an added file of 5,006 lines as the last file: six rows
+ * more than one block of the rows the viewer draws (the bridge's
+ * ROWS_PER_ITEM_WINDOW), ending the pane. The viewer alone never draws those
+ * six rows (vendor fact F30, tests/contract/vendor/row-window.spec.js).
+ */
+const LONG_TAIL = (() => {
+  const small = 'aa/small.js';
+  const long = 'long/tail.js';
+  const before = Array.from({ length: 40 }, (_, i) => `const v${i + 1} = ${i + 1};`);
+  const after = before.slice();
+  after[9] = 'const v10 = 100;';
+  const context = (from, to) => before.slice(from, to).map((line) => ` ${line}`).join('\n');
+  const smallHunk = `@@ -7,7 +7,7 @@\n${context(6, 9)}\n-${before[9]}\n+${after[9]}\n${context(10, 13)}\n`;
+  const lines = Array.from({ length: 5006 }, (_, i) => `export const row${i + 1} = compute(${i + 1}); // line ${i + 1}`);
+  const diff = `diff --git a/${small} b/${small}\nindex 1111111..2222222 100644\n--- a/${small}\n+++ b/${small}\n${smallHunk}`
+    + `diff --git a/${long} b/${long}\nnew file mode 100644\nindex 0000000..4444444\n--- /dev/null\n+++ b/${long}\n@@ -0,0 +1,${lines.length} @@\n`
+    + `${lines.map((line) => `+${line}`).join('\n')}\n`;
+  const corpus = customCorpus({ name: 'long-file-short-tail', diff, files: {
+    [small]: { old: `${before.join('\n')}\n`, new: `${after.join('\n')}\n` },
+    [long]: { old: null, new: `${lines.join('\n')}\n` },
+  } });
+  return { corpus, small, long, lastLine: 5006, tailLine: 5004, blockEnd: 5000 };
 })();
 
 const api = (page, method, url, body) => page.evaluate(async (r) => {
@@ -391,15 +416,6 @@ for (const mode of MODES) {
       await expect.poll(() => isLineVisible(page, TARGET, HIDDEN_LINE)).toBe(true);
       await expect(lineNumberCell(fileWrapper(page, TARGET), HIDDEN_LINE, { side: 'additions' }).first()).toBeAttached();
 
-      if (DELETED_COMMENT_RETURNS_ON_RERENDER) {
-        // Characterization of a defect on main: deleting removes the card
-        // element and leaves the comment in the list the file is re-rendered
-        // from, so the re-render draws the deleted comment again. The count
-        // (from data) stays right, and the next comment reload removes it.
-        await expect(inlineComment(page, gone)).toHaveCount(1);
-        await expectPendingCount(page, 0);
-        await reloadComments(page);
-      }
       await expect(inlineComment(page, gone)).toHaveCount(0);
 
       // Nor after going away and coming back.
@@ -453,12 +469,6 @@ for (const mode of MODES) {
       await expect.poll(() => isLineVisible(page, TARGET, HIDDEN_LINE)).toBe(true);
       await expect(lineNumberCell(fileWrapper(page, TARGET), HIDDEN_LINE, { side: 'additions' }).first()).toBeAttached();
       await expectLeftOpen();
-      if (DELETED_COMMENT_RETURNS_ON_RERENDER) {
-        // The defect of main the test above characterizes: the re-render
-        // draws the deleted comment again until the comments are reloaded.
-        await expect(targetComments(page)).toHaveCount(1);
-        await reloadComments(page);
-      }
       await expect(targetComments(page)).toHaveCount(0);
       await expectLeftOpen();
 
@@ -765,6 +775,55 @@ for (const mode of MODES) {
 
       await item(top).click();
       await expect(inlineComment(page, top)).toBeInViewport();
+
+      await expect(page.locator('.toast-error, .toast-warning')).toHaveCount(0);
+      await assertNoOrphanHosts(page);
+    });
+  });
+
+  test.describe(`The last rows of a file a few rows longer than one block of the viewer's rows, at the end of the pane (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await routeDiff(page, LONG_TAIL.corpus);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await cleanupAllComments(page, mode.reviewId);
+      await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
+      await page.evaluate(() => window.aiPanel?.expand());
+    });
+
+    test.afterEach(async ({ page }) => {
+      await cleanupAllComments(page, mode.reviewId);
+    });
+
+    test('the file\'s last lines are drawn when the pane is at its end, and a comment on one of them is reached from the review panel', async ({ page }) => {
+      const comment = await seedComment(page, mode.reviewId, { file: LONG_TAIL.long, line: LONG_TAIL.tailLine, body: 'On one of the last lines' });
+      await reloadComments(page);
+      const wrapper = fileWrapper(page, LONG_TAIL.long);
+
+      // The reader scrolls to the end of the pane, and again when the pane
+      // has grown under it (the comment's card has a height once the row
+      // under it is drawn, a frame or more after the scroll that drew it):
+      // the pane comes to rest at its end with the end of the file in it.
+      await expect(async () => {
+        await scrollDiffToEdge(page, 'bottom');
+        await waitForDiffSettled(page);
+        const state = await scrollState(page);
+        expect(state.top + state.client).toBeGreaterThanOrEqual(state.height - 1);
+        await expect(lineNumberCell(wrapper, LONG_TAIL.lastLine).first()).toBeInViewport({ timeout: 500 });
+        await expect(lineNumberCell(wrapper, LONG_TAIL.blockEnd).first()).toBeInViewport({ timeout: 500 });
+        await expect(inlineComment(page, comment)).toBeInViewport({ timeout: 500 });
+      }).toPass();
+
+      // From the top of the pane, a click on the comment in the review panel.
+      await scrollDiffToEdge(page, 'top');
+      await expect(fileWrapper(page, LONG_TAIL.small)).toBeInViewport();
+      await waitForDiffSettled(page);
+      await userSegment(page).click();
+      const item = page.locator(`.finding-item.finding-comment[data-id="${comment}"]`);
+      await expect(item).toBeVisible();
+      await item.click();
+      await expect(inlineComment(page, comment)).toBeInViewport();
+      await expect(lineNumberCell(wrapper, LONG_TAIL.tailLine).first()).toBeInViewport();
 
       await expect(page.locator('.toast-error, .toast-warning')).toHaveCount(0);
       await assertNoOrphanHosts(page);

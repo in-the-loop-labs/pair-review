@@ -26,7 +26,7 @@ async function prepare(page) {
     await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
     await H.settle();
     const base = H.cv.getItem(T).fileDiff;
-    window.__hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));
+    window.__hydrated = window.VendorTestExtras.hydratePartialDiff('clone', base, H.contentsOf(T));
     const first = base.hunks[0];
     return { T, gapLine: first.additionStart + first.additionCount + 30, expandedHeight: H.itemHeight(T) };
   });

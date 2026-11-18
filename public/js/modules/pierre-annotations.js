@@ -5,9 +5,8 @@
  * register (tour stops, hunk summaries, external threads, the file-comment
  * zone, notices).
  *
- * One copy for both diff bridges. PierreBridge (one FileDiff per file) calls
- * the builders; PierreCodeViewBridge (one virtualized CodeView) also uses
- * AnnotationElements, the registry and element cache.
+ * PierreBridge calls the builders and uses AnnotationElements, the registry
+ * and element cache.
  *
  * Nothing here reads `window.prManager`. The collaborators a builder needs
  * come in as `env`: an object, or a function that returns one and is called
@@ -38,8 +37,8 @@
   // ─── Order on one line ───────────────────────────────────────────────
 
   // At the same line, suggestions appear before comments. This matches the
-  // legacy rendering order where the suggestion row is inserted first, then
-  // the adopted comment row appears below it. Hunk summaries and tour stops
+  // order of the review: the suggestion first, then
+  // the comment adopted from it below it. Hunk summaries and tour stops
   // describe the surrounding code, so they stack above suggestion/comment
   // feedback anchored to the same line. External (host-synced) threads stack
   // below user comments on the same line (AI, then user, then external).
@@ -74,9 +73,10 @@
   // ─── Comment card ────────────────────────────────────────────────────
 
   /**
-   * Render a user comment card using the legacy comment UI. Produces DOM
-   * matching CommentManager.displayUserComment() so all existing CSS and
-   * event handling applies. The element lives in the light DOM (slotted).
+   * Render a user comment card in the page's comment markup (the one
+   * definition of a line comment's card; pr.css styles it and the page's
+   * delegated handlers act on it). The element lives in the light DOM
+   * (slotted).
    * @param {Object} comment
    * @param {string} id - annotation id
    * @param {Object|Function} env - collaborators (see the file header)
@@ -169,7 +169,7 @@
   // ─── Suggestion card ─────────────────────────────────────────────────
 
   /**
-   * Render an AI suggestion card using the legacy suggestion UI. Delegates to
+   * Render an AI suggestion card in the page's suggestion markup. Delegates to
    * SuggestionManager.createSuggestionRow() for zero duplication, then
    * extracts the inner .ai-suggestion div. The element lives in the light DOM
    * (slotted) so all existing CSS applies.
@@ -240,13 +240,13 @@
    */
   const SUGGESTION_ICON_SVG = `<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V4.664a.25.25 0 0 0-.073-.177l-2.914-2.914a.25.25 0 0 0-.177-.073ZM8 3.25a.75.75 0 0 1 .75.75v1.5h1.5a.75.75 0 0 1 0 1.5h-1.5v1.5a.75.75 0 0 1-1.5 0V7h-1.5a.75.75 0 0 1 0-1.5h1.5V4A.75.75 0 0 1 8 3.25Zm-3 8a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"></path></svg>`;
 
-  /** Chat icon SVG for the comment form (matches legacy CommentManager). */
+  /** Chat icon SVG for the comment form (the comment form's chat icon). */
   const CHAT_FORM_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>`;
 
   /**
    * Render a comment form. Reuses the existing form element for `id` if
    * `formElements` holds one, to preserve what the user typed. Elements live
-   * in the light DOM (slotted) and use legacy comment form classes so page
+   * in the light DOM (slotted) and use the page's comment form classes so page
    * CSS applies.
    * @param {Object} data - { lineStart, lineEnd, side, diffPosition,
    *   headerTitle, showSuggestionBtn, initialValue }
@@ -271,7 +271,7 @@
     container.className = 'pierre-annotation user-comment-form';
     container.dataset.annotationId = id;
 
-    // Header — matches legacy comment form
+    // Header
     const header = document.createElement('div');
     header.className = 'comment-form-header';
     const icon = document.createElement('span');
@@ -324,7 +324,7 @@
     }
     container.appendChild(textarea);
 
-    // Actions — order matches legacy: Save, Chat, Cancel
+    // Actions, in this order: Save, Chat, Cancel
     const actions = document.createElement('div');
     actions.className = 'comment-form-actions';
 
@@ -418,8 +418,8 @@
     formElements.set(id, container);
 
     // Focus textarea and attach emoji picker after it's in the DOM.
-    // Matches parity with legacy CommentManager.showCommentForm — emoji
-    // autocomplete (typing `:`) should work in Pierre-rendered forms too.
+    // Emoji autocomplete (typing `:`) works in these forms as in every
+    // other comment field of the page.
     requestAnimationFrame(() => {
       textarea.focus();
       const emojiPicker = resolveEnv(env).emojiPicker;

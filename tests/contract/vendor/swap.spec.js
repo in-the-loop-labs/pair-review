@@ -61,7 +61,7 @@ test('F5: with the worker pool, a replaced fileDiff is not displayed in the publ
 
   const result = await page.evaluate(async (T) => {
     const H = window.H;
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
     const sync = {
@@ -92,7 +92,7 @@ test('F5: without the worker pool, a replaced fileDiff is displayed synchronousl
   const info = await bringUpLarge(page, { pool: false });
   const result = await page.evaluate(async (T) => {
     const H = window.H;
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
     return { sync: H.shape(T), clean: H.auditClean() };
@@ -109,7 +109,7 @@ test('F6: an annotation-only publish during a pending swap is held back and appe
   const info = await bringUpLarge(page, { pool: true });
   const result = await page.evaluate(async ({ T, visibleLine }) => {
     const H = window.H;
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
     // The line is rendered right now (old diff) and will be rendered after the swap.
@@ -146,7 +146,7 @@ test('F7: derived metadata published with the same cacheKey is never displayed; 
   const result = await page.evaluate(async ({ T, visibleLine, gapLine }) => {
     const H = window.H;
     const out = {};
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     out.hydratedKey = hydrated.cacheKey;
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);

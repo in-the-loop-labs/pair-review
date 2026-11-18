@@ -38,23 +38,6 @@ function freePort() {
 const CHROMIUM_UNSAFE_PORTS = new Set([4045, 4190, 5060, 5061]);
 
 /**
- * Which diff engine the frontend should use, from PR_ENGINE.
- *
- * The CodeView migration (plans/codeview-virtualized-diff.md) builds the new
- * engine behind `window.__PAIR_REVIEW_DIFF_ENGINE === 'codeview'` so the same
- * specs can run against both engines. PRManager reads the flag once, in its
- * constructor; tests/e2e/diff-dom.js selects its engine half by the same
- * variable. An unknown value is an error, not a silent run on the default
- * engine.
- */
-function requestedDiffEngine() {
-  const value = process.env.PR_ENGINE;
-  if (value === undefined || value === '' || value === 'filediff') return null;
-  if (value === 'codeview') return 'codeview';
-  throw new Error(`PR_ENGINE must be "codeview" or "filediff" (got "${value}")`);
-}
-
-/**
  * Whether the page gets the vendor's DEVELOPMENT bundle, from
  * PR_VENDOR_BUNDLE=dev.
  *
@@ -170,15 +153,6 @@ const test = base.extend({
 
   context: async ({ context, expectedConsoleErrors }, use, testInfo) => {
     const guard = attachConsoleGuard(context, { title: testInfo.titlePath.join(' › ') });
-    const engine = requestedDiffEngine();
-    if (engine) {
-      // Sets a global only. An init script runs before the parser has created
-      // <html>: `document.head` and `document.documentElement` are both null
-      // here, so an init script cannot touch the DOM.
-      await context.addInitScript((value) => {
-        window.__PAIR_REVIEW_DIFF_ENGINE = value;
-      }, engine);
-    }
     const devBundle = requestedVendorBundle();
     if (devBundle) {
       if (!fs.existsSync(devBundle)) {

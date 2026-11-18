@@ -295,18 +295,20 @@ because violating it produced a real, observed flake or measurable waste.
   a census found thirteen describes leaving comments and fourteen leaving
   suggestions). The suite's old "known flake", a gutter button left showing,
   was a test for a clean review meeting an analysis an earlier spec had left
-  (`GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS`). A spec still cleans up, itself, whatever
+  (ledger H66 of `plans/codeview-virtualized-diff.md`). A spec still cleans up, itself, whatever
   else it creates: another review, a setting, viewed state it did not mock,
   `localStorage`. And a test must not count on rows an earlier test left.
-- **The suite runs on two diff engines until the migration ends, and a spec
-  must not know which.** `PR_ENGINE=codeview` runs it on the virtualized
-  viewer (`plans/codeview-virtualized-diff.md`). `tests/e2e/diff-dom.js` is
-  the surface; what an engine does its own way is in its half
-  (`diff-dom-filediff.js`, `diff-dom-codeview.js`), exported under one name.
-  Where the engines differ on purpose, the spec asks a named expectation of
-  `diff-dom.js` (`contextGapLabel`, `expectedContextRanges`,
-  `UPGRADED_DIFF_HUNKS`, `MISSING_VIEWER_BUNDLE`, ...), which has a value
-  per engine.
+- **A spec does not know how the diff is drawn.** `tests/e2e/diff-dom.js` is
+  the surface; what has to know the viewer from the inside (a file may not
+  be mounted, the bridge's records, a context file's rows) is in its half,
+  `diff-dom-codeview.js`, exported under the same names. During the
+  migration to the virtualized viewer (`plans/codeview-virtualized-diff.md`)
+  the whole suite ran unchanged on the renderer it replaced and on the
+  viewer; that only worked because no spec named vendor DOM. Where the
+  application has a behaviour a spec should not spell out (a defect kept as
+  it is, the wording of a vendor label), the spec asks a named expectation
+  of `diff-dom.js` (`contextGapLabel`, `expectedContextRanges`,
+  `BASE_CHANGE_KEEPS_CARDS`, `SUGGESTION_BLOCK_HAS_EMPTY_LINE`, ...).
 - **"The file has an element" is not "the file is in the pane".** The
   virtualized viewer has an element only for files near the viewport: two
   files down in a four-file pane there may be none. Never assert a file's
@@ -322,24 +324,25 @@ because violating it produced a real, observed flake or measurable waste.
   whatever is drawn against it; do not count rows of a long file in a spec.
 - **Scroll through the helpers** (`scrollDiffTo`, `scrollDiffToEdge`,
   `scrollThroughDiff`, `scrollFileOutOfView`), never by setting `scrollTop`
-  on an element a spec names. The scroll container is not the same element
-  on both engines, and the virtualized viewer holds a navigation's scroll
+  on an element a spec names. Which element scrolls is the adapter's to
+  know, and the virtualized viewer holds a navigation's scroll
   target until the reader takes over: a position written by a script right
   after a sidebar jump is undone. The helpers let go the way a wheel does.
 - **`test.use({ expectedConsoleErrors: [a, b] })` with two patterns is read
   by Playwright as `[value, options]`.** Pass one pattern with an
   alternation.
-- **A development-bundle run** (`PR_VENDOR_BUNDLE=dev PR_ENGINE=codeview`)
+- **A development-bundle run** (`PR_VENDOR_BUNDLE=dev`)
   serves the vendor's development bundle and gives the viewer its layout
   validator: a layout that does not match what is drawn is a `console.error`
   and fails the test, and after every test one more pass with the pane at
   rest must be silent. `fixture-isolation.spec.js` asserts in every run that
-  the bundle and the validator are what the run asked for. On the
-  virtualized viewer every test also ends with the orphan-host check.
-- **A `PR_ENGINE=codeview` run of a phase's list includes the lists of the
-  phases before it.** A later phase can take away what an earlier one had,
-  and a run of the later phase's own list does not see it (phase 6's CSS
-  failed a test of phase 5's list that phase 6's list does not contain).
+  the bundle and the validator are what the run asked for. Every test also
+  ends with the orphan-host check.
+- **A change is checked with the whole suite, not with the specs it seems to
+  touch.** A later change can take away what an earlier one had, and a run
+  of the later change's own specs does not see it (during the migration,
+  phase 6's CSS failed a test of phase 5's list that phase 6's list did not
+  contain).
 - **`scrollWidth - clientWidth` is a scroll range only on a box that
   scrolls.** On a box with `overflow: visible` it says how far something
   sticks out of the padding box, which includes anything drawn over the
@@ -395,6 +398,15 @@ because violating it produced a real, observed flake or measurable waste.
   reader's window does not cover, and more than 10,000 for a file whose top
   is not drawn while the reader is at its end (N11 "Navigation to a card far
   down a file longer than the rows the viewer draws").
+- **A pane scrolled to its end is not at its end a frame later when a card
+  below got its height.** The card of a line the viewer has not drawn yet
+  has no measured height; the pane grows by it after the scroll that drew the
+  row. Do what a reader does: scroll to the end again until the pane rests
+  there, with `expect(async () => { ... }).toPass()` around the scroll, the
+  `scrollState` check and the assertions on what must be in the viewport
+  (N11 "The last rows of a file a few rows longer than one block of the
+  viewer's rows ..."). Never one `scrollDiffToEdge` followed by
+  `toBeInViewport()` on the last line of a file that has cards.
 - **Two navigations can start from one key press.** The review panel and the
   suggestion navigator both answer `j` and `k`, each with its own cursor, so
   a test that presses a key and expects one card in view depends on which of
@@ -450,7 +462,7 @@ because violating it produced a real, observed flake or measurable waste.
 - **The CodeView bridge is tested in the browser against the real vendor**
   (`tests/contract/bridge`, the same command). `openBridge(harness)` from
   `bridge-test.js` loads the development bundle, the production
-  `PierreCodeViewBridge` with the modules it depends on, and the app's own CSS
+  `PierreBridge` with the modules it depends on, and the app's own CSS
   for the gutter buttons; `window.BH` (`bridge-page.js`) builds entries from
   the workload and constructs the bridge the way the app does. A spec drives
   the bridge's public API and asserts the DOM and the bridge's data; it ends
@@ -488,7 +500,7 @@ because violating it produced a real, observed flake or measurable waste.
   `bridge.isLineVisible` for the line and `bridge.getAnnotationElement` for
   the card, and use auto-waiting assertions for what reaches the screen.
 - **A unit test of the CodeView bridge uses the recording stub of
-  `tests/utils/codeview-bridge-harness.js`** in place of the viewer: it stores
+  `tests/utils/pierre-bridge-harness.js`** in place of the viewer: it stores
   what the bridge sends and answers booleans and items. It never renders,
   mounts or calls a render callback, so such a test covers the bridge's own
   decisions only (records, derived metadata and their keys, the visibility
@@ -527,7 +539,9 @@ because violating it produced a real, observed flake or measurable waste.
   below it.** A border, padding or margin on the scroll container or on a
   file's element is such height. What draws the pane's box and a file's frame
   there, and which number tells the viewer, is in `pr.css` (the block for the
-  viewer), `pierre-styles.js` (`FRAME_CSS`) and `engine-switch-sites.test.js`.
+  viewer) and `pierre-styles.js` (`FRAME_CSS`); gates G9 and G13
+  (`tests/contract/gates`) and `tests/unit/pierre-shared-modules.test.js` pin
+  them.
 - **A box is measured after the animations on it have ended.** A card slides
   in when it is attached (`slideUp`, 0.3 s, a transform), so its box is up to
   a tenth of a pixel away from its place for a few frames, and differently in

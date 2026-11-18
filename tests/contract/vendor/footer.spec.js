@@ -6,10 +6,11 @@
  * rendered once, after the last item, inside the scroller; the vendor does no
  * scroll anchoring inside it.
  *
- * Depends on it: decision D2. Context files render in a persistent
- * div.context-files-region returned from renderCodeViewFooter, with main's
- * legacy renderer unchanged; PRManager._mutateContextRegion anchors the app's
- * own mutations of the region.
+ * Depends on it: nothing the application ships. Decision D2 was taken the
+ * other way (context files are items of the viewer, section 12 of the
+ * ledger), so the application does not use the footer. The fact stays pinned
+ * because it is what that decision was weighed against: a region in the
+ * footer gets no scroll anchoring from the vendor.
  */
 
 import { test, expect } from '../harness/contract-test.js';

@@ -3,43 +3,39 @@
  * The diff pane, as E2E specs see it.
  *
  * THIS IS THE ONLY E2E FILE THAT KNOWS VENDOR DOM. A spec never names
- * `diffs-container`, a shadow root, `.pierre-diff-body`, or a vendor row
+ * `diffs-container`, a shadow root, or a vendor row
  * attribute (`data-line`, `data-column-number`, `data-separator`,
  * `data-expand-*`, `data-additions`, `data-diff-type`,
  * `data-annotation-slot`, ...), and never reaches for a vendor instance
  * through `prManager.pierreBridge`. It asks this module.
  * `tests/unit/e2e-vendor-dom-boundary.test.js` enforces that.
  *
- * Why: the diff is being moved from one `FileDiff` per file to a single
- * virtualized `CodeView` (plans/codeview-virtualized-diff.md). Every scenario
- * must run unchanged on both engines so that "same spec, two engines" is the
- * proof of parity. When the engine changes, this file changes and the specs
- * do not.
+ * Why: the diff pane is drawn by a vendor component (one virtualized
+ * `CodeView` of @pierre/diffs, plans/codeview-virtualized-diff.md). When the
+ * vendor's DOM changes, or the component is replaced again, this file and
+ * its half change and the specs do not. That is how the migration to the
+ * viewer was proven: every scenario ran unchanged on the renderer it
+ * replaced and on the viewer.
  *
- * What a spec may still name, because the application owns it on both
- * engines: `.d2h-file-wrapper[data-file-name]` (the element that carries a
- * file's identity; its header, file-comment zone and cards are light-DOM
+ * What a spec may still name, because the application owns it:
+ * `.d2h-file-wrapper[data-file-name]` (the element that carries a file's
+ * identity; its header, file-comment zone and cards are light-DOM
  * descendants), `.d2h-file-header`, card classes (`.user-comment-row`,
  * `.ai-suggestion`, ...), `.pierre-gutter-buttons` / `.pierre-comment-btn` /
  * `.pierre-chat-btn` (application elements), and `#diff-container`.
  *
- * Two engines, selected by PR_ENGINE (the default is FileDiff):
- *  - FileDiff: a diff file is `div.d2h-file-wrapper[data-file-name] >
- *    .pierre-diff-body > diffs-container` with an open shadow root; a context
- *    file is `div.d2h-file-wrapper.context-file[data-file-name]` rendered by
- *    the application's table renderer (no shadow DOM). This file.
- *  - CodeView (PR_ENGINE=codeview): the wrapper IS the `diffs-container`, for
- *    changed files and context files alike, and exists only while the file
- *    is mounted. `hostOf` below accepts both shapes.
- * This file is the surface every spec imports, what both engines share, and
- * the named expectations. What an engine does its own way is in its half:
- * tests/e2e/diff-dom-filediff.js (the table renderer's context files) and
- * tests/e2e/diff-dom-codeview.js. A half extends the in-page library and
- * gives the helpers that differ, which are exported here under one name.
+ * The shape: a file's wrapper IS the vendor's `diffs-container` host, for
+ * changed files and context files alike, with an open shadow root, and it
+ * exists only while the viewer has the file mounted (near the viewport).
+ * This file is the surface every spec imports: selectors, locators, the
+ * waits, the named expectations. What has to know that a file may not be
+ * mounted, the bridge's records and a context file's rows is in
+ * tests/e2e/diff-dom-codeview.js, which extends the in-page library and
+ * gives those helpers; they are exported here under one name.
  *  - Playwright CSS locators pierce open shadow roots, so
- *    `wrapper.locator('[data-line]')` reaches rows in either layout.
+ *    `wrapper.locator('[data-line]')` reaches a file's rows.
  *
- * Timing rules that hold on both engines (tests/CONVENTIONS.md):
+ * Timing rules (tests/CONVENTIONS.md):
  *  - A file's contents are fetched after its patch renders and the diff is
  *    upgraded with them. Rows are re-created by that upgrade. Wait for
  *    `waitForContentUpgrade` before measuring geometry or holding a row.
@@ -51,11 +47,7 @@
 // ---------------------------------------------------------------------------
 
 const { expect } = require('@playwright/test');
-const filediffEngine = require('./diff-dom-filediff.js');
-const codeviewEngine = require('./diff-dom-codeview.js');
-
-/** The engine this run drives the application with (tests/e2e/fixtures.js sets it in the page). */
-const ENGINE = process.env.PR_ENGINE === 'codeview' ? 'codeview' : 'filediff';
+const viewerHalf = require('./diff-dom-codeview.js');
 
 const ROW = '[data-line]';
 const NUMBER_CELL = '[data-column-number]';
@@ -251,63 +243,9 @@ function installInPage() {
     return el;
   };
 
-  /** Bridge-side record of a diff file, or null. Shape is engine-specific; only this file reads it. */
-  D.record = (file) => {
-    const bridge = window.prManager && window.prManager.pierreBridge;
-    return (bridge && bridge.files && bridge.files.get(file)) || null;
-  };
-
-  /**
-   * True when the engine is not going to re-create files on its own account.
-   *
-   * On the current engine the highlight worker pool starts with the page, and
-   * a file that rendered before the pool was ready is rebuilt from scratch (a
-   * new vendor instance, new rows, context the application revealed applied
-   * again) one animation frame after the pool reports ready. Under load that
-   * is hundreds of milliseconds after the first rows are on screen. Anything
-   * that holds a row, measures geometry, or puts a different diff on screen
-   * by hand must wait for it. A pool that failed to start is settled: the
-   * bridge dropped it and rebuilt on the main thread in the same task.
-   */
-  D.engineSettled = () => {
-    const bridge = window.prManager && window.prManager.pierreBridge;
-    if (!bridge) return false;
-    if (!bridge.workerManager) return true;
-    if (!bridge._workerReady) return false;
-    for (const state of bridge.files.values()) {
-      const rebuildPending = !state.usesWorkerManager && !state.forcePlainText && state.container && state.patch;
-      if (rebuildPending) return false;
-    }
-    return true;
-  };
-
-  /**
-   * True when what is on screen for `file` is the diff the bridge last asked
-   * for. Replacing a file's diff (content upgrade, revealed context) is
-   * displayed a worker round trip later; until then the old rows are still
-   * in the DOM and will be replaced. A collapsed file displays no rows, so
-   * there is nothing to wait for.
-   */
-  D.isDisplayCurrent = (file) => {
-    if (!D.engineSettled()) return false;
-    const record = D.record(file);
-    const instance = record && record.instance;
-    if (!instance || record.collapsed) return true;
-    if (typeof instance.getRenderedDiff !== 'function') return true;
-    return instance.getRenderedDiff() === instance.fileDiff;
-  };
-
-  /**
-   * True once the application has taken `file`'s contents and asked the
-   * engine for the upgraded diff, whether or not that diff is displayed yet.
-   */
-  D.contentsTaken = (file) => {
-    const record = D.record(file);
-    return !!(record && record.baseMetadata);
-  };
-
-  /** True when `file` has been upgraded with its contents AND that diff is what is displayed. */
-  D.isUpgraded = (file) => D.contentsTaken(file) && D.isDisplayCurrent(file);
+  // D.record, D.engineSettled, D.isDisplayCurrent, D.contentsTaken and
+  // D.isUpgraded (what the bridge holds for a file, and whether what is on
+  // screen is what it asked for) are defined by the viewer's half.
 
   /** True when no content upgrade is queued or in flight. */
   D.upgradesIdle = () => {
@@ -344,7 +282,7 @@ function installInPage() {
       separators: [],
       expandControls: 0,
       annotations: [],
-      notices: [...wrapper.querySelectorAll('.large-diff-placeholder, .pierre-binary-file')].map(text),
+      notices: [...wrapper.querySelectorAll('.large-diff-placeholder')].map(text),
     };
     if (pre) {
       for (const code of pre.querySelectorAll('code')) {
@@ -481,19 +419,6 @@ function installInPage() {
     return rows.length ? { ...box(rows[0]), text: rows[0].textContent, type: rows[0].getAttribute('data-line-type') } : null;
   };
 
-  /**
-   * Line numbers of `file` that are currently flashed (the brief highlight a
-   * navigation puts on its target lines), for a diff file or a context file.
-   */
-  D.flashedLines = (file) => {
-    const context = D.contextWrapper(file);
-    if (context) {
-      return [...context.querySelectorAll('tr.chat-line-highlight[data-line-number]')]
-        .map((tr) => Number(tr.dataset.lineNumber));
-    }
-    return D.rows(file).filter((row) => row.classList.contains('pierre-line-highlight'))
-      .map((row) => Number(row.getAttribute('data-line')));
-  };
 
   /** The text the user has selected, wherever the selection is (document or inside a diff's shadow tree). */
   D.selectedText = () => {
@@ -540,8 +465,8 @@ function installInPage() {
 }
 /* eslint-enable no-undef */
 
-/** What builds the in-page library: this file's, then the engine's extension of it. */
-const IN_PAGE_INSTALLERS = [installInPage, ENGINE === 'codeview' ? codeviewEngine.extendInPage : filediffEngine.extendInPage];
+/** What builds the in-page library: this file's, then the extension of it in the viewer's half. */
+const IN_PAGE_INSTALLERS = [installInPage, viewerHalf.extendInPage];
 const IN_PAGE_SOURCES = IN_PAGE_INSTALLERS.map((fn) => fn.toString());
 
 async function lib(page) {
@@ -609,16 +534,6 @@ function allFileWrappers(page) {
  */
 function diffStatus(page) {
   return page.locator('#diff-status');
-}
-
-async function filesInPane(page) {
-  return inPage(page, (D) => D.wrappers()
-    .map((w) => ({
-      file: w.dataset.fileName,
-      kind: w.classList.contains('context-file') ? 'context' : 'diff',
-      top: w.getBoundingClientRect().top,
-    }))
-    .sort((a, b) => a.top - b.top));
 }
 
 /**
@@ -782,11 +697,8 @@ async function expectLineCardsInPane(page, cardSelector, annotationType, count) 
     const state = await read();
     return { held: state.held, mismatched: state.mismatched };
   }).toEqual({ held: count, mismatched: [] });
-  if (ENGINE === 'codeview') {
-    expect((await read()).inDocument).toBeLessThanOrEqual(count);
-  } else {
-    await expect(page.locator(cardSelector)).toHaveCount(count);
-  }
+  // Only the cards of mounted files are in the document.
+  expect((await read()).inDocument).toBeLessThanOrEqual(count);
 }
 
 /**
@@ -976,90 +888,6 @@ async function revealOffHunkLine(page, file, line, { side = 'RIGHT', lineEnd = l
 }
 
 /**
- * The hunk of `file` whose new-side range contains `line`.
- * @returns {Promise<{index: number, additionStart: number, additionCount: number}|null>}
- */
-async function hunkContaining(page, file, line) {
-  return inPage(page, (D, a) => {
-    const record = D.record(a.file);
-    const metadata = record && record.instance && record.instance.fileDiff;
-    if (!metadata) return null;
-    const index = metadata.hunks.findIndex((h) => h.additionStart <= a.line && h.additionStart + h.additionCount > a.line);
-    if (index < 0) return null;
-    const hunk = metadata.hunks[index];
-    return { index, additionStart: hunk.additionStart, additionCount: hunk.additionCount };
-  }, { file, line });
-}
-
-/**
- * Bring a file of the pane to where it has an element. On this engine a file
- * keeps its element once the page has drawn it, so there is nothing to do;
- * the virtualized viewer's half scrolls the file into its mounted window.
- */
-async function ensureMounted() {}
-
-/**
- * Expand hidden context next to a hunk the way the vendor's own expand
- * control does, by an exact number of lines (a click expands by the
- * configured step, which a scenario cannot choose).
- * @param {Object} options
- * @param {number} options.hunkIndex
- * @param {('up'|'down'|'both')} options.direction
- * @param {number} options.lines
- */
-async function expandHunkBy(page, file, { hunkIndex, direction, lines }) {
-  // Not before the file shows its upgraded diff on a settled engine. The
-  // control this stands in for does not exist earlier, and on the current
-  // engine the expansion lives in the vendor instance: a file rebuilt for
-  // the worker pool afterwards gets a new instance and the expansion is
-  // gone for good (ledger H59; the cause of the "manually expanded lines"
-  // flake of inline-feedback-context.spec.js under load).
-  await waitForContentUpgrade(page, file);
-  await inPage(page, (D, a) => {
-    const record = D.record(a.file);
-    const instance = record && record.instance;
-    if (!instance) throw new Error(`expandHunkBy: ${a.file} is not rendered`);
-    instance.expandHunk(a.hunkIndex, a.direction, a.lines);
-    if (typeof instance.rerender === 'function') instance.rerender();
-  }, { file, hunkIndex, direction, lines });
-}
-
-/**
- * Re-display `file` from its upgraded base diff, dropping whatever context
- * was revealed on screen while the application's record of revealed ranges
- * and its annotations stay. Models the display falling behind the data.
- */
-async function redisplayBaseDiff(page, file) {
-  // Not before the engine has settled: a file rebuilt for the worker pool
-  // afterwards is rebuilt with every revealed range applied, which undoes
-  // this (the cause of this scenario's flake under load, ledger H59).
-  await waitInPage(page, (D) => D.engineSettled(), null, { timeout: 20000 });
-  await inPage(page, (D, f) => {
-    const bridge = window.prManager.pierreBridge;
-    const record = D.record(f);
-    if (!record || !record.baseMetadata) throw new Error(`redisplayBaseDiff: ${f} is not upgraded`);
-    bridge._renderWithFileDiff(record, record.baseMetadata);
-  }, file);
-}
-
-/**
- * Draw `file` again as it is, now: what a comment reload, a suggestion that
- * lands or the file's contents arriving do to a file on screen. On this
- * engine the file's own instance draws its rows again and the header and the
- * comment zone, elements of the page, are not touched; the virtualized
- * viewer's half publishes the file, which takes its header, zone and cards
- * out of the document and puts them back.
- */
-async function redrawFile(page, file) {
-  await inPage(page, (D, f) => {
-    const record = D.record(f);
-    const instance = record && record.instance;
-    if (!instance) throw new Error(`redrawFile: ${f} is not rendered`);
-    if (typeof instance.rerender === 'function') instance.rerender();
-  }, file);
-}
-
-/**
  * Hold back every result the diff worker pool delivers until `release()`.
  * While held, a diff whose content changed stays displayed as it was.
  * `arrived` resolves in the page (`window.__diffWorkerHold.arrived`) once the
@@ -1135,15 +963,19 @@ async function hoverDiffLine(page, lineIndex = 0) {
 
 /**
  * Open a line comment form the way a reader does: point at the line's number,
- * click the comment button that appears. Resolves when one more form is open.
+ * click the comment button that appears. Resolves when one more form is
+ * open, on the line that was asked for.
  *
- * On the current engine the button container is positioned by the
- * application, and one that was positioned for a file that has since moved
- * can be left over the hovered row and take the click (ledger H54;
- * gutter-buttons.spec.js is the test of that). A click that never reached the
- * button is made again after moving the pointer away and back, which is what
- * clears a stale container. The click is the last step of an attempt, so a
- * form is never opened twice.
+ * The comment button belongs to the row that is under the pointer when it is
+ * clicked. Rows can move under a resting pointer between the hover and the
+ * click (a card above the line gets its height a frame after it is attached,
+ * a file's contents arrive), the browser then reports the row that is now
+ * under the pointer, and the button is that row's: the click opens a form on
+ * a neighbouring line, as it would for a reader. Seen about once in a
+ * hundred executions of one test, on the per-file renderer's successor at
+ * the phase-7 commit as well (ledger H161). So a form that opened on another
+ * line is closed again and the gesture is repeated; a button that keeps
+ * opening the wrong line fails here after the timeout.
  *
  * @param {Object} target - `{file, line, side}` or `{lineIndex}` (Nth number cell of the page)
  * @returns {Promise<void>}
@@ -1155,10 +987,36 @@ async function openLineCommentForm(page, { file, line, side = 'additions', lineI
     : lineNumberCells(page).nth(lineIndex || 0);
   const forms = page.locator('.user-comment-form');
   const before = await forms.count();
+  /** What each open form says of itself: file, first and last line, side. */
+  const formKeys = () => forms.evaluateAll((elements) => elements.map((element) => {
+    const textarea = element.querySelector('textarea');
+    return textarea ? `${textarea.dataset.file}|${textarea.dataset.line}|${textarea.dataset.lineEnd}|${textarea.dataset.side}` : '';
+  }));
+  const known = await formKeys();
+  const wantedSide = side === 'deletions' ? 'LEFT' : 'RIGHT';
+  /** A form on the line: the line itself, or a selected range that holds it (the button of a line inside a selection comments the range). */
+  const isOnLine = (key) => {
+    const [, first, last, formSide] = key.split('|');
+    return formSide === wantedSide && Number(first) <= Number(line) && Number(line) <= Number(last || first);
+  };
   await expect(async () => {
     await page.mouse.move(0, 0);
     await cell.hover({ timeout: 2000 });
     await scope.locator('.pierre-comment-btn').first().click({ timeout: 2000 });
+    if (!file) return;
+    await expect(forms).toHaveCount(before + 1, { timeout: 2000 });
+    const opened = (await formKeys()).filter((key) => !known.includes(key));
+    if (opened.length === 1 && isOnLine(opened[0])) return;
+    // Another row's button took the click: close what it opened and start over.
+    await forms.evaluateAll((elements, keep) => {
+      for (const element of elements) {
+        const textarea = element.querySelector('textarea');
+        const key = textarea ? `${textarea.dataset.file}|${textarea.dataset.line}|${textarea.dataset.lineEnd}|${textarea.dataset.side}` : '';
+        if (!keep.includes(key)) element.querySelector('.cancel-comment-btn')?.click();
+      }
+    }, known);
+    await expect(forms).toHaveCount(before, { timeout: 2000 });
+    throw new Error(`the comment button opened a form on ${opened.join(', ')}, not on line ${line} (${wantedSide}) of ${file}`);
   }).toPass({ timeout: 20000 });
   await expect(forms).toHaveCount(before + 1);
 }
@@ -1582,151 +1440,13 @@ async function parkPointerOnLine(page, file, line, { side = 'additions' } = {}) 
 }
 
 /**
- * What switching between unified and split keeps in place.
- *
- *   'scroll-offset'       the scroll position in pixels; the content under it
- *                         changes because row heights above change (the
- *                         current behaviour: PRManager.handleDiffViewChange
- *                         saves and restores scrollTop)
- *   'first-visible-line'  the first visible code row stays where it was (what
- *                         the virtualized viewer does by itself; plan 3.12)
- *
- * This is a behaviour the migration changes on purpose, so the expectation
- * lives here and scroll-landing.spec.js asks. On the virtualized viewer it is
- * 'first-visible-line' (tests/e2e/diff-dom-codeview.js).
- */
-const LAYOUT_TOGGLE_KEEPS = 'scroll-offset';
-
-/**
- * What the diff pane shows when the viewer's bundle did not load (decision
- * D1): 'table', every file drawn by the application's table renderer (the
- * current behaviour), or 'message', an error in place of the diff (the
- * virtualized viewer has no second renderer).
- */
-const MISSING_VIEWER_BUNDLE = 'table';
-
-/**
  * What the console shows when the highlight worker's script cannot load and
- * highlighting falls back to the main thread: on both engines the vendor's
- * one `Worker error` line; the virtualized viewer's pool also reports the
- * worker it lost (tests/e2e/diff-dom-codeview.js).
+ * highlighting falls back to the main thread: the vendor's `Worker error`
+ * line, and the pool's report of the worker it lost. The same viewer goes on
+ * highlighting on the main thread.
  */
-const WORKER_LOAD_FAILURE_ERROR = /\[console\.error\] Worker error: Event/;
-
-/**
- * Whether a background content upgrade waits while the keyboard focus is
- * inside the file it would re-render.
- *
- *   false  it does not (the current behaviour): the upgrade lands once the
- *          pointer has left the file, the rows are re-created, and a focused
- *          comment textarea in that file loses focus; its text is kept
- *   true   it waits, so typing is never interrupted (plan 3.14, new with the
- *          virtualized viewer)
- */
-const UPGRADE_WAITS_FOR_FOCUS = false;
-
-/**
- * Whether a comment deleted through its card is drawn again by the next
- * re-render of its file (a reveal of hidden lines, a content upgrade).
- *
- *   true   it is, until the comments are reloaded: a defect main has.
- *          Deleting removed the card element and left the comment in the
- *          annotation list the file is re-rendered from.
- *   false  it stays gone. Since phase 3 of the migration, which removes the
- *          annotation with the comment (PRManager.patchUserComment);
- *          offscreen-mutations.spec.js asserts it.
- */
-const DELETED_COMMENT_RETURNS_ON_RERENDER = false;
-
-/**
- * Two defects of chat file links on main, characterized as they are
- * (chat-file-links.spec.js). On the virtualized viewer these links go
- * through the page's one navigation helper (PRManager.revealInDiff) and both
- * are true (tests/e2e/diff-dom-codeview.js): the viewer scrolls to a file and
- * a line it has not mounted, and the flash is put on the line once it is what
- * the file draws and follows the line onto every row drawn for it.
- *
- * CHAT_LINK_REACHES_UNRENDERED_FILE (false today): a link to a line of a
- * changed file whose body has never been rendered (it has not been near the
- * viewport yet) does not arrive. ChatPanel asks the bridge whether it has the
- * file, the bridge only knows rendered files, and the fallback has no rows to
- * scroll to or flash; the diff is scrolled toward the file once, the files on
- * the way render and grow while it scrolls, and the reader is left short of
- * the file (measured: 2,810 px above its header in the 60-file corpus), with
- * nothing flashed.
- *
- * REVEALED_LINE_KEEPS_FLASH (false today): a link to a line hidden between two
- * hunks reveals the line and scrolls to it, and the flash is put on a row
- * that is replaced a moment later when the revealed diff is drawn, so the
- * line is flashed for one to three frames (measured).
- */
-const CHAT_LINK_REACHES_UNRENDERED_FILE = false;
-const REVEALED_LINE_KEEPS_FLASH = false;
-
-/**
- * What collapsing a file does to the view when the reader is scrolled some
- * way into it (scroll-landing.spec.js).
- *
- *   'scroll-offset'  nothing scrolls: the collapsed header is left above the
- *                    viewport, about as far as the reader had scrolled into
- *                    the file, and a later file is on screen (the current
- *                    behaviour; ledger H48)
- *   'header'         the header of the file that was just collapsed is where
- *                    it was, pinned at the top of the pane, and the files
- *                    after it follow (the virtualized viewer; ledger H111)
- */
-const COLLAPSE_INSIDE_FILE = 'scroll-offset';
-
-/**
- * Where an external review thread is drawn when its list is answered while
- * its file has a new diff that is not displayed yet (a content upgrade whose
- * highlight result has not come back), and something has been added to or
- * removed from that file's cards since the file was last drawn in full (any
- * comment or suggestion reload does that).
- *
- *   'file-level'  in the file's comment zone, styled as a thread that could
- *                 not be anchored, and it stays there when the new diff is
- *                 displayed: nothing draws the threads again until the next
- *                 thread reload. A defect main has (ledger H60).
- *                 `ExternalCommentManager._renderThreadPierre` added the
- *                 annotation and looked for its card in the same task; while
- *                 a new diff awaits display the engine goes on drawing the
- *                 old diff with the annotations it was last drawn with, so
- *                 the card was not there, and the manager took that to mean
- *                 the line is not in the diff.
- *   'line'        under its line, once, as soon as the new diff is displayed.
- *                 Since phase 3 of the migration: the manager decides from
- *                 the engine's visibility oracle and does not look for the
- *                 card.
- *
- * On an ordinary page load the window is one worker round trip wide and the
- * thread list usually misses it; rerender-overlays.spec.js holds it open.
- */
-const THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY = 'line';
-
-/**
- * Whether the gutter button of the last hovered row is still showing after
- * the pointer has left the diff, when the review holds the suggestions of an
- * analysis (the test server's mock analysis: six rows, two of them on one
- * line, one on the other file).
- *
- *   true   it stays, on its row, with the pointer on the page header and
- *          after further pointer moves outside the diff: a defect of main,
- *          characterized as it is (gutter-buttons.spec.js). Measured 27 of
- *          27 with those suggestions on the review when the page loads, in
- *          both modes and both layouts; 0 of 15 on an empty review, and 0 of
- *          119 with a single comment or a single suggestion on any line
- *          (ledger H66). What in the six rows does it was not isolated.
- *   false  it is cleared, as it is on an empty review
- *
- * Until the fixture reset the reviews between tests, this showed as the
- * suite's baseline "known flake": the test for a clean review failed when
- * an earlier spec of the same worker had left its analysis on the review.
- * The fallback positioner this lives in is not ported to the virtualized
- * viewer (plan 3.13), whose own buttons are cleared: `false` there since
- * phase 6 (the value of that engine is in diff-dom-codeview.js).
- */
-const GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS = true;
+const WORKER_LOAD_FAILURE_ERROR =
+  /\[console\.error\] (Worker error: Event|WorkerPoolWorkerError: WorkerPoolManager: worker failed: the worker script failed to load)/;
 
 /**
  * Whether the block the suggestion button inserts into a comment form holds
@@ -1734,9 +1454,9 @@ const GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS = true;
  *
  *   true   "```suggestion\n<the line>\n\n```": the line's text as the diff
  *          holds it ends in a newline and the block's template adds its own.
- *          A defect of main (ledger H52) that is in CommentManager, not in
- *          the diff engine, so both engines give the same text; the
- *          migration keeps it as it is, and a fix is separate work.
+ *          A defect the application had before the migration to the viewer
+ *          (ledger H52; it is in CommentManager, not in the diff), kept as
+ *          it is: a fix is separate work.
  *   false  the code is followed by the closing fence at once
  */
 const SUGGESTION_BLOCK_HAS_EMPTY_LINE = true;
@@ -1750,7 +1470,8 @@ const SUGGESTION_BLOCK_HAS_EMPTY_LINE = true;
  * a stacked branch) puts comments, file-level comments and suggestions back
  * on the diff it re-renders.
  *
- * `false` is main (ledger H1): that path fetches and renders the new diff and
+ * `false` is what the application did before the migration to the viewer
+ * and still does (ledger H1): that path fetches and renders the new diff and
  * stops there. Every card is gone from the diff while the counts, which come
  * from data, still include them; the next comment or suggestion reload draws
  * them again. The other five whole-diff re-renders (whitespace, refresh,
@@ -1760,48 +1481,17 @@ const SUGGESTION_BLOCK_HAS_EMPTY_LINE = true;
 const BASE_CHANGE_KEEPS_CARDS = false;
 
 /**
- * Where a context file sits in the diff pane relative to the changed files:
- * 'interleaved', by path among them, on both engines (decision D2 of
- * plans/codeview-virtualized-diff.md: a context file is an item of the
- * viewer in the place it has today). Specs ask `expectedPaneOrder`.
+ * A context file shows the lines themselves where five lines or fewer are
+ * hidden (before its first range, after its last, or between two ranges):
+ * the rule the viewer has for the gaps of a changed file applies to a
+ * context file too (decision D2). `expectedContextRanges` turns the ranges a
+ * scenario asked for into the ranges the pane shows.
  */
-const CONTEXT_FILE_PLACEMENT = 'interleaved';
-
-/**
- * What a context file shows where five lines or fewer are hidden: before its
- * first range, after its last, or between two ranges.
- *
- *   'gap'    a gap row with expand controls, like any hidden gap (the table
- *            renderer)
- *   'shown'  the lines themselves: the rule the viewer has for the gaps of a
- *            changed file applies to a context file too (the virtualized
- *            viewer; decision D2, accepted by the user as part of the look)
- *
- * `expectedContextRanges` turns the ranges a scenario asked for into the
- * ranges the pane shows under the engine's rule.
- */
-const SMALL_CONTEXT_GAP = 'gap';
 const SMALL_CONTEXT_GAP_LINES = 5;
 
-/**
- * What the pane holds when two loads of the context files were in flight
- * together (the reader's own, and one a push from the server started).
- *
- *   'each-draws'  every load draws what it fetched by itself: a range can be
- *                 drawn twice, and one copy stays in the pane after its row
- *                 is removed (the table renderer, a defect of the current
- *                 engine; a scenario does not assert the pane there)
- *   'one-state'   the later load wins and the pane has each file once (the
- *                 virtualized viewer)
- *
- * On both engines whoever asked for a context file is answered with its row,
- * with the file in the pane.
- */
-const CONTEXT_LOADS_IN_FLIGHT = 'each-draws';
-
-/** The label of a hidden gap of `n` lines of a context file, as this engine words it. */
+/** The label of a hidden gap of `n` lines of a context file (the viewer's separator). */
 function contextGapLabel(n) {
-  return `${n} hidden lines`;
+  return `${n} unmodified line${n === 1 ? '' : 's'}`;
 }
 
 /**
@@ -1816,7 +1506,7 @@ function expectedPaneOrder(diffFiles, contextFiles) {
   const context = contextFiles.slice().sort(byPath).map((file) => ({ file, kind: 'context' }));
   const diff = diffFiles.map((file) => ({ file, kind: 'diff' }));
   // Interleaved: each context file goes before the first file whose path
-  // sorts after it (pr.js renderContextFile, _buildPaneEntries).
+  // sorts after it (pr.js _buildPaneEntries).
   const out = diff.slice();
   for (const entry of context) {
     const index = out.findIndex((other) => other.file > entry.file);
@@ -1828,13 +1518,12 @@ function expectedPaneOrder(diffFiles, contextFiles) {
 
 /**
  * The ranges of lines a context file of `totalLines` lines shows for the
- * ranges a scenario asked for, under this engine's small-gap rule.
+ * ranges a scenario asked for, under the small-gap rule.
  * @param {Array<{start: number, end: number}>} ranges - ascending, disjoint
  * @param {number} totalLines
  * @returns {Array<{start: number, end: number}>}
  */
 function expectedContextRanges(ranges, totalLines) {
-  if (engineExpectations.SMALL_CONTEXT_GAP === 'gap') return ranges.map((r) => ({ ...r }));
   const out = [];
   for (const range of ranges) {
     const last = out[out.length - 1];
@@ -1853,75 +1542,28 @@ function expectedContextRanges(ranges, totalLines) {
 // Standing checks and dumps
 // ---------------------------------------------------------------------------
 
-/**
- * A virtualized viewer must never leave a host element in the DOM that it no
- * longer accounts for (vendor fact F1). The current engine has one host per
- * rendered file and nothing to orphan, so today this only checks that no
- * file has two hosts.
- */
-async function assertNoOrphanHosts(page) {
-  const problems = await inPage(page, (D) => {
-    const seen = new Map();
-    for (const w of D.wrappers()) {
-      if (w.classList.contains('context-file')) continue;
-      const hosts = w.matches('diffs-container') ? 1 : w.querySelectorAll('diffs-container').length;
-      const key = w.dataset.fileName;
-      seen.set(key, (seen.get(key) || 0) + 1);
-      if (hosts > 1) return [`${key}: ${hosts} hosts`];
-    }
-    return [...seen].filter(([, n]) => n > 1).map(([file, n]) => `${file}: ${n} wrappers`);
-  });
-  if (problems.length > 0) {
-    throw new Error(`Orphan or duplicate diff hosts: ${problems.join('; ')}`);
-  }
-}
-
-/**
- * Whether this page checks the viewer's layout as it draws (see the
- * virtualized viewer's half). The default engine has no layout of its own to
- * check.
- */
-async function layoutValidatorState() {
-  return { developmentBundle: false, validator: false };
-}
-
-/** Everything visible of one diff file, as data (see D.dump). */
-async function dumpFile(page, file) {
-  return inPage(page, (D, f) => D.dump(f), file);
-}
-
-// The engine half: on the virtualized viewer the helpers that differ come from
-// tests/e2e/diff-dom-codeview.js, under the same names.
-const engineAdapter = (ENGINE === 'codeview' ? codeviewEngine.createCodeViewAdapter : filediffEngine.createFileDiffAdapter)(
+// The viewer's half: the helpers that must not assume a file is mounted, the
+// bridge's records and the context-file helpers, under the names specs use.
+const viewerAdapter = viewerHalf.createCodeViewAdapter(
   { inPage, waitInPage, contextFile, fileWrapper, waitForContentUpgrade }
 );
-const engineExpectations = {
-  LAYOUT_TOGGLE_KEEPS, MISSING_VIEWER_BUNDLE, WORKER_LOAD_FAILURE_ERROR, SMALL_CONTEXT_GAP, contextGapLabel,
-  CONTEXT_LOADS_IN_FLIGHT, GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS,
-  CHAT_LINK_REACHES_UNRENDERED_FILE, REVEALED_LINE_KEEPS_FLASH, UPGRADE_WAITS_FOR_FOCUS, COLLAPSE_INSIDE_FILE,
-  ...engineAdapter.expectations,
-};
 
 module.exports = {
-  ENGINE,
   // what a development-bundle run needs (tests/e2e/fixtures.js)
-  layoutValidator: codeviewEngine.layoutValidator,
+  layoutValidator: viewerHalf.layoutValidator,
   // the standing check of every test: problems with the pane's hosts when a
-  // test ends (the default engine has one host per rendered file and nothing
-  // to orphan; assertNoOrphanHosts is its check where a spec asks)
-  orphanHostsAtEnd: ENGINE === 'codeview' ? codeviewEngine.orphanHostsOf : async () => [],
+  // test ends (assertNoOrphanHosts is the same check where a spec asks)
+  orphanHostsAtEnd: viewerHalf.orphanHostsOf,
   // selectors
   fileSelector,
   contextFileSelector,
   lineCardSelector,
   inAnnotationGroup,
   expectLineCardsInPane,
-  ensureMounted,
   // files
   fileWrapper,
   contextFile,
   allFileWrappers,
-  filesInPane,
   diffStatus,
   waitForDiffToRender,
   waitForFileRendered,
@@ -1957,10 +1599,6 @@ module.exports = {
   framesWithoutUpgrade,
   isLineVisible,
   revealOffHunkLine,
-  hunkContaining,
-  expandHunkBy,
-  redisplayBaseDiff,
-  redrawFile,
   holdWorkerResults,
   // pointer
   waitForDiffSettled,
@@ -1994,30 +1632,17 @@ module.exports = {
   setLineLayout,
   clickExpandControl,
   parkPointerOnLine,
-  // context files
-  CONTEXT_FILE_PLACEMENT,
-  LAYOUT_TOGGLE_KEEPS,
-  UPGRADE_WAITS_FOR_FOCUS,
-  DELETED_COMMENT_RETURNS_ON_RERENDER,
-  CHAT_LINK_REACHES_UNRENDERED_FILE,
-  REVEALED_LINE_KEEPS_FLASH,
-  COLLAPSE_INSIDE_FILE,
+  // named expectations and context files
+  WORKER_LOAD_FAILURE_ERROR,
   BASE_CHANGE_KEEPS_CARDS,
-  THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY,
   SUGGESTION_BLOCK_HAS_EMPTY_LINE,
-  SMALL_CONTEXT_GAP,
   contextGapLabel,
   expectedContextRanges,
   expectedPaneOrder,
-  // checks and dumps
-  assertNoOrphanHosts,
-  dumpFile,
-  layoutValidatorState,
   inPage,
   waitInPage,
-  // what each engine does its own way (see ENGINE): the context-file helpers,
-  // and on the virtualized viewer the helpers that must not assume a file is
-  // mounted
-  ...engineAdapter.overrides,
-  ...engineExpectations,
+  // from the viewer's half: filesInPane, ensureMounted, the context-file
+  // helpers, hunkContaining, expandHunkBy, redisplayBaseDiff, redrawFile,
+  // assertNoOrphanHosts, dumpFile, layoutValidatorState
+  ...viewerAdapter.overrides,
 };

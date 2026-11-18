@@ -25,17 +25,26 @@ function attached(className = 'card') {
   return element;
 }
 
-/** A bridge stub exposing what revealInDiff asks of the bridge. */
+/**
+ * A bridge stub exposing what revealInDiff asks of the bridge. The card of
+ * the one annotation it knows is drawn when it is in the document (the file
+ * is mounted and the row under the card's line is in its row window).
+ */
 function bridgeWith(card, { file = 'a.js', id = 'comment-1' } = {}) {
   return {
+    files: new Map([[file, {}]]),
     findAnnotationFile: vi.fn((annotationId) => (annotationId === id ? file : null)),
+    getAnnotationElement: vi.fn((fileName, annotationId) => (annotationId === id ? card : null)),
+    isElementDrawn: vi.fn((element) => !!element?.isConnected),
+    scrollToAnnotation: vi.fn(() => true),
+    scrollToItem: vi.fn(() => true),
     whenAnnotationRendered: vi.fn(async () => card),
+    whenElementDrawn: vi.fn(async (element) => !!element?.isConnected),
   };
 }
 
 function makeManager(overrides = {}) {
   return makePageManager({
-    ensureFileBodyRendered: vi.fn(async () => null),
     ensureLinesVisible: vi.fn(async () => {}),
     ...overrides,
   });
@@ -51,7 +60,7 @@ afterEach(() => {
 });
 
 describe('PRManager.revealInDiff: the sequence', () => {
-  it('expands, renders the body, reveals the lines, resolves the card and scrolls, in that order', async () => {
+  it('expands, reveals the lines, resolves the card and scrolls, in that order', async () => {
     const order = [];
     const card = attached();
     card.scrollIntoView.mockImplementation(() => order.push('scroll'));
@@ -61,7 +70,6 @@ describe('PRManager.revealInDiff: the sequence', () => {
       pierreBridge: bridge,
       isFileCollapsed: vi.fn(() => true),
       setFileCollapsed: vi.fn(async () => { order.push('expand'); return true; }),
-      ensureFileBodyRendered: vi.fn(async () => { order.push('render'); }),
       ensureLinesVisible: vi.fn(async () => { order.push('lines'); }),
     });
 
@@ -70,7 +78,7 @@ describe('PRManager.revealInDiff: the sequence', () => {
       prepare: () => order.push('prepare'),
     });
 
-    expect(order).toEqual(['expand', 'render', 'lines', 'card', 'prepare', 'scroll']);
+    expect(order).toEqual(['expand', 'lines', 'card', 'prepare', 'scroll']);
     expect(manager.setFileCollapsed).toHaveBeenCalledWith('a.js', false);
     expect(manager.ensureLinesVisible).toHaveBeenCalledWith([{ file: 'a.js', line_start: 10, line_end: 12, side: 'LEFT' }]);
     expect(bridge.whenAnnotationRendered).toHaveBeenCalledWith('a.js', 'comment-1', { isCancelled: expect.any(Function) });
@@ -107,7 +115,6 @@ describe('PRManager.revealInDiff: the sequence', () => {
       const result = await manager.revealInDiff({ file: './src/a.js', line_start: 3, annotationId: 'comment-1' });
 
       expect(result).toEqual({ element: card, cancelled: false });
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
       expect([...manager.collapsedFiles]).toEqual([]);
       expect(bridge.setCollapsed.mock.calls).toEqual([['src/a.js', false]]);
       expect(manager.isFileCollapsed('src/a.js')).toBe(false);
@@ -127,7 +134,6 @@ describe('PRManager.revealInDiff: the sequence', () => {
     await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
 
     expect(manager.setFileCollapsed).not.toHaveBeenCalled();
-    expect(manager.ensureFileBodyRendered).toHaveBeenCalledWith('a.js');
     expect(manager.ensureLinesVisible).not.toHaveBeenCalled();
   });
 
@@ -268,13 +274,13 @@ describe('PRManager.revealInDiff: minimize mode', () => {
 
 describe('PRManager.revealInDiff: cancellation and errors', () => {
   it.each([
-    ['the file is prepared', 'ensureFileBodyRendered'],
+    ['the file is expanded', 'setFileCollapsed'],
     ['the lines are revealed', 'ensureLinesVisible'],
   ])('stops after %s when a newer navigation took over', async (_, method) => {
     let cancelled = false;
     const card = attached();
     const bridge = bridgeWith(card);
-    const manager = makeManager({ pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge, isFileCollapsed: vi.fn(() => true), setFileCollapsed: vi.fn(async () => true) });
     manager[method] = vi.fn(async () => { cancelled = true; });
 
     const result = await manager.revealInDiff({
@@ -310,12 +316,13 @@ describe('PRManager.revealInDiff: cancellation and errors', () => {
     expect(isCancelled()).toBe(true);
   });
 
-  it('still looks for the card when the file could not be prepared', async () => {
+  it('still looks for the card when the file could not be expanded', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const card = attached();
     const manager = makeManager({
       pierreBridge: bridgeWith(card),
-      ensureFileBodyRendered: vi.fn(async () => { throw new Error('render failed'); }),
+      isFileCollapsed: vi.fn(() => true),
+      setFileCollapsed: vi.fn(async () => { throw new Error('expand failed'); }),
     });
 
     const result = await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
@@ -331,7 +338,7 @@ describe('PRManager.revealInDiff: cancellation and errors', () => {
   });
 });
 
-describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted', () => {
+describe('PRManager.revealInDiff: what is not mounted', () => {
   /**
    * A bridge stub of the virtualized viewer. The viewer draws a card once it
    * was told to go to it. "Drawn" is its own state, not "in the document":
@@ -368,7 +375,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
   it('takes the pane to a card that is not in the document, waits for it, then scrolls to it', async () => {
     const card = detached();
     const bridge = viewerBridge({ card });
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const result = await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.scrollToAnnotation).toHaveBeenCalledWith('a.js', 'comment-1');
     expect(bridge.scrollToAnnotation.mock.invocationCallOrder[0]).toBeLessThan(bridge.whenAnnotationRendered.mock.invocationCallOrder[0]);
@@ -380,7 +387,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     const card = attached();
     const bridge = viewerBridge({ card });
     bridge.outsideRowWindow(card);
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const result = await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.scrollToAnnotation).toHaveBeenCalledWith('a.js', 'comment-1');
     expect(bridge.scrollToAnnotation.mock.invocationCallOrder[0]).toBeLessThan(bridge.whenAnnotationRendered.mock.invocationCallOrder[0]);
@@ -394,7 +401,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     bridge.outsideRowWindow(card);
     // The pane was taken there and the wait ran out.
     bridge.scrollToAnnotation = vi.fn(() => true);
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const result = await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.scrollToAnnotation).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ element: null, cancelled: false });
@@ -408,7 +415,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     // The bridge's answers for that state: nothing to send, and the card as it is.
     bridge.scrollToAnnotation = vi.fn(() => true);
     bridge.whenAnnotationRendered = vi.fn(async () => card);
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const result = await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(result).toEqual({ element: card, cancelled: false });
     expect(card.scrollIntoView).toHaveBeenCalledTimes(1);
@@ -417,20 +424,10 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
   it('moves nothing for a card that is drawn already', async () => {
     const card = attached();
     const bridge = viewerBridge({ card });
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.scrollToAnnotation).not.toHaveBeenCalled();
     expect(card.scrollIntoView).toHaveBeenCalledTimes(1);
-  });
-
-  it('the per-file renderer is never asked to go to an annotation', async () => {
-    const card = attached();
-    const bridge = { ...viewerBridge({ card }), scrollToAnnotation: vi.fn() };
-    const manager = makeManager({ pierreBridge: bridge });
-    card.remove();
-    bridge.whenAnnotationRendered = vi.fn(async () => null);
-    await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
-    expect(bridge.scrollToAnnotation).not.toHaveBeenCalled();
   });
 
   it('a card in a comment zone of a file that is not mounted: the pane goes to the file first', async () => {
@@ -445,7 +442,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     bridge.findAnnotationFile = vi.fn(() => null);
     // The viewer mounts the file: its zone is drawn from then on.
     bridge.whenElementDrawn = vi.fn(async () => { document.body.appendChild(zone); return true; });
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge, fileCommentManager });
+    const manager = makeManager({ pierreBridge: bridge, fileCommentManager });
     const result = await manager.revealInDiff({ file: 'far.js', zoneCardSelector: '.file-comment-card[data-comment-id="7"]' });
     expect(bridge.scrollToItem).toHaveBeenCalledWith('far.js', { align: 'start', behavior: 'instant' });
     expect(bridge.whenElementDrawn).toHaveBeenCalledWith(card, expect.objectContaining({ isCancelled: expect.any(Function) }));
@@ -470,7 +467,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     let drawn = false;
     bridge.isElementDrawn = vi.fn(() => drawn);
     bridge.whenElementDrawn = vi.fn(async () => { drawn = true; return true; });
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge, fileCommentManager });
+    const manager = makeManager({ pierreBridge: bridge, fileCommentManager });
     const result = await manager.revealInDiff({ file: 'long.js', zoneCardSelector: '.file-comment-card[data-comment-id="8"]' });
     expect(bridge.scrollToItem).toHaveBeenCalledWith('long.js', { align: 'start', behavior: 'instant' });
     expect(bridge.scrollToItem.mock.invocationCallOrder[0]).toBeLessThan(bridge.whenElementDrawn.mock.invocationCallOrder[0]);
@@ -495,7 +492,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     bridge.findAnnotationFile = vi.fn((annotationId) => (annotationId === 'far' ? 'a.js' : annotationId === 'near' ? 'a.js' : null));
     bridge.getAnnotationElement = vi.fn((file, annotationId) => (annotationId === 'far' ? far : near));
     bridge.whenAnnotationRendered = vi.fn(async (file, annotationId) => (annotationId === 'far' ? (bridge.isElementDrawn(far) ? far : null) : near));
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const first = manager.revealInDiff({ file: 'a.js', annotationId: 'far' });
     const second = manager.revealInDiff({ file: 'a.js', annotationId: 'near' });
     const [a, b] = await Promise.all([first, second]);
@@ -513,7 +510,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     bridge.holdListWrites = vi.fn(() => release);
     let land;
     window.ScrollUtils = { scrollIntoViewStable: vi.fn(() => new Promise((resolve) => { land = resolve; })) };
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.holdListWrites).toHaveBeenCalledTimes(1);
     // The helper has answered; the scroll is still under way.
@@ -528,7 +525,7 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     const release = vi.fn();
     const bridge = viewerBridge({ card: null });
     bridge.holdListWrites = vi.fn(() => release);
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     await manager.revealInDiff({ file: 'a.js', annotationId: 'nothing' });
     await new Promise(setImmediate);
     expect(release).toHaveBeenCalledTimes(1);
@@ -542,17 +539,15 @@ describe('PRManager.revealInDiff on the virtualized viewer: what is not mounted'
     await new Promise(setImmediate);
     expect(release).toHaveBeenCalledTimes(3);
 
-    // A lookup holds nothing, and neither does the per-file renderer.
+    // A lookup holds nothing.
     await manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1', scroll: false });
-    const other = makeManager({ pierreBridge: bridge });
-    await other.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     expect(bridge.holdListWrites).toHaveBeenCalledTimes(3);
   });
 
   it('a lookup that scrolls nothing (scroll: false) supersedes no navigation', async () => {
     const card = detached();
     const bridge = viewerBridge({ card });
-    const manager = makeManager({ _diffEngine: 'codeview', pierreBridge: bridge });
+    const manager = makeManager({ pierreBridge: bridge });
     const navigation = manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1' });
     const lookup = manager.revealInDiff({ file: 'a.js', annotationId: 'comment-1', scroll: false });
     const [a] = await Promise.all([navigation, lookup]);
@@ -575,20 +570,11 @@ describe('PRManager.revealInDiff: a line target (a chat link)', () => {
     };
   }
 
-  /** A page on the virtualized viewer whose pane knows the bridge's files by their own paths. */
+  /** A page whose pane knows the bridge's files by their own paths. */
   const lineManager = (bridge, extra = {}) => makeManager({
-    _diffEngine: 'codeview',
     pierreBridge: bridge,
     _canonicalFilePath: (path) => (bridge.files.has(path) ? path : null),
     ...extra,
-  });
-
-  it('is not served by the per-file renderer, which is left untouched: handled false, nothing expanded or revealed', async () => {
-    const manager = makeManager({ isFileCollapsed: vi.fn(() => true), setFileCollapsed: vi.fn() });
-    const result = await manager.revealInDiff({ file: 'a.js', line_start: 30, flashLines: true });
-    expect(result).toEqual({ element: null, cancelled: false, revealed: false, handled: false });
-    expect(manager.setFileCollapsed).not.toHaveBeenCalled();
-    expect(manager.ensureLinesVisible).not.toHaveBeenCalled();
   });
 
   it('a line of a mounted file that is drawn: revealed, then scrolled to unless on screen, the range flashed', async () => {
@@ -598,7 +584,7 @@ describe('PRManager.revealInDiff: a line target (a chat link)', () => {
     expect(manager.ensureLinesVisible).toHaveBeenCalledWith([{ file: 'a.js', line_start: 4, line_end: 6, side: 'RIGHT' }]);
     expect(bridge.whenLineDisplayed).not.toHaveBeenCalled();
     expect(bridge.scrollToLine.mock.calls).toEqual([['a.js', 4, 'RIGHT', { align: 'center', behavior: 'smooth', ifNeeded: true, endLine: 6 }]]);
-    expect(result).toEqual({ element: null, cancelled: false, revealed: true, handled: true });
+    expect(result).toEqual({ element: null, cancelled: false, revealed: true });
   });
 
   it('a file that is not mounted: the pane goes to the line at once, without a flash, and the flash waits for the line to be drawn', async () => {
@@ -628,14 +614,14 @@ describe('PRManager.revealInDiff: a line target (a chat link)', () => {
     const result = await manager.revealInDiff({ file: 'a.js', line_start: 30, flashLines: true });
     expect(manager.setFileCollapsed).not.toHaveBeenCalled();
     expect(bridge.scrollToLine).not.toHaveBeenCalled();
-    expect(result).toEqual({ element: null, cancelled: false, revealed: false, handled: true });
+    expect(result).toEqual({ element: null, cancelled: false, revealed: false });
   });
 
-  it('a file the pane does not have, or no line: handled, not revealed', async () => {
+  it('a file the pane does not have, or no line: not revealed', async () => {
     const bridge = lineBridge();
     const manager = lineManager(bridge);
-    expect(await manager.revealInDiff({ file: 'nope.js', line_start: 3, flashLines: true })).toMatchObject({ revealed: false, handled: true });
-    expect(await manager.revealInDiff({ file: 'a.js', flashLines: true })).toMatchObject({ revealed: false, handled: true });
+    expect(await manager.revealInDiff({ file: 'nope.js', line_start: 3, flashLines: true })).toMatchObject({ revealed: false });
+    expect(await manager.revealInDiff({ file: 'a.js', flashLines: true })).toMatchObject({ revealed: false });
     expect(bridge.scrollToLine).not.toHaveBeenCalled();
   });
 });

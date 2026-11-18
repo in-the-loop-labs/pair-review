@@ -8,14 +8,14 @@
  * tested here is which load wins, what a superseded load leaves untouched,
  * what a caller that awaits a superseded load finds when it settles, and
  * what the one sync sends to the bridge. The bridge is the production
- * PierreCodeViewBridge over the recording stand-in for the viewer
- * (tests/utils/codeview-bridge-harness.js): what it is asked and what it
+ * PierreBridge over the recording stand-in for the viewer
+ * (tests/utils/pierre-bridge-harness.js): what it is asked and what it
  * decides from data is real; nothing is rendered.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
-const { loadCodeViewBridge, numberedLines } = require('../utils/codeview-bridge-harness.js');
+const { loadCodeViewBridge, numberedLines } = require('../utils/pierre-bridge-harness.js');
 const { makePageManager } = require('../utils/page-manager.js');
 
 let vendor;
@@ -42,7 +42,7 @@ function gate() {
 
 function setUp({ changedFiles = ['src/main.js', 'src/utils.js'] } = {}) {
   env = loadCodeViewBridge(vendor);
-  bridge = new env.PierreCodeViewBridge({
+  bridge = new env.PierreBridge({
     root: env.window.document.getElementById('root'),
     theme: 'light',
     useWorkerPool: false,
@@ -58,7 +58,6 @@ function setUp({ changedFiles = ['src/main.js', 'src/utils.js'] } = {}) {
     return { ok: true, json: async () => ({ contextFiles: rows }) };
   });
   manager = makePageManager({
-    _diffEngine: 'codeview',
     pierreBridge: bridge,
     generatedFiles: new Map(),
     changedFilesByPath: new Map(changedFiles.map((name) => [name, { file: name, patch: patchOf(name) }])),

@@ -1584,30 +1584,10 @@ class AIPanel {
             || 'RIGHT';
         const lineNumber = line ? parseInt(line, 10) : null;
 
-        // Last resort, for cards the diff engine and the comment zones do not
-        // hold (rows of the table renderer, suggestions without ids).
-        const findInDocument = () => {
-            if (findingId) {
-                const byId = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
-                if (byId) return byId;
-            }
-            if (!file) return null;
-            for (const suggestion of document.querySelectorAll('.ai-suggestion')) {
-                const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
-                if (!suggestionFile || !suggestionFile.includes(file)) continue;
-                // No line specified: take the first match in the file
-                if (!line) return suggestion;
-                const row = suggestion.closest('tr');
-                const prevRow = row?.previousElementSibling;
-                const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
-                if (rowLine === line) return suggestion;
-            }
-            return null;
-        };
-
-        // Expand the file, render its body, reveal the lines (Pierre
-        // suggestions anchor at line_end, legacy ones at line_start, so both
-        // endpoints), resolve the card and scroll to it: one helper.
+        // Expand the file, reveal the lines (a suggestion's card sits under
+        // line_end; both endpoints are revealed), resolve the card through
+        // the diff viewer or the file's comment zone, and scroll to it: one
+        // helper.
         const { element: targetSuggestion } = await manager.revealInDiff({
             file,
             line_start: line ? (finding?.line_start || lineNumber) : undefined,
@@ -1615,7 +1595,6 @@ class AIPanel {
             side: resolvedSide,
             annotationId: findingId ? `suggestion-${findingId}` : undefined,
             zoneCardSelector: findingId ? `.ai-suggestion[data-suggestion-id="${findingId}"]` : undefined,
-            findElement: findInDocument,
             // A newer navigation took over while we awaited: let it win.
             isCancelled: () => myGen !== this._navGen
         });
@@ -1645,24 +1624,6 @@ class AIPanel {
         const isFileLevel = !!(comment && (comment.is_file_level === 1 || comment.is_file_level === true));
         const lineNumber = line ? parseInt(line, 10) : null;
 
-        // Last resort, for rows the diff engine and the comment zones do not
-        // hold (the table renderer of context files).
-        const findInDocument = () => {
-            if (commentId) {
-                const byId = (isFileLevel
-                    ? document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`)
-                    : null)
-                    || document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`)
-                    || document.querySelector(`[data-comment-id="${commentId}"]`);
-                if (byId) return byId;
-            }
-            if (!file || !line) return null;
-            for (const row of document.querySelectorAll('.user-comment-row, [data-comment-id]')) {
-                if (row.dataset.file === file && row.dataset.lineStart === line) return row;
-            }
-            return null;
-        };
-
         // Comments anchor at line_start. The full selected range is revealed,
         // including an ending line that may be in another collapsed gap.
         const { element: targetElement } = await manager.revealInDiff({
@@ -1671,8 +1632,9 @@ class AIPanel {
             line_end: line ? (comment?.line_end || lineNumber) : undefined,
             side: resolvedSide,
             annotationId: commentId && !isFileLevel ? `comment-${commentId}` : undefined,
-            zoneCardSelector: commentId && isFileLevel ? `.file-comment-card[data-comment-id="${commentId}"]` : undefined,
-            findElement: findInDocument,
+            // A comment the panel's list does not hold may be a file-level
+            // one: the zones are asked too.
+            zoneCardSelector: commentId && (isFileLevel || !comment) ? `.file-comment-card[data-comment-id="${commentId}"]` : undefined,
             // A file-level card sits in its file's comment zone: make sure
             // the zone is expanded before it is scrolled to.
             prepare: (element) => {
@@ -1682,8 +1644,7 @@ class AIPanel {
             isCancelled: () => myGen !== this._navGen
         });
         if (!targetElement) return;
-        // Add highlight effect — find .user-comment inside (works for both
-        // legacy rows and @pierre/diffs annotation divs)
+        // Add highlight effect — on the .user-comment inside the card
         const commentDiv = isFileLevel ? targetElement : (targetElement.querySelector('.user-comment') || targetElement);
         if (commentDiv) {
             commentDiv.classList.add('highlight-flash');

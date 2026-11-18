@@ -4,19 +4,19 @@
  * window.PierreDiffs. The bundle is an IIFE, so a name that frontend code
  * reads but the entry does not export is not an import error: it is an
  * `undefined` at runtime, and the failure is a TypeError deep in a render
- * path (or, worse, a silent fallback to the legacy renderer).
+ * path.
  *
  * Both sides are derived from the real sources so neither can drift silently:
  *
  *  - the entry's `export { ... } from` blocks, and
- *  - every `window.PierreDiffs.X` read under public/js.
+ *  - every `window.PierreDiffs.X` read under public/js and under
+ *    tests/contract (the vendor contract suite, which pins the vendor facts
+ *    the application relies on).
  *
- * The export list is also pinned exactly. During the CodeView migration
- * (plans/codeview-virtualized-diff.md) the list is deliberately wider than
- * what production reads: `CodeView` and `hydratePartialDiff` are exported for
- * the vendor contract suite before any production code uses them, and the
- * FileDiff-era names stay until the old renderer is deleted. The final phase
- * narrows the pinned list to exactly the consumed names.
+ * The export list is also pinned exactly, and nothing may be exported that
+ * production code does not read: the bundle ships to every user. A vendor
+ * function only the contract suite calls comes from that suite's own bundle
+ * (tests/contract/harness/vendor-extras.js, `window.VendorTestExtras`).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -94,21 +94,10 @@ describe('scripts/pierre-diffs-entry.mjs export surface', () => {
     // the 11 MB vendor bundle. Update the list in the same commit as the entry.
     expect([...entryExports()].sort()).toEqual([
       'CodeView',
-      'File',
-      'FileDiff',
+      'VirtualizedFileDiff',
       'WorkerPoolManager',
-      'disposeHighlighter',
-      'getLineAnnotationName',
-      'getSharedHighlighter',
-      'getSingularPatch',
-      'hydratePartialDiff',
-      'isHighlighterLoaded',
       'parseDiffFromFile',
       'parsePatchFiles',
-      'preloadHighlighter',
-      'registerCustomCSSVariableTheme',
-      'registerCustomTheme',
-      'trimPatchContext',
     ]);
   });
 
@@ -129,9 +118,24 @@ describe('scripts/pierre-diffs-entry.mjs export surface', () => {
     expect(missing).toEqual([]);
   });
 
-  it('exports the two names the CodeView migration is built on', () => {
-    const exported = entryExports();
-    expect(exported.has('CodeView')).toBe(true);
-    expect(exported.has('hydratePartialDiff')).toBe(true);
+  it('exports nothing that production code does not read', () => {
+    const read = productionConsumed();
+    const dead = [...entryExports()].filter((name) => !read.has(name)).sort();
+    expect(dead).toEqual([]);
+  });
+
+  it('the contract suite\'s own bundle names nothing the shipped bundle exports', () => {
+    const { TEST_EXTRAS } = require('../contract/harness/vendor-extras');
+    expect(TEST_EXTRAS.length).toBeGreaterThan(0);
+    expect(TEST_EXTRAS.filter((name) => entryExports().has(name))).toEqual([]);
+  });
+
+  it('production code reads exactly the viewer, its diff item class, the two parsers and the worker pool', () => {
+    // What the application itself depends on. A new name here is a new
+    // dependency on the vendor's API: it needs a contract test of what the
+    // application relies on (tests/contract/vendor). VirtualizedFileDiff is
+    // read for one method (PierreBridge.coverPaneWithRowWindow; vendor fact
+    // F30, tests/contract/vendor/row-window.spec.js).
+    expect([...productionConsumed()].sort()).toEqual(['CodeView', 'VirtualizedFileDiff', 'WorkerPoolManager', 'parseDiffFromFile', 'parsePatchFiles']);
   });
 });

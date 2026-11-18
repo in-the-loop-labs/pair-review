@@ -37,10 +37,6 @@
     <link rel="stylesheet" href="/css/snippet-manager.css">
     <link rel="stylesheet" href="/css/styles.css">
 
-    <!-- Highlight.js for syntax highlighting (legacy/context-file rendering; diffs use @pierre/diffs Shiki) -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
-
     <style>
         * {
             box-sizing: border-box;
@@ -563,13 +559,6 @@
     <!-- @pierre/diffs - Diff rendering with Shiki syntax highlighting -->
     <script src="/js/vendor/pierre-diffs.js"></script>
 
-    <!-- Highlight.js for legacy/context-file syntax highlighting -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/elixir.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/erb.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/scala.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/dockerfile.min.js"></script>
-
     <!-- Markdown-it Library for rendering markdown in comments -->
     <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.3.2/dist/markdown-it.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@2.0.2/dist/markdown-it-emoji.min.js"></script>
@@ -647,16 +636,13 @@
 
     <!-- PR Modules (must load before pr.js) -->
     <script src="/js/modules/storage-cleanup.js"></script>
-    <script src="/js/modules/gap-coordinates.js"></script>
     <script src="/js/modules/hunk-parser.js"></script>
-    <script src="/js/modules/line-tracker.js"></script>
     <script src="/js/modules/diff-renderer.js"></script>
     <script src="/js/modules/pierre-context.js"></script>
     <script src="/js/modules/pierre-styles.js"></script>
     <script src="/js/modules/pierre-annotations.js"></script>
-    <script src="/js/modules/pierre-bridge.js"></script>
     <script src="/js/modules/pierre-gutter.js"></script>
-    <script src="/js/modules/pierre-codeview-bridge.js"></script>
+    <script src="/js/modules/pierre-bridge.js"></script>
     <script src="/js/modules/comment-manager.js"></script>
     <script src="/js/modules/suggestion-manager.js"></script>
     <script src="/js/modules/comment-minimizer.js"></script>

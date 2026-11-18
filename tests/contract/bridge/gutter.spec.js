@@ -478,7 +478,7 @@ async function clicksOf(page, pointer, setup, target, drawBetween) {
 test.describe('a press that is not a mouse button', () => {
   test.use({ hasTouch: true });
 
-  // PierreCodeViewBridge._isMousePress. A browser has two ways of making a
+  // PierreBridge._isMousePress. A browser has two ways of making a
   // click. For a mouse it remembers what was pressed and sends no click if
   // that left the document before the release: the bridge sends it. For a
   // touch it recognizes the tap after the release and clicks whatever is

@@ -150,15 +150,10 @@ describe('SuggestionManager.displayAISuggestions coalescing', () => {
 });
 
 describe('SuggestionManager.clearAISuggestions', () => {
-  it('removes inline rows, Pierre suggestion annotations, file-level AI cards and the navigator list', () => {
+  it('removes the suggestion annotations of every file, file-level AI cards and the navigator list', () => {
     document.body.innerHTML = `
       <div class="main-content navigator-visible"></div>
-      <table><tbody>
-        <tr class="code-row"></tr>
-        <tr class="ai-suggestion-row"></tr>
-        <tr class="user-comment-row"></tr>
-        <tr class="ai-suggestion-row"></tr>
-      </tbody></table>
+      <div class="user-comment-row"></div>
       <div class="reasoning-popover"></div>
     `;
     pm.pierreBridge = {
@@ -169,7 +164,6 @@ describe('SuggestionManager.clearAISuggestions', () => {
 
     sm.clearAISuggestions();
 
-    expect(document.querySelectorAll('.ai-suggestion-row')).toHaveLength(0);
     expect(document.querySelectorAll('.user-comment-row')).toHaveLength(1);
     expect(document.querySelector('.reasoning-popover')).toBeNull();
     expect(pm.pierreBridge.removeAnnotationsByType.mock.calls).toEqual([

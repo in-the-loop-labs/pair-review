@@ -76,7 +76,7 @@ test('instance.getRenderedDiff is the DISPLAYED diff; isLineRenderable follows i
       gapLine: instance.isLineRenderable(gapLine),
       gapLineRowInDom: !!H.findRow(T, gapLine),
     };
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', base, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
     await H.until(() => instance.getRenderedDiff() === hydrated, 30000);
@@ -186,7 +186,7 @@ test('FileDiffMetadata carries the fields pierre-context.js and the visibility o
     const { roles } = H.workload;
     H.parse({ cacheKeyPrefix: 'contract:1' });
     const partial = H.fileDiffs.find((d) => d.name === roles.large);
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', partial, H.contentsOf(roles.large));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', partial, H.contentsOf(roles.large));
     const has = (object, keys) => keys.filter((key) => !(key in object));
     const topLevel = ['name', 'type', 'hunks', 'isPartial', 'additionLines', 'deletionLines', 'unifiedLineCount', 'splitLineCount', 'cacheKey'];
     const hunkKeys = ['additionStart', 'additionCount', 'additionLines', 'additionLineIndex', 'deletionStart', 'deletionCount', 'deletionLines', 'deletionLineIndex', 'collapsedBefore', 'unifiedLineStart', 'unifiedLineCount', 'splitLineStart', 'splitLineCount', 'hunkContent'];
@@ -239,7 +239,7 @@ for (const gap of [2, 5, 6]) {
       const hunks = W.hunksFromEdits(oldLines, edits);
       const patch = `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}\n+++ b/${name}\n${hunks.text}\n`;
       const partial = window.PierreDiffs.parsePatchFiles(patch)[0].files[0];
-      const hydrated = window.PierreDiffs.hydratePartialDiff('clone', partial, {
+      const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', partial, {
         oldFile: { name, contents: `${oldLines.join('\n')}\n` },
         newFile: { name, contents: `${newLines.join('\n')}\n` },
       });
@@ -275,7 +275,7 @@ for (const gap of [2, 5, 6]) {
 }
 
 test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the item lay itself out from its diff again after the expansion map was emptied by hand', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge._clearExpansionMap. The bridge empties
+  // Depends on it: PierreBridge._clearExpansionMap. The bridge empties
   // `instance.hunksRenderer.expandedHunks` when the viewer is about to draw
   // metadata with other hunks (the map is keyed by hunk index), and the
   // item's cached heights were computed with the expanded lines in them.
@@ -294,7 +294,7 @@ test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the ite
     const hunks = W.hunksFromEdits(oldLines, edits);
     const patch = `diff --git a/${name} b/${name}\nindex 1111111..2222222 100644\n--- a/${name}\n+++ b/${name}\n${hunks.text}\n`;
     const partial = window.PierreDiffs.parsePatchFiles(patch)[0].files[0];
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', partial, {
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', partial, {
       oldFile: { name, contents: `${oldLines.join('\n')}\n` },
       newFile: { name, contents: `${newLines.join('\n')}\n` },
     });
@@ -341,7 +341,7 @@ test('instance.resetLayoutCache({ includeEstimatedHeights: true }) makes the ite
 });
 
 test('hunksRenderer.getDiffForNextRender names the diff the next draw will be, and onRenderUpdate is called when an awaited diff has its result staged, before it is drawn', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge._retireExpansions (ledger F28, H146).
+  // Depends on it: PierreBridge._retireExpansions (ledger F28, H146).
   // The expansion map is keyed by hunk index and belongs to the diff on
   // screen. When the bridge publishes a diff with other hunks it has to know
   // whether the viewer's next draw is that diff (the map must be empty before
@@ -366,7 +366,7 @@ test('hunksRenderer.getDiffForNextRender names the diff the next draw will be, a
     };
 
     // A highlighted file: a new diff waits for its highlight result.
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', base, H.contentsOf(T));
     out.beforePublish = { nextIsOnScreen: renderer.getDiffForNextRender(hydrated) === base, nextIsNew: renderer.getDiffForNextRender(hydrated) === hydrated };
     const calls = [];
     const original = renderer.onRenderUpdate;

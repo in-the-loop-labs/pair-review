@@ -67,10 +67,10 @@ describe('PRManager.getFileCommentsZone / forEachFileCommentsZone', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('_removeRenderedFiles forgets every zone', () => {
+  it('_clearDiffItems forgets every zone', () => {
     const manager = makeManager();
     manager.fileCommentManager.createFileCommentsZone('a.js');
-    manager._removeRenderedFiles(document.createElement('div'));
+    manager._clearDiffItems();
     expect(manager.getFileCommentsZone('a.js')).toBeNull();
   });
 });
@@ -118,57 +118,42 @@ describe('sweeps reach zones that are not attached to the document', () => {
 });
 
 describe('a context file that leaves the pane takes its zone out of the registry', () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
-
-  function contextWrapper(manager, file, contextId, { chunk = false } = {}) {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper context-file';
-    wrapper.dataset.fileName = file;
-    wrapper._fileCommentsZone = manager.fileCommentManager.createFileCommentsZone(file, { context: true });
-    wrapper.appendChild(wrapper._fileCommentsZone);
-    if (chunk) {
-      wrapper.insertAdjacentHTML('beforeend',
-        `<table><tbody class="context-chunk" data-context-id="${contextId}"></tbody></table>`);
-    } else {
-      wrapper.dataset.contextId = String(contextId);
-    }
-    document.body.appendChild(wrapper);
-    return wrapper;
-  }
-
-  function managerWithRows(rows) {
+  /** A page whose viewer holds the given context files as items, each with its zone. */
+  function paneWith(paths) {
     const manager = makeManager();
-    Object.assign(manager, {
-      contextFiles: rows,
-      diffFiles: [],
-      _scrubRemovedContextState: vi.fn(),
-      rebuildFileListWithContext: vi.fn(),
-      renderContextFile: vi.fn(),
-    });
+    manager.pierreBridge = { files: new Map(paths.map((path) => [path, { id: path, kind: 'context' }])) };
+    manager.contextFiles = paths.map((path, index) => ({ id: index + 1, file: path }));
+    for (const path of paths) manager.fileCommentManager.createFileCommentsZone(path, { context: true });
+    // The page has seen these items.
+    expect(manager._noteContextItems()).toEqual({ created: paths, removed: [] });
     return manager;
   }
 
-  it.each([
-    ['a standalone context wrapper', false],
-    ['the last chunk of a merged context wrapper', true],
-  ])('loadContextFiles: %s removed elsewhere', async (_, chunk) => {
-    const manager = managerWithRows([{ id: 5, file: 'ctx.js' }, { id: 6, file: 'kept.js' }]);
-    const gone = contextWrapper(manager, 'ctx.js', 5, { chunk });
-    const kept = contextWrapper(manager, 'kept.js', 6, { chunk });
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ contextFiles: [{ id: 6, file: 'kept.js' }] }),
-    })));
+  it('_noteContextItems releases the zone of a context item that went and keeps the others', () => {
+    const manager = paneWith(['ctx.js', 'kept.js']);
+    const keptZone = manager.getFileCommentsZone('kept.js');
+    expect(manager.getFileCommentsZone('ctx.js')).not.toBeNull();
 
-    await manager.loadContextFiles();
+    // The viewer's list no longer has ctx.js (its rows were removed elsewhere).
+    manager.pierreBridge.files.delete('ctx.js');
+    manager.contextFiles = manager.contextFiles.filter((row) => row.file !== 'ctx.js');
+    expect(manager._noteContextItems()).toEqual({ created: [], removed: ['ctx.js'] });
 
-    expect(gone.isConnected).toBe(false);
     expect(manager.getFileCommentsZone('ctx.js')).toBeNull();
-    expect(kept.isConnected).toBe(true);
-    expect(manager.getFileCommentsZone('kept.js')).toBe(kept._fileCommentsZone);
+    expect(manager.getFileCommentsZone('kept.js')).toBe(keptZone);
     const visited = [];
     manager.forEachFileCommentsZone((zone, file) => visited.push(file));
     expect(visited).toEqual(['kept.js']);
+  });
+
+  it('a path that left as a context file and is a changed file of the diff keeps its zone', () => {
+    const manager = paneWith(['src/a.js']);
+    const zone = manager.getFileCommentsZone('src/a.js');
+    // The diff now has the file: the pane's item of that path is the changed file.
+    manager.pierreBridge.files.set('src/a.js', { id: 'src/a.js', kind: 'diff' });
+    manager.changedFilesByPath.set('src/a.js', { file: 'src/a.js' });
+    expect(manager._noteContextItems()).toEqual({ created: [], removed: ['src/a.js'] });
+    expect(manager.getFileCommentsZone('src/a.js')).toBe(zone);
   });
 });
 

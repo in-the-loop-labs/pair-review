@@ -32,605 +32,113 @@ function createTestSuggestionManager() {
 }
 
 /**
- * Create a mock suggestion div element with data attributes
+ * A suggestion card as its builder leaves it: the suggestion's place is
+ * stored on the card (data-file-name, data-line-number, ...).
  */
-function createMockSuggestionDiv(options = {}) {
-  const {
-    fileName = '',
-    lineNumber = '',
-    side = '',
-    diffPosition = '',
-    isFileLevel = 'false',
-    parentRow = null,
-    previousRow = null
-  } = options;
-
-  const dataset = {
-    fileName,
-    lineNumber,
-    side,
-    diffPosition,
-    isFileLevel
-  };
-
-  // Create a mock element with closest() and dataset
-  const mockDiv = {
-    dataset,
-    closest: vi.fn().mockReturnValue(parentRow)
-  };
-
-  return mockDiv;
-}
-
-/**
- * Create a mock table row with previousElementSibling chain
- */
-function createMockRow(options = {}) {
-  const {
-    className = '',
-    previousSibling = null,
-    dataset = {},
-    lineNum1 = null,
-    lineNum2 = null
-  } = options;
-
-  const mockRow = {
-    classList: {
-      contains: vi.fn((cls) => className.split(' ').includes(cls))
-    },
-    previousElementSibling: previousSibling,
-    dataset: { ...dataset },
-    closest: vi.fn().mockReturnValue(null),
-    querySelector: vi.fn((selector) => {
-      if (selector === '.line-num1' && lineNum1 !== null) {
-        return { textContent: String(lineNum1) };
-      }
-      if (selector === '.line-num2' && lineNum2 !== null) {
-        return { textContent: String(lineNum2) };
-      }
-      return null;
-    })
-  };
-
-  return mockRow;
+function createSuggestionCard(dataset = {}) {
+  return { dataset: { fileName: '', lineNumber: '', side: '', diffPosition: '', isFileLevel: 'false', ...dataset } };
 }
 
 describe('SuggestionManager.getFileAndLineInfo()', () => {
-  describe('Line-level suggestions with stored data', () => {
-    it('should return correct values from stored data attributes', () => {
+  // The answer comes from what the card stores, never from where the card
+  // is: a card of the virtualized viewer need not be in the document.
+  describe('Line-level suggestions', () => {
+    it('returns the stored file, line, side and diff position', () => {
       const suggestionManager = createTestSuggestionManager();
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({
+        fileName: 'src/components/Button.js', lineNumber: '42', side: 'RIGHT', diffPosition: '15',
+      }));
 
-      // Create a diff row (the target) and suggestion row
-      const targetRow = createMockRow({
-        className: 'd2h-code-linenumber',
-        dataset: { diffPosition: '15', side: 'RIGHT' }
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
+      expect(result).toEqual({
         fileName: 'src/components/Button.js',
-        lineNumber: '42',
+        lineNumber: 42, // parsed as an integer
+        lineEnd: null,
         side: 'RIGHT',
         diffPosition: '15',
-        isFileLevel: 'false',
-        parentRow: suggestionRow
+        isFileLevel: false,
       });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.fileName).toBe('src/components/Button.js');
-      expect(result.lineNumber).toBe(42); // Should be parsed as integer
-      expect(result.side).toBe('RIGHT');
-      expect(result.diffPosition).toBe('15');
-      expect(result.isFileLevel).toBe(false);
-      expect(result.suggestionRow).toBe(suggestionRow);
-      expect(result.targetRow).toBe(targetRow);
     });
 
-    it('should parse lineNumber as integer for type consistency', () => {
+    it('parses lineNumber and lineEnd as integers for type consistency', () => {
       const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({ className: '' });
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'test.js',
-        lineNumber: '123',
-        side: 'LEFT',
-        diffPosition: '50',
-        isFileLevel: 'false',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({
+        fileName: 'a.js', lineNumber: '007', lineEnd: '12', side: 'LEFT',
+      }));
+      expect(result.lineNumber).toBe(7);
+      expect(result.lineEnd).toBe(12);
       expect(typeof result.lineNumber).toBe('number');
-      expect(result.lineNumber).toBe(123);
+      expect(result.side).toBe('LEFT');
     });
 
-    it('should default side to RIGHT when not specified in stored data', () => {
+    it('defaults side to RIGHT when not stored', () => {
       const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({ className: '' });
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'test.js',
-        lineNumber: '10',
-        side: '', // Empty side
-        diffPosition: '5',
-        isFileLevel: 'false',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({ fileName: 'a.js', lineNumber: '3' }));
       expect(result.side).toBe('RIGHT');
     });
 
-    it('should return null diffPosition when not stored', () => {
+    it('returns a null diffPosition when not stored', () => {
       const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({ className: '' });
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'test.js',
-        lineNumber: '10',
-        side: 'RIGHT',
-        diffPosition: '', // Empty diffPosition
-        isFileLevel: 'false',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({ fileName: 'a.js', lineNumber: '3', side: 'RIGHT' }));
       expect(result.diffPosition).toBeNull();
+    });
+
+    it('never asks the card where it is in the document', () => {
+      const suggestionManager = createTestSuggestionManager();
+      const card = createSuggestionCard({ fileName: 'a.js', lineNumber: '3' });
+      card.closest = vi.fn();
+      card.querySelector = vi.fn();
+      suggestionManager.getFileAndLineInfo(card);
+      expect(card.closest).not.toHaveBeenCalled();
+      expect(card.querySelector).not.toHaveBeenCalled();
     });
   });
 
   describe('File-level suggestions', () => {
-    it('should return isFileLevel: true with null line/position values', () => {
+    it('returns isFileLevel: true with null line/position values', () => {
       const suggestionManager = createTestSuggestionManager();
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({
+        fileName: 'src/utils/helpers.js', isFileLevel: 'true',
+      }));
 
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row'
+      expect(result).toEqual({
+        fileName: 'src/utils/helpers.js', lineNumber: null, diffPosition: null, side: null, isFileLevel: true,
       });
+    });
 
-      // File-level suggestions have empty lineNumber, side, diffPosition
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'src/utils/helpers.js',
-        lineNumber: '',
-        side: '',
-        diffPosition: '',
-        isFileLevel: 'true',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
+    it('handles a file name containing colons', () => {
+      const suggestionManager = createTestSuggestionManager();
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({
+        fileName: 'C:/Users/dev/project/file.js', isFileLevel: 'true',
+      }));
       expect(result.isFileLevel).toBe(true);
-      expect(result.fileName).toBe('src/utils/helpers.js');
-      expect(result.lineNumber).toBeNull();
-      expect(result.diffPosition).toBeNull();
-      expect(result.side).toBeNull();
-      expect(result.targetRow).toBeNull();
-      expect(result.suggestionRow).toBe(suggestionRow);
+      expect(result.fileName).toBe('C:/Users/dev/project/file.js');
     });
 
-    it('should handle file-level suggestion even with fileName containing colons', () => {
+    it('the file-level check comes before the line: a stray line number does not make it a line suggestion', () => {
       const suggestionManager = createTestSuggestionManager();
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row'
-      });
-
-      // Windows-style path with drive letter
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'C:\\Users\\dev\\project\\file.js',
-        lineNumber: '',
-        side: '',
-        diffPosition: '',
-        isFileLevel: 'true',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.isFileLevel).toBe(true);
-      expect(result.fileName).toBe('C:\\Users\\dev\\project\\file.js');
-    });
-  });
-
-  describe('Fallback DOM traversal', () => {
-    it('should skip ai-suggestion-row when traversing', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      // Create chain: targetRow -> anotherSuggestionRow -> suggestionRow
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '20', side: 'RIGHT' },
-        lineNum2: '50'
-      });
-
-      // Set up closest() to return a file wrapper
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'fallback-file.js' }
-      });
-
-      const anotherSuggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: anotherSuggestionRow
-      });
-
-      // No stored data - forces fallback path
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',  // Empty triggers fallback
-        lineNumber: '',
-        side: '',
-        diffPosition: '',
-        isFileLevel: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.targetRow).toBe(targetRow);
-      expect(result.fileName).toBe('fallback-file.js');
-      expect(result.lineNumber).toBe(50);
-    });
-
-    it('should skip user-comment-row when traversing', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '25', side: 'LEFT' },
-        lineNum1: '30'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'user-comment-file.js' }
-      });
-
-      const userCommentRow = createMockRow({
-        className: 'user-comment-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: userCommentRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.targetRow).toBe(targetRow);
-    });
-
-    it('should skip context-expand-row when traversing', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '30', side: 'RIGHT' },
-        lineNum2: '75'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'expand-file.js' }
-      });
-
-      const expandRow = createMockRow({
-        className: 'context-expand-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: expandRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.targetRow).toBe(targetRow);
-      expect(result.fileName).toBe('expand-file.js');
-    });
-
-    it('should throw error when no target row found', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      // Suggestion row with no previous sibling
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: null
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      expect(() => {
-        suggestionManager.getFileAndLineInfo(suggestionDiv);
-      }).toThrow('Could not find target line for comment');
-    });
-
-    it('should use line-num1 for LEFT side in fallback path', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '35', side: 'LEFT' },
-        lineNum1: '100',
-        lineNum2: '105'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'left-side.js' }
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      // LEFT side should use line-num1
-      expect(result.lineNumber).toBe(100);
-      expect(result.side).toBe('LEFT');
-    });
-
-    it('should use line-num2 for RIGHT side in fallback path', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '40', side: 'RIGHT' },
-        lineNum1: '100',
-        lineNum2: '110'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'right-side.js' }
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      // RIGHT side should use line-num2
-      expect(result.lineNumber).toBe(110);
-      expect(result.side).toBe('RIGHT');
-    });
-
-    it('should default to RIGHT side when side not in dataset', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '45' }, // No side specified
-        lineNum2: '200'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'no-side.js' }
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.side).toBe('RIGHT');
-      expect(result.lineNumber).toBe(200);
-    });
-
-    it('should throw error when lineNumber cannot be determined', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '50', side: 'RIGHT' },
-        lineNum1: null,
-        lineNum2: null // No line numbers
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'no-line.js' }
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      expect(() => {
-        suggestionManager.getFileAndLineInfo(suggestionDiv);
-      }).toThrow('Could not determine file and line information');
-    });
-
-    it('should throw error when fileName cannot be determined', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '55', side: 'RIGHT' },
-        lineNum2: '300'
-      });
-
-      // closest returns null or element without fileName
-      targetRow.closest = vi.fn().mockReturnValue(null);
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: targetRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      expect(() => {
-        suggestionManager.getFileAndLineInfo(suggestionDiv);
-      }).toThrow('Could not determine file and line information');
-    });
-  });
-
-  describe('Edge cases', () => {
-    it('should handle stored fileName without lineNumber (file-level check comes first)', () => {
-      const suggestionManager = createTestSuggestionManager();
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row'
-      });
-
-      // Has fileName but no lineNumber and isFileLevel is true
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: 'edge-case.js',
-        lineNumber: '',
-        side: '',
-        diffPosition: '',
-        isFileLevel: 'true',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      // Should be treated as file-level
+      const result = suggestionManager.getFileAndLineInfo(createSuggestionCard({
+        fileName: 'edge-case.js', lineNumber: '9', isFileLevel: 'true',
+      }));
       expect(result.isFileLevel).toBe(true);
       expect(result.lineNumber).toBeNull();
     });
+  });
 
-    it('should handle multiple intermediate rows correctly', () => {
+  describe('A card that does not say where its suggestion is', () => {
+    it('throws when the line number is not stored', () => {
       const suggestionManager = createTestSuggestionManager();
-
-      const targetRow = createMockRow({
-        className: '',
-        dataset: { diffPosition: '60', side: 'RIGHT' },
-        lineNum2: '400'
-      });
-
-      targetRow.closest = vi.fn().mockReturnValue({
-        dataset: { fileName: 'multiple-rows.js' }
-      });
-
-      const expandRow = createMockRow({
-        className: 'context-expand-row',
-        previousSibling: targetRow
-      });
-
-      const userCommentRow = createMockRow({
-        className: 'user-comment-row',
-        previousSibling: expandRow
-      });
-
-      const anotherSuggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: userCommentRow
-      });
-
-      const suggestionRow = createMockRow({
-        className: 'ai-suggestion-row',
-        previousSibling: anotherSuggestionRow
-      });
-
-      const suggestionDiv = createMockSuggestionDiv({
-        fileName: '',
-        parentRow: suggestionRow
-      });
-
-      const result = suggestionManager.getFileAndLineInfo(suggestionDiv);
-
-      expect(result.targetRow).toBe(targetRow);
-      expect(result.fileName).toBe('multiple-rows.js');
-      expect(result.lineNumber).toBe(400);
+      expect(() => suggestionManager.getFileAndLineInfo(createSuggestionCard({ fileName: 'no-line.js' })))
+        .toThrow('Could not determine file and line information');
     });
-  });
-});
 
-describe('SuggestionManager.findFileElement()', () => {
-  afterEach(() => {
-    delete global.document;
-    delete global.CSS;
-    delete global.window.DiffRenderer;
-  });
-
-  it('escapes CSS special characters in the fallback selector lookup', () => {
-    const suggestionManager = createTestSuggestionManager();
-    const wrapper = { dataset: { fileName: 'src/routes/repos/"quoted"/route.tsx' } };
-    const file = 'src/routes/repos/"quoted"/route.tsx';
-
-    global.window.DiffRenderer = undefined;
-    global.CSS = {
-      escape: vi.fn(value => value.replace(/"/g, '\\"'))
-    };
-    global.document = {
-      querySelector: vi.fn().mockReturnValue(wrapper)
-    };
-
-    const result = suggestionManager.findFileElement(file);
-
-    expect(global.CSS.escape).toHaveBeenCalledWith(file);
-    expect(global.document.querySelector).toHaveBeenCalledWith(
-      '[data-file-name="src/routes/repos/\\"quoted\\"/route.tsx"]'
-    );
-    expect(result).toBe(wrapper);
+    it('throws when the file name is not stored', () => {
+      const suggestionManager = createTestSuggestionManager();
+      expect(() => suggestionManager.getFileAndLineInfo(createSuggestionCard({ lineNumber: '300', side: 'RIGHT' })))
+        .toThrow('Could not determine file and line information');
+      // Also for a card marked file-level: there is no file to file it under.
+      expect(() => suggestionManager.getFileAndLineInfo(createSuggestionCard({ isFileLevel: 'true' })))
+        .toThrow('Could not determine file and line information');
+    });
   });
 });
 

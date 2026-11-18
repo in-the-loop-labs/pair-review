@@ -5,11 +5,9 @@
  * Unit tests for ScrollUtils.scrollIntoViewStable — the stable scroll used by
  * tour navigation, AI-panel/comment navigation, suggestion navigation, and
  * scroll-to-file. It must:
- *   - render the target's lazy file body before scrolling (skipping
- *     collapsed wrappers, which contribute no height),
  *   - issue the caller's scroll, wait for the position to settle, then
  *     re-issue an instant corrective scroll,
- *   - keep correcting while lazy renders shift the layout (bounded),
+ *   - keep correcting while the layout shifts under the scroll (bounded),
  *   - bail when the target leaves the DOM or the user scrolls.
  */
 
@@ -27,13 +25,13 @@ const {
  * jsdom has no layout, so getBoundingClientRect is mocked; `state.top`
  * drives what the helper sees.
  */
-function makeTarget({ wrapped = true, collapsed = false } = {}) {
+function makeTarget({ wrapped = true } = {}) {
   const state = { top: 500, rendered: true };
   let parent = document.body;
   let wrapper = null;
   if (wrapped) {
     wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper' + (collapsed ? ' collapsed' : '');
+    wrapper.className = 'd2h-file-wrapper';
     document.body.appendChild(wrapper);
     parent = wrapper;
   }
@@ -155,32 +153,6 @@ describe('scrollIntoViewStable', () => {
     });
   });
 
-  it('renders the lazy body of the target file before scrolling', async () => {
-    const { target, wrapper } = makeTarget();
-    const calls = [];
-    window.prManager = {
-      ensureFileBodyRendered: vi.fn(async (arg) => { calls.push(['render', arg]); })
-    };
-    target.scrollIntoView = vi.fn(() => calls.push(['scroll']));
-
-    await scrollIntoViewStable(target, { behavior: 'smooth', block: 'center' });
-
-    expect(window.prManager.ensureFileBodyRendered).toHaveBeenCalledWith(wrapper);
-    // Render must come before any scroll.
-    expect(calls[0]).toEqual(['render', wrapper]);
-    expect(calls.some((c) => c[0] === 'scroll')).toBe(true);
-  });
-
-  it('skips body rendering for collapsed wrappers', async () => {
-    const { target } = makeTarget({ collapsed: true });
-    window.prManager = { ensureFileBodyRendered: vi.fn(async () => {}) };
-
-    await scrollIntoViewStable(target, {});
-
-    expect(window.prManager.ensureFileBodyRendered).not.toHaveBeenCalled();
-    expect(target.scrollIntoView).toHaveBeenCalled();
-  });
-
   it('scrolls with the caller options, then probes once instantly when stable', async () => {
     const { target } = makeTarget();
 
@@ -198,7 +170,7 @@ describe('scrollIntoViewStable', () => {
     target.scrollIntoView = vi.fn(() => {
       scrollCount += 1;
       // Simulate the first corrective probe (call #2) snapping the target
-      // to a new position because lazy renders shifted the layout.
+      // to a new position because the layout shifted under the scroll.
       if (scrollCount === 2) state.top = 100;
     });
 
@@ -248,42 +220,6 @@ describe('scrollIntoViewStable', () => {
 
     // Initial scroll only — the user's wheel cancels all corrections.
     expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
-  });
-
-  it('still scrolls when ensureFileBodyRendered rejects', async () => {
-    const { target } = makeTarget();
-    window.prManager = {
-      ensureFileBodyRendered: vi.fn(async () => { throw new Error('boom'); })
-    };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await scrollIntoViewStable(target, {});
-
-    expect(target.scrollIntoView).toHaveBeenCalled();
-    expect(warn).toHaveBeenCalled();
-  });
-
-  it('skips body rendering for targets inside the file comments zone', async () => {
-    // File-level comment cards live in .file-comments-zone, which sits above
-    // the lazy body — rendering the body can't move them, so skip the cost.
-    const wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper';
-    const zone = document.createElement('div');
-    zone.className = 'file-comments-zone';
-    const target = document.createElement('div');
-    zone.appendChild(target);
-    wrapper.appendChild(zone);
-    document.body.appendChild(wrapper);
-    vi.spyOn(target, 'getBoundingClientRect').mockImplementation(() => ({
-      top: 500, bottom: 520, left: 0, right: 100, width: 100, height: 20
-    }));
-    target.scrollIntoView = vi.fn();
-    window.prManager = { ensureFileBodyRendered: vi.fn(async () => {}) };
-
-    await scrollIntoViewStable(target, {});
-
-    expect(window.prManager.ensureFileBodyRendered).not.toHaveBeenCalled();
-    expect(target.scrollIntoView).toHaveBeenCalled();
   });
 
   it('stops correcting when a scroll-intent key is pressed', async () => {

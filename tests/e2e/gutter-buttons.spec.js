@@ -17,7 +17,7 @@
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender, setDiffView, hoverSplitDiffLine, waitForDiffType, analysesUrl } from './helpers.js';
 import {
-  gutterButtonsState, additionsContentPoint, scrollDiffUnderPointer, GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS
+  gutterButtonsState, additionsContentPoint, scrollDiffUnderPointer
 } from './diff-dom.js';
 
 const FILE = 'src/utils.js';
@@ -93,12 +93,11 @@ for (const mode of MODES) {
 
     /**
      * The same gesture on a review that holds the suggestions of an
-     * analysis when the page loads. On main the button then stays where it
-     * was (GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS in diff-dom.js has
-     * the measurements). The test above is the clean-review half of this
-     * pair; before the fixture reset the reviews between tests, that test
-     * met this state whenever an earlier spec of its worker had left an
-     * analysis behind, and was known as a flake.
+     * analysis when the page loads. Before the migration to the virtualized
+     * viewer the button then stayed where it was (a defect of the fallback
+     * positioner that went with the per-file renderer; ledger H66 of
+     * plans/codeview-virtualized-diff.md has the measurements). The viewer's
+     * own buttons leave with the pointer, whatever the review holds.
      */
     test('after the pointer leaves the diff, with the suggestions of an analysis on the review', async ({ page }) => {
       const started = await page.request.post(analysesUrl(mode.reviewId), { data: {} });
@@ -116,21 +115,7 @@ for (const mode of MODES) {
       await page.mouse.move(700, 20);
       pointer = null;
 
-      if (!GUTTER_BUTTON_STAYS_WITH_ANALYSIS_SUGGESTIONS) {
-        await expectNoStaleButtons(page);
-        return;
-      }
-      // Characterization of main: the button is left showing. Not for a
-      // frame or two: a second pointer move outside the diff and thirty
-      // painted frames later it is still there, alone.
-      await page.mouse.move(900, 30);
-      await page.evaluate(() => new Promise((resolve) => {
-        let frames = 0;
-        const tick = () => (++frames >= 30 ? resolve() : requestAnimationFrame(tick));
-        requestAnimationFrame(tick);
-      }));
-      const state = await gutterButtonsState(page, pointer);
-      expect(state.filter((s) => s.visible)).toEqual([{ visible: true, stale: true }]);
+      await expectNoStaleButtons(page);
     });
 
     test('clear when the page scrolls under a parked pointer', async ({ page }) => {

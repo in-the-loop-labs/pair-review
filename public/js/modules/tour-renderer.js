@@ -2,25 +2,17 @@
 /**
  * TourRenderer - Inline tour-stop annotations + body-level tour mode.
  *
- * DUAL RENDERING PATH — a stop's file is rendered by ONE of two engines:
- *   - PIERRE (@pierre/diffs): the file lives in a shadow-DOM
- *     `<diffs-container>` with NO light-DOM `<tr>` rows. The stop mounts as a
- *     custom `'tour-stop'` annotation (via PierreBridge.addAnnotation), which
- *     the bridge slots BELOW its anchor line into the file's light DOM as a
- *     `<div class="tour-annotation-row">`. A file is pierre-rendered iff
- *     `prManager.pierreBridge.files.has(filePath)`.
- *   - LEGACY (table renderer): context files added via ensureContextFile
- *     still render as an HTML table. The stop mounts as a
- *     `<tr class="tour-annotation-row">` inserted immediately ABOVE the
- *     anchor row.
- * Both variants carry the SAME inner `.tour-annotation` card (title, full
- * description, Chat-about button; Prev/Next lives on the TourBar) and the
- * same `data-stop-index`, so page CSS and the navigator code are agnostic to
- * which path mounted them.
+ * A stop's file is a file of the diff viewer (a changed file or a context
+ * file; a file outside the diff is added as a context file first). The stop
+ * mounts as a custom `'tour-stop'` annotation (via PierreBridge.addAnnotation),
+ * which the bridge slots BELOW its anchor line into the file's light DOM as a
+ * `<div class="tour-annotation-row">`. The card inside is `.tour-annotation`
+ * (title, full description, Chat-about button; Prev/Next lives on the
+ * TourBar), with the stop's `data-stop-index`.
  *
  * Responsibilities:
  *   - Resolve a stop's anchor line by (file_path, side, [line_start, line_end])
- *     and mount its annotation via the correct engine.
+ *     and mount its annotation.
  *   - Track the currently-highlighted stop and toggle the `active-stop` class.
  *   - Toggle the `body.tour-active` class for tour-specific chrome styling
  *     (sticky tour-bar offsets on .diff-toolbar / .d2h-file-header, plus
@@ -43,8 +35,8 @@
  *     `_autoAddedContextFileIds` and removed on tour exit so they don't
  *     leak into the user's persistent context-files list.
  *   - Folded gaps covering the stop's [line_start, line_end] range are
- *     expanded via PRManager.ensureLinesVisible so the anchor row exists
- *     by the time mountStop runs its DOM scan.
+ *     expanded via PRManager.ensureLinesVisible so the anchor line is one
+ *     the diff shows by the time mountStop looks for it.
  */
 
 // Prefixed to avoid collision with TourBar.js when both load as plain
@@ -76,19 +68,16 @@ class TourRenderer {
   constructor(prManager) {
     this.prManager = prManager;
     this._stops = [];
-    // Map<number, HTMLElement> — stop index -> mounted annotation element.
-    // For LEGACY (table-rendered) files this is the injected
-    // `<tr class="tour-annotation-row">`. For PIERRE-rendered files it is
-    // the last-known `<div class="tour-annotation-row">` slotted into the
-    // file's light DOM — that div is RE-CREATED on every FileDiff rerender,
-    // so the cached reference can go stale; always re-resolve the live node
-    // via `_resolveRow(index)` before operating on it.
+    // Map<number, HTMLElement> — stop index -> the last-known annotation
+    // element, the `<div class="tour-annotation-row">` slotted into the
+    // file's light DOM. The cached reference can go stale (the viewer drops
+    // and re-attaches elements); always re-resolve the live node via
+    // `_resolveRow(index)` before operating on it.
     this._mounted = new Map();
-    // Map<number, {filePath, side, id, anchorLine}> — pierre-mounted stops.
-    // Presence here marks a stop as living inside a @pierre/diffs shadow-DOM
-    // file (annotation-based) rather than a legacy injected <tr>. Holds the
-    // metadata needed to remove the annotation (bridge.removeAnnotation) and
-    // re-query the live slotted element after a rerender.
+    // Map<number, {filePath, side, id, anchorLine}> — the mounted stops, each
+    // an annotation of the diff viewer. Holds the metadata needed to remove
+    // the annotation (bridge.removeAnnotation) and to ask the bridge for the
+    // stop's element again.
     this._pierreMounts = new Map();
     // The index highlighted as the active stop, or -1. Tracked on the
     // instance (not just the DOM) because a pierre annotation element is
@@ -196,13 +185,10 @@ class TourRenderer {
     //    context file (or PATCHes an existing context file to cover the
     //    range). Track the new id so unmountAll can DELETE it on exit and
     //    not leave the user with surprise persistent entries.
-    //    "In the pane" is asked of data first: a file the bridge holds is
-    //    there whether or not it has an element (a virtualized viewer draws
-    //    only what is near the viewport). An element without a record is a
-    //    context file drawn by the table renderer.
-    const inPane = this._isPierreFile(filePath) || !!document.querySelector(
-      `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
-    );
+    //    "In the pane" is asked of data: a file the bridge holds is there
+    //    whether or not it has an element (the viewer draws only what is
+    //    near the viewport).
+    const inPane = this._isPierreFile(filePath);
     if (!inPane && typeof this.prManager.ensureContextFile === 'function') {
       const wasAlreadyContext = Array.isArray(this.prManager.contextFiles) &&
         this.prManager.contextFiles.some((cf) => cf.file === filePath);
@@ -248,8 +234,7 @@ class TourRenderer {
     if (isStale()) return false;
 
     // 2) Unfold any gap covering the stop's range. Safe no-op when the
-    //    rows are already visible. Works on both diff-file and context-file
-    //    wrappers (both produce tr[data-line-number][data-side] rows).
+    //    lines are already shown. Works on changed files and context files.
     if (typeof this.prManager.ensureLinesVisible === 'function') {
       try {
         await this.prManager.ensureLinesVisible([
@@ -280,14 +265,13 @@ class TourRenderer {
    * `collapsedFiles` would leave the file-tree and viewed-badge state
    * lying.
    *
-   * Async because `toggleFileCollapse` is now async (it awaits the lazy file
-   * body render before revealing it). The caller (`_advanceTour`) awaits this
-   * so the file is visibly expanded before `scrollToStop` runs — otherwise a
-   * stop inside a just-expanded file could be scrolled to while its rows are
-   * still hidden.
+   * Async because `toggleFileCollapse` is async. The caller (`_advanceTour`)
+   * awaits this so the file is expanded before `scrollToStop` runs —
+   * otherwise a stop inside a just-expanded file could be scrolled to while
+   * its rows are still hidden.
    *
    * @param {number} index
-   * @returns {Promise<HTMLTableRowElement|null>}
+   * @returns {Promise<HTMLElement|null>}
    */
   async mountStop(index) {
     const stop = this._stops[index];
@@ -296,7 +280,7 @@ class TourRenderer {
     const filePath = stop.file_path;
     const side = stop.side || 'RIGHT';
     const lineStart = stop.line_start;
-    // `line_end` may be missing on legacy/older stops; fall back to
+    // `line_end` may be missing on older stops; fall back to
     // `line_start` so the range scan still works.
     const lineEnd = (typeof stop.line_end === 'number' && stop.line_end >= lineStart)
       ? stop.line_end
@@ -307,16 +291,17 @@ class TourRenderer {
       return null;
     }
 
-    // Route by rendering engine. Pierre-rendered files have no light-DOM
-    // <tr> rows to anchor against, so they mount via the annotation bridge.
-    if (this._isPierreFile(filePath)) {
-      return this._mountStopPierre(index, stop, filePath, side, lineStart, lineEnd);
+    // A file the viewer does not hold (it could not be added to the pane)
+    // has no line to mount the stop under.
+    if (!this._isPierreFile(filePath)) {
+      console.warn(`[TourRenderer] no wrapper for ${filePath}; skipping stop ${index}`);
+      return null;
     }
-    return this._mountStopLegacy(index, stop, filePath, side, lineStart, lineEnd);
+    return this._mountStopPierre(index, stop, filePath, side, lineStart, lineEnd);
   }
 
   /**
-   * Mount a stop into a PIERRE-rendered file as a `'tour-stop'` annotation.
+   * Mount a stop into a file of the diff viewer as a `'tour-stop'` annotation.
    *
    * The bridge slots the annotation BELOW its anchor line into the file's
    * light DOM (so page CSS + inline handlers work). We anchor at `line_end`
@@ -326,8 +311,7 @@ class TourRenderer {
    * still finds a home.
    *
    * The `toggleFileCollapse` await is a suspension window guarded against a
-   * mid-flight tour teardown exactly like the legacy path — see the inline
-   * note. Returns the slotted `<div class="tour-annotation-row">`, or null
+   * mid-flight tour teardown — see the inline note. Returns the slotted `<div class="tour-annotation-row">`, or null
    * when no line in the range is mountable (probe advances).
    *
    * @returns {Promise<HTMLElement|null>}
@@ -336,9 +320,8 @@ class TourRenderer {
     const bridge = this.prManager && this.prManager.pierreBridge;
     if (!bridge) return null;
 
-    // Capture the open-generation ONCE at entry — mirrors the legacy path's
-    // guard so the `toggleFileCollapse` await below can't record state for a
-    // torn-down tour.
+    // Capture the open-generation ONCE at entry, so the `toggleFileCollapse`
+    // await below can't record state for a torn-down tour.
     const startGen = this.prManager?._tourGen;
     const isStale = () => this.prManager?._tourGen !== startGen;
 
@@ -377,11 +360,10 @@ class TourRenderer {
       return null;
     }
 
-    // Expand a collapsed wrapper the same way the legacy path does — route
-    // through PRManager.toggleFileCollapse so `collapsedFiles` stays in sync,
-    // and refuse (bail) rather than strip the class directly when the API is
-    // missing. The pierre body is hidden by `.collapsed` CSS just like the
-    // legacy table, so a collapsed file would slot the annotation invisibly.
+    // Expand a collapsed file through PRManager.toggleFileCollapse so
+    // `collapsedFiles` stays in sync, and refuse (bail) rather than strip the
+    // class directly when the API is missing. A collapsed file draws no
+    // lines, so its annotation would have no place on screen.
     const wrapper = document.querySelector(
       `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
     );
@@ -446,120 +428,11 @@ class TourRenderer {
     return row;
   }
 
-  /**
-   * Mount a stop into a LEGACY (table-rendered) file as a
-   * `<tr class="tour-annotation-row">` inserted immediately above the anchor.
-   * This is the original pre-@pierre/diffs path, kept for context files that
-   * still render as HTML tables.
-   *
-   * @returns {Promise<HTMLTableRowElement|null>}
-   */
-  async _mountStopLegacy(index, stop, filePath, side, lineStart, lineEnd) {
-    // Capture the open-generation ONCE at entry. The `toggleFileCollapse`
-    // await below is a suspension window — the tour can be exited or
-    // restarted (Escape, reopen) while it's in flight, which bumps
-    // `_tourGen` and runs `unmountAll`. Mirrors prepareStop's guard so we
-    // can bail without recording state for a dead tour. `?.` because
-    // prManager may be absent (the non-collapsed path has no await, so
-    // isStale stays harmlessly false there).
-    const startGen = this.prManager?._tourGen;
-    const isStale = () => this.prManager?._tourGen !== startGen;
-
-    if (this._mounted.has(index)) {
-      const existing = this._mounted.get(index);
-      if (existing && existing.isConnected) return existing;
-      this._mounted.delete(index);
-    }
-
-    const wrapper = document.querySelector(
-      `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
-    );
-    if (!wrapper) {
-      console.warn(`[TourRenderer] no wrapper for ${filePath}; skipping stop ${index}`);
-      return null;
-    }
-
-    // Look up the anchor row BEFORE expanding. Collapsed wrappers hide
-    // .d2h-file-body via CSS (`display: none`) but the rows are still in
-    // the DOM, so the query succeeds either way. Only expand once we've
-    // confirmed a row to mount against — otherwise an unmountable stop
-    // would leave the file expanded for no benefit.
-    //
-    // The validator accepts any stop whose [line_start, line_end] range
-    // intersects the changed-line set, so the EXACT line_start row may
-    // not be in the rendered diff (e.g. line_start is a context line that
-    // got folded). Scan forward through the range and anchor on the first
-    // row that exists.
-    let anchorRow = null;
-    for (let n = lineStart; n <= lineEnd; n++) {
-      const candidate = wrapper.querySelector(
-        `tr[data-line-number="${n}"][data-side="${side}"]`
-      );
-      if (candidate) {
-        anchorRow = candidate;
-        break;
-      }
-    }
-    if (!anchorRow) {
-      console.warn(
-        `[TourRenderer] no anchor row for ${filePath}:${lineStart}-${lineEnd} (${side}); ` +
-        'stop will be skipped'
-      );
-      return null;
-    }
-
-    // We have an anchor — now safe to expand if the file was collapsed.
-    // Route through PRManager.toggleFileCollapse so the user-facing
-    // `collapsedFiles` set stays in sync with the DOM; refuse to expand
-    // (and bail) when the API is missing rather than strip the class
-    // directly, which would silently desync the two views of collapse
-    // state.
-    if (wrapper.classList.contains('collapsed')) {
-      if (this.prManager && typeof this.prManager.toggleFileCollapse === 'function') {
-        try {
-          // Await: toggleFileCollapse renders the lazy body and removes the
-          // `collapsed` class. Awaiting here means the row is built into a
-          // visible body and the caller's scrollToStop lands correctly.
-          await this.prManager.toggleFileCollapse(filePath);
-          // The await above is a suspension window. If the tour exited or
-          // restarted while it was in flight, `unmountAll` already ran
-          // against a snapshot that does NOT include this stop (the
-          // `_autoExpanded.add` / `_mounted.set` below hadn't run yet).
-          // Recording state now would orphan it forever — the file would
-          // never be re-collapsed and the annotation row never removed.
-          // Bail without mutating renderer state, matching prepareStop's
-          // stale-bail behavior. (The file is left expanded; that minor
-          // cosmetic residue is preferable to a corrupted `_autoExpanded`
-          // set that mis-collapses an unrelated file on the next exit.)
-          if (isStale()) return null;
-          // Record so unmountAll() can re-collapse on tour exit.
-          this._autoExpanded.add(filePath);
-        } catch (err) {
-          console.warn(
-            '[TourRenderer] toggleFileCollapse failed; skipping stop',
-            err
-          );
-          return null;
-        }
-      } else {
-        console.warn(
-          '[TourRenderer] prManager.toggleFileCollapse missing; ' +
-          'refusing to strip collapsed class — stop skipped'
-        );
-        return null;
-      }
-    }
-
-    const row = this._buildAnnotationRow(index, stop, anchorRow);
-    anchorRow.parentNode.insertBefore(row, anchorRow);
-    this._mounted.set(index, row);
-    return row;
-  }
-
   // --- pierre helpers -----------------------------------------------------
 
   /**
-   * Whether `filePath` is rendered by @pierre/diffs (vs the legacy table).
+   * Whether `filePath` is a file of the diff viewer (it has a record there,
+   * mounted or not).
    * @param {string} filePath
    * @returns {boolean}
    */
@@ -595,23 +468,22 @@ class TourRenderer {
   }
 
   /**
-   * Resolve the live annotation element for a stop, regardless of engine.
-   * Legacy: the cached `<tr>` if still connected. Pierre: re-query the
-   * slotted `<div>` (and refresh the `_mounted` cache). Returns null when
-   * nothing is currently mounted for the index.
+   * Resolve the annotation element of a mounted stop: asked of the bridge
+   * again (the `_mounted` cache is refreshed). Returns null when nothing is
+   * mounted for the index.
    * @param {number} index
    * @returns {HTMLElement|null}
    */
   _resolveRow(index) {
     const pierre = this._pierreMounts.get(index);
-    if (pierre) {
-      const el = this._queryPierreRow(pierre.filePath, index);
-      if (el) this._mounted.set(index, el);
-      else this._mounted.delete(index);
-      return el;
+    if (!pierre) {
+      this._mounted.delete(index);
+      return null;
     }
-    const row = this._mounted.get(index);
-    return row && row.isConnected ? row : null;
+    const el = this._queryPierreRow(pierre.filePath, index);
+    if (el) this._mounted.set(index, el);
+    else this._mounted.delete(index);
+    return el;
   }
 
   /**
@@ -642,27 +514,21 @@ class TourRenderer {
    * @returns {boolean}
    */
   unmountStop(index) {
-    // Pierre stop: remove via the bridge (which rerenders the file without
-    // this annotation). Do NOT touch the DOM node directly — the bridge owns
-    // its lifecycle.
+    // Remove via the bridge (which redraws the file without this
+    // annotation). Do NOT touch the DOM node directly — the bridge owns its
+    // lifecycle.
     const pierre = this._pierreMounts.get(index);
-    if (pierre) {
-      this._pierreMounts.delete(index);
-      this._mounted.delete(index);
-      const bridge = this.prManager && this.prManager.pierreBridge;
-      if (bridge && typeof bridge.removeAnnotation === 'function') {
-        try {
-          bridge.removeAnnotation(pierre.filePath, pierre.id);
-        } catch (err) {
-          console.warn('[TourRenderer] removeAnnotation failed for', pierre.id, err);
-        }
-      }
-      return true;
-    }
-    const row = this._mounted.get(index);
-    if (!row) return false;
-    if (row.isConnected) row.remove();
     this._mounted.delete(index);
+    if (!pierre) return false;
+    this._pierreMounts.delete(index);
+    const bridge = this.prManager && this.prManager.pierreBridge;
+    if (bridge && typeof bridge.removeAnnotation === 'function') {
+      try {
+        bridge.removeAnnotation(pierre.filePath, pierre.id);
+      } catch (err) {
+        console.warn('[TourRenderer] removeAnnotation failed for', pierre.id, err);
+      }
+    }
     return true;
   }
 
@@ -687,9 +553,8 @@ class TourRenderer {
    * @returns {Promise<void>}
    */
   unmountAll() {
-    // Pierre stops: remove each via the bridge (rerenders the file without
-    // the annotation) and drop their `_mounted` cache entries so the legacy
-    // DOM-removal loop below only sees injected <tr> rows.
+    // Remove each stop via the bridge (which redraws the file without the
+    // annotation). The DOM nodes are the bridge's.
     if (this._pierreMounts.size > 0) {
       const bridge = this.prManager && this.prManager.pierreBridge;
       for (const [index, pierre] of this._pierreMounts) {
@@ -705,10 +570,6 @@ class TourRenderer {
       this._pierreMounts.clear();
     }
     this._activeIndex = -1;
-
-    for (const row of this._mounted.values()) {
-      if (row && row.isConnected) row.remove();
-    }
     this._mounted.clear();
 
     if (
@@ -771,10 +632,9 @@ class TourRenderer {
    *
    * Goes through the page's one navigation helper (PRManager.revealInDiff),
    * which resolves the stop's element through the bridge by annotation id,
-   * waits until the diff has attached it (it is not while a new diff of the
-   * file is still awaiting display) and scrolls with the stable variant:
-   * lazy bodies between the viewport and the stop render as the scroll
-   * passes them, shifting layout so a plain scrollIntoView lands off target.
+   * brings it into the viewer's mounted window, waits until the diff has
+   * attached it (it is not while a new diff of the file is still awaiting
+   * display) and scrolls with the stable variant.
    * Fire-and-forget for the caller; cancelled when the tour is left or
    * reopened, and it bails on its own if the user scrolls.
    * @param {number} index
@@ -788,19 +648,17 @@ class TourRenderer {
     const manager = this.prManager;
     if (manager && typeof manager.revealInDiff === 'function') {
       const pierre = this._pierreMounts.get(index);
-      if (!pierre && !this._mounted.has(index)) return undefined;
+      if (!pierre) return undefined;
       const gen = manager._tourGen;
       return manager.revealInDiff({
-        file: pierre ? pierre.filePath : this._stops[index]?.file_path,
-        annotationId: pierre ? pierre.id : undefined,
-        // Legacy (table-rendered) stops are rows this renderer holds.
-        findElement: () => (pierre ? null : this._resolveRow(index)),
+        file: pierre.filePath,
+        annotationId: pierre.id,
         scroll: options,
         // A stop is never minimized: scroll to the stop itself.
         expandMinimized: false,
         isCancelled: () => manager._tourGen !== gen
       }).then(({ element }) => {
-        if (element && pierre && this._pierreMounts.get(index) === pierre) {
+        if (element && this._pierreMounts.get(index) === pierre) {
           this._mounted.set(index, element);
         }
       }).catch((err) => {
@@ -839,39 +697,9 @@ class TourRenderer {
   // --- private ------------------------------------------------------------
 
   /**
-   * Build the LEGACY `<tr class="tour-annotation-row">` wrapper (table-based
-   * files). Inner `.tour-annotation` card is shared with the pierre variant.
-   * @param {number} index
-   * @param {Object} stop
-   * @param {HTMLElement} anchorRow
-   * @returns {HTMLTableRowElement}
-   */
-  _buildAnnotationRow(index, stop, anchorRow) {
-    const row = document.createElement('tr');
-    row.className = 'tour-annotation-row';
-    if (index === this._activeIndex) row.classList.add('active-stop');
-    row.dataset.stopIndex = String(index);
-
-    const cell = document.createElement('td');
-    cell.colSpan = 2;
-    cell.className = 'tour-annotation-cell';
-
-    cell.appendChild(this._buildAnnotationInner(index, stop));
-    row.appendChild(cell);
-
-    // Suppress the anchorRow parameter being marked unused by linters that
-    // care; it's only here for future enhancements (e.g. computing colspan
-    // from the anchor row's siblings).
-    void anchorRow;
-
-    return row;
-  }
-
-  /**
-   * Build the PIERRE `<div class="tour-annotation-row">` wrapper. The bridge
-   * slots this into the file's light DOM below the anchor line. Carries the
-   * same class + `data-stop-index` as the legacy `<tr>` so page CSS and the
-   * light-DOM query (`_queryPierreRow`) treat both uniformly.
+   * Build the `<div class="tour-annotation-row">` wrapper of a stop. The
+   * bridge slots it into the file's light DOM below the anchor line. Page
+   * CSS keys on the class and on `data-stop-index`.
    * @param {number} index
    * @param {Object} stop
    * @returns {HTMLDivElement}
@@ -886,9 +714,8 @@ class TourRenderer {
   }
 
   /**
-   * Build the shared `.tour-annotation` card (marker + Chat button, title,
-   * full description) used by both the legacy `<tr>` and the pierre `<div>`
-   * wrappers.
+   * Build the `.tour-annotation` card (marker + Chat button, title, full
+   * description) inside the stop's wrapper.
    * @param {number} index
    * @param {Object} stop
    * @returns {HTMLDivElement}

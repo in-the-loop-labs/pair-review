@@ -31,7 +31,7 @@ test('F15: hydratePartialDiff by diff type', async ({ harness }) => {
     const attempt = (role, files) => {
       const diff = byName[roles[role]];
       try {
-        const hydrated = window.PierreDiffs.hydratePartialDiff('clone', diff, files || H.contentsOf(diff.name));
+        const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', diff, files || H.contentsOf(diff.name));
         return {
           type: hydrated.type,
           isPartial: hydrated.isPartial,
@@ -134,7 +134,7 @@ test('D5: hydration keeps the patch hunks, adds expand controls, and shifts no r
     const referenceLine = Number(reference.getAttribute('data-line'));
     const topBefore = H.viewportTopOf(reference);
 
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', base, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', base, H.contentsOf(T));
     const range = (h) => `${h.deletionStart},${h.deletionCount},${h.additionStart},${h.additionCount}`;
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
@@ -193,7 +193,7 @@ test('F17: a click on an expand control expands the gap, and onHunkExpand passed
     H.hooks.onHunkExpand = () => {};
     H.parse({});
     H.buildItems({ only: [T] });
-    H.items[0].fileDiff = window.PierreDiffs.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
+    H.items[0].fileDiff = window.VendorTestExtras.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
     H.create({ ...H.APP_OPTIONS, pointerEventsOnScroll: true }, [...H.APP_CALLBACKS, 'onHunkExpand']);
     H.cv.setItems(H.items);
     await H.settle();
@@ -255,7 +255,7 @@ test('F17: the expansion map survives a fileDiff replacement, keyed by hunk inde
     const T = roles.large;
     H.parse({});
     H.buildItems({ only: [T] });
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
     H.items[0].fileDiff = hydrated;
     H.create({ ...H.APP_OPTIONS }, H.APP_CALLBACKS);
     H.cv.setItems(H.items);
@@ -295,7 +295,7 @@ test('PierreContext.mergeContextRanges output renders through updateItem, with n
     const T = roles.large;
     H.parse({});
     H.buildItems({ only: [T] });
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.items[0].fileDiff, H.contentsOf(T));
     H.items[0].fileDiff = hydrated;
     H.create({ ...H.APP_OPTIONS }, H.APP_CALLBACKS);
     H.cv.setItems(H.items);
@@ -341,9 +341,9 @@ test('PierreContext.mergeContextRanges output renders through updateItem, with n
 });
 
 test('F19: a zero-change base from parseDiffFromFile(file, file) plus mergeContextRanges renders range chunks', async ({ harness }) => {
-  // Depends on it: nothing in the plan as written (context files use the
-  // legacy renderer in the footer, decision D2). It is the costed alternative
-  // if D2 is not accepted, and it needs no private API.
+  // Depends on it: context files (decision D2, section 12 of the ledger). A
+  // context file is an item of the viewer whose diff is this: the file
+  // diffed with itself, with its ranges merged in. It needs no private API.
   const page = await harness.open({ scripts: [CONTEXT_MODULE] });
   const result = await page.evaluate(async () => {
     const H = window.H;

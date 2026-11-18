@@ -21,7 +21,7 @@ import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, rowCount, scrollDiffTo,
   scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts, clickExpandControl,
-  scrollThroughDiff, ensureMounted, LAYOUT_TOGGLE_KEEPS, COLLAPSE_INSIDE_FILE
+  scrollThroughDiff, ensureMounted
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -236,24 +236,16 @@ for (const mode of MODES) {
       // Read a little way into the file.
       await scrollDiffTo(page, (await scrollState(page)).top + 230);
       const before = await firstVisibleRow(page);
-      const offsetBefore = (await scrollState(page)).top;
       expect(before.file).toBe(middle);
 
       await setDiffView(page, 'split');
       await scrollSettled(page);
 
-      if (LAYOUT_TOGGLE_KEEPS === 'first-visible-line') {
-        const side = before.type === 'change-deletion' ? 'deletions' : 'additions';
-        await expect.poll(async () => {
-          const now = await rowBox(page, before.file, before.line, side);
-          return now ? Math.abs(now.top - before.top) : 999;
-        }).toBeLessThan(2);
-      } else {
-        // Characterization of main: the pixel offset is restored, and the
-        // rows above have other heights in the other layout, so the line that
-        // was at the top is no longer there.
-        expect(Math.abs((await scrollState(page)).top - offsetBefore)).toBeLessThan(2);
-      }
+      const side = before.type === 'change-deletion' ? 'deletions' : 'additions';
+      await expect.poll(async () => {
+        const now = await rowBox(page, before.file, before.line, side);
+        return now ? Math.abs(now.top - before.top) : 999;
+      }).toBeLessThan(2);
       // Either way the diff was not thrown back to its start.
       expect((await scrollState(page)).top).toBeGreaterThan(1000);
       await assertNoOrphanHosts(page);
@@ -267,41 +259,25 @@ for (const mode of MODES) {
       await scrollSettled(page);
       // Scroll 300 px into the file; its header stays pinned under the toolbar.
       await scrollDiffTo(page, (await scrollState(page)).top + 300);
-      const inside = await scrollSettled(page);
+      await scrollSettled(page);
       const wrapper = fileWrapper(page, middle);
       await expect(wrapper.locator('.d2h-file-header')).toBeInViewport();
 
       await wrapper.locator('.file-collapse-toggle').click();
       const next = MANY.order[MANY.order.indexOf(middle) + 1];
-      if (COLLAPSE_INSIDE_FILE === 'header') {
-        // The header of the file that was collapsed is where the reader was
-        // looking, flush under the toolbar, and the next file follows it.
-        await expect(wrapper).toHaveClass(/collapsed/);
-        await scrollSettled(page);
-        const landing = await headerLanding(page, middle);
-        expect(Math.abs(landing.belowPinned)).toBeLessThan(2);
-        expect(landing.inViewport).toBe(true);
-        expect(await firstFileBelowToolbar(page)).toBe(middle);
-        const following = await headerLanding(page, next);
-        expect(following.inViewport).toBe(true);
-        // The collapsed header (53 px) and the 24 px between two files.
-        expect(following.belowPinned).toBeGreaterThan(60);
-        expect(following.belowPinned).toBeLessThan(100);
-      } else {
-        await expect(wrapper).toHaveClass(/collapsed/);
-        // Characterization of main (ledger H48): nothing scrolls. The collapsed
-        // header is left above the viewport, about as far as the reader had
-        // scrolled into the file (measured: 359 px above the toolbar's bottom
-        // edge, the 300 scrolled plus the toolbar's own height), and a later
-        // file is on screen.
-        await scrollSettled(page);
-        expect(Math.abs((await scrollState(page)).top - inside)).toBeLessThan(2);
-        const landing = await headerLanding(page, middle);
-        expect(landing.belowPinned).toBeLessThan(-250);
-        expect(landing.belowPinned).toBeGreaterThan(-400);
-        const top = await firstFileBelowToolbar(page);
-        expect(MANY.order.indexOf(top)).toBeGreaterThan(MANY.order.indexOf(middle));
-      }
+      // The header of the file that was collapsed is where the reader was
+      // looking, flush under the toolbar, and the next file follows it.
+      await expect(wrapper).toHaveClass(/collapsed/);
+      await scrollSettled(page);
+      const landing = await headerLanding(page, middle);
+      expect(Math.abs(landing.belowPinned)).toBeLessThan(2);
+      expect(landing.inViewport).toBe(true);
+      expect(await firstFileBelowToolbar(page)).toBe(middle);
+      const following = await headerLanding(page, next);
+      expect(following.inViewport).toBe(true);
+      // The collapsed header (53 px) and the 24 px between two files.
+      expect(following.belowPinned).toBeGreaterThan(60);
+      expect(following.belowPinned).toBeLessThan(100);
     });
   });
 }

@@ -9,18 +9,19 @@
  *  - every stylesheet pr.html and local.html load, in their order, unmodified
  *    (pr.css with its block for the virtualized viewer, and styles.css after
  *    it, whose `!important` rules give the file header its padding)
- *  - the file header built by PRManager.prototype.renderFileDiff itself
+ *  - the file header built by PRManager.prototype._buildFileHeader itself
  *    (DiffRenderer.createFileHeader plus the comment, chat and summary-toggle
  *    buttons), in every variant: plain, renamed, generated, viewed, with the
  *    comment indicator filled, with the summary toggle enabled
  *  - the file-comment zone element from FileCommentManager
- *  - everything the CodeView bridge passes as unsafeCSS
+ *  - everything the bridge passes as unsafeCSS
  *    (PierreStyles.unsafeCSS(): the card rules, the row-less fix, the file's
  *    frame), and comment cards, a comment form and a suggestion card built by
- *    main's PierreBridge renderers
+ *    the application's card builders (PierreAnnotations)
  *
- * and lays them out the way the application does on the virtualized viewer,
- * with the numbers its bridge gives the viewer:
+ * and lays them out the way the application does, with the numbers its
+ * bridge gives the viewer ("main" below is the application before the
+ * migration to the viewer, whose look the pane keeps):
  *
  *  - #diff-container is the scroll root; the box a reader sees around the
  *    files is drawn behind the viewer's list, not on the scroll root
@@ -47,14 +48,13 @@ import { test, expect, VALIDATOR_PATTERN } from '../harness/contract-test.js';
 import { appStylesheets } from '../harness/constants.js';
 
 const APP_STYLES = appStylesheets();
-/** The numbers the bridge gives the viewer (pierre-codeview-bridge.js DEFAULT_LAYOUT). */
+/** The numbers the bridge gives the viewer (pierre-bridge.js DEFAULT_LAYOUT). */
 const APP_LAYOUT = { paddingTop: 17, paddingBottom: 41, gap: 24 };
 const APP_SCRIPTS = [
   '/app/js/utils/smart-truncate.js',
   '/app/js/modules/diff-renderer.js',
   '/app/js/modules/pierre-styles.js',
   '/app/js/modules/pierre-annotations.js',
-  '/app/js/modules/pierre-bridge.js',
   '/app/js/modules/file-comment-manager.js',
   '/app/js/pr.js',
 ];
@@ -93,11 +93,8 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     manager.summariesHiddenFiles = new Set();
     manager._summaryHashesByFile = new Map();
     manager._summariesEnabled = true;
-    manager._lazyFileBodies = new Map();
     manager._renderGen = 1;
     manager.fileCommentManager = new window.FileCommentManager(manager);
-    // The only decision renderFileDiff asks for; the body it then registers is not used here.
-    manager._getPierreRenderDecision = () => ({ usePierre: true, forcePlainText: false, deferDiff: false });
 
     const names = H.workload.modifiedPaths.slice(0, 14);
     const variantOf = {
@@ -124,16 +121,21 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
         renamed: variant === 'renamed',
         renamedFrom: variant === 'renamed' ? `old/location/${id}` : null,
       };
-      const wrapper = manager.renderFileDiff(file);
-      const header = wrapper.querySelector('.d2h-file-header');
-      const zone = wrapper.querySelector('.file-comments-zone');
+      // What PRManager._renderFileHeader does for a changed file, and what
+      // _fileHostClasses and the bridge stamp on its element.
+      const collapsed = variant === 'generated' || variant === 'viewed';
+      const zone = manager.fileCommentManager.createFileCommentsZone(file.file);
+      const header = manager._buildFileHeader(file, { collapsed, zone });
+      const classes = [];
+      if (variant === 'generated') classes.push('generated-file');
+      if (collapsed) classes.push('collapsed');
       if (variant === 'comment-indicator') {
         // What FileCommentManager.updateCommentCount does to the header icon.
         header.querySelector('.comment-icon-outline').style.display = 'none';
         header.querySelector('.comment-icon-filled').style.display = '';
         header.querySelector('.file-header-comment-btn').classList.add('has-comments');
       }
-      return { variant, header, zone, classes: [...wrapper.classList].filter((c) => c !== 'd2h-file-wrapper') };
+      return { variant, header, zone, classes };
     };
 
     // ---- main's natural header height, per variant, on main's own structure ----
@@ -177,24 +179,22 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     probeRow.remove();
     const lineHeight = lineHeightMode === 'vendor-default' ? 20 : measuredRowHeight;
 
-    // ---- the layout class PRManager puts on .diff-view for this engine ----
-    view.classList.add('codeview-engine');
-
-    // ---- real cards from main's bridge ----
-    const bridge = new window.PierreBridge({ theme });
+    // ---- real cards from the application's builders ----
+    const cards = window.PierreAnnotations;
+    const env = { escapeHtml: (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;') };
     const formElements = new Map();
     const comment = (id, line) => ({
       id, file: names[0], line_start: line, line_end: line, side: 'RIGHT', source: 'user', type: 'comment',
-      body: 'A real user comment card, rendered by main\'s bridge.\n\nSecond paragraph.',
+      body: 'A real user comment card, rendered by the application.\n\nSecond paragraph.',
     });
     H.hooks.renderAnnotation = (annotation, fileOrDiff, context) => {
       const meta = annotation.metadata;
       if (H.annEls.has(meta.key)) return H.annEls.get(meta.key);
       let el;
       if (meta.kind === 'zone') el = parts.get(context.item.id).zone;
-      else if (meta.kind === 'comment') el = bridge._renderCommentAnnotation(comment(meta.id, annotation.lineNumber), `comment-${meta.id}`);
-      else if (meta.kind === 'form') el = bridge._renderFormAnnotation({ lineStart: annotation.lineNumber, lineEnd: annotation.lineNumber, side: 'RIGHT' }, `form-${meta.id}`, formElements, context.item.id);
-      else if (meta.kind === 'suggestion') el = bridge._renderSuggestionFallback({ id: meta.id, type: 'bug', title: 'A suggestion', body: 'Suggestion body text.' }, `suggestion-${meta.id}`);
+      else if (meta.kind === 'comment') el = cards.renderComment(comment(meta.id, annotation.lineNumber), `comment-${meta.id}`, env);
+      else if (meta.kind === 'form') el = cards.renderForm({ lineStart: annotation.lineNumber, lineEnd: annotation.lineNumber, side: 'RIGHT' }, `form-${meta.id}`, formElements, context.item.id, {}, env);
+      else if (meta.kind === 'suggestion') el = cards.renderSuggestionFallback({ id: meta.id, type: 'bug', title: 'A suggestion', body: 'Suggestion body text.' }, `suggestion-${meta.id}`, env);
       H.annEls.set(meta.key, el);
       return el;
     };
@@ -246,7 +246,7 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     // One zone with a card in it, so the zone's "has content" rules apply.
     const filled = names[7];
     parts.get(filled).zone.querySelector('.file-comments-container')
-      .appendChild(bridge._renderCommentAnnotation({ ...comment(8999, 1), is_file_level: 1, line_start: null, line_end: null }, 'comment-8999'));
+      .appendChild(cards.renderComment({ ...comment(8999, 1), is_file_level: 1, line_start: null, line_end: null }, 'comment-8999', env));
 
     H.root = container;
     H.create({

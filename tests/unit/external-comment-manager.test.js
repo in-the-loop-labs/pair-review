@@ -13,52 +13,76 @@
  *  - defensive skip when both line_end and original_line_end are null
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, beforeAll } from 'vitest';
 
 // Production code expects `window.renderMarkdown` and `window.toast`; leave
 // them off by default so the module's fallback paths are exercised, then
 // individual tests can install spies as needed.
 const { ExternalCommentManager } = require('../../public/js/modules/external-comment-manager.js');
-const { createBridgeHarness, hunk } = require('../utils/pierre-bridge-harness.js');
+const { createBridgeHarness, restoreBridgeHarnesses, hunk } = require('../utils/pierre-bridge-harness.js');
+
+let vendor;
+beforeAll(async () => {
+  vendor = await import('@pierre/diffs');
+});
+afterEach(() => {
+  restoreBridgeHarnesses();
+  delete window.prManager;
+});
 
 /**
- * Build a minimal diff-like table with a single file wrapper containing
- * a tbody and rows for the given (lineNumber, side) pairs.
+ * A diff pane with one file, drawn by the production bridge on a viewer that
+ * never renders (tests/utils/pierre-bridge-harness.js): the file shows the
+ * given lines, on both sides. The page manager on the window has that
+ * bridge and a line reveal that reveals nothing.
+ *
+ * The viewer's part is stood in for: after every change of the file's
+ * annotations, the cards of its review threads are the children of
+ * `.diff-lines` inside the file's wrapper, in the order the bridge gives the
+ * viewer. They are the card elements the bridge holds, so a test can click
+ * what a reader would click.
  *
  *   <div class="d2h-file-wrapper" data-file-name=file>
- *     <table>
- *       <tbody>
- *         <tr data-line-number="..." data-side="..." />
- *         ...
- *       </tbody>
- *     </table>
+ *     <div class="diff-lines"> ...thread cards... </div>
  *   </div>
  */
-function buildDiffTable({ file = 'src/app.js', lines = [{ line: 10, side: 'RIGHT' }] } = {}) {
+function buildDiffPane({ file = 'src/app.js', lines = [{ line: 10, side: 'RIGHT' }] } = {}) {
   const wrapper = document.createElement('div');
   wrapper.className = 'd2h-file-wrapper';
   wrapper.dataset.fileName = file;
-
-  const table = document.createElement('table');
-  const tbody = document.createElement('tbody');
-
-  const rowsByKey = new Map();
-  for (const { line, side } of lines) {
-    const tr = document.createElement('tr');
-    tr.dataset.lineNumber = String(line);
-    tr.dataset.side = side;
-    if (side === 'RIGHT') tr.dataset.newLineNumber = String(line);
-    if (side === 'LEFT') tr.dataset.oldLineNumber = String(line);
-    // Four diff cells to mimic colspan layout (line nums, gutter, code, etc.)
-    for (let i = 0; i < 4; i++) tr.appendChild(document.createElement('td'));
-    tbody.appendChild(tr);
-    rowsByKey.set(`${file}:${line}:${side}`, tr);
-  }
-
-  table.appendChild(tbody);
-  wrapper.appendChild(table);
+  const drawn = document.createElement('div');
+  drawn.className = 'diff-lines';
+  wrapper.appendChild(drawn);
   document.body.appendChild(wrapper);
-  return { wrapper, tbody, rowsByKey };
+
+  // One hunk per run of consecutive lines.
+  const numbers = [...new Set(lines.map(({ line }) => line))].sort((x, y) => x - y);
+  const hunks = [];
+  for (const line of numbers) {
+    const last = hunks[hunks.length - 1];
+    if (last && last.end === line - 1) last.end = line;
+    else hunks.push(hunk(line, line));
+  }
+  const bridge = createBridgeHarness(vi, vendor, { files: [{ name: file, hunks }] });
+  const draw = () => {
+    drawn.replaceChildren(...bridge.getAnnotations(file, 'external-comment')
+      .map((annotation) => bridge.getAnnotationElement(file, annotation.metadata.id, { create: true })));
+  };
+  for (const method of ['addAnnotation', 'addAnnotations', 'removeAnnotation', 'removeAnnotationsByType']) {
+    const change = bridge[method];
+    bridge[method] = Object.assign((...args) => {
+      const result = change.apply(bridge, args);
+      draw();
+      return result;
+    }, { mock: change.mock });
+  }
+  // A page manager a describe block has already put on the window (the zone
+  // resolvers of the file-level tests) keeps what it has.
+  window.prManager = Object.assign(window.prManager || {}, { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) });
+  /** The annotation the bridge holds for a thread: its line and side are where the thread is drawn. */
+  const annotationOf = (threadId, source = 'github') => bridge.getAnnotations(file, 'external-comment')
+    .find((annotation) => annotation.metadata.id === `external-thread-${source}-${threadId}`) || null;
+  return { wrapper, drawn, bridge, annotationOf };
 }
 
 function makeComment(overrides = {}) {
@@ -104,16 +128,15 @@ describe('ExternalCommentManager.render', async () => {
   });
 
   it('renders nothing when there are no threads', async () => {
-    buildDiffTable();
+    buildDiffPane();
     const mgr = makeManager();
     mgr.threadsBySource.set('github', []);
     await mgr.render();
     expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
   });
 
-  it('renders a single root thread after the target diff line', async () => {
-    const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
+  it('renders a single root thread under the target diff line', async () => {
+    const { drawn, annotationOf } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'Hello' })]);
@@ -121,8 +144,9 @@ describe('ExternalCommentManager.render', async () => {
 
     const rows = document.querySelectorAll('.external-comment-row');
     expect(rows.length).toBe(1);
-    // Inserted immediately after the target diff row
-    expect(target.nextSibling).toBe(rows[0]);
+    // An annotation of the target line, on its side
+    expect(annotationOf(7)).toMatchObject({ lineNumber: 10, side: 'additions' });
+    expect(rows[0].parentNode).toBe(drawn);
     // Contains exactly one comment element (no replies)
     expect(rows[0].querySelectorAll('.external-comment').length).toBe(1);
     expect(rows[0].querySelector('.external-comment').classList.contains('source-github')).toBe(true);
@@ -130,9 +154,8 @@ describe('ExternalCommentManager.render', async () => {
     expect(rows[0].querySelector('.external-comment-body').textContent).toBe('Hello');
   });
 
-  it('renders a root with two replies as nested is-reply elements in one row', async () => {
-    const { rowsByKey } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
+  it('renders a root with two replies as nested is-reply elements in one card', async () => {
+    const { annotationOf } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
 
     const root = makeComment({
       id: 1,
@@ -148,7 +171,7 @@ describe('ExternalCommentManager.render', async () => {
 
     const rows = document.querySelectorAll('.external-comment-row');
     expect(rows.length).toBe(1);
-    expect(target.nextSibling).toBe(rows[0]);
+    expect(annotationOf(1)).toMatchObject({ lineNumber: 10, side: 'additions' });
 
     const thread = rows[0].querySelector('.external-comment-thread');
     const comments = thread.querySelectorAll('.external-comment');
@@ -160,8 +183,7 @@ describe('ExternalCommentManager.render', async () => {
 
   it('uses original_line_end and shows outdated badge for outdated threads', async () => {
     // Diff currently shows line 20 — the outdated comment was made against line 20 originally.
-    const { rowsByKey } = buildDiffTable({ lines: [{ line: 20, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:20:RIGHT');
+    const { annotationOf } = buildDiffPane({ lines: [{ line: 20, side: 'RIGHT' }] });
 
     const root = makeComment({
       id: 9,
@@ -178,14 +200,14 @@ describe('ExternalCommentManager.render', async () => {
 
     const rows = document.querySelectorAll('.external-comment-row');
     expect(rows.length).toBe(1);
-    expect(target.nextSibling).toBe(rows[0]);
+    expect(annotationOf(9)).toMatchObject({ lineNumber: 20, side: 'additions' });
     const c = rows[0].querySelector('.external-comment');
     expect(c.classList.contains('is-outdated')).toBe(true);
     expect(rows[0].querySelector('.external-comment-outdated-badge')).not.toBeNull();
   });
 
   it('skips threads with no anchor and warns once', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const root = makeComment({ id: 5, line_end: null, original_line_end: null, is_outdated: 0 });
@@ -198,7 +220,7 @@ describe('ExternalCommentManager.render', async () => {
   });
 
   it('renders author as a link when author_url is present and plain text otherwise', async () => {
-    const { rowsByKey } = buildDiffTable({ lines: [
+    const { bridge } = buildDiffPane({ lines: [
       { line: 10, side: 'RIGHT' },
       { line: 11, side: 'RIGHT' },
     ] });
@@ -209,8 +231,8 @@ describe('ExternalCommentManager.render', async () => {
     ]);
     await mgr.render();
 
-    expect(rowsByKey.get('src/app.js:10:RIGHT').nextSibling.querySelector('a.external-comment-author').textContent).toBe('octocat');
-    expect(rowsByKey.get('src/app.js:11:RIGHT').nextSibling.querySelector('span.external-comment-author').textContent).toBe('ghost');
+    expect(pierreCard(bridge, 'src/app.js', 1).querySelector('a.external-comment-author').textContent).toBe('octocat');
+    expect(pierreCard(bridge, 'src/app.js', 2).querySelector('span.external-comment-author').textContent).toBe('ghost');
   });
 });
 
@@ -233,7 +255,7 @@ describe('ExternalCommentManager chat buttons', async () => {
   // is preserved on the threadContext root entry.
 
   it('chat button on a reply invokes chatPanel.open with commentContext shape', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
     const root = makeComment({
@@ -277,7 +299,7 @@ describe('ExternalCommentManager chat buttons', async () => {
   });
 
   it('chat button on an outdated reply uses original_line_* and isOutdated=true', async () => {
-    buildDiffTable({ lines: [{ line: 20, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 20, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
     const root = makeComment({
@@ -315,7 +337,7 @@ describe('ExternalCommentManager chat buttons', async () => {
   });
 
   it('chat button on the thread root invokes chatPanel.open with threadContext shape', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
 
@@ -384,29 +406,23 @@ describe('ExternalCommentManager.clear', async () => {
     vi.restoreAllMocks();
   });
 
-  it('removes only external-comment-row rows, leaving user-comment-row and ai-suggestion-row intact', async () => {
-    const { rowsByKey, tbody } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
-
-    // Manually place sibling rows owned by other renderers
-    const aiRow = document.createElement('tr');
-    aiRow.className = 'ai-suggestion-row';
-    const userRow = document.createElement('tr');
-    userRow.className = 'user-comment-row';
-    tbody.insertBefore(aiRow, target.nextSibling);
-    tbody.insertBefore(userRow, aiRow.nextSibling);
+  it('removes only the review threads, leaving comments and suggestions on the same line intact', async () => {
+    const { bridge } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
+    // Annotations owned by other renderers, on the thread's line
+    bridge.addAnnotation('src/app.js', { lineNumber: 10, side: 'RIGHT', type: 'suggestion', id: 'suggestion-1', data: { id: 1 } });
+    bridge.addAnnotation('src/app.js', { lineNumber: 10, side: 'RIGHT', type: 'comment', id: 'comment-1', data: { id: 1 } });
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
     await mgr.render();
 
     expect(document.querySelectorAll('.external-comment-row').length).toBe(1);
+    expect(bridge.getAnnotations('src/app.js').map((a) => a.metadata.type).sort()).toEqual(['comment', 'external-comment', 'suggestion']);
 
     mgr.clear();
 
     expect(document.querySelectorAll('.external-comment-row').length).toBe(0);
-    expect(document.querySelectorAll('.ai-suggestion-row').length).toBe(1);
-    expect(document.querySelectorAll('.user-comment-row').length).toBe(1);
+    expect(bridge.getAnnotations('src/app.js').map((a) => a.metadata.type).sort()).toEqual(['comment', 'suggestion']);
   });
 });
 
@@ -419,45 +435,33 @@ describe('ExternalCommentManager ordering rule', async () => {
     vi.restoreAllMocks();
   });
 
-  it('inserts external-comment-row BELOW pre-existing user-comment-row at the same diff line', async () => {
-    const { rowsByKey, tbody } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
+  /** The types of what the viewer is given for the file's line 10, in the order it draws them. */
+  const typesOnLine = (bridge) => bridge.codeView.getItem('src/app.js').annotations
+    .filter((annotation) => annotation.lineNumber === 10)
+    .map((annotation) => annotation.metadata.type);
 
-    // Existing user-comment-row sits immediately after the diff line
-    const userRow = document.createElement('tr');
-    userRow.className = 'user-comment-row';
-    tbody.insertBefore(userRow, target.nextSibling);
+  it('a review thread is drawn BELOW a user comment that is on the same diff line, whichever was added first', async () => {
+    const { bridge } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
     await mgr.render();
+    // The user's comment arrives after the thread
+    bridge.addAnnotation('src/app.js', { lineNumber: 10, side: 'RIGHT', type: 'comment', id: 'comment-1', data: { id: 1 } });
 
-    const externalRow = document.querySelector('.external-comment-row');
-    expect(externalRow).not.toBeNull();
-    // Order: target -> userRow -> externalRow
-    expect(target.nextSibling).toBe(userRow);
-    expect(userRow.nextSibling).toBe(externalRow);
+    expect(typesOnLine(bridge)).toEqual(['comment', 'external-comment']);
   });
 
-  it('inserts external-comment-row BELOW pre-existing ai-suggestion-row AND user-comment-row at the same diff line', async () => {
-    const { rowsByKey, tbody } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
-
-    const aiRow = document.createElement('tr');
-    aiRow.className = 'ai-suggestion-row';
-    tbody.insertBefore(aiRow, target.nextSibling);
-    const userRow = document.createElement('tr');
-    userRow.className = 'user-comment-row';
-    tbody.insertBefore(userRow, aiRow.nextSibling);
+  it('a review thread is drawn BELOW an AI suggestion AND a user comment on the same diff line', async () => {
+    const { bridge } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
+    bridge.addAnnotation('src/app.js', { lineNumber: 10, side: 'RIGHT', type: 'comment', id: 'comment-1', data: { id: 1 } });
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
     await mgr.render();
+    bridge.addAnnotation('src/app.js', { lineNumber: 10, side: 'RIGHT', type: 'suggestion', id: 'suggestion-1', data: { id: 1 } });
 
-    const externalRow = document.querySelector('.external-comment-row');
-    expect(target.nextSibling).toBe(aiRow);
-    expect(aiRow.nextSibling).toBe(userRow);
-    expect(userRow.nextSibling).toBe(externalRow);
+    expect(typesOnLine(bridge)).toEqual(['suggestion', 'comment', 'external-comment']);
   });
 });
 
@@ -472,7 +476,7 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
   });
 
   it('coalesces concurrent loadAndRender calls into a single fetch', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const threads = [makeComment({ id: 1 })];
 
     // Block the fetch on a manual promise so we can fire two callers
@@ -503,7 +507,7 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
   });
 
   it('a third call AFTER the first settles makes a new fetch', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const threads = [makeComment({ id: 1 })];
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -522,7 +526,7 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
     // (analysis rebuild, whitespace toggle) hitting loadAndRender used to
     // race the POST with a stale GET. Both methods now share `_inflight`,
     // so the GET-only caller joins the full sync+load promise.
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const threads = [makeComment({ id: 1 })];
 
     // Order recorder: confirm POST ran before GET.
@@ -566,7 +570,7 @@ describe('ExternalCommentManager.loadAndRender in-flight guard', async () => {
   });
 
   it('syncAndRender: sync failure does not block render — syncError surfaced, render still happens', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const threads = [makeComment({ id: 1 })];
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -596,34 +600,29 @@ describe('ExternalCommentManager outdated comment ensureLinesVisible fallback', 
     vi.restoreAllMocks();
   });
 
-  it('calls prManager.ensureLinesVisible with items-array shape, awaits it, then re-looks-up', async () => {
+  it('calls prManager.ensureLinesVisible with items-array shape and awaits it before deciding where the thread goes', async () => {
     // Regression: the call previously used positional args and wasn't
     // awaited. Production PRManager.ensureLinesVisible takes an array of
     // `{file, line_start, line_end, side}` items and returns a Promise.
-    // If the call isn't awaited the row isn't in the DOM at re-lookup time.
-    const { wrapper, tbody, rowsByKey } = buildDiffTable({ lines: [{ line: 30, side: 'RIGHT' }] });
-    const target30 = rowsByKey.get('src/app.js:30:RIGHT');
+    // If the call isn't awaited the line is not shown yet when the manager
+    // asks, and the thread is filed at file level.
+    const { bridge, annotationOf, wrapper } = buildDiffPane({ lines: [{ line: 30, side: 'RIGHT' }] });
+    expect(bridge.isLineVisible('src/app.js', 20, 'RIGHT')).toBe(false);
 
-    let expandedRow = null;
     let ensureLinesVisibleResolved = false;
-    window.prManager = {
-      ensureLinesVisible: vi.fn(async (items) => {
-        // Defer DOM mutation to the next microtask so the test would FAIL
-        // if the production code forgot to await this Promise — the
-        // re-lookup would run before this hook materializes the row.
-        await Promise.resolve();
-        const item = Array.isArray(items) ? items[0] : null;
-        if (!item) return;
-        const tr = document.createElement('tr');
-        tr.dataset.lineNumber = String(item.line_start);
-        tr.dataset.side = (item.side || 'RIGHT').toString();
-        tr.dataset.newLineNumber = String(item.line_start);
-        for (let i = 0; i < 4; i++) tr.appendChild(document.createElement('td'));
-        tbody.insertBefore(tr, target30);
-        expandedRow = tr;
-        ensureLinesVisibleResolved = true;
-      }),
-    };
+    window.prManager.ensureLinesVisible = vi.fn(async (items) => {
+      // Reveal the line on a later microtask so the test would FAIL if the
+      // production code forgot to await this Promise.
+      await Promise.resolve();
+      const item = Array.isArray(items) ? items[0] : null;
+      if (!item) return;
+      const numbered = `${Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n')}\n`;
+      bridge.upgradeFileContents('src/app.js',
+        { name: 'src/app.js', contents: numbered },
+        { name: 'src/app.js', contents: numbered.replace('line 30\n', 'changed 30\n') });
+      bridge.addContextRanges('src/app.js', [{ startLine: item.line_start, endLine: item.line_end }]);
+      ensureLinesVisibleResolved = true;
+    });
 
     const outdated = makeComment({
       id: 99,
@@ -639,8 +638,8 @@ describe('ExternalCommentManager outdated comment ensureLinesVisible fallback', 
     mgr.threadsBySource.set('github', [outdated]);
     await mgr.render();
 
-    // Production contract: items-array call shape, awaited so the new row
-    // is in the DOM before re-lookup.
+    // Production contract: items-array call shape, awaited so the line is
+    // shown before the manager asks.
     expect(window.prManager.ensureLinesVisible).toHaveBeenCalledTimes(1);
     expect(window.prManager.ensureLinesVisible).toHaveBeenCalledWith([
       { file: 'src/app.js', line_start: 20, line_end: 20, side: 'RIGHT' }
@@ -649,16 +648,14 @@ describe('ExternalCommentManager outdated comment ensureLinesVisible fallback', 
 
     const rows = document.querySelectorAll('.external-comment-row');
     expect(rows.length).toBe(1);
-    expect(expandedRow.nextSibling).toBe(rows[0]);
+    expect(annotationOf(99)).toMatchObject({ lineNumber: 20, side: 'additions' });
+    expect(rows[0].classList.contains('external-comment-row--file-fallback')).toBe(false);
     expect(wrapper.contains(rows[0])).toBe(true);
   });
 
   it('falls back to file-level when ensureLinesVisible cannot materialize the anchor', async () => {
-    // Diff has no anchor row for the target line; ensureLinesVisible is a no-op.
-    const { wrapper } = buildDiffTable({ lines: [{ line: 999, side: 'RIGHT' }] });
-    window.prManager = {
-      ensureLinesVisible: vi.fn(async () => {}),
-    };
+    // The diff does not show the target line; ensureLinesVisible is a no-op.
+    const { wrapper } = buildDiffPane({ lines: [{ line: 999, side: 'RIGHT' }] });
 
     const outdated = makeComment({
       id: 77,
@@ -681,13 +678,13 @@ describe('ExternalCommentManager outdated comment ensureLinesVisible fallback', 
 });
 
 // =======================================================================
-// Pierre (@pierre/diffs) rendering path
+// Threads on lines of the diff: annotations of the viewer
 //
-// On the pierre-diffs branch, normal diff files render into a shadow-DOM
-// container with NO light-DOM <tr> rows, so external threads mount as
-// 'external-comment' annotations via PierreBridge instead of injected
-// table rows. These tests run against the real PierreBridge without the
-// vendor (tests/utils/pierre-bridge-harness.js): its annotation list,
+// A file's lines are drawn by the vendor in a shadow tree, and a file far
+// from the viewport is not drawn at all, so a thread on a line mounts as an
+// 'external-comment' annotation via PierreBridge. These tests run against
+// the real PierreBridge without the vendor
+// (tests/utils/pierre-bridge-harness.js): its annotation list,
 // visibility oracle and element cache are production code, and nothing is
 // ever drawn. The manager must decide from the oracle whether a line is
 // shown, and must never need a card to be in the document.
@@ -707,7 +704,7 @@ function makePierreBridge({ files = ['src/app.js'], hunks } = {}) {
     wrapper.dataset.fileName = f;
     document.body.appendChild(wrapper);
   }
-  return createBridgeHarness(vi, {
+  return createBridgeHarness(vi, vendor, {
     files: files.map(name => (hunks ? { name, hunks } : { name })),
   });
 }
@@ -736,7 +733,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     mgr.threadsBySource.set('github', [makeComment({ id: 7, body: 'pierre body' })]);
     await mgr.render();
 
-    // Legacy <tr> path was NOT taken — the anchor is a pierre file.
+    // The thread is an annotation of its file.
     expect(bridge.addAnnotation).toHaveBeenCalledTimes(1);
     const [file, ann] = bridge.addAnnotation.mock.calls[0];
     expect(file).toBe('src/app.js');
@@ -745,7 +742,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(ann.lineNumber).toBe(10);
     expect(ann.data.id).toBe(7);
 
-    // The annotation's element is a <div> (not a <tr>) carrying the shared
+    // The annotation's element is a <div> carrying the shared
     // class + data attributes. It is the bridge's to draw: the manager did
     // not look for it in the document, where it is not (nothing draws here).
     expect(document.querySelector('.external-comment-row')).toBeNull();
@@ -779,54 +776,16 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
   });
 
-  it('routes a lazily-registered (not yet rendered) pierre file to the pierre path', async () => {
+  it('_isPierreFile: a file the viewer has a record of, mounted or not; no other, and none without a viewer', () => {
     const bridge = makePierreBridge({ files: ['src/app.js'] });
-    // Simulate lazy rendering: the body has not rendered yet, so the file is
-    // absent from bridge.files — only the PR manager's lazy registry knows
-    // it will render via pierre.
-    const entry = bridge.files.get('src/app.js');
-    bridge.files.delete('src/app.js');
-    // ensureLinesVisible materializes the body (re-inserting the bridge
-    // entry), mirroring PRManager.ensureLinesVisible → ensureFileBodyRendered.
-    const ensureLinesVisible = vi.fn(async () => {
-      bridge.files.set('src/app.js', entry);
-    });
-    window.prManager = {
-      pierreBridge: bridge,
-      ensureLinesVisible,
-      _lazyFileBodies: new Map([['src/app.js', { pierre: true, rendered: false }]]),
-    };
-
-    const mgr = makeManager();
-    mgr.threadsBySource.set('github', [makeComment({ id: 42, body: 'lazy body' })]);
-    await mgr.render();
-
-    // Routed to the pierre path (materialize first, then annotate) — not the
-    // legacy <tr> lookup, and no rollback into the file-level fallback.
-    expect(ensureLinesVisible).toHaveBeenCalledTimes(1);
-    expect(bridge.addAnnotation).toHaveBeenCalledTimes(1);
-    expect(bridge.addAnnotation.mock.calls[0][0]).toBe('src/app.js');
-    expect(bridge.removeAnnotation).not.toHaveBeenCalled();
-    const row = pierreCard(bridge, 'src/app.js', 42);
-    expect(row).not.toBeNull();
-    expect(row.dataset.threadId).toBe('42');
-    expect(row.classList.contains('external-comment-row--file-fallback')).toBe(false);
-  });
-
-  it('_isPierreFile: rendered and lazy pierre files are pierre; others are not', () => {
-    const bridge = makePierreBridge({ files: ['src/app.js'] });
-    window.prManager = {
-      pierreBridge: bridge,
-      _lazyFileBodies: new Map([
-        ['src/lazy.js', { pierre: true, rendered: false }],
-        ['src/legacy.js', { pierre: false }],
-      ]),
-    };
+    window.prManager = { pierreBridge: bridge };
     const mgr = makeManager();
     expect(mgr._isPierreFile('src/app.js')).toBe(true); // in bridge.files
-    expect(mgr._isPierreFile('src/lazy.js')).toBe(true); // lazy registry, pierre:true
-    expect(mgr._isPierreFile('src/legacy.js')).toBe(false);
     expect(mgr._isPierreFile('src/unknown.js')).toBe(false);
+    window.prManager = {};
+    expect(mgr._isPierreFile('src/app.js')).toBe(false);
+    delete window.prManager;
+    expect(mgr._isPierreFile('src/app.js')).toBe(false);
   });
 
   it('registers the external-comment renderer exactly once across renders', async () => {
@@ -890,7 +849,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
   });
 
   it('keeps a thread on its line when the line is shown and no card is in the document (H60)', async () => {
-    // While a new diff of the file awaits display the engine does not draw
+    // While a new diff of the file awaits display the viewer does not draw
     // the annotation that was just added. "No card in the document" then
     // says nothing about the line; the oracle does. The thread must stay an
     // annotation, and nothing may be put in the file's comment zone.
@@ -904,7 +863,8 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(document.querySelector('.external-comment-row')).toBeNull();
     expect(bridge.getAnnotations('src/app.js', 'external-comment')).toHaveLength(1);
     expect(bridge.removeAnnotation).not.toHaveBeenCalled();
-    expect(bridge.files.get('src/app.js').instance.setLineAnnotations).toHaveBeenCalledTimes(1);
+    // It is what the viewer was given for the file.
+    expect(bridge.codeView.getItem('src/app.js').annotations.map((a) => a.metadata.type)).toContain('external-comment');
   });
 
   it('falls back to file level for a collapsed file, and when the oracle is missing or throws', async () => {
@@ -980,13 +940,15 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(mgr.findThreadCard(31, 'github')).toBeNull();
   });
 
-  it('routes to the legacy <tr> path for files NOT rendered by pierre', async () => {
-    // Bridge exists but only knows about a different file; the thread's file
-    // is legacy-rendered, so it must take the <tr> injection path.
+  it('a thread of a file the viewer does not have is no annotation: it is filed with the file when the page has a place for it', async () => {
+    // The bridge only knows another file (the thread names a file that is
+    // not in the diff any more).
     const bridge = makePierreBridge({ files: ['other/file.js'] });
     window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
-    const { rowsByKey } = buildDiffTable({ file: 'src/app.js', lines: [{ line: 10, side: 'RIGHT' }] });
-    const target = rowsByKey.get('src/app.js:10:RIGHT');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper';
+    wrapper.dataset.fileName = 'src/app.js';
+    document.body.appendChild(wrapper);
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 1, file: 'src/app.js' })]);
@@ -994,8 +956,23 @@ describe('ExternalCommentManager pierre annotation path', async () => {
 
     expect(bridge.addAnnotation).not.toHaveBeenCalled();
     const row = document.querySelector('.external-comment-row');
-    expect(row.tagName).toBe('TR');
-    expect(target.nextSibling).toBe(row);
+    expect(row.tagName).toBe('DIV');
+    expect(row.classList.contains('external-comment-row--file-fallback')).toBe(true);
+    expect(wrapper.contains(row)).toBe(true);
+  });
+
+  it('a thread of a file the page has nothing for is not drawn, and says so', async () => {
+    const bridge = makePierreBridge({ files: ['other/file.js'] });
+    window.prManager = { pierreBridge: bridge, ensureLinesVisible: vi.fn(async () => {}) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const mgr = makeManager();
+    mgr.threadsBySource.set('github', [makeComment({ id: 1, file: 'src/gone.js' })]);
+    await mgr.render();
+
+    expect(bridge.addAnnotation).not.toHaveBeenCalled();
+    expect(document.querySelector('.external-comment-row')).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('src/gone.js:10'));
   });
 });
 
@@ -1056,8 +1033,8 @@ describe('ExternalCommentManager file-level threads', async () => {
     });
   }
 
-  it('renders a file-level thread into the zone, not as a diff-line row', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+  it('renders a file-level thread into the zone, not under a diff line', async () => {
+    const { bridge } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const { container } = addZone('src/app.js');
 
     const mgr = makeManager();
@@ -1074,13 +1051,12 @@ describe('ExternalCommentManager file-level threads', async () => {
     expect(card.dataset.source).toBe('github');
     expect(card.querySelector('.external-comment-body').textContent).toBe('whole file comment');
 
-    // The diff line must NOT have gained a sibling comment row.
-    const diffRow = document.querySelector('tr[data-line-number="10"]');
-    expect(diffRow.nextSibling).toBeNull();
+    // The diff line must NOT have gained an annotation.
+    expect(bridge.getAnnotations('src/app.js', 'external-comment')).toEqual([]);
   });
 
   it('renders a file-level thread with replies as one zone card', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const { container } = addZone('src/app.js');
     const root = fileLevelComment({
       id: 1,
@@ -1112,7 +1088,7 @@ describe('ExternalCommentManager file-level threads', async () => {
   });
 
   it('resolves the zone via prManager.getFileCommentsZone, also when the zone is not in the document', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const { zone, container } = addZone('src/app.js');
     zone.remove();
 
@@ -1126,7 +1102,7 @@ describe('ExternalCommentManager file-level threads', async () => {
   });
 
   it('appends to the file wrapper when the page has no zone for the file', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     delete window.prManager;
 
     const mgr = makeManager();
@@ -1138,7 +1114,7 @@ describe('ExternalCommentManager file-level threads', async () => {
   });
 
   it('unanchorable line thread falls back into the zone (not a faked line-1 row)', async () => {
-    buildDiffTable({ lines: [{ line: 999, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 999, side: 'RIGHT' }] });
     const { container } = addZone('src/app.js');
     window.prManager = { ...zoneResolvers(), ensureLinesVisible: vi.fn(async () => {}) };
 
@@ -1162,7 +1138,7 @@ describe('ExternalCommentManager file-level threads', async () => {
   });
 
   it('clear() removes file-level zone cards (shared .external-comment-row class)', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     addZone('src/app.js');
 
     const mgr = makeManager();
@@ -1177,7 +1153,7 @@ describe('ExternalCommentManager file-level threads', async () => {
   it('last-resort wrapper append when the zone is missing', async () => {
     // No zone in the wrapper — a file-level thread still renders (discoverable),
     // appended to the wrapper rather than dropped.
-    const { wrapper } = buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    const { wrapper } = buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
 
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [fileLevelComment({ id: 8 })]);
@@ -1198,7 +1174,7 @@ describe('ExternalCommentManager URL safety (isSafeUrl)', async () => {
   });
 
   it('javascript: author_url renders as plain text and no href', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({
       id: 1,
@@ -1219,7 +1195,7 @@ describe('ExternalCommentManager URL safety (isSafeUrl)', async () => {
   });
 
   it('javascript: external_url drops the permalink button entirely', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({
       id: 1,
@@ -1232,7 +1208,7 @@ describe('ExternalCommentManager URL safety (isSafeUrl)', async () => {
   });
 
   it('https URLs are still rendered as links', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({
       id: 1,
@@ -1263,7 +1239,7 @@ describe('ExternalCommentManager minimizer refresh', async () => {
     // indicator pipeline, so toggling minimize mode dropped the external
     // bubble count from per-line badges. Mirror what comment-manager and
     // suggestion-manager do — call refreshIndicators on render completion.
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const refreshSpy = vi.fn();
     window.prManager = {
       commentMinimizer: { refreshIndicators: refreshSpy }
@@ -1277,7 +1253,7 @@ describe('ExternalCommentManager minimizer refresh', async () => {
   });
 
   it('does not throw when prManager or commentMinimizer is missing', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 1 })]);
     // window.prManager intentionally absent.
@@ -1295,7 +1271,7 @@ describe('ExternalCommentManager passes side to chat context', async () => {
   });
 
   it('LEFT side flows through to commentContext (reply chat button)', async () => {
-    buildDiffTable({ lines: [{ line: 5, side: 'LEFT' }] });
+    buildDiffPane({ lines: [{ line: 5, side: 'LEFT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
 
@@ -1323,7 +1299,7 @@ describe('ExternalCommentManager passes side to chat context', async () => {
   });
 
   it('LEFT side flows through to threadContext (root chat button)', async () => {
-    buildDiffTable({ lines: [{ line: 5, side: 'LEFT' }] });
+    buildDiffPane({ lines: [{ line: 5, side: 'LEFT' }] });
     const chatPanel = { open: vi.fn() };
     const mgr = makeManager({ chatPanel });
 
@@ -1342,7 +1318,7 @@ describe('ExternalCommentManager passes side to chat context', async () => {
   });
 
   it('missing chat panel surfaces a toast instead of silently dropping', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
     const toastSpy = vi.fn();
     const origToast = window.toast;
     const origChatPanel = window.chatPanel;
@@ -1604,7 +1580,7 @@ describe('ExternalCommentManager._fetchAllAndRender → panel handoff', () => {
   });
 
   it('pushes the flattened thread list to the panel after a successful fetch+render', async () => {
-    buildDiffTable({ lines: [{ line: 10, side: 'RIGHT' }] });
+    buildDiffPane({ lines: [{ line: 10, side: 'RIGHT' }] });
 
     const threads = [makeComment({ id: 1 }), makeComment({ id: 2 })];
     global.fetch = vi.fn().mockResolvedValue({

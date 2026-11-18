@@ -78,6 +78,22 @@ function createTestPRManager() {
     number: 1
   };
 
+  // The page's card resolvers are stubbed: these tests are about what the
+  // status flows do with a card, and hand cards over through the mocked
+  // `document.querySelector` (a line comment's row is asked for before the
+  // file-level card, as the production resolver asks the diff viewer before
+  // the comment zones). The resolvers themselves, which answer from the
+  // viewer's bridge and the zone registry and never from the document, are
+  // tested in find-card.test.js.
+  prManager.findSuggestionCard = (suggestionId) => document.querySelector(`[data-suggestion-id="${suggestionId}"]`) || null;
+  prManager.findCommentCard = (commentId, { fileLevel } = {}) => {
+    if (fileLevel !== true) {
+      const row = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`) || null;
+      if (row || fileLevel === false) return row;
+    }
+    return document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`) || null;
+  };
+
   return prManager;
 }
 
@@ -1021,7 +1037,7 @@ describe('PRManager Suggestion Status', () => {
     let prManager;
 
     beforeEach(() => {
-      prManager = Object.create(PRManager.prototype);
+      prManager = createTestPRManager();
       // Expose the real SuggestionUI helper for this block only; the global
       // beforeEach resets window before each test so this stays isolated.
       global.window.SuggestionUI = SuggestionUI;
@@ -1059,26 +1075,21 @@ describe('PRManager Suggestion Status', () => {
       return div;
     }
 
-    /**
-     * Build a mock suggestion row that contains one or more suggestion divs.
-     * The row's querySelector uses CSS attribute selectors to find the right div.
-     */
-    function buildRowWithSuggestions(...divs) {
-      return {
-        querySelector: vi.fn((selector) => {
-          // selector looks like: [data-suggestion-id="<id>"]
-          const match = selector.match(/data-suggestion-id="([^"]+)"/);
-          if (!match) return null;
-          return divs.find(d => d.dataset.suggestionId === match[1]) || null;
-        })
-      };
+    /** Hand the given cards to the page's card resolver, by suggestion id. */
+    function cardsInPane(...divs) {
+      document.querySelector.mockImplementation((selector) => {
+        // selector looks like: [data-suggestion-id="<id>"]
+        const match = selector.match(/data-suggestion-id="([^"]+)"/);
+        if (!match) return null;
+        return divs.find(d => d.dataset.suggestionId === match[1]) || null;
+      });
     }
 
     it('should collapse the targeted suggestion div', () => {
       const div = buildSuggestionDiv('s1');
-      const row = buildRowWithSuggestions(div);
+      cardsInPane(div);
 
-      prManager.collapseSuggestionForAdoption(row, 's1');
+      prManager.collapseSuggestionForAdoption('s1');
 
       expect(div.classList.add).toHaveBeenCalledWith('collapsed');
       expect(div._collapsedContent.title).toBe('Adopted');
@@ -1087,35 +1098,37 @@ describe('PRManager Suggestion Status', () => {
       expect(div.dataset.hiddenForAdoption).toBe('true');
     });
 
-    it('should only collapse the targeted suggestion when two suggestions share the same row', () => {
+    it('should only collapse the targeted suggestion when two suggestions are on the same line', () => {
       const divA = buildSuggestionDiv('s-target');
       const divB = buildSuggestionDiv('s-other');
-      const row = buildRowWithSuggestions(divA, divB);
+      cardsInPane(divA, divB);
 
-      prManager.collapseSuggestionForAdoption(row, 's-target');
+      prManager.collapseSuggestionForAdoption('s-target');
 
       // Target suggestion should be collapsed
       expect(divA.classList.add).toHaveBeenCalledWith('collapsed');
       expect(divA._collapsedContent.title).toBe('Adopted');
       expect(divA.dataset.hiddenForAdoption).toBe('true');
 
-      // Other suggestion on the same row should be completely unaffected
+      // The other suggestion on the same line should be completely unaffected
       expect(divB.classList.add).not.toHaveBeenCalled();
       expect(divB._collapsedContent.title).toBe('');
       expect(divB.dataset.hiddenForAdoption).toBeUndefined();
     });
 
-    it('should be a no-op when suggestionRow is null', () => {
+    it('should be a no-op when the suggestion has no card', () => {
+      cardsInPane();
       // Should not throw
-      expect(() => prManager.collapseSuggestionForAdoption(null, 's1')).not.toThrow();
+      expect(() => prManager.collapseSuggestionForAdoption('s1')).not.toThrow();
+      expect(() => prManager.collapseSuggestionForAdoption(null)).not.toThrow();
     });
 
-    it('should be a no-op when the target div is not found in the row', () => {
+    it('should be a no-op for an id that is not the card that exists', () => {
       const divA = buildSuggestionDiv('s-other');
-      const row = buildRowWithSuggestions(divA);
+      cardsInPane(divA);
 
       // Targeting a non-existent suggestion ID should not affect divA
-      prManager.collapseSuggestionForAdoption(row, 's-missing');
+      prManager.collapseSuggestionForAdoption('s-missing');
 
       expect(divA.classList.add).not.toHaveBeenCalled();
       expect(divA._collapsedContent.title).toBe('');

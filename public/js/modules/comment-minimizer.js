@@ -50,8 +50,9 @@ class CommentMinimizer {
     // zones are pr.js light DOM, not vendor-managed, so they persist).
     this._expandedFiles = new Set();
     // MutationObserver that re-injects indicators after vendor rerenders
-    // (diffStyle switch, hunk expansion, worker-highlight streaming, lazy file
-    // render) that are NOT followed by an explicit refreshIndicators() call.
+    // (diffStyle switch, hunk expansion, worker-highlight streaming, a file
+    // coming into the mounted window) that are NOT followed by an explicit
+    // refreshIndicators() call.
     this._observer = null;
     this._refreshScheduled = false;
   }

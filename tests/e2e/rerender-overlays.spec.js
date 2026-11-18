@@ -28,7 +28,7 @@ import { allCorpora, routeDiff, hunkHashes, prDiffResponse, localDiffResponse } 
 import {
   fileWrapper, filesInPane, inlineComment, inlineSuggestion, lineCards, fileSelector, rowCount,
   waitForContentUpgrade, waitForDiffSettled, waitForHighlightedDisplay, upgradeAwaitingDisplay, holdWorkerResults, isLineVisible,
-  assertNoOrphanHosts, BASE_CHANGE_KEEPS_CARDS, THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY
+  assertNoOrphanHosts, BASE_CHANGE_KEEPS_CARDS
 } from './diff-dom.js';
 
 const { default: DEFAULT } = allCorpora();
@@ -431,22 +431,8 @@ test.describe('Re-rendering the whole diff: external threads (PR mode)', () => {
     // Once, whichever way.
     await expect(thread).toHaveCount(1);
     await expect(thread).toContainText('Thread answered during the upgrade');
-    if (THREAD_ADDED_WHILE_DIFF_AWAITS_DISPLAY === 'line') {
-      await expect(onLine).toHaveCount(1);
-      await expect(thread).not.toHaveClass(/external-comment-row--file-fallback/);
-    } else {
-      // Characterization of main: demoted to the file's comment zone, and
-      // still there with the upgraded diff on screen and its line in view.
-      await expect(thread).toHaveClass(/external-comment-row--file-fallback/);
-      await expect(fileWrapper(page, UTILS).locator('.file-comments-zone .external-comment-row')).toHaveCount(1);
-      await expect(onLine).toHaveCount(0);
-      expect(await isLineVisible(page, UTILS, 3)).toBe(true);
-      // The next thread reload (here the panel's refresh) puts it on its line.
-      await page.locator('#refresh-external-comments-btn-panel').click();
-      await expect(onLine).toHaveCount(1);
-      await expect(thread).toHaveCount(1);
-      await expect(thread).not.toHaveClass(/external-comment-row--file-fallback/);
-    }
+    await expect(onLine).toHaveCount(1);
+    await expect(thread).not.toHaveClass(/external-comment-row--file-fallback/);
     await assertNoOrphanHosts(page);
     await expect(page.locator('.toast-error')).toHaveCount(0);
   });

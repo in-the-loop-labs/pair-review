@@ -1,7 +1,7 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Fixture for the bridge-in-browser tests: the real @pierre/diffs bundle
- * (development build, height validator on), the real PierreCodeViewBridge
+ * (development build, height validator on), the real PierreBridge
  * and the production modules it depends on, the deterministic workload, and
  * no pr.js. `openBridge(harness)` gives a page with `window.H` (the vendor
  * harness) and `window.BH` (bridge-page.js) ready.
@@ -39,7 +39,7 @@ const BRIDGE_SCRIPTS = [
   '/app/js/modules/pierre-styles.js',
   '/app/js/modules/pierre-annotations.js',
   '/app/js/modules/pierre-gutter.js',
-  '/app/js/modules/pierre-codeview-bridge.js',
+  '/app/js/modules/pierre-bridge.js',
 ];
 
 /**

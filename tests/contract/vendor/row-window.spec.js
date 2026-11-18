@@ -19,9 +19,29 @@
  *        every row at every scroll position, nothing is trimmed, and the
  *        defect cannot occur in that item.
  *
- * Depends on it: PierreCodeViewBridge passes `hunkLineCount: 5000`. If a
- * vendor bump makes the two "vendor defect" tests fail, the trim was fixed
- * and that option can be reconsidered.
+ *   F30  (vendor defect) With a `hunkLineCount` larger than the number of
+ *        rows the pane shows, an item's rows are drawn in blocks of that
+ *        many: the block the middle of the pane's window is in, and the one
+ *        before it. While the middle is in one block and the lower part of
+ *        the pane is in the next, the rows of the next block are not drawn:
+ *        the drawn rows are held against the pane's bottom edge instead of
+ *        being where the layout puts them, until the middle crosses the
+ *        boundary. The last rows of an item that ends a few rows after a
+ *        boundary, at the end of the pane, are never drawn.
+ *   F31  (vendor defect) The viewer measures every drawn row with
+ *        getBoundingClientRect, whose numbers are 32-bit floats. A row more
+ *        than 2^18 px from the viewport measures a 64th of a pixel off when
+ *        the line height is not a multiple of 1/32 px, and the item's
+ *        computed height then differs from its DOM. Within 2^18 px the
+ *        measurement is exact.
+ *
+ * Depends on it: PierreBridge passes `hunkLineCount: 5000` (F26: no smaller;
+ * F31: no larger, two blocks of 5,000 rows of 17.4 px stay within 2^18 px of
+ * the pane) and asks the viewer for an item's rows a second time where its
+ * first answer leaves rows of the pane out
+ * (PierreBridge.coverPaneWithRowWindow, F30). If a vendor bump makes the
+ * "vendor defect" tests fail, the defect was fixed and what depends on it can
+ * be reconsidered.
  *
  * `instance.renderRange` (which rows the vendor drew) is read here to find
  * the scroll position at which the window ends at a given row. It is the
@@ -48,7 +68,7 @@ const SETUP = `
     await H.appLike({ build: { only: names }, options: { layout, itemMetrics } });
     // The target: a file below the first screen that, once its contents are
     // known, has hidden lines after its last hunk.
-    const hydratedOf = (name) => window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(name).fileDiff, H.contentsOf(name));
+    const hydratedOf = (name) => window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(name).fileDiff, H.contentsOf(name));
     const hiddenAfter = (diff) => {
       const last = diff.hunks[diff.hunks.length - 1];
       return diff.additionLines.length - (last.additionStart + last.additionCount - 1);
@@ -246,7 +266,7 @@ test('F26 (vendor defect): the card of the row a shrinking window ends at is dro
 });
 
 test('F26: with an itemMetrics.hunkLineCount above its row count an item draws every row it shows, and the same scrolling drops nothing', async ({ harness }) => {
-  // Depends on it: PierreCodeViewBridge's item metrics (5000). The window is
+  // Depends on it: PierreBridge's item metrics (5000). The window is
   // then the same at every scroll position, so there is no trim.
   const page = await openRowWindow(harness);
   const result = await page.evaluate(async (layout) => {
@@ -284,4 +304,155 @@ test('F26: with an itemMetrics.hunkLineCount above its row count an item draws e
   expect(result.windowEnds).toEqual(['5000']);
   expect(result.shapes).toHaveLength(1);
   expect(result.unclean).toBe(0);
+});
+
+/**
+ * Runs in the page. One added file of `rows` lines of plain text as the only
+ * item, drawn by the viewer alone (no bridge), and what is drawn of it.
+ */
+const LONG_ITEM = `
+  window.longItem = async ({ rows, itemMetrics, lineHeight }) => {
+    const { H } = window;
+    if (lineHeight) {
+      // As public/css/pr.css sets them on the diff pane.
+      document.getElementById('root').style.setProperty('--diffs-font-size', '12px');
+      document.getElementById('root').style.setProperty('--diffs-line-height', lineHeight);
+    }
+    const lines = Array.from({ length: rows }, (_, i) => '+line ' + (i + 1));
+    const patch = 'diff --git a/long.txt b/long.txt\\nnew file mode 100644\\n--- /dev/null\\n+++ b/long.txt\\n@@ -0,0 +1,' + rows + ' @@\\n' + lines.join('\\n') + '\\n';
+    H.loadWorkload();
+    H.items = [{ id: 'long.txt', type: 'diff', fileDiff: window.PierreDiffs.parsePatchFiles(patch).flatMap((p) => p.files)[0], annotations: [], version: 0 }];
+    H.create({ ...H.APP_OPTIONS, itemMetrics: { diffHeaderHeight: 40, ...itemMetrics } }, H.APP_CALLBACKS);
+    H.cv.setItems(H.items);
+    await H.settle(300, 20000);
+    const api = {};
+    const rowsOf = () => [...H.host('long.txt').shadowRoot.querySelectorAll('[data-content] > [data-line]')];
+    /** A drawn line's bottom edge, in the pane's scroll coordinates. */
+    api.bottomOf = (line) => {
+      const row = rowsOf().find((el) => Number(el.getAttribute('data-line')) === line);
+      return row ? row.getBoundingClientRect().bottom - H.root.getBoundingClientRect().top + H.root.scrollTop : null;
+    };
+    api.drawn = () => {
+      const all = rowsOf();
+      const audit = H.heightAudit()[0];
+      return { rows: all.length, first: Number(all[0].getAttribute('data-line')), last: Number(all[all.length - 1].getAttribute('data-line')), dH: audit.dH, dTop: audit.dTop };
+    };
+    api.at = async (scrollTop) => { H.root.scrollTop = scrollTop; await H.settle(400); return api.drawn(); };
+    return api;
+  };
+`;
+
+async function openLongItem(harness) {
+  const page = await harness.open();
+  await page.addScriptTag({ content: LONG_ITEM });
+  return page;
+}
+
+test('F30 (vendor defect): with a row window larger than the pane, the rows after a block boundary are not drawn while the middle of the pane is before it, and the drawn rows are held against the pane\'s bottom edge', async ({ harness }) => {
+  // Depends on it: PierreBridge.coverPaneWithRowWindow asks the viewer a
+  // second time. Without that, a reader who scrolls a file of more than
+  // 5,000 rows sees its rows stop moving for a few hundred pixels before
+  // every 5,000th row and then jump, and a navigation to a line just after
+  // such a row lands on rows that are not drawn.
+  const page = await openLongItem(harness);
+  harness.allowErrors(page, VALIDATOR);
+  const result = await page.evaluate(async () => {
+    const { H } = window;
+    const w = await window.longItem({ rows: 5300, itemMetrics: { hunkLineCount: 5000 } });
+    const out = { paneHeight: H.root.clientHeight, top: w.drawn() };
+    // Where the 5,000th row ends: the boundary between the first block of rows and the second.
+    const boundary = w.bottomOf(5000);
+    out.boundary = boundary;
+    // The boundary three quarters down the pane: a quarter of the pane shows rows of the second block.
+    out.before = await w.at(Math.round(boundary - out.paneHeight * 0.75));
+    out.boundaryInPaneBefore = Math.round(w.bottomOf(5000) - H.root.scrollTop);
+    // The boundary a quarter down the pane: the middle of the pane is in the second block.
+    out.after = await w.at(Math.round(boundary - out.paneHeight * 0.25));
+    out.boundaryInPaneAfter = Math.round(w.bottomOf(5000) - H.root.scrollTop);
+    // And back.
+    out.again = await w.at(Math.round(boundary - out.paneHeight * 0.75));
+    return out;
+  });
+
+  expect(result.paneHeight).toBe(860);
+  expect(result.top).toMatchObject({ rows: 5000, first: 1, last: 5000, dH: 0, dTop: 0 });
+  // A quarter of the pane is past the boundary and none of the rows there is
+  // drawn; the 5,000th row is not three quarters down the pane, where the
+  // layout has it, but far below that, near the pane's bottom edge.
+  expect(result.before).toMatchObject({ rows: 5000, last: 5000, dH: 0 });
+  expect(result.before.dTop).toBeGreaterThan(150);
+  expect(result.boundaryInPaneBefore).toBeGreaterThan(645 + 150);
+  // The middle of the pane has crossed: both blocks are drawn, where the layout has them.
+  expect(result.after).toMatchObject({ rows: 5300, first: 1, last: 5300, dH: 0, dTop: 0 });
+  expect(result.boundaryInPaneAfter).toBe(215);
+  expect(result.again).toMatchObject({ rows: 5000, last: 5000 });
+  expect(result.again.dTop).toBeGreaterThan(150);
+});
+
+test('F30 (vendor defect): the last rows of an item that ends a few rows after a block boundary, at the end of the pane, are never drawn', async ({ harness }) => {
+  // Depends on it: the same. On the per-file renderer every row of a file is
+  // drawn; here a comment on line 5,003 of a file of 5,006 rows that ends the
+  // pane would have no row to be shown under.
+  const page = await openLongItem(harness);
+  harness.allowErrors(page, VALIDATOR);
+  const result = await page.evaluate(async () => {
+    const { H } = window;
+    const w = await window.longItem({ rows: 5006, itemMetrics: { hunkLineCount: 5000 } });
+    const out = { top: w.drawn() };
+    out.atEnd = await w.at(H.root.scrollHeight);
+    out.atEndScrollTop = H.root.scrollTop;
+    out.maxScrollTop = H.root.scrollHeight - H.root.clientHeight;
+    H.cv.scrollTo({ type: 'line', id: 'long.txt', lineNumber: 5006, side: 'additions', align: 'center', behavior: 'instant' });
+    await H.settle(400);
+    out.atLine = w.drawn();
+    return out;
+  });
+  expect(result.top).toMatchObject({ rows: 5000, last: 5000 });
+  expect(result.atEndScrollTop).toBe(result.maxScrollTop);
+  expect(result.atEnd).toMatchObject({ rows: 5000, first: 1, last: 5000 });
+  expect(result.atLine).toMatchObject({ rows: 5000, first: 1, last: 5000 });
+});
+
+test('F31 (vendor defect): rows more than 2^18 px from the viewport are measured a 64th of a pixel off when a line is 17.4 px (12 px at 1.45), so an item of 16,000 rows drawn whole is not the height the viewer computes; drawn 5,000 rows at a time it is', async ({ harness }) => {
+  // Depends on it: the bridge's row window is 5,000 rows and not "every row"
+  // (PierreBridge, ROWS_PER_ITEM_WINDOW). The application's lines are 12 px
+  // at a line height of 1.45 (--diffs-font-size and --diffs-line-height in
+  // pr.css), 17.390625 px in the layout; 16,000 of them are 278,250 px.
+  test.setTimeout(120000);
+  const measure = async (hunkLineCount) => {
+    const page = await openLongItem(harness);
+    harness.allowErrors(page, VALIDATOR);
+    const result = await page.evaluate(async (count) => {
+      const { H } = window;
+      const w = await window.longItem({ rows: 16000, itemMetrics: { hunkLineCount: count, lineHeight: 17.390625 }, lineHeight: '1.45' });
+      const column = H.host('long.txt').shadowRoot.querySelector('[data-content]');
+      const heights = {};
+      let sum = 0;
+      for (const row of column.querySelectorAll(':scope > [data-line]')) {
+        const height = row.getBoundingClientRect().height;
+        heights[height] = (heights[height] || 0) + 1;
+        sum += height;
+      }
+      return { drawn: w.drawn(), heights, measuredShort: +(column.querySelectorAll(':scope > [data-line]').length * 17.390625 - sum).toFixed(3) };
+    }, hunkLineCount);
+    const reports = harness.validatorErrors(page);
+    await page.close();
+    return { ...result, reports: reports.length };
+  };
+
+  const whole = await measure(1e9);
+  expect(whole.drawn).toMatchObject({ rows: 16000, first: 1, last: 16000 });
+  // Every row is 17.390625 px in the DOM (17.4 px in 64ths). The ones past
+  // 262,144 px are reported as 17.375 or 17.40625.
+  expect(Object.keys(whole.heights).map(Number).sort()).toEqual([17.375, 17.390625, 17.40625]);
+  expect(whole.heights[17.390625]).toBeGreaterThan(15000);
+  expect(whole.measuredShort).not.toBe(0);
+  // The item's DOM is that much taller (or shorter) than the height the viewer computed from the measurements.
+  expect(Math.abs(whole.drawn.dH)).toBeGreaterThan(1);
+  expect(whole.reports).toBeGreaterThan(0);
+
+  const windowed = await measure(5000);
+  expect(windowed.drawn).toMatchObject({ rows: 5000, first: 1, last: 5000, dH: 0, dTop: 0 });
+  expect(Object.keys(windowed.heights).map(Number)).toEqual([17.390625]);
+  expect(windowed.reports).toBe(0);
 });

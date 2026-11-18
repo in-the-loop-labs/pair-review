@@ -25,9 +25,12 @@
  * click, and after collapsing the file while scrolled deep inside it; and
  * where a suggestion's card ends up after a click on it in the review panel.
  *
- * The dump is taken once per engine and compared with compare.mjs. Everything
- * that reads the rendered diff goes through tests/e2e/diff-dom.js, so the
- * same script runs against either engine (PR_ENGINE=codeview from phase 5).
+ * The dump of this tree is compared with compare.mjs against a reference:
+ * the dump of the application as it was before the migration to the
+ * virtualized viewer, which that tree's own copy of this script wrote
+ * (reference.mjs runs it in a second checkout). Everything that reads the
+ * rendered diff goes through tests/e2e/diff-dom.js, which is what lets one
+ * script describe both.
  *
  * Usage:
  *   PLAYWRIGHT_BROWSERS_PATH=... node tests/parity/dump.mjs --out <dir>
@@ -83,8 +86,8 @@ function freePort() {
 
 /** Scroll the diff so `file`'s header is at the top of the visible area, by setting the container's scrollTop. */
 async function scrollToFileTop(page, file) {
-  // A virtualized viewer has no element for a file far from the viewport.
-  if (dom.ensureMounted) await dom.ensureMounted(page, file);
+  // The viewer has no element for a file far from the viewport.
+  await dom.ensureMounted(page, file);
   await dom.inPage(page, (D, f) => {
     const s = D.scroller();
     const w = D.wrapper(f) || D.contextWrapper(f);
@@ -359,11 +362,10 @@ async function dumpOne(browser, baseURL, { corpusName, mode, style, theme }) {
   context.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 300));
   });
-  await context.addInitScript(({ style: s, theme: t, engine }) => {
+  await context.addInitScript(({ style: s, theme: t }) => {
     window.localStorage.setItem('pair-review-diff-view', s);
     window.localStorage.setItem('theme', t);
-    if (engine) window.__PAIR_REVIEW_DIFF_ENGINE = engine;
-  }, { style, theme, engine: process.env.PR_ENGINE === 'codeview' ? 'codeview' : null });
+  }, { style, theme });
   const page = await context.newPage();
 
   await corpora.routeDiff(page, corpus);
@@ -393,7 +395,8 @@ async function dumpOne(browser, baseURL, { corpusName, mode, style, theme }) {
 
   await context.close();
   return {
-    meta: { corpus: corpusName, mode, style, theme, engine: process.env.PR_ENGINE || 'filediff', viewport: '1440x900' },
+    // `engine` is what compare.mjs reads to know how a dump's context files are drawn.
+    meta: { corpus: corpusName, mode, style, theme, engine: 'codeview', viewport: '1440x900' },
     order,
     pre,
     post,

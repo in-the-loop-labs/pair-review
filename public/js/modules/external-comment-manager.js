@@ -3,8 +3,8 @@
  * ExternalCommentManager - Read-only renderer for external review comments.
  *
  * Consumes `GET /api/reviews/:reviewId/external-comments?source=<source>` and
- * renders thread-grouped comments as `.external-comment-row` rows anchored
- * after the appropriate diff line.
+ * renders thread-grouped comments as `.external-comment-row` cards anchored
+ * under the appropriate diff line.
  *
  * FILE-LEVEL PATH — a thread with `is_file_level` (GitHub subject_type='file')
  * has no line anchor. It renders into the file's `.file-comments-zone` above
@@ -16,33 +16,29 @@
  * and AIPanel.scrollToExternalThread stay agnostic to placement. A bare
  * file-wrapper append is the last resort only when the zone is missing.
  *
- * DUAL RENDERING PATH — a thread's file is rendered by ONE of two engines:
- *   - PIERRE (@pierre/diffs): the file lives in a shadow-DOM
- *     `<diffs-container>` with NO light-DOM `<tr>` rows. The thread mounts as
- *     a custom `'external-comment'` annotation (via PierreBridge.addAnnotation),
- *     which the bridge slots BELOW its anchor line into the file's light DOM
- *     as a `<div class="external-comment-row">`. A file is pierre-rendered iff
- *     `window.prManager.pierreBridge.files.has(filePath)`.
- *   - LEGACY (table renderer): context files / bridge-less fallbacks still
- *     render as an HTML table. The thread mounts as a
- *     `<tr class="external-comment-row">` inserted BELOW the anchor row.
- * Both variants carry the SAME inner `.external-comment-thread` card and the
- * same `data-thread-id` / `data-source` attributes, so page CSS, the
- * comment-minimizer, and AIPanel.scrollToExternalThread are agnostic to which
- * path mounted them.
+ * LINE THREADS — a file of the diff pane is drawn by the diff viewer in a
+ * shadow-DOM `<diffs-container>`. A thread mounts as a custom
+ * `'external-comment'` annotation (via PierreBridge.addAnnotation), which the
+ * bridge slots BELOW its anchor line into the file's light DOM as a
+ * `<div class="external-comment-row">`. A file is the viewer's iff
+ * `window.prManager.pierreBridge.files.has(filePath)`; a thread on any other
+ * file has no line to anchor against and goes to the fallback above.
+ * Every placement carries the SAME inner `.external-comment-thread` card and
+ * the same `data-thread-id` / `data-source` attributes, so page CSS, the
+ * comment-minimizer, and AIPanel.scrollToExternalThread are agnostic to
+ * where a thread was mounted.
  *
  * Read-only: no draft / submit / edit / dismiss flows. Only chat-about
  * actions, which delegate to the global chat panel.
  *
- * Ordering rule (shared diff-row surface — see plans/fetch-external-review-comments.md
- * "Hazards"): three independent renderers append rows after the same diff
- * line: `.ai-suggestion-row`, `.user-comment-row`, `.external-comment-row`.
- * External rows sit BELOW AI suggestion + user comment rows for the same
- * diff line. In the legacy path this is enforced by `_insertAtOrderedPosition`;
- * in the pierre path by PierreBridge's `typeOrder` map (external-comment sorts
- * after suggestion + comment). This module ONLY touches its own
- * `.external-comment-row` elements / `'external-comment'` annotations when
- * clearing — it never strips rows owned by other renderers.
+ * Ordering rule (see plans/fetch-external-review-comments.md "Hazards"):
+ * three kinds of card sit under the same diff line: AI suggestions, user
+ * comments, external threads. External threads sit BELOW the AI suggestions
+ * and user comments of the line, by PierreBridge's `typeOrder` map
+ * (external-comment sorts after suggestion + comment). This module ONLY
+ * touches its own `.external-comment-row` elements / `'external-comment'`
+ * annotations when clearing — it never strips cards owned by other
+ * renderers.
  */
 
 class ExternalCommentManager {
@@ -270,21 +266,21 @@ class ExternalCommentManager {
   }
 
   /**
-   * Remove all external-comment rows we own from BOTH rendering engines.
+   * Remove every external-comment card this module owns.
    *
-   * Pierre-rendered files: drop the `'external-comment'` annotations via the
-   * bridge (which rerenders the file, un-slotting their `<div>` rows). We must
-   * NOT `.remove()` a slotted pierre `<div>` directly — the bridge still holds
-   * the annotation in `fileState.annotations` and would re-slot it on the next
-   * rerender, causing duplicates. Drop the annotation and let the bridge own
-   * the DOM lifecycle.
+   * Line threads: drop the `'external-comment'` annotations via the bridge
+   * (which redraws the file, un-slotting their `<div>` cards). A slotted
+   * card must NOT be `.remove()`d directly — the bridge still holds the
+   * annotation and would slot it again on the next draw, causing
+   * duplicates. Drop the annotation and let the bridge own the DOM
+   * lifecycle.
    *
-   * Legacy files: strip the injected `<tr class="external-comment-row">`
-   * (and any file-level fallback `<div>`) from the DOM. Leaves
-   * `.user-comment-row` and `.ai-suggestion-row` rows untouched.
+   * File-level and fallback cards: strip them from the file-comment zones
+   * (attached or not) and from the document. Leaves the cards of other
+   * renderers untouched.
    *
-   * Order matters: clear the pierre annotations FIRST so their rerender
-   * removes the slotted divs, then the DOM sweep only finds legacy rows.
+   * Order matters: clear the annotations FIRST so their redraw removes the
+   * slotted cards, then the sweep only finds zone and fallback cards.
    */
   clear() {
     if (typeof document === 'undefined') return;
@@ -321,64 +317,6 @@ class ExternalCommentManager {
   // ------------------------------------------------------------------
 
   /**
-   * Resolve the diff row that an external comment / thread root anchors to.
-   * Uses the project-wide DiffRenderer file lookup when available, and the
-   * LineTracker side-aware coordinate lookup when present — both already
-   * power the suggestion-manager and comment-manager renderers, so behavior
-   * stays consistent across the three.
-   *
-   * @param {string} file
-   * @param {number} line
-   * @param {string} side - 'LEFT' or 'RIGHT'
-   * @returns {Element|null}
-   */
-  _findDiffLineRow(file, line, side) {
-    if (typeof document === 'undefined') return null;
-    if (!file || !Number.isFinite(line)) return null;
-
-    let fileElement = null;
-    if (typeof window !== 'undefined' && window.DiffRenderer && typeof window.DiffRenderer.findFileElement === 'function') {
-      fileElement = window.DiffRenderer.findFileElement(file);
-    }
-    if (!fileElement) {
-      try {
-        const escaped = (typeof globalThis !== 'undefined' && globalThis.CSS?.escape)
-          ? globalThis.CSS.escape(file)
-          : file;
-        fileElement = document.querySelector(`[data-file-name="${escaped}"]`);
-      } catch {
-        fileElement = null;
-      }
-    }
-    if (!fileElement) return null;
-
-    const wantedSide = side || 'RIGHT';
-    const rows = fileElement.querySelectorAll('tr');
-    const lineTracker = (typeof window !== 'undefined' && window.LineTracker)
-      ? new window.LineTracker()
-      : null;
-
-    for (const row of rows) {
-      let lineNum = null;
-      if (lineTracker && typeof lineTracker.getLineNumber === 'function') {
-        lineNum = lineTracker.getLineNumber(row, wantedSide);
-      } else {
-        // Minimal fallback: dataset.lineNumber + dataset.side check
-        const ds = row.dataset || {};
-        if (wantedSide === 'LEFT' && ds.oldLineNumber) {
-          lineNum = parseInt(ds.oldLineNumber, 10);
-        } else if (wantedSide === 'RIGHT' && ds.newLineNumber) {
-          lineNum = parseInt(ds.newLineNumber, 10);
-        } else if (ds.lineNumber && (!ds.side || ds.side === wantedSide)) {
-          lineNum = parseInt(ds.lineNumber, 10);
-        }
-      }
-      if (lineNum === line) return row;
-    }
-    return null;
-  }
-
-  /**
    * Compute the (file, line, side) anchor for a comment, accounting for
    * outdated rows that fall back to the original anchor.
    * Returns null if the comment cannot be anchored.
@@ -389,7 +327,7 @@ class ExternalCommentManager {
     // File-level comments (GitHub subject_type='file') have no line anchor —
     // they belong in the per-file comments zone above the diff, not on any
     // line. Signal that with `fileLevel: true` so `_renderThread` routes them
-    // to the zone regardless of which diff engine rendered the file.
+    // to the zone.
     if (comment.is_file_level === 1 || comment.is_file_level === true) {
       return { file: comment.file, fileLevel: true };
     }
@@ -414,15 +352,10 @@ class ExternalCommentManager {
   /**
    * Render a single thread (root + replies) into the diff.
    *
-   * When the anchor line isn't initially in the DOM (collapsed context for
-   * outdated comments is the common case) we ask the PR manager to expand
-   * any hidden lines that cover the anchor and re-look-up before giving up.
-   * If still missing we drop to a file-level fallback so the discussion
-   * stays visible rather than disappearing silently.
-   *
-   * Async because `PRManager.ensureLinesVisible` returns a Promise — we
-   * MUST await it before re-looking-up, otherwise the freshly-materialized
-   * row is not yet in the DOM when we ask for it.
+   * A thread on a line of a file of the diff pane mounts as an annotation
+   * (_renderThreadPierre, which reveals a hidden anchor line first). A
+   * thread that cannot be anchored drops to a file-level fallback so the
+   * discussion stays visible rather than disappearing silently.
    * @private
    */
   async _renderThread(thread) {
@@ -440,60 +373,25 @@ class ExternalCommentManager {
     }
 
     // File-level comments render in the per-file comments zone above the diff
-    // (light DOM, shared by both diff engines) — no line anchor, no bridge.
+    // (light DOM) — no line anchor, no bridge.
     if (anchor.fileLevel) {
       this._renderThreadFileLevel(thread, anchor.file);
       return;
     }
 
-    // Route by rendering engine. Pierre-rendered files have no light-DOM
-    // <tr> rows to anchor against, so they mount via the annotation bridge.
     if (this._isPierreFile(anchor.file)) {
       await this._renderThreadPierre(thread, anchor);
       return;
     }
 
-    let targetRow = this._findDiffLineRow(anchor.file, anchor.line, anchor.side);
+    // A file the diff viewer does not hold has no line to anchor against
+    // (the thread names a file that is not in the diff any more). Render
+    // into the per-file comments zone when there is one.
+    if (this._renderFileFallback(thread, anchor.file)) return;
 
-    // Outdated discussions often land on lines that the diff renderer
-    // collapsed behind an "expand context" gap. Ask the PR manager (when
-    // present) to expand the gap, then await before retrying the lookup.
-    // PRManager.ensureLinesVisible takes an array of items and returns a
-    // Promise — must await or the row isn't in the DOM yet.
-    if (!targetRow && this._canEnsureLinesVisible()) {
-      try {
-        await window.prManager.ensureLinesVisible([
-          {
-            file: anchor.file,
-            line_start: anchor.line,
-            line_end: anchor.line,
-            side: anchor.side
-          }
-        ]);
-      } catch (err) {
-        if (typeof console !== 'undefined') {
-          console.warn('[ExternalCommentManager] ensureLinesVisible threw, falling back', err);
-        }
-      }
-      targetRow = this._findDiffLineRow(anchor.file, anchor.line, anchor.side);
+    if (typeof console !== 'undefined') {
+      console.warn(`[ExternalCommentManager] Could not find diff row for ${anchor.file}:${anchor.line} (${anchor.side})`);
     }
-
-    if (!targetRow) {
-      // Unanchorable discussion (outdated / force-pushed line no longer in the
-      // diff). Render into the per-file comments zone above the diff rather
-      // than faking a line-1 annotation at the top of the table. Falls back to
-      // a bare wrapper append only when the zone itself is missing.
-      if (this._renderFileFallback(thread, anchor.file)) return;
-
-      if (typeof console !== 'undefined') {
-        console.warn(`[ExternalCommentManager] Could not find diff row for ${anchor.file}:${anchor.line} (${anchor.side})`);
-      }
-      return;
-    }
-
-    const externalRow = this._buildThreadRow(thread, targetRow);
-    if (!externalRow) return;
-    this._insertAtOrderedPosition(targetRow, externalRow);
   }
 
   /**
@@ -509,12 +407,12 @@ class ExternalCommentManager {
   }
 
   // ------------------------------------------------------------------
-  // Pierre (@pierre/diffs) rendering path
+  // Line threads: annotations of the diff viewer
   // ------------------------------------------------------------------
 
   /**
-   * The shared PierreBridge instance, or null when @pierre/diffs isn't in
-   * play (unit tests, legacy-only fallback).
+   * The shared PierreBridge instance, or null when the diff viewer is not
+   * on the page (unit tests, a bundle that did not load).
    * @returns {Object|null}
    * @private
    */
@@ -524,11 +422,8 @@ class ExternalCommentManager {
   }
 
   /**
-   * Whether `file` is (or will be) rendered by @pierre/diffs vs the legacy
-   * table. Pierre files have no light-DOM `<tr>` rows, so their threads mount
-   * as annotations. Lazily-registered Pierre files are absent from
-   * `bridge.files` until their body renders, so also consult the PR manager's
-   * lazy registry — `_renderThreadPierre` materializes the body itself.
+   * Whether `file` is a file of the diff viewer (it has a record there,
+   * mounted or not), so that a thread can mount as an annotation of it.
    * @param {string} file
    * @returns {boolean}
    * @private
@@ -536,12 +431,7 @@ class ExternalCommentManager {
   _isPierreFile(file) {
     const bridge = this._pierreBridge();
     if (!bridge || !bridge.files || typeof bridge.files.has !== 'function') return false;
-    if (bridge.files.has(file)) return true;
-    const lazyBodies = window.prManager && window.prManager._lazyFileBodies;
-    const lazyEntry = lazyBodies && typeof lazyBodies.get === 'function'
-      ? lazyBodies.get(file)
-      : null;
-    return !!(lazyEntry && lazyEntry.pierre);
+    return bridge.files.has(file);
   }
 
   /**
@@ -592,10 +482,11 @@ class ExternalCommentManager {
   }
 
   /**
-   * The card of a thread wherever it was rendered: on its anchor line (a
-   * pierre annotation), else in a file-comment zone (file-level threads and
-   * unanchorable ones), else a row of the table renderer. The one lookup for
-   * "the element of thread X"; used by navigation.
+   * The card of a thread wherever it was rendered: on its anchor line (an
+   * annotation of the diff viewer), else in a file-comment zone (file-level
+   * threads and unanchorable ones), else a card appended to a file's element
+   * (_appendThreadToWrapper). The one lookup for "the element of thread X";
+   * used by navigation.
    * @param {string|number} threadId
    * @param {string} [source]
    * @returns {HTMLElement|null}
@@ -631,7 +522,7 @@ class ExternalCommentManager {
   }
 
   /**
-   * Mount a thread into a PIERRE-rendered file as an `'external-comment'`
+   * Mount a thread into a file of the diff viewer as an `'external-comment'`
    * annotation. The bridge slots the card BELOW its anchor line into the
    * file's light DOM (so page CSS + inline handlers work) and orders it after
    * suggestion + comment annotations on the same line via its `typeOrder` map.
@@ -702,8 +593,8 @@ class ExternalCommentManager {
   }
 
   /**
-   * File-level fallback for a pierre file: same zone-first strategy as the
-   * legacy path. Shares `_renderFileFallback`.
+   * File-level fallback for a thread whose anchor line the diff does not
+   * show: zone first (`_renderFileFallback`).
    * @private
    */
   _renderPierreFileFallback(thread, file) {
@@ -719,8 +610,9 @@ class ExternalCommentManager {
    */
   _renderThreadFileLevel(thread, file) {
     if (this._appendThreadToZone(thread, file, 'external-comment-row--file-level')) return;
-    // Zone missing (rare — created per file in renderFileDiff). Fall back to a
-    // bare wrapper append so the discussion stays discoverable.
+    // Zone missing (rare — every file of the pane gets one when the diff is
+    // rendered). Fall back to a bare wrapper append so the discussion stays
+    // discoverable.
     if (!this._appendThreadToWrapper(thread, file, 'external-comment-row--file-level')
         && typeof console !== 'undefined') {
       console.warn(`[ExternalCommentManager] Could not anchor file-level thread ${thread?.id} in ${file}`);
@@ -744,8 +636,7 @@ class ExternalCommentManager {
    * Build the thread card `<div class="external-comment-row">`, tag it with
    * `extraClass`, and append it to the file's `.file-comments-container`.
    * Returns true on success, false when the zone is missing. The zone is light
-   * DOM created per file by FileCommentManager.createFileCommentsZone, so it
-   * works for BOTH the legacy table and pierre engines.
+   * DOM created per file by FileCommentManager.createFileCommentsZone.
    * @private
    */
   _appendThreadToZone(thread, file, extraClass) {
@@ -791,7 +682,8 @@ class ExternalCommentManager {
   }
 
   /**
-   * Resolve a file's `.d2h-file-wrapper` element (shared by both engines).
+   * Resolve a file's `.d2h-file-wrapper` element (null for a file the viewer
+   * has not mounted).
    * @param {string} file
    * @returns {HTMLElement|null}
    * @private
@@ -814,8 +706,7 @@ class ExternalCommentManager {
 
   /**
    * Build the `.external-comment-thread` element containing the root comment,
-   * its replies, and per-comment actions. Shared by the legacy `<tr>` wrapper
-   * (`_buildThreadRow`) and the pierre `<div>` wrapper (`_buildThreadDiv`).
+   * its replies, and per-comment actions; `_buildThreadDiv` wraps it.
    * @private
    */
   _buildThreadElement(thread) {
@@ -837,10 +728,9 @@ class ExternalCommentManager {
   }
 
   /**
-   * Apply the `data-thread-id` / `data-source` attributes both engines' row
-   * wrappers rely on (AIPanel.scrollToExternalThread queries them, and the
-   * comment-minimizer keys off the class). Kept in one place so the legacy
-   * `<tr>` and pierre `<div>` stay identical.
+   * Apply the `data-thread-id` / `data-source` attributes the card's wrapper
+   * carries (AIPanel.scrollToExternalThread queries them, and the
+   * comment-minimizer keys off the class).
    * @private
    */
   _applyThreadDataset(el, thread) {
@@ -849,31 +739,11 @@ class ExternalCommentManager {
   }
 
   /**
-   * Build the LEGACY `<tr class="external-comment-row">` wrapper (table-based
-   * files) containing the shared thread card. Inserted below the anchor row.
-   * @private
-   */
-  _buildThreadRow(thread, targetRow) {
-    if (typeof document === 'undefined') return null;
-    const tr = document.createElement('tr');
-    tr.className = 'external-comment-row';
-    this._applyThreadDataset(tr, thread);
-
-    const td = document.createElement('td');
-    // Match user-comment-row colspan of 4 used elsewhere in the diff table
-    td.colSpan = this._resolveColSpan(targetRow);
-    td.className = 'external-comment-cell';
-
-    td.appendChild(this._buildThreadElement(thread));
-    tr.appendChild(td);
-    return tr;
-  }
-
-  /**
-   * Build the PIERRE `<div class="external-comment-row">` wrapper. The bridge
-   * slots this into the file's light DOM below the anchor line. Carries the
-   * same class + `data-thread-id` / `data-source` as the legacy `<tr>` so page
-   * CSS, the minimizer, and the AIPanel scroll-to lookup treat both uniformly.
+   * Build the `<div class="external-comment-row">` wrapper of a thread. For a
+   * line thread the bridge slots it into the file's light DOM below the
+   * anchor line; file-level and fallback threads put it in the file's
+   * comment zone. The class and `data-thread-id` / `data-source` are what page
+   * CSS, the minimizer, and the AIPanel scroll-to lookup go by.
    * @private
    */
   _buildThreadDiv(thread) {
@@ -883,22 +753,6 @@ class ExternalCommentManager {
     this._applyThreadDataset(div, thread);
     div.appendChild(this._buildThreadElement(thread));
     return div;
-  }
-
-  /**
-   * Best-effort colSpan resolution. The diff renderer uses a 4-column
-   * layout (matches `.user-comment-cell` colSpan=4). Fall back to that
-   * if we can't introspect the target row's column count.
-   * @private
-   */
-  _resolveColSpan(targetRow) {
-    try {
-      const cells = targetRow?.cells || targetRow?.children;
-      if (cells && cells.length) return cells.length;
-    } catch {
-      // ignore
-    }
-    return 4;
   }
 
   /**
@@ -1110,48 +964,6 @@ class ExternalCommentManager {
       return this.chatPanel;
     }
     return null;
-  }
-
-  /**
-   * Insert the external comment row at the correct position after the diff
-   * line, preserving the ordering rule:
-   *   AI suggestions  →  user comments  →  external comments
-   *
-   * Walk forward from `targetRow.nextSibling` while we see rows that should
-   * come BEFORE us (AI suggestion rows, user comment rows, or already-
-   * existing external comment rows for the same diff line). Insert before
-   * the first non-comment row we encounter, or at the end of the table.
-   * @private
-   */
-  _insertAtOrderedPosition(targetRow, externalRow) {
-    const parent = targetRow.parentNode;
-    if (!parent) return;
-    let insertBefore = targetRow.nextSibling;
-    while (insertBefore && this._isOwnedCommentRow(insertBefore)) {
-      insertBefore = insertBefore.nextSibling;
-    }
-    if (insertBefore) {
-      parent.insertBefore(externalRow, insertBefore);
-    } else {
-      parent.appendChild(externalRow);
-    }
-  }
-
-  /**
-   * Returns true if the given node is a comment-like row that belongs
-   * to one of the three diff renderers and should remain ABOVE this
-   * new external-comment row.
-   * @private
-   */
-  _isOwnedCommentRow(node) {
-    if (!node || node.nodeType !== 1 /* ELEMENT_NODE */) return false;
-    const cls = node.classList;
-    if (!cls) return false;
-    return (
-      cls.contains('ai-suggestion-row') ||
-      cls.contains('user-comment-row') ||
-      cls.contains('external-comment-row')
-    );
   }
 
   // ------------------------------------------------------------------

@@ -3,17 +3,16 @@
  * PierreStyles - the CSS pair-review injects into the shadow root of every
  * @pierre/diffs host (the vendor's `unsafeCSS` option).
  *
- * One copy for both diff bridges: PierreBridge (one FileDiff per file) uses
- * ANNOTATION_CSS; PierreCodeViewBridge (one virtualized CodeView) uses every
- * block through unsafeCSS(). Page CSS (pr.css) cannot reach into a
- * shadow root, so everything that styles vendor rows lives here.
+ * PierreBridge hands every block to the viewer through unsafeCSS(). Page
+ * CSS (pr.css) cannot reach into a shadow root, so everything that styles
+ * vendor rows lives here.
  *
  * Wrapped in a function: this file is a classic script, and top-level
  * `const` names are shared by every script on the page.
  */
 (function () {
   // Annotation CSS injected into Shadow DOM via unsafeCSS.
-  // Suggestions and comments use legacy classes (.ai-suggestion, .user-comment)
+  // Suggestions and comments use the page's classes (.ai-suggestion, .user-comment)
   // styled by the page stylesheet. Only the comment form annotation lives
   // entirely within the shadow DOM and needs styles here.
   //
@@ -41,7 +40,7 @@
     [data-line-annotation] { min-width: 0; }
     [data-annotation-content] { min-width: 0; }
     /* Split view: stretch a lone card across both columns. The class and
-       --pr-split-gutter-width are maintained by _syncSplitAnnotationLayout
+       --pr-split-gutter-width are maintained by PierreAnnotations.applySplitAnnotationLayout
        (the middle gutter track is min-content sized — unknowable in pure
        CSS). Without the var the card degrades to stopping at the seam.
        z-index clears the middle gutter, which the vendor paints at 3. */
@@ -100,7 +99,7 @@
     }
     /* One-sided file: every card is lone, stretch across both halves.
        Geometry (g = the file's own gutter, published by
-       _applySplitAnnotationLayout as --pr-split-gutter-width; 100% = the
+       the bridge's split layout pass as --pr-split-gutter-width; 100% = the
        content track = half minus g): a left-half card starts after its
        gutter, so 200% + g reaches the far edge; a right-half card must
        also cross the empty left half AND its own gutter — shift back by
@@ -228,10 +227,9 @@
   const ITEM_PADDING_BOTTOM = 9;
 
   /**
-   * The frame of a file under the virtualized viewer: what the per-file
-   * renderer's `.pierre-diff-body` (pr.css) draws around a file's lines, a
-   * 1 px border left, right and below with 6 px bottom corners. There the
-   * body is an element of the page around the vendor's host; here the host is
+   * The frame of a file: what the per-file renderer drew around a file's
+   * lines with an element of the page around the vendor's host, a 1 px
+   * border left, right and below with 6 px bottom corners. Here the host is
    * the file, so the frame is on the code block inside it.
    *
    *  - Left and right borders add no height. The bottom border adds 1 px,
@@ -243,11 +241,11 @@
    *    either; pr.css draws its 1 px line in the file's comment zone, which
    *    the viewer measures.
    *    Such a file has no code background either: what it shows (its
-   *    comments, a notice, that line) is on the pane, as on the other engine.
+   *    comments, a notice, that line) is on the pane, as with the per-file renderer.
    *    Its side borders keep their width (the comment zone's row is sized
    *    with it, ZONE_CSS) and are not drawn: beside a notice or the 1 px
-   *    line they would be two strokes the other engine does not have.
-   *  - A context file has no frame on the other engine and none here; its
+   *    line they would be two strokes the per-file renderer did not have.
+   *  - A context file had no frame before the migration and has none here; its
    *    bottom border is transparent, because the 1 px is counted for it too.
    *  - The viewer paints its host and its sticky header's box with the code
    *    background. The page's header has rounded top corners and the pane

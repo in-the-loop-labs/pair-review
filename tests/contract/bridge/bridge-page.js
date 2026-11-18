@@ -4,7 +4,7 @@
  * Exposes `window.BH`, next to the vendor harness `window.H`.
  *
  * BH builds pane entries from the deterministic workload and constructs the
- * REAL PierreCodeViewBridge over the REAL vendor bundle. It contains no model
+ * REAL PierreBridge over the REAL vendor bundle. It contains no model
  * of either: what a spec asserts on is read from the bridge's public API,
  * from the vendor's own objects, or from the DOM. After `BH.create` the
  * vendor harness's measurement helpers work on the bridge's viewer
@@ -83,7 +83,7 @@
   BH.create = (options = {}) => {
     H.root = H.root || document.getElementById('root');
     const record = (name) => (...args) => { BH.calls.push({ name, args: args.map((a) => H.ser(a)) }); };
-    const bridge = new window.PierreCodeViewBridge({
+    const bridge = new window.PierreBridge({
       root: H.root,
       theme: 'light',
       workerUrl: '/vendor/pierre-diffs-worker.js',

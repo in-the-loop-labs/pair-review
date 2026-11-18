@@ -2,32 +2,22 @@
 // @vitest-environment jsdom
 
 /**
- * Unit tests for the lazy-render hunk-summary anchoring split:
- *   - _registerHunkAnchorsForFile() turns a file's per-hunk records into
- *     anchored `data-hunk-start` rows as that file's body renders, and mounts
- *     any summary that arrived before the anchor existed.
+ * Unit tests for hunk-summary anchoring:
+ *   - _registerPierreHunkAnchorsForFile() turns a file's hunks into anchor
+ *     positions keyed by the server's content hashes, scoped by file, and
+ *     mounts any summary that arrived before the anchor existed.
  *   - _fetchHunkSummaryMap() loads the server summary map (config-gated) and
- *     queues summaries for files that haven't rendered yet.
+ *     queues summaries of hunks that have no anchor yet.
  *
  * Server-supplied canonical hashes are mandatory (the WebCrypto fallback was
- * removed in favor of always trusting the backend); records missing a
- * `contentHash` must be logged-and-skipped rather than silently re-hashed.
+ * removed in favor of always trusting the backend); a file whose hashes do
+ * not match its hunks registers nothing rather than being re-hashed.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { PRManager } = require('../../public/js/pr.js');
 const { HunkParser } = require('../../public/js/modules/hunk-parser.js');
-
-function buildAnchorRow() {
-  const table = document.createElement('table');
-  const tbody = document.createElement('tbody');
-  const tr = document.createElement('tr');
-  tbody.appendChild(tr);
-  table.appendChild(tbody);
-  document.body.appendChild(table);
-  return tr;
-}
 
 function createTestPRManager() {
   const prManager = Object.create(PRManager.prototype);
@@ -53,146 +43,6 @@ function createTestPRManager() {
   return prManager;
 }
 
-describe('PRManager._registerHunkAnchorsForFile', () => {
-  let warnSpy;
-
-  beforeEach(() => {
-    document.body.innerHTML = '';
-    window.localStorage.clear();
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    delete global.fetch;
-  });
-
-  it('wires anchor rows for records with a server-supplied contentHash', () => {
-    const prManager = createTestPRManager();
-    const anchor = buildAnchorRow();
-
-    prManager._registerHunkAnchorsForFile([
-      { file: 'a.js', header: '@@ -1,2 +1,3 @@', anchorRow: anchor, contentHash: 'deadbeef' }
-    ]);
-
-    expect(anchor.dataset.hunkStart).toBe('deadbeef');
-    // Anchors are file-scoped: Map<filePath, Map<hash, anchorRow>>.
-    expect(prManager._summaryAnchorsByHash.get('a.js')?.get('deadbeef')).toBe(anchor);
-    expect(prManager._summaryHashesByFile.get('a.js')?.has('deadbeef')).toBe(true);
-  });
-
-  it('logs and skips records with no contentHash (no client-side fallback hashing)', () => {
-    const prManager = createTestPRManager();
-    const anchor = buildAnchorRow();
-
-    prManager._registerHunkAnchorsForFile([
-      { file: 'b.js', header: '@@ -1,2 +1,3 @@', anchorRow: anchor, contentHash: null }
-    ]);
-
-    expect(anchor.dataset.hunkStart).toBeUndefined();
-    expect(prManager._summaryAnchorsByHash.size).toBe(0);
-    expect(prManager._summaryHashesByFile.size).toBe(0);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('no server contentHash')
-    );
-  });
-
-  it('mounts a summary that arrived (queued) before its anchor was rendered', () => {
-    const prManager = createTestPRManager();
-    const summary = { content_hash: 'deadbeef', summary_text: 'does a thing' };
-    // Simulate a WS/fetch summary that landed (scoped to its file) before this
-    // file rendered.
-    prManager._queuePendingSummary('a.js', summary);
-    const renderInline = vi.fn().mockReturnValue(document.createElement('tr'));
-    prManager.hunkSummaryRenderer = { renderInline };
-
-    const anchor = buildAnchorRow();
-    prManager._registerHunkAnchorsForFile([
-      { file: 'a.js', header: '@@ -1,2 +1,3 @@', anchorRow: anchor, contentHash: 'deadbeef' }
-    ]);
-
-    expect(renderInline).toHaveBeenCalledWith(anchor, summary);
-    // The file's pending bucket is drained (and removed once empty).
-    expect(prManager._pendingSummariesByHash.has('a.js')).toBe(false);
-    expect(prManager._summariesGenerated).toBe(true);
-    expect(prManager._summariesAvailable).toBe(true);
-    expect(prManager._refreshFileSummaryToggle).toHaveBeenCalledWith('a.js');
-  });
-
-  it('does not let one file consume another file\'s queued summary on a hash collision', () => {
-    const prManager = createTestPRManager();
-    const renderInline = vi.fn().mockReturnValue(document.createElement('tr'));
-    prManager.hunkSummaryRenderer = { renderInline };
-    // Two files share content_hash 'shared' (copy-pasted boilerplate / tiny
-    // rename). Only b.js's summary is queued.
-    const summaryForB = { content_hash: 'shared', summary_text: 'B summary' };
-    prManager._queuePendingSummary('b.js', summaryForB);
-
-    // a.js renders first and registers an anchor with the SAME hash. It must
-    // NOT mount b.js's queued summary.
-    const anchorA = buildAnchorRow();
-    prManager._registerHunkAnchorsForFile([
-      { file: 'a.js', header: '@@ -1 +1 @@', anchorRow: anchorA, contentHash: 'shared' }
-    ]);
-    expect(renderInline).not.toHaveBeenCalled();
-    expect(prManager._pendingSummariesByHash.get('b.js')?.has('shared')).toBe(true);
-
-    // When b.js renders, its own anchor drains its own queued summary.
-    const anchorB = buildAnchorRow();
-    prManager._registerHunkAnchorsForFile([
-      { file: 'b.js', header: '@@ -1 +1 @@', anchorRow: anchorB, contentHash: 'shared' }
-    ]);
-    expect(renderInline).toHaveBeenCalledWith(anchorB, summaryForB);
-  });
-
-  it('mounts an already-rendered summary against its OWN file\'s anchor on a hash collision', () => {
-    const prManager = createTestPRManager();
-    // Mimic the real renderer: insert the summary row immediately above the
-    // anchor and return it, so we can assert which anchor it mounted against.
-    const renderInline = vi.fn((anchorRow, summary) => {
-      const row = document.createElement('tr');
-      row.className = 'hunk-summary-row';
-      row.textContent = summary.summary_text;
-      anchorRow.parentNode.insertBefore(row, anchorRow);
-      return row;
-    });
-    prManager.hunkSummaryRenderer = { renderInline };
-
-    // a.js and b.js both carry the SAME content hash and BOTH bodies have
-    // already rendered (both anchors registered). This is the already-rendered
-    // path the queued-before-render collision test above does not cover: the
-    // pre-fix global map let b.js's set() overwrite a.js's anchor for 'shared'.
-    const anchorA = buildAnchorRow();
-    const anchorB = buildAnchorRow();
-    prManager._registerHunkAnchorsForFile([
-      { file: 'a.js', header: '@@ -1 +1 @@', anchorRow: anchorA, contentHash: 'shared' }
-    ]);
-    prManager._registerHunkAnchorsForFile([
-      { file: 'b.js', header: '@@ -1 +1 @@', anchorRow: anchorB, contentHash: 'shared' }
-    ]);
-    // Neither registration mounts anything (nothing was queued).
-    expect(renderInline).not.toHaveBeenCalled();
-
-    // Apply a summary for a.js. It must resolve a.js's anchor, NOT the
-    // later-registered b.js anchor.
-    const row = prManager._renderOneSummary({ content_hash: 'shared', summary_text: 'A' }, 'a.js');
-
-    expect(row).toBeTruthy();
-    expect(renderInline).toHaveBeenCalledTimes(1);
-    expect(renderInline.mock.calls[0][0]).toBe(anchorA);
-    // The mounted row sits immediately above a.js's anchor, not b.js's.
-    expect(anchorA.previousElementSibling).toBe(row);
-    expect(anchorB.previousElementSibling).not.toBe(row);
-  });
-
-  it('is a no-op for empty/missing record lists', () => {
-    const prManager = createTestPRManager();
-    expect(() => prManager._registerHunkAnchorsForFile([])).not.toThrow();
-    expect(() => prManager._registerHunkAnchorsForFile(undefined)).not.toThrow();
-    expect(prManager._summaryAnchorsByHash.size).toBe(0);
-  });
-});
-
 describe('PRManager._fetchHunkSummaryMap', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -214,9 +64,9 @@ describe('PRManager._fetchHunkSummaryMap', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('queues fetched summaries for files whose body has not rendered yet', async () => {
+  it('queues fetched summaries of hunks that have no anchor yet', async () => {
     const prManager = createTestPRManager();
-    prManager.hunkSummaryRenderer = { renderInline: vi.fn() };
+    prManager.hunkSummaryRenderer = { renderPierre: vi.fn() };
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -227,10 +77,9 @@ describe('PRManager._fetchHunkSummaryMap', () => {
 
     await prManager._fetchHunkSummaryMap();
 
-    // No anchor exists yet (lazy body unrendered) → summary is deferred,
-    // scoped to its file, not lost.
+    // No anchor exists yet → summary is deferred, scoped to its file, not lost.
     expect(prManager._pendingSummariesByHash.get('a.js')?.has('h1')).toBe(true);
-    expect(prManager.hunkSummaryRenderer.renderInline).not.toHaveBeenCalled();
+    expect(prManager.hunkSummaryRenderer.renderPierre).not.toHaveBeenCalled();
     expect(prManager._summariesAvailable).toBe(true);
   });
 });
@@ -316,7 +165,7 @@ describe('PRManager._registerPierreHunkAnchorsForFile', () => {
     vi.restoreAllMocks();
   });
 
-  it('registers position-based (pierre) anchor records scoped by file', () => {
+  it('registers position anchors scoped by file', () => {
     const prManager = createPierrePRManager();
     prManager.hunkSummaryRenderer = { renderPierre: vi.fn() };
 
@@ -327,12 +176,12 @@ describe('PRManager._registerPierreHunkAnchorsForFile', () => {
     });
 
     const anchors = prManager._summaryAnchorsByHash.get('a.js');
-    expect(anchors.get('h1')).toEqual({ pierre: true, fileName: 'a.js', lineNumber: 1, side: 'RIGHT' });
-    expect(anchors.get('h2')).toEqual({ pierre: true, fileName: 'a.js', lineNumber: 10, side: 'LEFT' });
+    expect(anchors.get('h1')).toEqual({ fileName: 'a.js', lineNumber: 1, side: 'RIGHT' });
+    expect(anchors.get('h2')).toEqual({ fileName: 'a.js', lineNumber: 10, side: 'LEFT' });
     expect(prManager._summaryHashesByFile.get('a.js')).toEqual(new Set(['h1', 'h2', 'h3']));
   });
 
-  it('mounts a summary queued before the pierre anchor existed', () => {
+  it('mounts a summary queued before the anchor existed', () => {
     const prManager = createPierrePRManager();
     prManager.hunkSummaryRenderer = { renderPierre: vi.fn().mockReturnValue('hunk-summary-h2') };
     const summary = { content_hash: 'h2', summary_text: 'Removes dead code.' };
@@ -346,7 +195,7 @@ describe('PRManager._registerPierreHunkAnchorsForFile', () => {
 
     expect(prManager.hunkSummaryRenderer.renderPierre).toHaveBeenCalledWith(
       'a.js',
-      { pierre: true, fileName: 'a.js', lineNumber: 10, side: 'LEFT' },
+      { fileName: 'a.js', lineNumber: 10, side: 'LEFT' },
       summary
     );
     expect(prManager._pendingSummariesByHash.has('a.js')).toBe(false);
@@ -355,7 +204,54 @@ describe('PRManager._registerPierreHunkAnchorsForFile', () => {
     expect(prManager._refreshFileSummaryToggle).toHaveBeenCalledWith('a.js');
   });
 
-  it('is a no-op for files not rendered by PierreBridge', () => {
+  it('does not let one file consume another file\'s queued summary on a hash collision', () => {
+    const prManager = createPierrePRManager(['a.js', 'b.js']);
+    const renderPierre = vi.fn().mockReturnValue('hunk-summary-h1');
+    prManager.hunkSummaryRenderer = { renderPierre };
+    // Two files share their hunks' content hashes (copy-pasted boilerplate,
+    // a tiny rename). Only b.js's summary is queued.
+    const summaryForB = { content_hash: 'h1', summary_text: 'B summary' };
+    prManager._queuePendingSummary('b.js', summaryForB);
+
+    // a.js registers an anchor with the SAME hash. It must NOT mount b.js's
+    // queued summary.
+    prManager._registerPierreHunkAnchorsForFile({ file: 'a.js', patch: MULTI_HUNK_PATCH, hunk_hashes: ['h1', 'h2', 'h3'] });
+    expect(renderPierre).not.toHaveBeenCalled();
+    expect(prManager._pendingSummariesByHash.get('b.js')?.has('h1')).toBe(true);
+
+    // b.js's own anchor drains its own queued summary.
+    prManager._registerPierreHunkAnchorsForFile({ file: 'b.js', patch: MULTI_HUNK_PATCH, hunk_hashes: ['h1', 'h2', 'h3'] });
+    expect(renderPierre).toHaveBeenCalledTimes(1);
+    expect(renderPierre).toHaveBeenCalledWith('b.js', { fileName: 'b.js', lineNumber: 1, side: 'RIGHT' }, summaryForB);
+  });
+
+  it('mounts a summary against its OWN file\'s anchor on a hash collision, whichever file registered last', () => {
+    const prManager = createPierrePRManager(['a.js', 'b.js']);
+    const renderPierre = vi.fn().mockReturnValue('hunk-summary-h2');
+    prManager.hunkSummaryRenderer = { renderPierre };
+    // Both files have their anchors, under the same hashes: a map keyed by
+    // hash alone would let b.js's registration overwrite a.js's anchor.
+    prManager._registerPierreHunkAnchorsForFile({ file: 'a.js', patch: MULTI_HUNK_PATCH, hunk_hashes: ['h1', 'h2', 'h3'] });
+    prManager._registerPierreHunkAnchorsForFile({ file: 'b.js', patch: MULTI_HUNK_PATCH, hunk_hashes: ['h1', 'h2', 'h3'] });
+    // Neither registration mounts anything (nothing was queued).
+    expect(renderPierre).not.toHaveBeenCalled();
+
+    const summary = { content_hash: 'h2', summary_text: 'A' };
+    expect(prManager._renderOneSummary(summary, 'a.js')).toBe('hunk-summary-h2');
+    expect(renderPierre).toHaveBeenCalledTimes(1);
+    expect(renderPierre).toHaveBeenCalledWith('a.js', { fileName: 'a.js', lineNumber: 10, side: 'LEFT' }, summary);
+  });
+
+  it('is a no-op for a missing file, a file without a patch and a patch without a hunk', () => {
+    const prManager = createPierrePRManager();
+    prManager.hunkSummaryRenderer = { renderPierre: vi.fn() };
+    expect(() => prManager._registerPierreHunkAnchorsForFile(undefined)).not.toThrow();
+    expect(() => prManager._registerPierreHunkAnchorsForFile({ file: 'a.js', patch: '' })).not.toThrow();
+    expect(() => prManager._registerPierreHunkAnchorsForFile({ file: 'a.js', patch: 'old mode 100644\nnew mode 100755\n', hunk_hashes: [] })).not.toThrow();
+    expect(prManager._summaryAnchorsByHash.size).toBe(0);
+  });
+
+  it('is a no-op for a file the bridge has no record of', () => {
     const prManager = createPierrePRManager([]); // bridge has no files
     prManager.hunkSummaryRenderer = { renderPierre: vi.fn() };
 
@@ -385,13 +281,13 @@ describe('PRManager._registerPierreHunkAnchorsForFile', () => {
   });
 });
 
-describe('PRManager._renderOneSummary (pierre anchor branch)', () => {
+describe('PRManager._renderOneSummary', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('mounts via renderPierre when the anchor is a pierre record', () => {
+  it('mounts through the bridge at the anchor\'s position', () => {
     const prManager = Object.create(PRManager.prototype);
     prManager._summaryAnchorsByHash = new Map([
-      ['a.js', new Map([['h', { pierre: true, fileName: 'a.js', lineNumber: 7, side: 'RIGHT' }]])]
+      ['a.js', new Map([['h', { fileName: 'a.js', lineNumber: 7, side: 'RIGHT' }]])]
     ]);
     prManager._pendingSummariesByHash = new Map();
     prManager.pierreBridge = { files: new Map([['a.js', {}]]) };
@@ -403,15 +299,15 @@ describe('PRManager._renderOneSummary (pierre anchor branch)', () => {
     expect(result).toBe('hunk-summary-h');
     expect(renderPierre).toHaveBeenCalledWith(
       'a.js',
-      { pierre: true, fileName: 'a.js', lineNumber: 7, side: 'RIGHT' },
+      { fileName: 'a.js', lineNumber: 7, side: 'RIGHT' },
       { content_hash: 'h', summary_text: 'x' }
     );
   });
 
-  it('requeues when the pierre file is no longer rendered (destroyed/re-deferred)', () => {
+  it('requeues when the file has left the pane since its anchor was registered', () => {
     const prManager = Object.create(PRManager.prototype);
     prManager._summaryAnchorsByHash = new Map([
-      ['a.js', new Map([['h', { pierre: true, fileName: 'a.js', lineNumber: 7, side: 'RIGHT' }]])]
+      ['a.js', new Map([['h', { fileName: 'a.js', lineNumber: 7, side: 'RIGHT' }]])]
     ]);
     prManager._pendingSummariesByHash = new Map();
     prManager.pierreBridge = { files: new Map() }; // file gone

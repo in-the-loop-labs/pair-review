@@ -7,8 +7,6 @@ const { PRManager } = require('../../public/js/pr.js');
 const DEFAULTS = {
   PIERRE_HIGHLIGHT_MAX_PATCH_CHARS: PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS,
   PIERRE_HIGHLIGHT_MAX_PATCH_LINES: PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES,
-  PIERRE_HIGHLIGHT_TOTAL_CHARS: PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS,
-  PIERRE_HIGHLIGHT_TOTAL_LINES: PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES,
   PIERRE_AUTO_RENDER_MAX_PATCH_CHARS: PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_CHARS,
   PIERRE_AUTO_RENDER_MAX_PATCH_LINES: PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_LINES,
   PIERRE_UPGRADE_MAX_PATCH_CHARS: PRManager.PIERRE_UPGRADE_MAX_PATCH_CHARS,
@@ -24,14 +22,14 @@ let originalFetch;
 let originalWindow;
 let originalDocument;
 
-function createManager({ worker = true } = {}) {
+function createManager() {
   const manager = Object.create(PRManager.prototype);
   manager.pierreBridge = {
-    _disabled: false,
-    workerManager: worker ? {} : null,
     files: new Map(),
   };
-  manager._pierreRenderBudget = manager._createPierreRenderBudget();
+  // The files the viewer has mounted: background upgrades go to those.
+  manager._mountedDiffItems = new Set();
+  manager._renderGen = 1;
   manager.currentPR = { id: 42 };
   manager.changedFilesByPath = new Map();
   manager._pierreContentUpgradePromises = new Map();
@@ -55,8 +53,6 @@ describe('PRManager Pierre render budgeting', () => {
     originalDocument = global.document;
     PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_CHARS = 50;
     PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES = 10;
-    PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS = 80;
-    PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES = 20;
     PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_CHARS = 200;
     PRManager.PIERRE_AUTO_RENDER_MAX_PATCH_LINES = 50;
     PRManager.PIERRE_UPGRADE_MAX_PATCH_CHARS = 40;
@@ -88,90 +84,51 @@ describe('PRManager Pierre render budgeting', () => {
 
   it('keeps default upgrade budgets broad enough for small patches in large source files', () => {
     Object.assign(PRManager, DEFAULTS);
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     const sourceFile = Array.from({ length: 6500 }, (_, index) => `line ${index + 1}`).join('\n');
 
     expect(PRManager.PIERRE_UPGRADE_MAX_PATCH_LINES).toBeGreaterThanOrEqual(
       PRManager.PIERRE_HIGHLIGHT_MAX_PATCH_LINES
     );
-    expect(PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES).toBeGreaterThanOrEqual(15000);
     expect(manager._isPatchEligibleForContentUpgrade(fileWithPatch('@@ -1 +1 @@\n-old\n+new\n'))).toBe(true);
     expect(manager._isContentEligibleForPierreUpgrade(sourceFile, sourceFile)).toBe(true);
   });
 
-  it('forces large files to plain Pierre rendering when a worker is available', () => {
-    const manager = createManager({ worker: true });
-    const decision = manager._getPierreRenderDecision(fileWithPatch('x'.repeat(60)));
-
-    expect(decision).toEqual({
-      usePierre: true,
-      forcePlainText: true,
-      deferDiff: false,
-    });
+  it('draws a file over the per-file limit as plain text, by characters or by lines', () => {
+    const manager = createManager();
+    expect(manager._getPierreRenderDecision(fileWithPatch('x'.repeat(40)))).toEqual({ forcePlainText: false, deferDiff: false });
+    expect(manager._getPierreRenderDecision(fileWithPatch('x'.repeat(60)))).toEqual({ forcePlainText: true, deferDiff: false });
+    expect(manager._getPierreRenderDecision(fileWithPatch('l\n'.repeat(12)))).toEqual({ forcePlainText: true, deferDiff: false });
   });
 
-  it('keeps plain Pierre rendering for large files when no worker is available', () => {
-    const manager = createManager({ worker: false });
-    const decision = manager._getPierreRenderDecision(fileWithPatch('x'.repeat(60)));
-
-    expect(decision).toEqual({
-      usePierre: true,
-      forcePlainText: true,
-      deferDiff: false,
-    });
+  it('has no limit on the page as a whole: every file under the per-file limit is highlighted, however many there are', () => {
+    // The viewer highlights what is mounted, so a total budget protects
+    // nothing (decision D3 of plans/codeview-virtualized-diff.md).
+    const manager = createManager();
+    for (let index = 0; index < 50; index++) {
+      const file = fileWithPatch(String.fromCharCode(97 + (index % 26)).repeat(45));
+      file.file = `src/file-${index}.js`;
+      expect(manager._getPierreRenderDecision(file), file.file).toEqual({ forcePlainText: false, deferDiff: false });
+    }
+    expect(PRManager.PIERRE_HIGHLIGHT_TOTAL_CHARS).toBeUndefined();
+    expect(PRManager.PIERRE_HIGHLIGHT_TOTAL_LINES).toBeUndefined();
   });
 
-  it('forces plain rendering after the total syntax-highlight budget is exhausted', () => {
-    const manager = createManager({ worker: true });
-
-    const first = manager._getPierreRenderDecision(fileWithPatch('a'.repeat(45)));
-    const second = manager._getPierreRenderDecision(fileWithPatch('b'.repeat(45)));
-
-    expect(first.forcePlainText).toBe(false);
-    expect(first.usePierre).toBe(true);
-    expect(second.forcePlainText).toBe(true);
-    expect(second.usePierre).toBe(true);
+  it('holds a diff back when its patch is over the automatic render limit', () => {
+    const manager = createManager();
+    expect(manager._getPierreRenderDecision(fileWithPatch('x'.repeat(220)))).toEqual({ forcePlainText: true, deferDiff: true });
+    expect(manager._getPierreRenderDecision(fileWithPatch('l\n'.repeat(60)))).toEqual({ forcePlainText: true, deferDiff: true });
   });
 
-  it('defers automatic inline rendering for patches above the automatic render budget', () => {
-    const manager = createManager({ worker: true });
-    const decision = manager._getPierreRenderDecision(fileWithPatch('x'.repeat(220)));
-
-    expect(decision).toEqual({
-      usePierre: false,
-      forcePlainText: true,
-      deferDiff: true,
-    });
-  });
-
-  it('allows deferred large patches to render on explicit request', () => {
-    const manager = createManager({ worker: true });
-    const decision = manager._getPierreRenderDecision(fileWithPatch('x'.repeat(220)), {
-      forceRender: true,
-    });
-
-    expect(decision).toEqual({
-      usePierre: true,
-      forcePlainText: true,
-      deferDiff: false,
-    });
-  });
-
-  it('uses plain Pierre for explicit deferred rendering even without a worker', () => {
-    const manager = createManager({ worker: false });
-    const decision = manager._getPierreRenderDecision(fileWithPatch('x'.repeat(220)), {
-      forceRender: true,
-    });
-
-    expect(decision).toEqual({
-      usePierre: true,
-      forcePlainText: true,
-      deferDiff: false,
-    });
+  it('decides nothing for a file without a patch or a binary file', () => {
+    const manager = createManager();
+    expect(manager._getPierreRenderDecision({ file: 'a.bin', binary: true, patch: 'x'.repeat(500) })).toEqual({ forcePlainText: false, deferDiff: false });
+    expect(manager._getPierreRenderDecision({ file: 'empty.js' })).toEqual({ forcePlainText: false, deferDiff: false });
+    expect(manager._getPierreRenderDecision(null)).toEqual({ forcePlainText: false, deferDiff: false });
   });
 
   it('skips full-content upgrades for large patches and large file contents', () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
 
     expect(manager._isPatchEligibleForContentUpgrade(fileWithPatch('small\n'))).toBe(true);
     expect(manager._isPatchEligibleForContentUpgrade(fileWithPatch('x'.repeat(45)))).toBe(false);
@@ -182,11 +139,12 @@ describe('PRManager Pierre render budgeting', () => {
   });
 
   it('does not cap the total number of eligible full-content upgrades', () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     const files = Array.from({ length: 20 }, (_, index) => {
       const file = fileWithPatch(`@@ -1 +1 @@\n-old ${index}\n+new ${index}\n`);
       file.file = `src/file-${index}.js`;
       manager.pierreBridge.files.set(file.file, { forcePlainText: false });
+      manager._mountedDiffItems.add(file.file);
       return file;
     });
 
@@ -194,15 +152,28 @@ describe('PRManager Pierre render budgeting', () => {
   });
 
   it('keeps plain-text Pierre files eligible for full-content upgrades', () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     const file = fileWithPatch('@@ -1 +1 @@\n-old\n+new\n');
     manager.pierreBridge.files.set(file.file, { forcePlainText: true });
+    manager._mountedDiffItems.add(file.file);
 
     expect(manager._getPierreContentUpgradeFiles([file])).toEqual([file]);
   });
 
+  it('upgrades only the files the viewer has mounted: a record alone is not a drawn file', () => {
+    const manager = createManager();
+    const drawn = fileWithPatch('@@ -1 +1 @@\n-old\n+new\n');
+    const far = { ...fileWithPatch('@@ -1 +1 @@\n-old\n+new\n'), file: 'src/far.js' };
+    manager.pierreBridge.files.set(drawn.file, {});
+    manager.pierreBridge.files.set(far.file, {});
+    manager._mountedDiffItems.add(drawn.file);
+
+    expect(manager._getPierreContentUpgradeFiles([drawn, far])).toEqual([drawn]);
+    expect(manager._isDiffFileRendered(far.file)).toBe(false);
+  });
+
   it('moves a navigated file to the front of the pending full-content queue', () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager._fileContentsUpgradeState = {
       pending: [
         { file: 'src/one.js' },
@@ -227,7 +198,7 @@ describe('PRManager Pierre render budgeting', () => {
   });
 
   it('does not install stale or aborted full-content upgrade queues', () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     const existingState = { pending: [], inFlight: new Set(), completed: new Set() };
     manager._fileContentsUpgradeState = existingState;
     manager._fileContentsAbort = { signal: { aborted: false } };
@@ -241,7 +212,7 @@ describe('PRManager Pierre render budgeting', () => {
 
   it('waits to apply background full-content upgrades while the pointer is over the file', async () => {
     vi.useFakeTimers();
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     let pointerOverFile = true;
     manager.pierreBridge.isPointerOverFile = vi.fn(() => pointerOverFile);
 
@@ -263,7 +234,7 @@ describe('PRManager Pierre render budgeting', () => {
 
   it('waits for as long as the reader is typing in the file, past the pointer\'s limit, and goes on when the focus leaves', async () => {
     vi.useFakeTimers();
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     let typing = true;
     manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
     manager.pierreBridge.isEditingInside = vi.fn(() => typing);
@@ -288,7 +259,7 @@ describe('PRManager Pierre render budgeting', () => {
 
   it('the wait for typing ends with the render, and a pointer that stays is let go after its limit', async () => {
     vi.useFakeTimers();
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
     manager.pierreBridge.isEditingInside = vi.fn(() => true);
     const signal = { aborted: false };
@@ -313,14 +284,14 @@ describe('PRManager Pierre render budgeting', () => {
   });
 
   it('a bridge that cannot tell whether the reader is typing is not asked', async () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager.pierreBridge.isPointerOverFile = vi.fn(() => false);
     delete manager.pierreBridge.isEditingInside;
     await manager._waitForPierrePointerIdle('src/any.js', { aborted: false });
   });
 
   it('forces a full-content upgrade when hidden Pierre line anchoring needs metadata', async () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     const file = fileWithPatch('x'.repeat(45));
     file.file = 'src/large-but-rendered.js';
     manager.changedFilesByPath.set(file.file, file);
@@ -354,36 +325,8 @@ describe('PRManager Pierre render budgeting', () => {
     );
   });
 
-  it('materializes deferred diffs for line-targeting paths without recursive reanchor', async () => {
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
-
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    manager.findFileElement = vi.fn(() => document.querySelector('.d2h-file-wrapper'));
-    manager._renderDeferredDiff = vi.fn(async () => {});
-
-    await expect(manager._materializeDeferredDiff(file.file)).resolves.toBe(true);
-
-    const placeholder = document.querySelector('.large-diff-placeholder');
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      document.querySelector('.d2h-file-wrapper'),
-      placeholder,
-      { reanchor: false }
-    );
-  });
-
   it('ensures Pierre metadata before adding hidden-line context ranges', async () => {
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
@@ -411,7 +354,7 @@ describe('PRManager Pierre render budgeting', () => {
     // Regression for finding 4: the visibility guard must test the WHOLE range.
     // Before the fix, only line_start was checked, so a range with a visible
     // start but a hidden end skipped addContextRanges and never revealed line_end.
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     const isLineVisible = vi.fn((_file, line) => line === 40); // start visible, end hidden
@@ -439,7 +382,7 @@ describe('PRManager Pierre render budgeting', () => {
   it('skips Pierre context expansion when the whole range is already visible', async () => {
     // Preserve the skip-when-fully-visible optimization: both endpoints visible
     // must NOT trigger addContextRanges (avoids needless re-render churn).
-    const manager = createManager({ worker: true });
+    const manager = createManager();
     manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
@@ -459,124 +402,103 @@ describe('PRManager Pierre render budgeting', () => {
     expect(manager._ensurePierreContentUpgrade).not.toHaveBeenCalled();
   });
 
-  it('routes the deferred "Load diff" click through _materializeDeferredDiff with reanchor', async () => {
-    // Finding 3: the click handler must go through _materializeDeferredDiff so it
-    // shares the render-promise cache and de-dupes with auto-materialize. Because
-    // a manual click is not inside a loadUserComments/loadAISuggestions flow, it
-    // must render with reanchor:true.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js"></div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
+  describe('a diff that is held back for its size', () => {
+    function deferredManager() {
+      const manager = createManager();
+      const file = fileWithPatch('x'.repeat(220));
+      file.file = 'src/huge.js';
+      manager.changedFilesByPath.set(file.file, file);
+      const record = { deferred: true };
+      manager.pierreBridge.files.set(file.file, record);
+      manager.pierreBridge.materializeDeferred = vi.fn(() => {
+        record.deferred = false;
+        return true;
+      });
+      manager._registerPierreHunkAnchorsForFile = vi.fn();
+      manager._reanchorInlineFeedbackAfterDeferredRender = vi.fn(async () => {});
+      return { manager, file, record };
+    }
 
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    const wrapper = document.querySelector('.d2h-file-wrapper');
-    manager.findFileElement = vi.fn(() => wrapper);
-    manager._renderDeferredDiff = vi.fn(async () => {});
+    it('is shown for a path that reveals a line, without reloading comments and suggestions (the caller does)', async () => {
+      const { manager, file } = deferredManager();
 
-    const placeholder = manager._createDeferredDiffPlaceholder(file, wrapper);
-    wrapper.appendChild(placeholder);
+      await expect(manager._materializeDeferredDiff(file.file)).resolves.toBe(true);
 
-    const materializeSpy = vi.spyOn(manager, '_materializeDeferredDiff');
-    const button = placeholder.querySelector('.large-diff-load-btn');
-    button.click();
+      expect(manager.pierreBridge.materializeDeferred).toHaveBeenCalledWith(file.file);
+      expect(manager._registerPierreHunkAnchorsForFile).toHaveBeenCalledWith(file);
+      expect(manager._reanchorInlineFeedbackAfterDeferredRender).not.toHaveBeenCalled();
+    });
 
-    // Let the async click handler and the queued render microtasks drain.
-    await new Promise(resolve => setTimeout(resolve, 0));
-    await Promise.resolve();
+    it('answers true for a file that shows its diff and false for a path that is not a file of the pane, asking the viewer nothing', async () => {
+      const { manager, file, record } = deferredManager();
+      record.deferred = false;
 
-    expect(materializeSpy).toHaveBeenCalledWith('src/huge.js', { reanchor: true });
-    expect(button.disabled).toBe(true);
-    expect(button.textContent).toBe('Loading...');
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      wrapper,
-      placeholder,
-      { reanchor: true }
-    );
-  });
+      await expect(manager._materializeDeferredDiff(file.file)).resolves.toBe(true);
+      await expect(manager._materializeDeferredDiff('src/unknown.js')).resolves.toBe(false);
+      await expect(manager._materializeDeferredDiff('')).resolves.toBe(false);
+      expect(manager.pierreBridge.materializeDeferred).not.toHaveBeenCalled();
+    });
 
-  it('de-dupes concurrent materialize calls for the same file into a single render', async () => {
-    // Finding 3: two concurrent triggers for the same file must share the
-    // _deferredDiffRenderPromises cache and produce exactly one _renderDeferredDiff.
-    // The first call wins its reanchor setting.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
+    it('the "Load diff" button goes through _materializeDeferredDiff and reloads comments and suggestions', async () => {
+      // A click is not inside a loadUserComments / loadAISuggestions flow, so
+      // the comments and suggestions of the file must be put on the diff that
+      // is now drawn.
+      const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
+      global.window = dom.window;
+      global.document = dom.window.document;
+      const { manager, file } = deferredManager();
 
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    manager.findFileElement = vi.fn(() => document.querySelector('.d2h-file-wrapper'));
+      const placeholder = manager._createDeferredDiffPlaceholder(file);
+      const materializeSpy = vi.spyOn(manager, '_materializeDeferredDiff');
+      const button = placeholder.querySelector('.large-diff-load-btn');
+      button.click();
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toBe('Loading...');
+      await materializeSpy.mock.results[0].value;
 
-    let resolveRender;
-    const renderGate = new Promise(resolve => { resolveRender = resolve; });
-    manager._renderDeferredDiff = vi.fn(() => renderGate);
+      expect(materializeSpy).toHaveBeenCalledWith('src/huge.js', { reanchor: true });
+      expect(manager.pierreBridge.materializeDeferred).toHaveBeenCalledTimes(1);
+      expect(manager._reanchorInlineFeedbackAfterDeferredRender).toHaveBeenCalledTimes(1);
+    });
 
-    const first = manager._materializeDeferredDiff(file.file, { reanchor: true });
-    const second = manager._materializeDeferredDiff(file.file); // defaults reanchor:false
-    resolveRender();
-    await Promise.all([first, second]);
+    it('two requests for the same file are one change of the viewer; the first decides about the reload', async () => {
+      const { manager, file } = deferredManager();
+      let releaseYield;
+      manager._yieldForDiffWork = vi.fn(() => new Promise((resolve) => { releaseYield = resolve; }));
 
-    expect(manager._renderDeferredDiff).toHaveBeenCalledTimes(1);
-    expect(manager._renderDeferredDiff).toHaveBeenCalledWith(
-      file,
-      document.querySelector('.d2h-file-wrapper'),
-      document.querySelector('.large-diff-placeholder'),
-      { reanchor: true }
-    );
-  });
+      const first = manager._materializeDeferredDiff(file.file, { reanchor: true });
+      const second = manager._materializeDeferredDiff(file.file); // defaults reanchor:false
+      releaseYield();
+      await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
 
-  it('bails without clobbering file state when the review is rebuilt during the idle yield', async () => {
-    // A deferred materialize snapshots wrapper/placeholder, then yields. If
-    // renderDiff() re-runs during that idle window it clears the container,
-    // detaching the captured placeholder. The stale task must return early and
-    // never call renderFile/_renderDeferredDiff, or it would destroy the freshly
-    // rebuilt pierreBridge.files entry and replace it with a detached-DOM node.
-    const dom = new JSDOM(`
-      <!doctype html>
-      <div class="d2h-file-wrapper" data-file-name="src/huge.js">
-        <div class="large-diff-placeholder"></div>
-      </div>
-    `, { url: 'http://localhost/' });
-    global.window = dom.window;
-    global.document = dom.window.document;
+      expect(manager.pierreBridge.materializeDeferred).toHaveBeenCalledTimes(1);
+      expect(manager._reanchorInlineFeedbackAfterDeferredRender).toHaveBeenCalledTimes(1);
+      // The shared promise is forgotten once it has settled.
+      expect(manager._deferredDiffRenderPromises.size).toBe(0);
+    });
 
-    const manager = createManager({ worker: true });
-    const file = fileWithPatch('x'.repeat(220));
-    file.file = 'src/huge.js';
-    manager.changedFilesByPath.set(file.file, file);
-    const wrapper = document.querySelector('.d2h-file-wrapper');
-    const placeholder = document.querySelector('.large-diff-placeholder');
-    manager.findFileElement = vi.fn(() => wrapper);
-    manager._renderDeferredDiff = vi.fn(async () => {});
+    it('does nothing when the diff was rendered again while it waited for an idle moment', async () => {
+      // renderDiff during the wait replaced every record: the file this was
+      // asked for belongs to a diff that is gone.
+      const { manager, file } = deferredManager();
+      let releaseYield;
+      manager._yieldForDiffWork = vi.fn(() => new Promise((resolve) => { releaseYield = resolve; }));
 
-    // Idle yield held open so we can simulate the teardown mid-flight. A null
-    // abort signal is deliberate: the isConnected checks — not the abort flag —
-    // are the load-bearing guard (the signal is null when pierreBridge is off).
-    manager._fileContentsAbort = null;
-    let releaseYield;
-    const yieldGate = new Promise(resolve => { releaseYield = resolve; });
-    manager._yieldForDiffWork = vi.fn(() => yieldGate);
+      const materialize = manager._materializeDeferredDiff(file.file, { reanchor: true });
+      manager._renderGen += 1;
+      releaseYield();
 
-    const materialize = manager._materializeDeferredDiff(file.file);
-    // renderDiff() clears diffContainer.innerHTML, detaching the placeholder.
-    placeholder.remove();
-    releaseYield();
+      await expect(materialize).resolves.toBe(false);
+      expect(manager.pierreBridge.materializeDeferred).not.toHaveBeenCalled();
+      expect(manager._reanchorInlineFeedbackAfterDeferredRender).not.toHaveBeenCalled();
+    });
 
-    await expect(materialize).resolves.toBe(false);
-    expect(manager._renderDeferredDiff).not.toHaveBeenCalled();
-    expect(manager.pierreBridge.files.has(file.file)).toBe(false);
+    it('answers false when the viewer could not show the diff', async () => {
+      const { manager, file } = deferredManager();
+      manager.pierreBridge.materializeDeferred = vi.fn(() => false);
+
+      await expect(manager._materializeDeferredDiff(file.file, { reanchor: true })).resolves.toBe(false);
+      expect(manager._reanchorInlineFeedbackAfterDeferredRender).not.toHaveBeenCalled();
+    });
   });
 });

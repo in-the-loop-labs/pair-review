@@ -106,52 +106,11 @@
     font-size: 14px;
 }
 
-.d2h-code-line {
-    position: relative;
-}
-
-.d2h-code-linenumber {
-    position: relative;
-}
-
 /* Clean, minimal diff2html styling */
 
-/* Simple green for additions - entire line only */
-.d2h-ins, 
-.d2h-ins .d2h-code-line-ctn,
-.d2h-ins .d2h-code-line,
-tr.d2h-ins,
-tr.d2h-ins td {
-    background: var(--color-diff-addition) !important;
-}
-
-/* Simple red for deletions - entire line only */
-.d2h-del,
-.d2h-del .d2h-code-line-ctn,
-.d2h-del .d2h-code-line,
-tr.d2h-del,
-tr.d2h-del td {
-    background: var(--color-diff-deletion) !important;
-}
-
-/* Context lines (unchanged code) - pure white */
-.d2h-cntx,
-.d2h-cntx .d2h-code-line-ctn,
-.d2h-code-line:not(.d2h-ins):not(.d2h-del) {
-    background: var(--color-bg-primary) !important;
-}
-
 /* Remove ALL inline highlighting and character-level changes */
-.d2h-code-line ins,
-.d2h-code-line del,
-.d2h-ins ins,
-.d2h-del ins,
-.d2h-code-line-ctn ins,
-.d2h-code-line-ctn del,
 .d2h-change-inner,
-.d2h-change-inner-highlight,
-mark.d2h-code-line-prefix,
-mark.d2h-code-line-ctn {
+.d2h-change-inner-highlight{
     background: transparent !important;
     background-color: transparent !important;
     text-decoration: none !important;
@@ -163,27 +122,10 @@ mark.d2h-code-line-ctn {
     margin: 0 !important;
 }
 
-/* Ensure the line backgrounds stay consistent */
-.d2h-ins .d2h-code-line-ctn * {
-    background: transparent !important;
-}
-
-.d2h-del .d2h-code-line-ctn * {
-    background: transparent !important;
-}
-
 /* Remove all borders and shadows for cleaner look */
 .d2h-file-wrapper {
     border: none !important;
     box-shadow: none !important;
-}
-
-.d2h-diff-table {
-    border: none !important;
-}
-
-.d2h-file-wrapper .d2h-diff-tbody tr {
-    border: none !important;
 }
 
 /* Clean file headers */
@@ -212,102 +154,6 @@ mark.d2h-code-line-ctn {
     border: none;
 }
 
-/* Remove line borders and fix spacing */
-.d2h-code-line-prefix,
-.d2h-code-line-ctn {
-    border: none !important;
-}
-
-/* Fix table cell spacing - remove ALL padding first */
-.d2h-diff-table td {
-    padding: 0 !important;
-}
-
-/* Then add back minimal spacing where needed */
-.d2h-code-line-ctn {
-    padding-left: 10px !important;  /* Small buffer between line numbers and code */
-    padding-right: 10px !important;
-    white-space: pre-wrap !important;  /* Preserve whitespace but allow wrapping */
-    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
-    font-size: 12px !important;
-    tab-size: 4 !important;  /* Ensure tabs display correctly */
-    text-align: left !important;  /* Force left alignment for code content */
-}
-
-/* Compact line number display */
-.d2h-code-linenumber {
-    padding: 0 8px !important;
-    border-right: 1px solid var(--color-border-secondary) !important;
-    text-align: right !important;  /* Ensure line numbers are right-aligned */
-}
-
-/* Remove any empty table cells */
-.d2h-diff-table td:empty {
-    display: none !important;
-}
-
-/* Unified diff table structure */
-.d2h-diff-table {
-    width: 100% !important;
-    border-collapse: collapse !important;
-    border-spacing: 0 !important;
-    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
-    font-size: 12px !important;
-    table-layout: auto !important;  /* auto allows content-based column sizing */
-    text-align: left !important;
-    overflow: visible !important;
-}
-
-.d2h-diff-tbody td.d2h-code-linenumber,
-.d2h-diff-tbody td:first-child {
-    width: 80px !important;
-    min-width: 80px !important;
-    max-width: 80px !important;
-}
-
-.d2h-diff-tbody td.d2h-code-line-ctn {
-    width: auto !important;
-    overflow-wrap: break-word !important;
-    word-wrap: break-word !important;
-}
-
-/* Simplified line numbers for unified view */
-.d2h-code-linenumber {
-    background: var(--color-bg-secondary) !important;
-    color: var(--color-text-tertiary) !important;
-    border-right: 1px solid var(--color-border-secondary) !important;
-    font-size: 12px;
-    padding: 0 4px !important;
-    text-align: center !important;
-    white-space: nowrap !important;
-    cursor: pointer !important;
-    user-select: none !important;
-    -webkit-user-select: none !important;
-    -moz-user-select: none !important;
-}
-
-.d2h-code-linenumber .line-num1,
-.d2h-code-linenumber .line-num2 {
-    display: inline-block;
-    width: 32px;
-    text-align: right;
-    padding: 0 2px;
-    font-size: 11px !important;
-}
-
-.d2h-code-linenumber .line-num2 {
-    padding-right: 8px;
-}
-
-/* Style info/hunk headers (@@ lines) */
-.d2h-info {
-    background: var(--color-bg-secondary) !important;
-    color: var(--color-accent-primary) !important;
-    font-family: 'SF Mono', Monaco, monospace !important;
-    font-size: 12px !important;
-    padding: 4px 10px !important;
-}
-
 /* Remove any yellow/changed line styling */
 .d2h-change {
     background: var(--color-bg-primary) !important;
@@ -322,29 +168,6 @@ mark.d2h-code-line-ctn {
     overflow: visible !important;
 }
 
-/* Ensure no prefix characters are shown */
-.d2h-code-line-prefix {
-    display: none !important;
-}
-
-/* Hide any inline diff markers */
-.d2h-code-line-ctn::before {
-    content: none !important;
-    display: none !important;
-}
-
-.d2h-diff-tbody {
-    display: table-row-group !important;
-}
-
-.d2h-diff-tbody tr {
-    display: table-row !important;
-}
-
-.d2h-diff-tbody td {
-    display: table-cell !important;
-}
-
 /* Special styling for new/untracked files - now same as regular additions */
 .d2h-file-wrapper[data-new-file="true"] .d2h-file-header,
 .d2h-file-addition .d2h-file-header {
@@ -352,116 +175,3 @@ mark.d2h-code-line-ctn {
     border-bottom: 1px solid var(--color-border-secondary) !important;
 }
 
-/* For new files, use the same green background as regular additions */
-.d2h-file-addition .d2h-ins,
-.d2h-file-addition .d2h-ins .d2h-code-line-ctn,
-.d2h-file-addition .d2h-ins .d2h-code-line,
-.d2h-file-addition tr.d2h-ins,
-.d2h-file-addition tr.d2h-ins td,
-.d2h-file-addition .d2h-code-line {
-    background: var(--color-diff-addition) !important;  /* Same green as regular additions */
-}
-
-/* ==========================================================================
-   Syntax Highlighting Overrides for Dark Mode
-
-   The highlight.js CDN styles use prefers-color-scheme media queries, but our
-   app uses data-theme="dark" for manual theme toggling. These overrides ensure
-   proper syntax highlighting colors when dark mode is manually enabled.
-
-   Additionally, the default blue (#79c0ff) has been adjusted to #a5d6ff for
-   better contrast against dark backgrounds, especially in diff views.
-   ========================================================================== */
-
-[data-theme="dark"] .hljs {
-    color: #c9d1d9;
-    background: #0d1117;
-}
-
-[data-theme="dark"] .hljs-doctag,
-[data-theme="dark"] .hljs-keyword,
-[data-theme="dark"] .hljs-meta .hljs-keyword,
-[data-theme="dark"] .hljs-template-tag,
-[data-theme="dark"] .hljs-template-variable,
-[data-theme="dark"] .hljs-type,
-[data-theme="dark"] .hljs-variable.language_ {
-    color: #ff7b72;
-}
-
-[data-theme="dark"] .hljs-title,
-[data-theme="dark"] .hljs-title.class_,
-[data-theme="dark"] .hljs-title.class_.inherited__,
-[data-theme="dark"] .hljs-title.function_ {
-    color: #d2a8ff;
-}
-
-/* Improved blue for better contrast - changed from #79c0ff to #a5d6ff */
-[data-theme="dark"] .hljs-attr,
-[data-theme="dark"] .hljs-attribute,
-[data-theme="dark"] .hljs-literal,
-[data-theme="dark"] .hljs-meta,
-[data-theme="dark"] .hljs-number,
-[data-theme="dark"] .hljs-operator,
-[data-theme="dark"] .hljs-variable,
-[data-theme="dark"] .hljs-selector-attr,
-[data-theme="dark"] .hljs-selector-class,
-[data-theme="dark"] .hljs-selector-id {
-    color: var(--syntax-blue);
-}
-
-[data-theme="dark"] .hljs-regexp,
-[data-theme="dark"] .hljs-string,
-[data-theme="dark"] .hljs-meta .hljs-string {
-    color: var(--syntax-blue);
-}
-
-[data-theme="dark"] .hljs-built_in,
-[data-theme="dark"] .hljs-symbol {
-    color: #ffa657;
-}
-
-[data-theme="dark"] .hljs-comment,
-[data-theme="dark"] .hljs-code,
-[data-theme="dark"] .hljs-formula {
-    color: #8b949e;
-}
-
-[data-theme="dark"] .hljs-name,
-[data-theme="dark"] .hljs-quote,
-[data-theme="dark"] .hljs-selector-tag,
-[data-theme="dark"] .hljs-selector-pseudo {
-    color: #7ee787;
-}
-
-[data-theme="dark"] .hljs-subst {
-    color: #c9d1d9;
-}
-
-[data-theme="dark"] .hljs-section {
-    color: #1f6feb;
-    font-weight: bold;
-}
-
-[data-theme="dark"] .hljs-bullet {
-    color: #f2cc60;
-}
-
-[data-theme="dark"] .hljs-emphasis {
-    color: #c9d1d9;
-    font-style: italic;
-}
-
-[data-theme="dark"] .hljs-strong {
-    color: #c9d1d9;
-    font-weight: bold;
-}
-
-[data-theme="dark"] .hljs-addition {
-    color: #aff5b4;
-    background-color: #033a16;
-}
-
-[data-theme="dark"] .hljs-deletion {
-    color: #ffdcd7;
-    background-color: #67060c;
-}

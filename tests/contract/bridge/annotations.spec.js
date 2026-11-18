@@ -584,3 +584,90 @@ test('a suggestion whose status changed while its card was untouched shows it at
   expect(result.sameCards).toBe(true);
   expect(result.connected).toBe(true);
 });
+
+/**
+ * A card on a hidden line of a long file is navigated to the way
+ * PRManager._revealSteps does it: the line is revealed (a new diff, which
+ * the viewer draws when the highlighter has answered), the pane is taken to
+ * the card unless the viewer draws it already, the card is waited for with
+ * the default time, and then the browser scrolls to it.
+ */
+const REVEAL_NAVIGATIONS = [
+  { name: 'a file drawn whole that the reveal takes past 5,000 rows, first of thirty-one files', position: 'first', shown: 4995, reveal: [6495, 6505], line: 6500, rows: 5006 },
+  { name: 'the same file in the middle of the pane', position: 'middle', shown: 4995, reveal: [6495, 6505], line: 6500, rows: 5006 },
+  { name: 'the same file as the last of the pane, the card among the six rows after the block boundary', position: 'last', shown: 4995, reveal: [6495, 6505], line: 6500, rows: 5006 },
+  { name: 'the same file as the only one', position: 'only', shown: 4995, reveal: [6495, 6505], line: 6500, rows: 5006 },
+  { name: 'a file that was drawn in windows already, a line revealed near its end', position: 'middle', shown: 5010, reveal: [6495, 6505], line: 6500, rows: 5021 },
+  // The pane cannot be scrolled beyond its present height: where the file ends the pane, the first target stops at the old diff's end.
+  { name: 'a reveal of 3,600 lines at once in the only file, the card far below what the pane\'s height reaches until the new diff is displayed', position: 'only', shown: 3000, reveal: [3001, 6600], line: 6500, rows: 6600, sentAgain: true },
+  { name: 'the same reveal in the last of thirty-one files', position: 'last', shown: 3000, reveal: [3001, 6600], line: 6500, rows: 6600, sentAgain: true },
+  { name: 'the same reveal with files after it: the pane is high enough for the first target', position: 'middle', shown: 3000, reveal: [3001, 6600], line: 6500, rows: 6600 },
+];
+for (const v of REVEAL_NAVIGATIONS) {
+  test(`navigating to a card on a line that was just revealed in a long file: ${v.name}`, async ({ harness }) => {
+    // Hazard H155. Three things have to hold together: the card is not taken
+    // as "about to be drawn" when the diff that awaits display is drawn in
+    // windows (PierreBridge.drawnRowCount), the rows after a block boundary
+    // are drawn when the pane is there (coverPaneWithRowWindow, vendor fact
+    // F30), and a target sent while the old diff was on screen is sent again
+    // once the new one is (whenAnnotationRendered).
+    test.setTimeout(120000);
+    const page = await openBridge(harness);
+    const result = await page.evaluate(async (v) => {
+      const { H, BH } = window;
+      const { roles } = H.workload;
+      const LONG = 'ctx/long.js';
+      const others = v.position === 'only' ? [] : H.workload.modifiedPaths.filter((n) => n !== roles.hugeModified && n !== roles.large).slice(0, 30).map((n) => BH.diffEntry(n));
+      const long = BH.contextEntry(LONG, { contents: BH.numberedLines(7000), ranges: [{ startLine: 1, endLine: v.shown }] });
+      const entries = v.position === 'first' || v.position === 'only' ? [long, ...others] : v.position === 'last' ? [...others, long] : [...others.slice(0, 15), long, ...others.slice(15)];
+      await BH.up({ entries, quietMs: 400 });
+      const b = BH.bridge;
+      // The reader at the top of the long file.
+      b.scrollToItem(LONG);
+      await H.until(() => !!H.host(LONG));
+      await H.until(() => (H.shape(LONG)?.tokens ?? 0) > 0, 30000);
+      await H.settle(400);
+      const pane = () => H.root.getBoundingClientRect();
+      const lines = () => [...H.host(LONG).shadowRoot.querySelectorAll('[data-content] > [data-line]')].map((row) => Number(row.getAttribute('data-line')));
+      const id = 'far-card';
+      const out = { rowsBefore: lines().length };
+      const scrolls = [];
+      const scrollTo = b.codeView.scrollTo.bind(b.codeView);
+      b.codeView.scrollTo = (target) => { scrolls.push({ type: target.type, lineNumber: target.lineNumber, displayed: b.isDiffDisplayed(LONG) }); return scrollTo(target); };
+
+      b.addAnnotation(LONG, { lineNumber: v.line, side: 'RIGHT', type: 'card', id, data: { text: 'far.', height: 30 } });
+      b.addContextRanges(LONG, [{ startLine: v.reveal[0], endLine: v.reveal[1] }]);
+      out.pending = !b.isDiffDisplayed(LONG);
+      out.pendingRows = window.PierreBridge.drawnRowCount(b.files.get(LONG).metadata, 'unified');
+      if (!b.isElementDrawn(b.getAnnotationElement(LONG, id))) out.sent = b.scrollToAnnotation(LONG, id);
+      const element = await b.whenAnnotationRendered(LONG, id);
+      out.resolved = element !== null && element === b.getAnnotationElement(LONG, id);
+      out.drawnWhenHandedOver = b.isElementDrawn(element);
+      out.displayedWhenHandedOver = b.isDiffDisplayed(LONG);
+      element?.scrollIntoView({ block: 'center' });
+      await H.settle(600);
+      const box = element ? element.getBoundingClientRect() : null;
+      out.inPane = !!box && box.height === 30 && box.top >= pane().top && box.bottom <= pane().bottom;
+      const drawn = lines();
+      out.lineDrawn = drawn.includes(v.line);
+      out.lastLineDrawn = drawn.includes(v.reveal[1]);
+      out.scrolls = scrolls;
+      out.sound = BH.sound();
+      return out;
+    }, v);
+    expect(result.rowsBefore).toBe(Math.min(v.shown, 5000));
+    expect(result.pending).toBe(true);
+    expect(result.pendingRows).toBe(v.rows);
+    expect(result.sent).toBe(true);
+    // The card is handed over when the viewer draws it, which is after the new diff is displayed.
+    expect(result).toMatchObject({ resolved: true, drawnWhenHandedOver: true, displayedWhenHandedOver: true });
+    expect(result).toMatchObject({ inPane: true, lineDrawn: true, lastLineDrawn: true });
+    // One line target while the old diff was on screen; a second one, after
+    // the display, only where the first could not reach the line.
+    const target = { type: 'line', lineNumber: v.line };
+    expect(result.scrolls[0]).toEqual({ ...target, displayed: false });
+    expect(result.scrolls.slice(1)).toEqual(v.sentAgain ? [{ ...target, displayed: true }] : []);
+    expect(result.sound).toEqual({ orphans: 0, clean: true });
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}

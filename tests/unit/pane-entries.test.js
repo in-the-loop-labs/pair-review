@@ -21,7 +21,6 @@ const row = (id, file, line_start, line_end, extra = {}) => ({ id, file, line_st
 
 function makeManager(overrides = {}) {
   return makePageManager({
-    _diffEngine: 'codeview',
     pierreBridge: { files: new Map() },
     generatedFiles: new Map(),
     ...overrides,
@@ -108,7 +107,7 @@ describe('PRManager.fileKind and _fileStateKey', () => {
     expect(manager._fileStateKey('nowhere.js')).toBe('nowhere.js');
   });
 
-  it('a record of the default engine (no kind) does not make a path a file of the pane', () => {
+  it('a record without a kind does not make a path a file of the pane', () => {
     const manager = makeManager({ pierreBridge: { files: new Map([['x.js', { instance: {} }]]) } });
     expect(manager.fileKind('x.js')).toBeNull();
   });

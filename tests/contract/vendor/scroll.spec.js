@@ -177,7 +177,7 @@ test('F11: a line target set while that line\'s diff swap is pending is not retr
     // until its workers are up (G7), which under load is after the bring-up's
     // quiet period.
     await H.until(() => (H.shape(T)?.tokens ?? 0) > 0, 30000);
-    const hydrated = window.PierreDiffs.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
+    const hydrated = window.VendorTestExtras.hydratePartialDiff('clone', H.cv.getItem(T).fileDiff, H.contentsOf(T));
     H.update(T, { fileDiff: hydrated });
     H.cv.render(true);
     await H.until(() => H.shape(T).expandButtons > 0, 30000);

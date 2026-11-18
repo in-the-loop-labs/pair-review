@@ -1,17 +1,23 @@
+// Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
 window.reviewModal = {}; // The tests create modal instances explicitly.
 const { PRManager } = require('../../public/js/pr.js');
 const { ReviewModal } = require('../../public/js/components/ReviewModal.js');
 const { CommentManager } = require('../../public/js/modules/comment-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
-const PierreBridge = require('../../public/js/modules/pierre-bridge.js');
+const { createBridgeHarness, restoreBridgeHarnesses, hunk } = require('../utils/pierre-bridge-harness.js');
 const { AIPanel } = require('../../public/js/components/AIPanel.js');
 const { getPostedCommentIcon, shouldHidePostedComment } = require('../../public/js/utils/posted-comment.js');
 const PostedComment = require('../../public/js/utils/posted-comment.js');
 
 let comments, fetchMock;
+
+let vendor;
+beforeAll(async () => {
+  vendor = await import('@pierre/diffs');
+});
 
 beforeEach(() => {
   localStorage.clear();
@@ -19,11 +25,12 @@ beforeEach(() => {
   document.body.innerHTML = `
     <button id="review-button"><span class="review-button-text"></span></button>
     <button id="clear-comments-btn"></button>
-    <div id="diff"><table><tbody><tr data-line="10"></tr><tr data-line="11"></tr></tbody></table></div>
+    <div id="diff"></div>
     <div class="file-comments-zone"><div class="file-comments-container"></div></div>`;
   window.aiPanel = { setComments: vi.fn(), updateFindingStatus: vi.fn() };
   window.toast = { showSuccess: vi.fn(), showWarning: vi.fn(), showError: vi.fn() };
   window.CommentManager = CommentManager;
+  window.PostedComment = PostedComment;
   window.getPostedCommentIcon = getPostedCommentIcon;
   window.shouldHidePostedComment = shouldHidePostedComment;
   window.escapeHtmlAttribute = text => ReviewModal.escapeHtml(text);
@@ -49,18 +56,41 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  restoreBridgeHarnesses();
+  delete window.PostedComment;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
+/**
+ * A page manager over the production bridge (on a viewer that never
+ * renders), with src/a.js in the pane showing lines 10 and 11. The viewer's
+ * part is stood in for here: after every change of the file's annotations
+ * the cards of its line comments are the children of #diff, the same card
+ * elements the bridge would hand the viewer, so the tests can look at what a
+ * reader would see.
+ */
 function makeManager() {
   const manager = Object.create(PRManager.prototype);
   manager.currentPR = { id: 42, owner: 'acme', repo: 'widget', number: 7 };
   manager.ensureLinesVisible = vi.fn();
   manager.findFileElement = () => document.querySelector('#diff');
-  manager.getLineNumber = row => Number(row.dataset.line);
   manager.commentManager = new CommentManager(manager);
-  manager.commentManager.isLineInDiffHunk = () => true;
+  window.prManager = manager;
+  const bridge = createBridgeHarness(vi, vendor, { files: [{ name: 'src/a.js', hunks: [hunk(10, 11)] }] });
+  const draw = () => {
+    document.querySelector('#diff').replaceChildren(...bridge.getAnnotations('src/a.js', 'comment')
+      .map(annotation => bridge.getAnnotationElement('src/a.js', annotation.metadata.id, { create: true })));
+  };
+  for (const method of ['addAnnotation', 'addAnnotations', 'removeAnnotation', 'removeAnnotationsByType']) {
+    const change = bridge[method];
+    bridge[method] = (...args) => {
+      const result = change.apply(bridge, args);
+      draw();
+      return result;
+    };
+  }
+  manager.pierreBridge = bridge;
   manager.fileCommentManager = new FileCommentManager(manager);
   // Zones are found through the registry, never in the document.
   const zone = document.querySelector('.file-comments-zone');
@@ -68,8 +98,14 @@ function makeManager() {
   manager.fileCommentManager.findZoneForFile = () => zone;
   manager.splitButton = { updateCommentCount: vi.fn() };
   manager.updatePendingDraftIndicator = vi.fn();
-  window.prManager = manager;
   return manager;
+}
+
+/** Open a comment form on a line of src/a.js and save it, as the form's Save button does. */
+async function saveLineComment(manager, line, body) {
+  manager.showCommentForm('src/a.js', line, null, null, 'RIGHT');
+  const [form] = manager.pierreBridge.getAnnotations('src/a.js', 'comment-form');
+  await manager._handleCommentFormSubmit('src/a.js', form.metadata.id, form.metadata.data, body);
 }
 
 function makeModal() {
@@ -263,27 +299,24 @@ describe('posted comment UI', () => {
     expect(manager.ensureLinesVisible).toHaveBeenCalledTimes(1);
   });
 
-  it('passes posted comments to Pierre annotations unless submitted comments are hidden', async () => {
+  it('gives posted comments to the viewer as annotations, and a card built later is built hidden while submitted comments are hidden', async () => {
     const manager = makeManager();
-    const bridge = Object.create(PierreBridge.prototype);
-    const annotations = document.createElement('div');
-    document.body.appendChild(annotations);
-    manager.pierreBridge = {
-      files: new Map([['src/a.js', {}]]),
-      batch: (fn) => fn(),
-      removeAnnotationsByType: () => annotations.replaceChildren(),
-      addAnnotations: (_file, items) => items.forEach(item => annotations.appendChild(bridge._renderCommentAnnotation(item.data, item.id))),
-    };
+    const bridge = manager.pierreBridge;
+    const annotations = document.querySelector('#diff');
     await manager.loadUserComments();
+    expect(bridge.getAnnotations('src/a.js', 'comment').map(a => a.metadata.data.id)).toEqual([1, 2]);
     expect(annotations.querySelectorAll('.user-comment-row')).toHaveLength(2);
     expect(annotations.querySelectorAll('.posted-comment-icon')).toHaveLength(1);
     localStorage.setItem('pair-review-hide-posted-comments', 'true');
     manager.applyPostedCommentVisibility();
     expect(annotations.querySelectorAll('.user-comment-row:not(.posted-comment-hidden)')).toHaveLength(1);
     expect(annotations.querySelectorAll('.user-comment-row:not(.posted-comment-hidden) .posted-comment-icon')).toHaveLength(0);
-    // Pierre recreates annotation containers when suggestions or forms change.
-    annotations.replaceChildren(bridge._renderCommentAnnotation(comments[1], 'comment-2'));
-    expect(annotations.querySelector('.user-comment-row').classList.contains('posted-comment-hidden')).toBe(true);
+    // The viewer asks for a card again whenever it draws the file: a posted
+    // comment's card comes back hidden.
+    const [, posted] = bridge.getAnnotations('src/a.js', 'comment');
+    const drawn = bridge._renderAnnotation(posted, { item: { id: 'src/a.js' } });
+    const card = drawn.matches('.user-comment-row') ? drawn : drawn.querySelector('.user-comment-row');
+    expect(card.classList.contains('posted-comment-hidden')).toBe(true);
   });
 
   it.each(['COMMENT', 'DRAFT'])('refreshes pending counts after %s submission and reload', async event => {
@@ -357,12 +390,14 @@ describe('posted comment UI', () => {
   it('updates the pending data on line/file creation, adoption, edit and dismissal', async () => {
     const manager = makeManager();
     await manager.loadUserComments();
-    const row = document.createElement('tr');
-    row.innerHTML = '<td><textarea data-file="src/a.js" data-line="10">Created line</textarea></td>';
-    document.querySelector('#diff tbody').appendChild(row);
-    manager.commentManager.currentCommentForm = row;
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ commentId: 6 }) });
-    await manager.commentManager.saveUserComment(row.querySelector('textarea'), row);
+    // A line comment is saved on the server and the comments are read again.
+    fetchMock.mockImplementationOnce(async () => {
+      comments = [...comments, { id: 6, status: 'active', file: 'src/a.js', line_start: 10, body: 'Created line' }];
+      return { ok: true, json: async () => ({ commentId: 6 }) };
+    });
+    await saveLineComment(manager, 10, 'Created line');
+    expect(manager.pierreBridge.getAnnotations('src/a.js', 'comment-form')).toEqual([]);
+    expect(document.querySelector('.user-comment-row[data-comment-id="6"]')).not.toBeNull();
     expect(manager.getPendingCommentCount()).toBe(3);
     const zone = document.querySelector('.file-comments-zone');
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ commentId: 7 }) });
@@ -417,15 +452,11 @@ describe('posted comment UI', () => {
     await vi.waitFor(() => expect(manager.ensureLinesVisible).toHaveBeenCalledTimes(2));
 
     // Saved meanwhile: on the server, so a fresh fetch includes it
-    const row = document.createElement('tr');
-    row.innerHTML = '<td><textarea data-file="src/a.js" data-line="10">Saved mid-reload</textarea></td>';
-    document.querySelector('#diff tbody').appendChild(row);
-    manager.commentManager.currentCommentForm = row;
     fetchMock.mockImplementationOnce(async () => {
       comments = [...comments, { id: 6, status: 'active', file: 'src/a.js', line_start: 10, body: 'Saved mid-reload' }];
       return { ok: true, json: async () => ({ commentId: 6 }) };
     });
-    await manager.commentManager.saveUserComment(row.querySelector('textarea'), row);
+    await saveLineComment(manager, 10, 'Saved mid-reload');
 
     release();
     expect(await reload).toBe(true);
