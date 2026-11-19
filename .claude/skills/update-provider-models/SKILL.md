@@ -261,15 +261,21 @@ does not trigger a fallback, so an inaccessible default fails automatic analyses
 Codex keeps `gpt-5.6-sol-high` as the default, `gpt-5.6-terra-xhigh` as the first
 balanced entry (provider-switch selection and resolver fallback), and
 `gpt-5.6-luna-low` as the first fast entry (JSON extraction and hunk summaries).
-GPT-6 and GPT-6.1 models remain explicit choices with access requirements in
+GPT-6, GPT-6.1, and GPT-6.2 models remain explicit choices with access requirements in
 their descriptions. The same access bar applies to the first balanced and fast
 entries. GPT-6.1 Terra (2026-10-26, $1/$5) is likewise an explicit balanced choice:
 it is not offered on Free or Go, and Enterprise access depends on workspace
 administrator controls. As of 2026-11-12 GPT-6.1 Sol ($2/$10) is newer and cheaper
 than GPT-5.6 Sol ($4/$20), so move the default to `gpt-6.1-sol-high` once the
-workspace-availability page no longer requires admin enablement. GPT-5.5 was retired
-from Codex with ChatGPT sign-in on 2026-10-14 (API keys unaffected); its entries were
-removed on 2026-11-12.
+workspace-availability page no longer requires admin enablement. GPT-6.2 Sol
+($2/$10) and GPT-6.2 Astra ($8/$40) were added on 2026-11-17 as explicit thorough
+entries. They needed Codex CLI 0.170.0: on 0.160.0 the probes failed with the same
+400 `model_not_found ... not supported when using Codex with a ChatGPT account` as
+a retired slug, so a new slug failing on an older CLI means "update the CLI", not
+"not rolled out yet". GPT-6.2 Sol costs the same as 6.1 Sol, so the default-move
+condition (admin enablement lifted) now applies to whichever of 6.1/6.2 Sol is
+newest. GPT-5.5 was retired from Codex with ChatGPT sign-in on 2026-10-14 (API keys
+unaffected); its entries were removed on 2026-11-12.
 
 ## Notes
 

@@ -72,11 +72,15 @@ describe('CodexProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = CodexProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(14);
+      expect(models.length).toBe(18);
 
       // Check that we have the expected model IDs, ordered thorough → balanced → fast
       const modelIds = models.map(m => m.id);
       expect(modelIds).toEqual([
+        'gpt-6.2-sol-high',
+        'gpt-6.2-sol-xhigh',
+        'gpt-6.2-astra-high',
+        'gpt-6.2-astra-xhigh',
         'gpt-6.1-sol-high',
         'gpt-6.1-sol-xhigh',
         'gpt-6-astra-high',
@@ -92,9 +96,11 @@ describe('CodexProvider', () => {
         'gpt-5.6-luna-low',
         'gpt-6-luna-low'
       ]);
-      // Bare GPT-6.1 / GPT-6 / GPT-5.6 (unspecified reasoning effort) are not
-      // exposed as picker entries — users pick an explicit reasoning variant
-      // instead.
+      // Bare GPT-6.2 / GPT-6.1 / GPT-6 / GPT-5.6 (unspecified reasoning effort)
+      // are not exposed as picker entries — users pick an explicit reasoning
+      // variant instead.
+      expect(modelIds).not.toContain('gpt-6.2-sol');
+      expect(modelIds).not.toContain('gpt-6.2-astra');
       expect(modelIds).not.toContain('gpt-6.1-sol');
       expect(modelIds).not.toContain('gpt-6.1-terra');
       expect(modelIds).not.toContain('gpt-6-astra');
@@ -117,22 +123,69 @@ describe('CodexProvider', () => {
         expect(models.some(m => m.aliases?.includes(retired)), `${retired} should not be aliased`).toBe(false);
       }
 
-      // GPT-6 Astra remains available for the most demanding reviews.
+      // GPT-6.2 Sol and Astra (2026-11-17) lead the thorough tier as explicit
+      // opt-ins; neither is the default.
+      expect(models.find(m => m.id === 'gpt-6.2-sol-high')).toMatchObject({
+        cli_model: 'gpt-6.2-sol',
+        extra_args: ['-c', 'model_reasoning_effort="high"'],
+        name: 'GPT-6.2 Sol High',
+        tier: 'thorough',
+        tagline: 'Latest Workhorse',
+        badge: 'Newest',
+        badgeClass: 'badge-power'
+      });
+      expect(models.find(m => m.id === 'gpt-6.2-sol-xhigh')).toMatchObject({
+        cli_model: 'gpt-6.2-sol',
+        extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+        name: 'GPT-6.2 Sol XHigh',
+        tier: 'thorough',
+        tagline: 'Latest Workhorse Depth',
+        badge: 'Extra High',
+        badgeClass: 'badge-power'
+      });
+      expect(models.find(m => m.id === 'gpt-6.2-astra-high')).toMatchObject({
+        cli_model: 'gpt-6.2-astra',
+        extra_args: ['-c', 'model_reasoning_effort="high"'],
+        name: 'GPT-6.2 Astra High',
+        tier: 'thorough',
+        tagline: 'Most Capable',
+        badge: 'Most Capable',
+        badgeClass: 'badge-power'
+      });
+      expect(models.find(m => m.id === 'gpt-6.2-astra-xhigh')).toMatchObject({
+        cli_model: 'gpt-6.2-astra',
+        extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+        name: 'GPT-6.2 Astra XHigh',
+        tier: 'thorough',
+        tagline: 'Maximum Depth',
+        badge: 'Extra High',
+        badgeClass: 'badge-power'
+      });
+      for (const model of models.filter(m => /^gpt-6\.2-(sol|astra)$/.test(m.cli_model))) {
+        const line = model.cli_model === 'gpt-6.2-sol' ? 'Sol' : 'Astra';
+        expect(model.description, model.id).toContain(`Requires GPT-6.2 ${line} access and Codex CLI 0.170.0 or later`);
+        expect(model.description, model.id).toContain('Enterprise and Edu administrators must enable it');
+      }
+
+      // GPT-6 Astra stays available as the previous generation frontier model.
       const astraHigh = models.find(m => m.id === 'gpt-6-astra-high');
       expect(astraHigh).toMatchObject({
         cli_model: 'gpt-6-astra',
         extra_args: ['-c', 'model_reasoning_effort="high"'],
         name: 'GPT-6 Astra High',
         tier: 'thorough',
-        badge: 'Most Capable',
+        tagline: 'Previous Gen',
+        badge: 'Previous Gen',
         badgeClass: 'badge-power'
       });
+      expect(astraHigh.description).toContain('Previous generation frontier model');
       expect(astraHigh.default).toBeUndefined();
       const astraXhigh = models.find(m => m.id === 'gpt-6-astra-xhigh');
       expect(astraXhigh).toMatchObject({
         cli_model: 'gpt-6-astra',
         extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
         tier: 'thorough',
+        tagline: 'Previous Gen Depth',
         badge: 'Extra High'
       });
 
@@ -185,16 +238,19 @@ describe('CodexProvider', () => {
         badgeClass: 'badge-recommended',
         default: true
       });
-      expect(defaultModel.description).toContain('The default while GPT-6 and GPT-6.1 access rolls out');
+      expect(defaultModel.description).toContain('The default while GPT-6, GPT-6.1, and GPT-6.2 access rolls out');
       expect(models.find(m => m.id === 'gpt-6.1-sol-high')).toMatchObject({
         name: 'GPT-6.1 Sol High',
         tier: 'thorough',
-        badge: 'Newest',
+        tagline: 'Previous Workhorse',
+        badge: 'Previous Gen',
         badgeClass: 'badge-power'
       });
+      expect(models.find(m => m.id === 'gpt-6.1-sol-high').description).toContain('Previous generation workhorse model');
       expect(models.find(m => m.id === 'gpt-6.1-sol-xhigh')).toMatchObject({
         name: 'GPT-6.1 Sol XHigh',
         tier: 'thorough',
+        tagline: 'Previous Workhorse Depth',
         badge: 'Extra High'
       });
 
@@ -221,12 +277,14 @@ describe('CodexProvider', () => {
       expect(models.find(m => m.id === 'gpt-5.6-sol-high').description).toContain('Older generation workhorse model');
     });
 
-    it('the first balanced and fast entries do not need GPT-6 or GPT-6.1 access', () => {
+    it('the first balanced and fast entries do not need GPT-6, GPT-6.1, or GPT-6.2 access', () => {
       // Provider switching, resolver fallback, extraction, and hunk summaries
       // must work for accounts without access to the newer models.
       const models = CodexProvider.getModels();
       const firstBalanced = models.find(m => m.tier === 'balanced');
       const firstFast = models.find(m => m.tier === 'fast');
+      expect(firstBalanced.id).toBe('gpt-5.6-terra-xhigh');
+      expect(firstFast.id).toBe('gpt-5.6-luna-low');
       expect(firstBalanced.cli_model).not.toMatch(/^gpt-6[.-]/);
       expect(firstFast.cli_model).not.toMatch(/^gpt-6[.-]/);
       expect(resolveDefaultModel(models.filter(m => !m.default))).toBe(firstBalanced.id);
@@ -248,6 +306,10 @@ describe('CodexProvider', () => {
     it('reasoning-effort variants should declare cli_model and -c reasoning effort', () => {
       const models = CodexProvider.getModels();
       const variants = [
+        { id: 'gpt-6.2-sol-high', cliModel: 'gpt-6.2-sol', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-6.2-sol-xhigh', cliModel: 'gpt-6.2-sol', effort: 'xhigh', tier: 'thorough' },
+        { id: 'gpt-6.2-astra-high', cliModel: 'gpt-6.2-astra', effort: 'high', tier: 'thorough' },
+        { id: 'gpt-6.2-astra-xhigh', cliModel: 'gpt-6.2-astra', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-6.1-sol-high', cliModel: 'gpt-6.1-sol', effort: 'high', tier: 'thorough' },
         { id: 'gpt-6.1-sol-xhigh', cliModel: 'gpt-6.1-sol', effort: 'xhigh', tier: 'thorough' },
         { id: 'gpt-6-sol-high', cliModel: 'gpt-6-sol', effort: 'high', tier: 'thorough' },
@@ -376,6 +438,10 @@ describe('CodexProvider', () => {
       });
 
       it.each([
+        ['gpt-6.2-sol-high', 'gpt-6.2-sol', 'high'],
+        ['gpt-6.2-sol-xhigh', 'gpt-6.2-sol', 'xhigh'],
+        ['gpt-6.2-astra-high', 'gpt-6.2-astra', 'high'],
+        ['gpt-6.2-astra-xhigh', 'gpt-6.2-astra', 'xhigh'],
         ['gpt-6.1-sol-high', 'gpt-6.1-sol', 'high'],
         ['gpt-6.1-sol-xhigh', 'gpt-6.1-sol', 'xhigh'],
         ['gpt-6-sol-high', 'gpt-6-sol', 'high'],
