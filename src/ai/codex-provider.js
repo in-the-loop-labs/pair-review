@@ -27,9 +27,13 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * GPT-6.1 Terra (2026-10-26, $1/$5 per 1M tokens, Codex CLI >= 0.159.0) runs on
  * Plus, Pro, Business, Enterprise, and Edu, with Enterprise access subject to
  * workspace availability and administrator controls.
+ * GPT-6.2 Sol and GPT-6.2 Astra (2026-11-17; Sol $2/$10, Astra $8/$40 per 1M
+ * tokens; Codex CLI >= 0.170.0, which older CLIs reject as model_not_found) run
+ * on Plus, Pro, Enterprise, and Edu, with Enterprise and Edu off by default
+ * until an administrator enables them.
  * Selecting a model locally does not grant access. testAvailability() checks
  * only `codex --version`, and model rejection does not trigger a fallback,
- * so GPT-6 and GPT-6.1 remain explicit choices.
+ * so GPT-6, GPT-6.1, and GPT-6.2 remain explicit choices.
  * Each picker entry specifies a reasoning effort explicitly.
  *
  * Entries are ordered thorough → balanced → fast. The first balanced entry
@@ -65,14 +69,58 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const CODEX_MODELS = [
   // ── Thorough tier ───────────────────────────────────────────────────────
   {
+    id: 'gpt-6.2-sol-high',
+    cli_model: 'gpt-6.2-sol',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-6.2 Sol High',
+    tier: 'thorough',
+    tagline: 'Latest Workhorse',
+    description: 'Latest workhorse model for coding and everyday work, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6.2 Sol access and Codex CLI 0.170.0 or later; Enterprise and Edu administrators must enable it during rollout.',
+    badge: 'Newest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6.2-sol-xhigh',
+    cli_model: 'gpt-6.2-sol',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-6.2 Sol XHigh',
+    tier: 'thorough',
+    tagline: 'Latest Workhorse Depth',
+    description: 'Latest workhorse model for coding and everyday work, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6.2 Sol access and Codex CLI 0.170.0 or later; Enterprise and Edu administrators must enable it during rollout.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6.2-astra-high',
+    cli_model: 'gpt-6.2-astra',
+    extra_args: ['-c', 'model_reasoning_effort="high"'],
+    name: 'GPT-6.2 Astra High',
+    tier: 'thorough',
+    tagline: 'Most Capable',
+    description: 'Frontier intelligence for the most demanding coding and professional work, with high reasoning effort for deep cross-file analysis and demanding architectural reviews. Requires GPT-6.2 Astra access and Codex CLI 0.170.0 or later; Enterprise and Edu administrators must enable it during rollout.',
+    badge: 'Most Capable',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-6.2-astra-xhigh',
+    cli_model: 'gpt-6.2-astra',
+    extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
+    name: 'GPT-6.2 Astra XHigh',
+    tier: 'thorough',
+    tagline: 'Maximum Depth',
+    description: 'Frontier intelligence for the most demanding coding and professional work, with extra-high reasoning effort for concurrency, security-sensitive changes, and large codebase context. Requires GPT-6.2 Astra access and Codex CLI 0.170.0 or later; Enterprise and Edu administrators must enable it during rollout.',
+    badge: 'Extra High',
+    badgeClass: 'badge-power'
+  },
+  {
     id: 'gpt-6.1-sol-high',
     cli_model: 'gpt-6.1-sol',
     extra_args: ['-c', 'model_reasoning_effort="high"'],
     name: 'GPT-6.1 Sol High',
     tier: 'thorough',
-    tagline: 'Latest Workhorse',
-    description: 'Latest workhorse model for coding and everyday work, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6.1 Sol access; Enterprise and Edu administrators must enable it during rollout.',
-    badge: 'Newest',
+    tagline: 'Previous Workhorse',
+    description: 'Previous generation workhorse model for coding and everyday work, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6.1 Sol access; Enterprise and Edu administrators must enable it during rollout.',
+    badge: 'Previous Gen',
     badgeClass: 'badge-power'
   },
   {
@@ -81,8 +129,8 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
     name: 'GPT-6.1 Sol XHigh',
     tier: 'thorough',
-    tagline: 'Latest Workhorse Depth',
-    description: 'Latest workhorse model for coding and everyday work, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6.1 Sol access; Enterprise and Edu administrators must enable it during rollout.',
+    tagline: 'Previous Workhorse Depth',
+    description: 'Previous generation workhorse model for coding and everyday work, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6.1 Sol access; Enterprise and Edu administrators must enable it during rollout.',
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
@@ -92,9 +140,9 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="high"'],
     name: 'GPT-6 Astra High',
     tier: 'thorough',
-    tagline: 'Most Capable',
-    description: 'Frontier intelligence for the most demanding work, with high reasoning effort for deep cross-file analysis and demanding architectural reviews.',
-    badge: 'Most Capable',
+    tagline: 'Previous Gen',
+    description: 'Previous generation frontier model for the most demanding work, with high reasoning effort for deep cross-file analysis and demanding architectural reviews.',
+    badge: 'Previous Gen',
     badgeClass: 'badge-power'
   },
   {
@@ -103,8 +151,8 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
     name: 'GPT-6 Astra XHigh',
     tier: 'thorough',
-    tagline: 'Maximum Depth',
-    description: 'Frontier intelligence for the most demanding work, with extra-high reasoning effort for concurrency, security-sensitive changes, and large codebase context.',
+    tagline: 'Previous Gen Depth',
+    description: 'Previous generation frontier model for the most demanding work, with extra-high reasoning effort for concurrency, security-sensitive changes, and large codebase context.',
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
@@ -114,9 +162,9 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="high"'],
     name: 'GPT-6 Sol High',
     tier: 'thorough',
-    tagline: 'Previous Gen',
-    description: 'Previous generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
-    badge: 'Previous Gen',
+    tagline: 'Older Workhorse',
+    description: 'Older generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
+    badge: 'Older Gen',
     badgeClass: 'badge-power'
   },
   {
@@ -125,8 +173,8 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
     name: 'GPT-6 Sol XHigh',
     tier: 'thorough',
-    tagline: 'Previous Gen Depth',
-    description: 'Previous generation workhorse model, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
+    tagline: 'Older Workhorse Depth',
+    description: 'Older generation workhorse model, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
@@ -137,7 +185,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.6 Sol High',
     tier: 'thorough',
     tagline: 'Older Workhorse',
-    description: 'Older generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. The default while GPT-6 and GPT-6.1 access rolls out.',
+    description: 'Older generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. The default while GPT-6, GPT-6.1, and GPT-6.2 access rolls out.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true

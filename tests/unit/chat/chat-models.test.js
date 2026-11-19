@@ -288,17 +288,24 @@ describe('chat-models', () => {
       expect(model.extra_args).not.toContain('--mutated');
     });
 
-    it.each(['high', 'xhigh'])('exposes and resolves GPT-6.1 Sol %s for chat', (effort) => {
-      const id = `gpt-6.1-sol-${effort}`;
+    it.each([
+      ['gpt-6.2-sol', 'high', 'Newest'],
+      ['gpt-6.2-sol', 'xhigh', 'Extra High'],
+      ['gpt-6.2-astra', 'high', 'Most Capable'],
+      ['gpt-6.2-astra', 'xhigh', 'Extra High'],
+      ['gpt-6.1-sol', 'high', 'Previous Gen'],
+      ['gpt-6.1-sol', 'xhigh', 'Extra High'],
+    ])('exposes and resolves %s at %s effort for chat', (cliModel, effort, badge) => {
+      const id = `${cliModel}-${effort}`;
       const { models } = getChatModelCatalog('codex');
       expect(models.find(m => m.id === id)).toMatchObject({
         id,
         tier: 'thorough',
-        badge: effort === 'high' ? 'Newest' : 'Extra High',
+        badge,
       });
       expect(resolveChatModel('codex', id)).toEqual({
         id,
-        cliModel: 'gpt-6.1-sol',
+        cliModel,
         extraArgs: ['-c', `model_reasoning_effort="${effort}"`],
         env: {},
         known: true,
