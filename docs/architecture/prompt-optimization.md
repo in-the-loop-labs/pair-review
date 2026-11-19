@@ -643,21 +643,23 @@ function interpolate(template, context) {
 
 ### Shared Section Handling
 
-Some sections are shared across prompt types (e.g., output schema structure). These live in the `shared/` directory and are imported by reference.
+Some content is shared across prompt types (e.g., the orchestration input schema docs and the adversarial verification instructions). It lives in the `shared/` directory and is embedded into the baseline templates.
 
 ```javascript
-// baseline/level1/balanced.js
-import { outputSchemaSection } from '../shared/output-schema.js';
-import { diffInstructionsSection } from '../shared/diff-instructions.js';
+// baseline/orchestration/balanced.js
+const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema');
 
-export const sections = [
-  roleSection,          // Specific to level1
-  constraintsSection,   // Specific to level1
-  diffInstructionsSection,  // Shared
-  outputSchemaSection,      // Shared
-  // ...
-];
+const taggedPrompt = `...
+<section name="input-suggestions" locked="true">
+${ORCHESTRATION_INPUT_SCHEMA_DOCS}
+</section>
+...
+<section name="output-schema" locked="true">
+...defined inline in this file...
+</section>`;
 ```
+
+The `output-schema` section is **not** shared: each baseline prompt defines its own locked section inline, with the JSON fields and wording that prompt needs. Keep the `reasoning` field described as concise code evidence and impact. Asking for step-by-step reasoning makes Anthropic models refuse with `Refusal (reasoning_extraction)`.
 
 ---
 
@@ -709,7 +711,7 @@ src/ai/prompts/
 │       └── mistral-large/
 │
 ├── shared/                     # Reusable sections across prompt types
-│   ├── output-schema.js       # Standard output schema section
+│   ├── output-schema.js       # Orchestration input schema docs
 │   ├── diff-instructions.js   # How to read unified diffs
 │   ├── severity-levels.js     # Issue severity definitions
 │   └── praise-patterns.js     # Good code patterns to recognize
