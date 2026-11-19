@@ -5262,14 +5262,17 @@ class PRManager {
 
     const key = this._contextStateKey(filePath);
     const header = wrapper.querySelector('.d2h-file-header');
-    // Expanding grows the entry below its header, so only a collapse moves it.
-    const collapsed = window.HeaderAnchor.keepHeaderInPlace(
-      header,
-      () => wrapper.classList.toggle('collapsed')
-    );
+    const collapsed = !wrapper.classList.contains('collapsed');
     if (collapsed) {
+      window.HeaderAnchor.keepHeaderInPlace(header, () => {
+        wrapper.classList.add('collapsed');
+      });
       this.collapsedFiles.add(key);
     } else {
+      // Not anchored: a collapsed header partly under the sticky toolbar
+      // drops to the sticky line on expand, and compensating for that would
+      // push the top of the newly revealed body up under it.
+      wrapper.classList.remove('collapsed');
       this.collapsedFiles.delete(key);
     }
 
