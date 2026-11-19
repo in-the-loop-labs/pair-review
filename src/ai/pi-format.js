@@ -204,30 +204,41 @@ function extractPiEventText(event, seenTexts) {
 }
 
 /**
- * Extract the model error message from a Pi JSONL event.
+ * Extract the outcome of the last assistant message in a Pi JSONL event.
  *
  * Pi and OMP report a failed model request (for example, a provider refusal)
  * as an assistant message with an `errorMessage`. The CLI writes this message
  * only to stdout, so stderr alone does not explain the failure.
  *
+ * Only the last assistant message in the event counts. A later message that
+ * succeeded replaces an earlier error, so a turn that the CLI retried
+ * successfully does not report its old error. Non-assistant messages and
+ * assistant messages whose `errorMessage` is empty or only whitespace give no
+ * signal either way and are ignored.
+ *
  * @param {Object} event - Parsed Pi event object
- * @returns {string|null} The last assistant error message in the event, or null
+ * @returns {{errorMessage: string|null}|null} The last assistant message's
+ *   outcome (`errorMessage` is null when it succeeded), or null when the event
+ *   carries no assistant message
  */
 function extractPiEventError(event) {
   let messages = [];
-  if (event.type === 'agent_end' && Array.isArray(event.messages)) {
+  if (event?.type === 'agent_end' && Array.isArray(event.messages)) {
     messages = event.messages;
-  } else if (event.type === 'message_end' || event.type === 'turn_end') {
+  } else if (event?.type === 'message_end' || event?.type === 'turn_end') {
     messages = [event.message];
   }
 
-  let errorMessage = null;
+  let outcome = null;
   for (const msg of messages) {
-    if (msg?.role === 'assistant' && typeof msg.errorMessage === 'string' && msg.errorMessage.trim()) {
-      errorMessage = msg.errorMessage.trim();
+    if (msg?.role !== 'assistant') continue;
+    if (msg.errorMessage === undefined || msg.errorMessage === null) {
+      outcome = { errorMessage: null };
+    } else if (typeof msg.errorMessage === 'string' && msg.errorMessage.trim()) {
+      outcome = { errorMessage: msg.errorMessage.trim() };
     }
   }
-  return errorMessage;
+  return outcome;
 }
 
 /**
@@ -289,8 +300,8 @@ function accumulatePiResponseLine(line, state, levelPrefix, cliName = 'Pi') {
   try {
     const event = JSON.parse(line);
     state.textContent += extractPiEventText(event, state.seenTexts);
-    const errorMessage = extractPiEventError(event);
-    if (errorMessage) state.errorMessage = errorMessage;
+    const outcome = extractPiEventError(event);
+    if (outcome) state.errorMessage = outcome.errorMessage;
     parseResult = { status: 'parsed', value: event };
   } catch {
     logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
@@ -556,6 +567,7 @@ module.exports = {
   appendHeadTailBuffer,
   formatHeadTailBuffer,
   extractPiEventText,
+  extractPiEventError,
   accumulatePiRawFallbackLine,
   accumulatePiResponseLine,
   appendPiChunkToLineBuffer,

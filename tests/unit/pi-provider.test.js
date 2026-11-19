@@ -1563,6 +1563,114 @@ describe('PiProvider', () => {
     });
   });
 
+  describe('execute model error capture', () => {
+    const { EventEmitter } = require('events');
+    const fs = require('fs');
+    const REFUSAL = 'Refusal (reasoning_extraction): This request was blocked';
+
+    let writeFileSpy;
+    let unlinkSpy;
+
+    beforeEach(() => {
+      writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+      unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      writeFileSpy.mockRestore();
+      unlinkSpy.mockRestore();
+    });
+
+    function createMockChild() {
+      const child = new EventEmitter();
+      child.stdin = { end: vi.fn() };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.pid = 12345;
+      child.kill = vi.fn();
+      mockSpawn.mockReturnValueOnce(child);
+      return child;
+    }
+
+    const failed = { role: 'assistant', content: [], stopReason: 'error', errorMessage: REFUSAL };
+    const succeeded = {
+      role: 'assistant',
+      content: [{ type: 'text', text: '{"level":1,"suggestions":[],"summary":"ok"}' }],
+      stopReason: 'stop'
+    };
+    const emitEvent = (child, event) => child.stdout.emit('data', Buffer.from(`${JSON.stringify(event)}\n`));
+
+    it('includes the model error from stdout on non-zero exit', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const promise = provider.execute('prompt', { level: 1 });
+
+      child.stderr.emit('data', Buffer.from('startup noise\n'));
+      emitEvent(child, { type: 'message_end', message: failed });
+      child.emit('close', 1);
+
+      await expect(promise).rejects.toThrow(/Pi CLI exited with code 1: Refusal \(reasoning_extraction\): This request was blocked\nstartup noise/);
+    });
+
+    it('rejects with the model error when the CLI exits 0 without any text', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const extractSpy = vi.spyOn(provider, 'extractJSONWithLLM');
+      const promise = provider.execute('prompt', { level: 1 });
+
+      emitEvent(child, { type: 'message_end', message: failed });
+      emitEvent(child, { type: 'agent_end', messages: [failed] });
+      child.emit('close', 0);
+
+      await expect(promise).rejects.toThrow(`[Level 1] Pi model error: ${REFUSAL}`);
+      // The fallback would cost a model call and hide the cause behind a parse error.
+      expect(extractSpy).not.toHaveBeenCalled();
+      expect(unlinkSpy).toHaveBeenCalledWith(writeFileSpy.mock.calls[0][0]);
+    });
+
+    it('still uses the LLM fallback when the CLI exits 0 with unparseable text and no error', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const extractSpy = vi.spyOn(provider, 'extractJSONWithLLM')
+        .mockResolvedValue({ success: true, data: { suggestions: [] } });
+      const promise = provider.execute('prompt', { level: 1 });
+
+      emitEvent(child, { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'not json' }] } });
+      child.emit('close', 0);
+
+      expect(await promise).toEqual({ suggestions: [] });
+      expect(extractSpy).toHaveBeenCalled();
+    });
+
+    it('resolves normally when a failed turn is retried successfully', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const promise = provider.execute('prompt', { level: 1 });
+
+      emitEvent(child, { type: 'message_end', message: failed });
+      emitEvent(child, { type: 'message_end', message: succeeded });
+      emitEvent(child, { type: 'agent_end', messages: [failed, succeeded] });
+      child.emit('close', 0);
+
+      expect(await promise).toEqual({ level: 1, suggestions: [], summary: 'ok' });
+    });
+
+    it('does not report an earlier, retried error for a later unrelated failure', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const promise = provider.execute('prompt', { level: 1 });
+
+      emitEvent(child, { type: 'message_end', message: failed });
+      emitEvent(child, { type: 'message_end', message: succeeded });
+      child.stderr.emit('data', Buffer.from('Segmentation fault'));
+      child.emit('close', 139);
+
+      const error = await promise.then(() => null, (err) => err);
+      expect(error.message).toBe('[Level 1] Pi CLI exited with code 139: Segmentation fault');
+      expect(error.message).not.toContain('Refusal');
+    });
+  });
+
   describe('extractJSONWithLLM @file prompt delivery', () => {
     const { EventEmitter } = require('events');
     const fs = require('fs');

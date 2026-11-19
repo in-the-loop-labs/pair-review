@@ -277,6 +277,12 @@ class PiStyleProvider extends AIProvider {
           }
 
           settle(resolve, parsed.data);
+        } else if (responseState.errorMessage && !responseState.textContent) {
+          // The CLI exited 0 but the model request failed and produced no text.
+          // The LLM extraction fallback has nothing to extract from, and would
+          // hide the real cause behind a generic parse error.
+          logger.error(`${levelPrefix} ${this.cliName} model error: ${responseState.errorMessage}`);
+          settle(reject, new Error(`${levelPrefix} ${this.cliName} model error: ${responseState.errorMessage}`));
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
           logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
