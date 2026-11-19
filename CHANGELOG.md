@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.4.3
+
+### Patch Changes
+
+- 1d7e2ba: Stop Anthropic models from refusing review prompts with `Refusal (reasoning_extraction)`: the `reasoning` field now asks for concise code evidence and impact instead of step-by-step reasoning. Pi and OMP analysis failures now show the model error message from the CLI output, not only stderr.
+- cc4db32: Add GPT-6.2 Sol (`gpt-6.2-sol-high`, `gpt-6.2-sol-xhigh`) and GPT-6.2 Astra (`gpt-6.2-astra-high`, `gpt-6.2-astra-xhigh`) as explicit thorough choices in the Codex provider. They require Codex CLI 0.170.0 or later, and Enterprise and Edu administrators must enable them during rollout. GPT-5.6 Sol High stays the recommended default.
+- 1f53d41: Closing the analysis progress modal with the close button, Escape, or a backdrop click no longer leaves the Analyze button stuck on "Analyzing..." after the analysis finishes. Closing the modal now behaves like "Run in Background": progress keeps updating, the button completes, and reopening the modal shows the current state instead of every level still running.
+- 1349fbc: Collapsing a file from its stuck header, by checking "Viewed" or clicking the chevron, keeps the collapsed header where it was stuck, with the next file directly below it, instead of leaving the view at an unrelated spot further down the diff.
+- 18d66a5: Pi and OMP analysis now fails with the model error when the CLI exits successfully but the run ended on a model error, instead of running an extra LLM extraction call and reporting a generic parse error. A model error that the CLI later retried successfully is no longer reported for an unrelated failure.
+
 ## 5.4.2
 
 ### Patch Changes
