@@ -20,6 +20,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 const { PRManager } = require('../../public/js/pr.js');
 const { SmartTruncate } = require('../../public/js/utils/smart-truncate.js');
+const HeaderAnchor = require('../../public/js/utils/header-anchor.js');
 
 // jsdom exposes CSS.escape via window; make sure the global exists for code
 // that references bare `CSS`.
@@ -76,6 +77,7 @@ describe('context entry collapse independence (#540)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="diff-container"></div>';
     window.DiffRenderer = DiffRenderer;
+    window.HeaderAnchor = HeaderAnchor;
 
     manager = createManager();
     diffWrapper = buildWrapper(FILE);
@@ -142,6 +144,46 @@ describe('context entry collapse independence (#540)', () => {
       expect(contextWrapper.classList.contains('collapsed')).toBe(false);
       expect(contextWrapper.querySelector('.file-collapse-toggle').title).toBe('Collapse file');
       expect(manager.collapsedFiles.has(`context:${FILE}`)).toBe(false);
+    });
+
+    it('anchors the header on collapse but not on expand', () => {
+      // A collapsed header partly under the sticky toolbar drops to the
+      // sticky line on expand; anchoring that would scroll the body under it.
+      const anchor = vi.fn((header, change) => change());
+      window.HeaderAnchor = { keepHeaderInPlace: anchor };
+      const header = contextWrapper.querySelector('.d2h-file-header');
+
+      manager.toggleContextFileCollapse(FILE);
+      expect(anchor).toHaveBeenCalledTimes(1);
+      expect(anchor).toHaveBeenCalledWith(header, expect.any(Function));
+      expect(contextWrapper.classList.contains('collapsed')).toBe(true);
+
+      manager.toggleContextFileCollapse(FILE);
+      expect(anchor).toHaveBeenCalledTimes(1);
+      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
+      expect(manager.collapsedFiles.has(`context:${FILE}`)).toBe(false);
+    });
+
+    it('does not scroll the diff pane when expanding a partly covered header', () => {
+      // Real helper: simulate the header dropping 20px to the sticky line as
+      // the entry expands. Expand must leave the pane's scroll alone.
+      const pane = document.createElement('div');
+      pane.className = 'diff-view';
+      pane.scrollBy = vi.fn();
+      document.body.appendChild(pane);
+      pane.appendChild(document.getElementById('diff-container'));
+      contextWrapper.classList.add('collapsed');
+      manager.collapsedFiles.add(`context:${FILE}`);
+
+      const header = contextWrapper.querySelector('.d2h-file-header');
+      header.getBoundingClientRect = () => ({
+        top: contextWrapper.classList.contains('collapsed') ? -20 : 0,
+      });
+
+      manager.toggleContextFileCollapse(FILE);
+
+      expect(contextWrapper.classList.contains('collapsed')).toBe(false);
+      expect(pane.scrollBy).not.toHaveBeenCalled();
     });
 
     it('is a no-op when no context wrapper exists', () => {
