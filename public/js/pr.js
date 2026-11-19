@@ -5155,8 +5155,10 @@ class PRManager {
       wrapper.classList.remove('collapsed');
       this.collapsedFiles.delete(filePath);
     } else {
-      wrapper.classList.add('collapsed');
-      this.collapsedFiles.add(filePath);
+      window.HeaderAnchor.keepHeaderInPlace(header, () => {
+        wrapper.classList.add('collapsed');
+        this.collapsedFiles.add(filePath);
+      });
     }
 
     // Update header state
@@ -5182,9 +5184,11 @@ class PRManager {
       this.viewedFiles.add(filePath);
       // Auto-collapse when marking as viewed
       if (wrapper && !wrapper.classList.contains('collapsed')) {
-        wrapper.classList.add('collapsed');
-        this.collapsedFiles.add(filePath);
         const header = wrapper.querySelector('.d2h-file-header');
+        window.HeaderAnchor.keepHeaderInPlace(header, () => {
+          wrapper.classList.add('collapsed');
+          this.collapsedFiles.add(filePath);
+        });
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
@@ -5257,14 +5261,21 @@ class PRManager {
     if (!wrapper) return;
 
     const key = this._contextStateKey(filePath);
-    const collapsed = wrapper.classList.toggle('collapsed');
+    const header = wrapper.querySelector('.d2h-file-header');
+    const collapsed = !wrapper.classList.contains('collapsed');
     if (collapsed) {
+      window.HeaderAnchor.keepHeaderInPlace(header, () => {
+        wrapper.classList.add('collapsed');
+      });
       this.collapsedFiles.add(key);
     } else {
+      // Not anchored: a collapsed header partly under the sticky toolbar
+      // drops to the sticky line on expand, and compensating for that would
+      // push the top of the newly revealed body up under it.
+      wrapper.classList.remove('collapsed');
       this.collapsedFiles.delete(key);
     }
 
-    const header = wrapper.querySelector('.d2h-file-header');
     if (header) {
       window.DiffRenderer.updateFileHeaderState(header, !collapsed);
     }
@@ -5286,8 +5297,10 @@ class PRManager {
       this.viewedFiles.add(key);
       // Auto-collapse when marking as viewed
       if (wrapper && !wrapper.classList.contains('collapsed')) {
-        wrapper.classList.add('collapsed');
-        this.collapsedFiles.add(key);
+        window.HeaderAnchor.keepHeaderInPlace(header, () => {
+          wrapper.classList.add('collapsed');
+          this.collapsedFiles.add(key);
+        });
         if (header) {
           window.DiffRenderer.updateFileHeaderState(header, false);
         }
