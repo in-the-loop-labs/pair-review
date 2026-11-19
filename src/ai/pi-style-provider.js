@@ -277,10 +277,12 @@ class PiStyleProvider extends AIProvider {
           }
 
           settle(resolve, parsed.data);
-        } else if (responseState.errorMessage && !responseState.textContent) {
-          // The CLI exited 0 but the model request failed and produced no text.
-          // The LLM extraction fallback has nothing to extract from, and would
-          // hide the real cause behind a generic parse error.
+        } else if (responseState.errorMessage) {
+          // The CLI exited 0 but the final model request failed. A later
+          // successful assistant message clears errorMessage, so it is only set
+          // here when the run ended on the error. Any earlier assistant text is
+          // pre-tool narration, not a review to extract, so the LLM extraction
+          // fallback would only cost a model call and hide the real cause.
           logger.error(`${levelPrefix} ${this.cliName} model error: ${responseState.errorMessage}`);
           settle(reject, new Error(`${levelPrefix} ${this.cliName} model error: ${responseState.errorMessage}`));
         } else {

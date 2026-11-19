@@ -1628,6 +1628,24 @@ describe('PiProvider', () => {
       expect(unlinkSpy).toHaveBeenCalledWith(writeFileSpy.mock.calls[0][0]);
     });
 
+    it('rejects with the model error when the CLI exits 0 after earlier pre-tool narration', async () => {
+      const child = createMockChild();
+      const provider = new PiProvider('test-model');
+      const extractSpy = vi.spyOn(provider, 'extractJSONWithLLM');
+      const promise = provider.execute('prompt', { level: 2 });
+
+      emitEvent(child, {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Let me read the file.' }], stopReason: 'toolUse' }
+      });
+      emitEvent(child, { type: 'message_end', message: { role: 'toolResult', content: [{ type: 'text', text: 'file body' }] } });
+      emitEvent(child, { type: 'message_end', message: failed });
+      child.emit('close', 0);
+
+      await expect(promise).rejects.toThrow(`[Level 2] Pi model error: ${REFUSAL}`);
+      expect(extractSpy).not.toHaveBeenCalled();
+    });
+
     it('still uses the LLM fallback when the CLI exits 0 with unparseable text and no error', async () => {
       const child = createMockChild();
       const provider = new PiProvider('test-model');
