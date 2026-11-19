@@ -110,7 +110,11 @@ Each CLI has different model listing commands:
   codex exec -m <slug> -c model_reasoning_effort=low --skip-git-repo-check 'Reply with the single word OK'
   ```
   A retired slug fails with a 400 `The '<slug>' model is not supported when using Codex
-  with a ChatGPT account`; a valid one prints OK. `codex exec` also prints a
+  with a ChatGPT account`; a valid one prints OK. Before trusting that 400, compare
+  `codex --version` with `client_version` in the cache and the latest Codex CLI
+  release: on an older CLI a brand-new slug fails with the same 400 (GPT-6.2 on
+  0.160.0, 2026-11-18, fine on 0.170.0). Ask the user to update the CLI and probe
+  again before concluding a slug is retired or not rolled out. `codex exec` also prints a
   `reasoning effort: <level>` header line — grep it to confirm each effort level you
   ship actually took effect. Pricing is not in the cache — use web search
   (learn.chatgpt.com/docs/models, learn.chatgpt.com/docs/changelog).
@@ -265,16 +269,15 @@ GPT-6, GPT-6.1, and GPT-6.2 models remain explicit choices with access requireme
 their descriptions. The same access bar applies to the first balanced and fast
 entries. GPT-6.1 Terra (2026-10-26, $1/$5) is likewise an explicit balanced choice:
 it is not offered on Free or Go, and Enterprise access depends on workspace
-administrator controls. As of 2026-11-12 GPT-6.1 Sol ($2/$10) is newer and cheaper
-than GPT-5.6 Sol ($4/$20), so move the default to `gpt-6.1-sol-high` once the
-workspace-availability page no longer requires admin enablement. GPT-6.2 Sol
-($2/$10) and GPT-6.2 Astra ($8/$40) were added on 2026-11-17 as explicit thorough
-entries. They needed Codex CLI 0.170.0: on 0.160.0 the probes failed with the same
-400 `model_not_found ... not supported when using Codex with a ChatGPT account` as
-a retired slug, so a new slug failing on an older CLI means "update the CLI", not
-"not rolled out yet". GPT-6.2 Sol costs the same as 6.1 Sol, so the default-move
-condition (admin enablement lifted) now applies to whichever of 6.1/6.2 Sol is
-newest. GPT-5.5 was retired from Codex with ChatGPT sign-in on 2026-10-14 (API keys
+administrator controls. GPT-6.2 Sol ($2/$10) and GPT-6.2 Astra ($8/$40) were
+added on 2026-11-17 as explicit thorough entries; they need Codex CLI 0.170.0 or
+later (see the Codex probe step for the old-CLI 400). The next default is
+`gpt-6.2-sol-high`: it is newer than and as cheap as GPT-6.1 Sol, and cheaper
+than GPT-5.6 Sol ($4/$20). Move it once the workspace-availability page no longer
+requires admin enablement AND Codex CLI 0.170.0 is widely installed, since an old
+CLI rejects the default and breaks automatic analyses. If admin enablement is
+lifted but that CLI floor is still too high, `gpt-6.1-sol-high` is the fallback
+target. GPT-5.5 was retired from Codex with ChatGPT sign-in on 2026-10-14 (API keys
 unaffected); its entries were removed on 2026-11-12.
 
 ## Notes

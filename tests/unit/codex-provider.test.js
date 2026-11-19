@@ -211,9 +211,17 @@ describe('CodexProvider', () => {
       expect(models.find(m => m.id === 'gpt-6-luna-low').tagline).toBe('Quick Scan');
 
       // GPT-6 Sol and Luna Max carry the current Codex descriptions
+      // GPT-6 Sol is two generations behind 6.2 Sol, so it is labeled older,
+      // matching GPT-5.6 Sol; "Previous" is reserved for GPT-6.1 Sol.
+      expect(models.find(m => m.id === 'gpt-6-sol-high')).toMatchObject({
+        name: 'GPT-6 Sol High',
+        tagline: 'Older Workhorse',
+        badge: 'Older Gen',
+        badgeClass: 'badge-power'
+      });
       expect(models.find(m => m.id === 'gpt-6-sol-xhigh')).toMatchObject({
         name: 'GPT-6 Sol XHigh',
-        tagline: 'Previous Gen Depth',
+        tagline: 'Older Workhorse Depth',
         badge: 'Extra High',
         badgeClass: 'badge-power'
       });
@@ -272,8 +280,7 @@ describe('CodexProvider', () => {
         badgeClass: 'badge-balanced'
       });
       expect(models.find(m => m.id === 'gpt-6.1-terra-xhigh').description).toContain('Requires GPT-6.1 Terra access');
-      expect(models.find(m => m.id === 'gpt-6-sol-high').badge).toBe('Previous Gen');
-      expect(models.find(m => m.id === 'gpt-6-sol-high').description).toContain('Previous generation workhorse model');
+      expect(models.find(m => m.id === 'gpt-6-sol-high').description).toContain('Older generation workhorse model');
       expect(models.find(m => m.id === 'gpt-5.6-sol-high').description).toContain('Older generation workhorse model');
     });
 

@@ -162,9 +162,9 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="high"'],
     name: 'GPT-6 Sol High',
     tier: 'thorough',
-    tagline: 'Previous Gen',
-    description: 'Previous generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
-    badge: 'Previous Gen',
+    tagline: 'Older Workhorse',
+    description: 'Older generation workhorse model, with high reasoning effort for demanding reviews and cross-file analysis. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
+    badge: 'Older Gen',
     badgeClass: 'badge-power'
   },
   {
@@ -173,8 +173,8 @@ const CODEX_MODELS = [
     extra_args: ['-c', 'model_reasoning_effort="xhigh"'],
     name: 'GPT-6 Sol XHigh',
     tier: 'thorough',
-    tagline: 'Previous Gen Depth',
-    description: 'Previous generation workhorse model, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
+    tagline: 'Older Workhorse Depth',
+    description: 'Older generation workhorse model, with extra-high reasoning effort for difficult architectural reviews, subtle regressions, and security-sensitive changes. Requires GPT-6 access; Enterprise administrators must enable it during rollout.',
     badge: 'Extra High',
     badgeClass: 'badge-power'
   },
