@@ -35,7 +35,9 @@ const {
   appendWithLimit,
   appendHeadTailBuffer,
   formatHeadTailBuffer,
-  finalizePiResponseParsing
+  finalizePiResponseParsing,
+  extractPiEventError,
+  accumulatePiResponseLine
 } = require('../../src/ai/pi-format');
 
 describe('pi-format', () => {
@@ -263,6 +265,104 @@ describe('pi-format', () => {
       const seenTexts = new Set();
       const result = extractAssistantText(42, seenTexts);
       expect(result).toBe('');
+    });
+  });
+
+  describe('extractPiEventError', () => {
+    const refusal = 'Refusal (reasoning_extraction): This request was blocked';
+    const failed = (errorMessage) => ({ role: 'assistant', content: [], stopReason: 'error', errorMessage });
+    const succeeded = (text = '{}') => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' });
+
+    it.each(['message_end', 'turn_end'])('returns the assistant error from a %s event', (type) => {
+      expect(extractPiEventError({ type, message: failed(refusal) })).toEqual({ errorMessage: refusal });
+    });
+
+    it('returns the assistant error from an agent_end event', () => {
+      expect(extractPiEventError({ type: 'agent_end', messages: [failed(refusal)] })).toEqual({ errorMessage: refusal });
+    });
+
+    it('trims the error message', () => {
+      expect(extractPiEventError({ type: 'message_end', message: failed(`  ${refusal}\n`) }))
+        .toEqual({ errorMessage: refusal });
+    });
+
+    it('reports a successful assistant message as no error', () => {
+      expect(extractPiEventError({ type: 'message_end', message: succeeded() })).toEqual({ errorMessage: null });
+    });
+
+    it('ignores a non-assistant message with an errorMessage', () => {
+      const toolResult = { role: 'toolResult', content: [], errorMessage: 'tool failed' };
+      expect(extractPiEventError({ type: 'message_end', message: toolResult })).toBeNull();
+      expect(extractPiEventError({ type: 'agent_end', messages: [toolResult] })).toBeNull();
+    });
+
+    it.each(['', '   ', '\n\t'])('ignores an assistant errorMessage of %j', (errorMessage) => {
+      expect(extractPiEventError({ type: 'message_end', message: failed(errorMessage) })).toBeNull();
+    });
+
+    it('keeps an earlier error when a later message has only a blank errorMessage', () => {
+      const event = { type: 'agent_end', messages: [failed(refusal), failed('  ')] };
+      expect(extractPiEventError(event)).toEqual({ errorMessage: refusal });
+    });
+
+    it('uses the last error when agent_end has several assistant errors', () => {
+      const event = { type: 'agent_end', messages: [failed('first error'), succeeded(), failed('last error')] };
+      expect(extractPiEventError(event)).toEqual({ errorMessage: 'last error' });
+    });
+
+    it('reports no error when the last assistant message in agent_end succeeded', () => {
+      const event = {
+        type: 'agent_end',
+        messages: [failed(refusal), { role: 'toolResult', content: [] }, succeeded()]
+      };
+      expect(extractPiEventError(event)).toEqual({ errorMessage: null });
+    });
+
+    it.each([
+      ['an agent_end with no messages array', { type: 'agent_end' }],
+      ['an agent_end with an empty messages array', { type: 'agent_end', messages: [] }],
+      ['a message_end with no message', { type: 'message_end' }],
+      ['an event type that carries no messages', { type: 'tool_execution_end', message: failed(refusal) }],
+      ['a non-event value', null]
+    ])('returns null for %s', (_label, event) => {
+      expect(extractPiEventError(event)).toBeNull();
+    });
+  });
+
+  describe('accumulatePiResponseLine error tracking', () => {
+    const newState = () => ({
+      textContent: '',
+      seenTexts: new Set(),
+      rawOutput: '',
+      rawOutputTruncated: false,
+      errorMessage: null
+    });
+    const line = (event) => JSON.stringify(event);
+    const failed = { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Rate limit exceeded' };
+    const succeeded = { role: 'assistant', content: [{ type: 'text', text: '{"suggestions":[]}' }], stopReason: 'stop' };
+
+    it('records the model error from a failed assistant message', () => {
+      const state = newState();
+      accumulatePiResponseLine(line({ type: 'message_end', message: failed }), state, '[Test]');
+      expect(state.errorMessage).toBe('Rate limit exceeded');
+    });
+
+    it('clears an earlier error once a later assistant message succeeds', () => {
+      const state = newState();
+      accumulatePiResponseLine(line({ type: 'message_end', message: failed }), state, '[Test]');
+      accumulatePiResponseLine(line({ type: 'message_end', message: succeeded }), state, '[Test]');
+      // agent_end repeats every message of the run; the successful retry is last.
+      accumulatePiResponseLine(line({ type: 'agent_end', messages: [failed, succeeded] }), state, '[Test]');
+      expect(state.errorMessage).toBeNull();
+      expect(state.textContent).toBe('{"suggestions":[]}');
+    });
+
+    it('keeps the error across events that carry no assistant message', () => {
+      const state = newState();
+      accumulatePiResponseLine(line({ type: 'message_end', message: failed }), state, '[Test]');
+      accumulatePiResponseLine(line({ type: 'tool_execution_end', toolName: 'read' }), state, '[Test]');
+      accumulatePiResponseLine(line({ type: 'message_end', message: { role: 'user', content: [] } }), state, '[Test]');
+      expect(state.errorMessage).toBe('Rate limit exceeded');
     });
   });
 });

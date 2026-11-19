@@ -863,6 +863,24 @@ describe('OmpProvider', () => {
       );
     });
 
+    it('should reject with the model error when the CLI exits 0 without any text', async () => {
+      const fakeChild = makeFakeChild();
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new OmpProvider('default');
+      const extractSpy = vi.spyOn(provider, 'extractJSONWithLLM');
+      const executePromise = provider.execute('test prompt', { level: 1 });
+
+      const refusal = 'Refusal (reasoning_extraction): This request was blocked';
+      const assistant = { role: 'assistant', content: [], stopReason: 'error', errorMessage: refusal };
+      fakeChild.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'message_end', message: assistant })}\n`));
+      fakeChild.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'agent_end', messages: [assistant] })));
+      fakeChild.emit('close', 0);
+
+      await expect(executePromise).rejects.toThrow(`OMP model error: ${refusal}`);
+      expect(extractSpy).not.toHaveBeenCalled();
+    });
+
     it('should use a single shell command string in shell mode', async () => {
       const fakeChild = makeFakeChild();
       mockSpawn.mockReturnValueOnce(fakeChild);

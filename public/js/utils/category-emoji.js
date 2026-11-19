@@ -3,7 +3,7 @@
  * Canonical category-to-emoji mapping for AI suggestion types.
  * Used by SuggestionManager and FileCommentManager to format adopted comments.
  *
- * Canonical types from src/ai/prompts/shared/output-schema.js:
+ * Canonical types from the output-schema sections in src/ai/prompts/baseline/:
  * bug|improvement|praise|suggestion|design|performance|security|code-style
  */
 
