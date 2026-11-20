@@ -97,6 +97,32 @@ describe('PierreAnnotations card builders take their collaborators as an argumen
     expect(viaFunction.querySelector('.user-comment-body').innerHTML).toBe('<p>md</p>');
   });
 
+  it('renderComment marks the card of a comment on a context file, after the line label, and no other card', () => {
+    const { renderComment } = load('pierre-annotations.js');
+    const isContextFile = vi.fn((file) => file === 'docs/notes.js');
+    const onContext = renderComment({ id: 3, file: 'docs/notes.js', line_start: 8, body: 'x' }, 'comment-3', { isContextFile });
+    const indicator = onContext.querySelector('.user-comment-header-left .expanded-context-indicator');
+    expect(indicator).not.toBeNull();
+    expect(indicator.getAttribute('title')).toBe('This expanded context comment will be posted to GitHub as a file-level comment');
+    expect(indicator.previousElementSibling.className).toBe('user-comment-line-info');
+    expect(isContextFile).toHaveBeenCalledWith('docs/notes.js');
+    const inDiff = renderComment({ id: 4, file: 'src/a.js', line_start: 8, body: 'x' }, 'comment-4', { isContextFile });
+    expect(inDiff.querySelector('.expanded-context-indicator')).toBeNull();
+    // Without the collaborator no card is marked.
+    expect(renderComment({ id: 5, file: 'docs/notes.js', line_start: 8, body: 'x' }, 'comment-5').querySelector('.expanded-context-indicator')).toBeNull();
+  });
+
+  it('renderForm warns in the form of a line outside the diff, under the header, and in no other form', () => {
+    const { renderForm } = load('pierre-annotations.js');
+    const outside = renderForm({ lineStart: 8, lineEnd: 8, side: 'RIGHT', showSuggestionBtn: true, outsideDiff: true }, 'form-1', new Map(), 'docs/notes.js', {});
+    const warning = outside.querySelector('.expanded-context-warning');
+    expect(warning.textContent).toBe('Warning: Expanded context line - may not submit to GitHub');
+    expect(warning.previousElementSibling.className).toBe('comment-form-header');
+    expect(warning.nextElementSibling.className).toBe('comment-form-toolbar');
+    const inside = renderForm({ lineStart: 8, lineEnd: 8, side: 'RIGHT', showSuggestionBtn: true }, 'form-2', new Map(), 'src/a.js', {});
+    expect(inside.querySelector('.expanded-context-warning')).toBeNull();
+  });
+
   it('renderSuggestion asks the given suggestion manager for the card, and falls back without one', () => {
     const { renderSuggestion } = load('pierre-annotations.js');
     const createSuggestionRow = vi.fn(() => {
@@ -459,7 +485,7 @@ describe('PierreStyles', () => {
     });
 
     it('a file without lines has no bottom border (the viewer counts no bottom padding for it) and no code background', () => {
-      const rowless = 'pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))';
+      const rowless = `:host(.${styles.ROWLESS_CLASS}) pre[data-diff]`;
       expect(bodyOf(rowless)).toContain('border-bottom: 0 !important');
       // No frame at all: the side borders keep their width and are not drawn.
       expect(bodyOf(rowless)).toContain('border-color: transparent !important');
@@ -555,10 +581,54 @@ describe('PierreStyles', () => {
     for (const selector of selectors) expect(selector.startsWith(':host(.context-file) ')).toBe(true);
   });
 
-  it('the row-less fix is scoped by an annotation, in both layouts (ledger correction 4)', () => {
+  it('the row-less fix is scoped by the host\'s class, in both layouts (ledger correction 4, H169)', () => {
     const [unified, split] = styles.ROWLESS_FIX.split('\n');
-    expect(unified.startsWith('[data-code]:has([data-line-annotation]):not(:has([data-line]))')).toBe(true);
-    expect(split.startsWith('pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))')).toBe(true);
+    expect(unified.startsWith(`:host(.${styles.ROWLESS_CLASS}) [data-code] {`)).toBe(true);
+    expect(split.startsWith(`:host(.${styles.ROWLESS_CLASS}) pre[data-diff] {`)).toBe(true);
+  });
+
+  it('no rule of the injected stylesheet asks :has() about what a code block or a code column holds (H169)', () => {
+    // Such a rule makes every row added to or taken out of a file restyle
+    // the block, and with a descendant rule every row of the file: the
+    // viewer's hover moves a button from row to row. A :has() with a child
+    // combinator on the block (`:has(> [data-additions])`) asks only about
+    // the block's own children, which change at a draw.
+    const css = styles.unsafeCSS().replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = css.split('}').map((rule) => rule.split('{')[0].trim()).filter((selector) => selector.includes(':has('));
+    expect(selectors.length).toBeGreaterThan(0);
+    for (const selector of selectors) {
+      for (const [, anchor, argument] of selector.matchAll(/([^\s>+~,]*):has\(([^)]*)\)/g)) {
+        const onCodeBlock = /^(pre|\[data-diff|\[data-code|code)/.test(anchor);
+        if (onCodeBlock) expect(argument.trim().startsWith('>'), selector).toBe(true);
+      }
+    }
+  });
+
+  it('markRowless: a host whose code block shows a card and no line gets the class; any other host, and a host given back, loses it', () => {
+    const host = (inner) => {
+      const classes = new Set();
+      const find = (selector) => (inner.includes(selector) ? {} : null);
+      return {
+        classes,
+        classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } },
+        shadowRoot: inner === null ? null : { querySelector: (selector) => (selector === 'pre[data-diff]' ? (inner.includes('pre') ? { querySelector: find } : null) : null) },
+      };
+    };
+    const rowless = host(['pre', '[data-line-annotation]']);
+    expect(styles.isRowless(rowless)).toBe(true);
+    expect(styles.markRowless(rowless)).toBe(true);
+    expect(rowless.classes.has(styles.ROWLESS_CLASS)).toBe(true);
+    // Given back to the viewer's pool.
+    expect(styles.markRowless(rowless, false)).toBe(false);
+    expect(rowless.classes.has(styles.ROWLESS_CLASS)).toBe(false);
+    // Lines and a card; lines alone; a block with nothing (a header-only mount); no block; no shadow tree.
+    for (const inner of [['pre', '[data-line-annotation]', '[data-line]'], ['pre', '[data-line]'], ['pre'], [], null]) {
+      const other = host(inner);
+      other.classes.add(styles.ROWLESS_CLASS);
+      expect(styles.markRowless(other), JSON.stringify(inner)).toBe(false);
+      expect(other.classes.has(styles.ROWLESS_CLASS)).toBe(false);
+    }
+    expect(styles.markRowless(null)).toBe(false);
   });
 
 });

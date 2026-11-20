@@ -945,9 +945,10 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     // diff that was actually returned to the client. Two cases:
     //
     //   1. `?w=1`: `git diff -w` only DROPS whitespace-only hunks; it
-    //      never rewrites kept hunks. The frontend renderPatch length
-    //      guard catches the drop case (mismatch between canonical hash
-    //      count and rendered block count) and bails. So for kept hunks
+    //      never rewrites kept hunks. The frontend's length guard
+    //      (PRManager._computePierreHunkAnchors) catches the drop case
+    //      (mismatch between canonical hash count and rendered block
+    //      count) and bails. So for kept hunks
     //      the canonical hash still identifies the right rendered hunk
     //      AND matches the persisted summary key — fall back to the
     //      canonical diff here for hash computation.

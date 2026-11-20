@@ -189,7 +189,6 @@ describe('SuggestionManager.displayAISuggestions file-level routing', () => {
     const sm = Object.create(SuggestionManager.prototype);
     sm.prManager = {
       currentPR: { id: 'review-1' },
-      ensureFileBodyRendered: vi.fn(async () => null),
       ensureLinesVisible: vi.fn(async () => {}),
       suggestionNavigator: null,
       fileCommentManager

@@ -470,3 +470,45 @@ test('a collapsed context file shows its header only, and setCollapsed works on 
   expect(result.expanded).toEqual({ classes: ['context-file', 'd2h-file-wrapper', 'has-diff-lines'], runs: [[100, 120], [300, 310]], visible: true });
   expect(result.sound).toEqual({ orphans: 0, clean: true });
 });
+
+test('getCodeFromLines answers the text of every line a context file shows: stored ranges, a gap small enough to be painted in full, and lines the reader expanded', async ({ harness }) => {
+  const page = await openBridge(harness);
+  // Lines 1-3 and 25-27 are gaps of three lines: the viewer paints them.
+  await up(page, { ranges: [{ startLine: 4, endLine: 24 }, { startLine: 28, endLine: 40 }] });
+  // The gap after the last range (41-400): its control reveals 41-60.
+  const step = await clickExpandControl(page, CONTEXT, 2, 'up');
+  expect(step && step.visible, JSON.stringify(step)).toBe(true);
+  const result = await page.evaluate((CONTEXT) => {
+    const { BH } = window;
+    const b = BH.bridge;
+    const drawn = new Map(BH.rows(CONTEXT).map((row) => [row.line, row.text]));
+    const text = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => drawn.get(from + i)).join('\n');
+    const ask = (from, to, side = 'RIGHT') => b.getCodeFromLines(CONTEXT, from, to, side);
+    const same = (from, to, side) => ({ drawn: [...Array(to - from + 1).keys()].every((i) => drawn.has(from + i)), equal: ask(from, to, side) === text(from, to) });
+    return {
+      oracle: [2, 10, 26, 45, 60, 61].map((n) => b.isLineVisible(CONTEXT, n, 'RIGHT')),
+      inRange: same(10, 12),
+      smallGapBefore: same(2, 2),
+      smallGapBetween: same(26, 26),
+      expanded: same(45, 46),
+      // A selection from a stored range, across the painted gap, into the next range and on into the expanded lines.
+      across: same(20, 45),
+      // A context file has one side: a comment stored LEFT reads the same lines.
+      left: same(26, 26, 'LEFT'),
+      sample: ask(26, 26),
+      // A line the file does not show has no text to offer; a selection that runs past the shown lines holds the shown ones.
+      hidden: ask(61, 61),
+      pastTheEnd: ask(59, 62) === text(59, 60),
+    };
+  }, CONTEXT);
+  expect(result.oracle).toEqual([true, true, true, true, true, false]);
+  expect(result.inRange).toEqual({ drawn: true, equal: true });
+  expect(result.smallGapBefore).toEqual({ drawn: true, equal: true });
+  expect(result.smallGapBetween).toEqual({ drawn: true, equal: true });
+  expect(result.expanded).toEqual({ drawn: true, equal: true });
+  expect(result.across).toEqual({ drawn: true, equal: true });
+  expect(result.left).toEqual({ drawn: true, equal: true });
+  expect(result.sample).toBe('const value26 = compute(26); // line 26');
+  expect(result.hidden).toBeNull();
+  expect(result.pastTheEnd).toBe(true);
+});

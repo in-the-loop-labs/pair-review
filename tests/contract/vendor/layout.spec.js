@@ -17,7 +17,7 @@
  */
 
 import { test, expect, VALIDATOR_PATTERN } from '../harness/contract-test.js';
-import { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT } from '../harness/constants.js';
+import { ROWLESS_FIX, ROWLESS_SCRIPTS, MARK_ROWLESS, ROWLESS_FIX_FIRST_DRAFT } from '../harness/constants.js';
 
 for (const diffStyle of ['unified', 'split']) {
   test(`F9: a static diffHeaderHeight keeps every item's layout exact across the whole list (${diffStyle})`, async ({ harness }) => {
@@ -336,7 +336,8 @@ for (const diffStyle of ['unified', 'split']) {
 test(`F10: an always-present empty lineNumber-0 annotation costs 0 px, grows with its content, and returns to 0 (${diffStyle})`, async ({ harness }) => {
   // Depends on it: the file-comment zone is a `file-comments` annotation at
   // lineNumber 0, first in every item's array from renderAll on.
-  const page = await harness.open();
+  const page = await harness.open({ scripts: ROWLESS_SCRIPTS });
+  await page.evaluate(MARK_ROWLESS);
   const result = await page.evaluate(async ({ fix, diffStyle }) => {
     const H = window.H;
     const { roles } = H.workload;
@@ -468,7 +469,8 @@ for (const diffStyle of ['unified', 'split']) {
   test(`F10: with ROWLESS_FIX, items mounted with no rows in their window keep an exact layout (${diffStyle})`, async ({ harness }) => {
     // Depends on it: the same unsafeCSS serves row-less items AND ordinary
     // items that happen to be mounted header-only at a window edge.
-    const page = await harness.open();
+    const page = await harness.open({ scripts: ROWLESS_SCRIPTS });
+    await page.evaluate(MARK_ROWLESS);
     const result = await walkWithZones(page, { css: ROWLESS_FIX, diffStyle });
     // The walk did meet the case it is about.
     expect(result.headerOnlyMounts).toBeGreaterThan(0);

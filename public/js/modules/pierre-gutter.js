@@ -79,7 +79,7 @@
    * @param {Function} [deps.onCommentClick] - (start, side, target) => void
    * @returns {HTMLElement}
    */
-  function createGutterButtons({ getHoveredRow, getLineSelection, clearLineSelection, selectLines, onChatClick, onCommentClick }) {
+  function createGutterButtons({ getHoveredRow, getLineSelection, clearLineSelection, selectLines, onChatClick, onCommentClick, commentTitle }) {
     const container = document.createElement('div');
     container.className = 'pierre-gutter-buttons';
     // Marks the element as a utility so the viewer recognizes it in pointer path checks.
@@ -173,7 +173,7 @@
     // Comment button (right)
     const commentBtn = document.createElement('button');
     commentBtn.className = 'pierre-gutter-btn pierre-comment-btn';
-    commentBtn.title = 'Add comment';
+    commentBtn.title = commentTitle || 'Add comment';
     commentBtn.textContent = '+';
     wrapButton(commentBtn, (target) => {
       if (onCommentClick) onCommentClick(target.start, target.side, target);

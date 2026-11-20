@@ -84,8 +84,11 @@ class CommentMinimizer {
       this._removeAllIndicators();
       // Remove any per-line expansion overrides
       document.querySelectorAll('.comment-expanded').forEach(el => el.classList.remove('comment-expanded'));
-      // Remove any per-file expansion overrides
+      // Remove any per-file expansion overrides. A file's comment zone is in
+      // the document only while the viewer draws its file; the page's
+      // registry holds every zone, drawn or not.
       document.querySelectorAll('.file-comments-expanded').forEach(el => el.classList.remove('file-comments-expanded'));
+      window.prManager?.forEachFileCommentsZone?.(zone => zone.classList.remove('file-comments-expanded'));
     }
   }
 

@@ -52,7 +52,7 @@ const listed = [];
 const notes = [];
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const DRAWING_CLASSES = new Set(['has-diff-lines', 'has-diff-body']);
+const DRAWING_CLASSES = new Set(['has-diff-lines', 'has-diff-body', 'pierre-rowless']);
 const CHANGED = new Set(['change-addition', 'change-deletion']);
 const rowsOf = (dump, predicate) => (dump ? dump.columns.flatMap((c) => c.rows.filter(predicate).map((r) => ({ column: c.name, ...r }))) : []);
 
@@ -68,8 +68,10 @@ function compareFile(label, stage, a, b) {
   }
   // The virtualized viewer's element of a file says with two classes what the
   // per-file renderer says with an element (a code block under the header,
-  // and lines in it); pr.css keys the space under the header on them. They
-  // are how a file is drawn, not a state of the file.
+  // and lines in it); pr.css keys the space under the header on them. A
+  // third says that the block shows a card and no line, which the viewer's
+  // stylesheet keys on (PierreStyles.ROWLESS_FIX). They are how a file is
+  // drawn, not a state of the file.
   const stateClasses = (classes) => (classes || []).filter((name) => !DRAWING_CLASSES.has(name));
   if (!same(stateClasses(a.classes), stateClasses(b.classes))) notes.push(`${where}: wrapper classes ${JSON.stringify(a.classes)} vs ${JSON.stringify(b.classes)}`);
 

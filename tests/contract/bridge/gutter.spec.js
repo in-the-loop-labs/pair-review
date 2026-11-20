@@ -201,12 +201,8 @@ test('the buttons are hidden while the pane scrolls under a resting pointer, and
   const duringScroll = await page.evaluate(() => window.__scrolled);
   const atRest = await page.evaluate(async ({ x, y }) => {
     const { H, BH, T } = window;
-    let last = -1;
-    for (let still = 0; still < 6;) {
-      await H.raf(1);
-      still = H.root.scrollTop === last ? still + 1 : 0;
-      last = H.root.scrollTop;
-    }
+    // The bridge decides when the pane is at rest (_watchScrollRest).
+    await H.until(() => !BH.bridge._gutterHiddenByScroll);
     const el = BH.bridge.findFileElement(T.id).shadowRoot.elementFromPoint(x, y);
     const row = el && el.closest('[data-line]');
     const gutter = T.gutter();
@@ -227,6 +223,68 @@ test('the buttons are hidden while the pane scrolls under a resting pointer, and
   expect(atRest.hovered).not.toBe(lines[6]);
 });
 
+test('with a long file mounted, the hover is not re-derived between the steps of a scroll, and once when the pane has come to rest (H169)', async ({ harness }) => {
+  // Marking the row under the pointer makes the browser lay the file's rows
+  // out again; in a long file that is milliseconds, paid between the steps
+  // of one scroll gesture for a row nobody stops at. Steps three frames
+  // apart: the pane is "still" for two frames between them, which is a rest
+  // only where no long file is mounted (the tests around this one).
+  const page = await openBridge(harness);
+  const { lines } = await up(page, { role: 'hugeAdded' });
+  await hover(page, lines[6]);
+  const result = await page.evaluate(async () => {
+    const { H, BH, T } = window;
+    const shadow = BH.bridge.findFileElement(T.id).shadowRoot;
+    let told = 0;
+    // What the bridge dispatches into the file's rows; a real pointer move is trusted.
+    shadow.addEventListener('pointermove', (event) => { if (!event.isTrusted) told++; }, { capture: true });
+    const hoveredBefore = BH.bridge.getHoveredRow(T.id)?.lineNumber ?? null;
+    // Every step must move the pane: a step at the end of the pane is a rest.
+    const room = H.root.scrollHeight - H.root.clientHeight - H.root.scrollTop;
+    const stride = Math.min(40, Math.floor(room / 13));
+    const during = [];
+    let moved = 0;
+    for (let step = 0; step < 12; step++) {
+      const from = H.root.scrollTop;
+      H.root.scrollTop += stride;
+      if (H.root.scrollTop !== from) moved++;
+      await H.raf(3);
+      during.push(told);
+    }
+    const hiddenWhileMoving = !T.gutter().shown;
+    await H.until(() => !BH.bridge._gutterHiddenByScroll);
+    return {
+      longFileMounted: BH.bridge._hasLongFileMounted(),
+      stride, moved, during, hiddenWhileMoving, toldAtRest: told, shown: T.gutter().shown, hoveredBefore, hovered: BH.bridge.getHoveredRow(T.id)?.lineNumber ?? null,
+    };
+  });
+  expect(result.longFileMounted).toBe(true);
+  expect(result.stride).toBeGreaterThanOrEqual(18);
+  expect(result.moved).toBe(12);
+  expect(result.during).toEqual(Array(12).fill(0));
+  expect(result.hiddenWhileMoving).toBe(true);
+  expect(result.toldAtRest).toBe(1);
+  expect(result.shown).toBe(true);
+  expect(result.hovered).not.toBe(result.hoveredBefore);
+});
+
+test('with no long file mounted, the pane is at rest after two frames', async ({ harness }) => {
+  const page = await openBridge(harness);
+  const { lines } = await up(page, { role: 'large' });
+  await hover(page, lines[6]);
+  const result = await page.evaluate(async () => {
+    const { H, BH, T } = window;
+    let told = 0;
+    BH.bridge.findFileElement(T.id).shadowRoot.addEventListener('pointermove', (event) => { if (!event.isTrusted) told++; }, { capture: true });
+    H.root.scrollTop += 40;
+    // The scroll event in the next frame, two frames without a move, and the frame the check runs in.
+    await H.until(() => BH.bridge._gutterHiddenByScroll);
+    await H.raf(4);
+    return { longFileMounted: BH.bridge._hasLongFileMounted(), told, hidden: BH.bridge._gutterHiddenByScroll, shown: T.gutter().shown };
+  });
+  expect(result).toEqual({ longFileMounted: false, told: 1, hidden: false, shown: true });
+});
+
 test('after a scroll that leaves the resting pointer on no row, the file drops its hovered row and shows no button', async ({ harness }) => {
   const page = await openBridge(harness);
   const { id, lines } = await up(page);
@@ -238,12 +296,10 @@ test('after a scroll that leaves the resting pointer on no row, the file drops i
     // event: the first file ends just above the pointer and stays mounted.
     const hostBottom = H.host(id).getBoundingClientRect().bottom;
     H.root.scrollTop += Math.round(hostBottom - y) + 30;
-    let last = -1;
-    for (let still = 0; still < 6;) {
-      await H.raf(1);
-      still = H.root.scrollTop === last ? still + 1 : 0;
-      last = H.root.scrollTop;
-    }
+    // The scroll event is dispatched in the next frame; then the bridge
+    // waits for the pane to rest (_watchScrollRest).
+    await H.until(() => BH.bridge._gutterHiddenByScroll);
+    await H.until(() => !BH.bridge._gutterHiddenByScroll);
     const first = H.host(id);
     const box = first ? first.getBoundingClientRect() : null;
     return {

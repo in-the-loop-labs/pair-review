@@ -73,6 +73,8 @@ afterEach(() => {
 function makeManager() {
   const manager = Object.create(PRManager.prototype);
   manager.currentPR = { id: 42, owner: 'acme', repo: 'widget', number: 7 };
+  // What the constructor sets and fileKind reads: no context file in the pane.
+  manager._contextItemIds = new Set();
   manager.ensureLinesVisible = vi.fn();
   manager.findFileElement = () => document.querySelector('#diff');
   manager.commentManager = new CommentManager(manager);

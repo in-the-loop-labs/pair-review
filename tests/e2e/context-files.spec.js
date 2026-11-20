@@ -36,7 +36,7 @@
 import { test, expect } from './fixtures.js';
 import {
   waitForDiffToRender, cleanupAllComments, enableChat, mockViewedStateApi, mockContextFilesApi,
-  mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound, setDiffView
+  mockAppConfig, mockHunkSummaries, mockTour, whenReviewEventsBound, setDiffView, seedComment, reloadComments
 } from './helpers.js';
 import {
   contextFile, expectContextFile, expectNoContextFile, contextFileState, contextLine, contextLineText,
@@ -45,7 +45,7 @@ import {
   expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
   fileWrapper, headerPosition, headerLanding, scrollState, waitForContentUpgrade, assertNoOrphanHosts, contextFileLayout,
-  waitForDiffType, scrollFileIntoView
+  waitForDiffType, scrollFileIntoView, openLineCommentForm
 } from './diff-dom.js';
 
 const MODES = [
@@ -328,6 +328,85 @@ for (const mode of MODES) {
       expect(after[index + 1].kind).toBe('card');
     });
 
+    test('the suggestion button on a context line fills the block with that line: in a stored range, in a gap small enough to be shown in full, and on a line the reader expanded', async ({ page }) => {
+      await open(page);
+      // 4-14 is stored. Lines 1-3 are a gap of three, which the file shows too.
+      await addContextRange(page, MIDDLE, 4, 14);
+      await expect.poll(async () => (await contextFileState(page, MIDDLE)).ranges)
+        .toEqual(expectedContextRanges([{ start: 4, end: 14 }], SHORT_LINES));
+
+      const blockOn = async (line) => {
+        await waitForDiffSettled(page);
+        const text = await contextLineText(page, MIDDLE, line);
+        expect(text.trim()).not.toBe('');
+        await openContextLineCommentForm(page, MIDDLE, line);
+        const textarea = contextFile(page, MIDDLE).locator('.user-comment-form textarea');
+        await expect(textarea).toBeVisible();
+        // The form is the form of the line asked for.
+        expect(await textarea.evaluate((el) => Number(el.dataset.line))).toBe(line);
+        await contextFile(page, MIDDLE).locator('.user-comment-form .suggestion-btn').click();
+        const value = await textarea.inputValue();
+        await contextFile(page, MIDDLE).locator('.user-comment-form .cancel-comment-btn').click();
+        await expect(page.locator('.user-comment-form')).toHaveCount(0);
+        return { value, expected: `\`\`\`suggestion\n${text}\n\`\`\`` };
+      };
+
+      // A line of the stored range.
+      let block = await blockOn(8);
+      expect(block.value).toBe(block.expected);
+      // A line of the small gap before it: in no stored range, on screen.
+      block = await blockOn(2);
+      expect(block.value).toBe(block.expected);
+      // A line the reader expanded by hand (the gap after the range, 15-30, has 16 lines: one control shows it).
+      await expandContextGapFully(page, MIDDLE, 0);
+      await expect.poll(async () => (await contextFileState(page, MIDDLE)).ranges).toEqual([{ start: 1, end: SHORT_LINES }]);
+      block = await blockOn(22);
+      expect(block.value).toBe(block.expected);
+    });
+
+    test('a comment on a context line: the button, the form and the card say that it may not be posted on its line; in a changed file none of them does', async ({ page }) => {
+      await open(page);
+      await addContextRange(page, MIDDLE, 5, 15);
+      await openContextLineCommentForm(page, MIDDLE, 8);
+      // The button that opened the form.
+      await expect(contextFile(page, MIDDLE).locator('.pierre-comment-btn').first())
+        .toHaveAttribute('title', 'Add comment (expanded context - may not submit to GitHub)');
+      // The form.
+      const warning = contextFile(page, MIDDLE).locator('.user-comment-form .expanded-context-warning');
+      await expect(warning).toBeVisible();
+      await expect(warning).toHaveText('Warning: Expanded context line - may not submit to GitHub');
+      expect(await warning.evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe('solid');
+      const body = `Context indicator ${Date.now()}`;
+      await contextFile(page, MIDDLE).locator('.user-comment-form textarea').fill(body);
+      await contextFile(page, MIDDLE).locator('.save-comment-btn').click();
+      const card = contextFile(page, MIDDLE).locator('.user-comment-row', { hasText: body });
+      await expect(card).toBeVisible();
+      const indicator = card.locator('.expanded-context-indicator');
+      await expect(indicator).toBeVisible();
+      await expect(indicator).toHaveAttribute('title', 'This expanded context comment will be posted to GitHub as a file-level comment');
+      // Drawn, with a size and a colour of its own (the rule is in pr.css).
+      const box = await indicator.boundingBox();
+      expect(box.width).toBeGreaterThan(10);
+      expect(await indicator.evaluate((el) => getComputedStyle(el).cursor)).toBe('help');
+
+      // After a reload it is there again.
+      await page.reload();
+      await waitForDiffToRender(page);
+      await expect(contextFile(page, MIDDLE).locator('.user-comment-row', { hasText: body }).locator('.expanded-context-indicator')).toBeVisible();
+
+      // A comment on a line of a changed file has none, as on main.
+      await seedComment(page, mode.reviewId, { file: 'src/utils.js', line: 5, body: 'In the diff' });
+      await reloadComments(page);
+      await scrollFileIntoView(page, 'src/utils.js');
+      const inDiff = fileWrapper(page, 'src/utils.js').locator('.user-comment-row', { hasText: 'In the diff' });
+      await expect(inDiff).toBeVisible();
+      await expect(inDiff.locator('.expanded-context-indicator')).toHaveCount(0);
+      await openLineCommentForm(page, { file: 'src/utils.js', line: 6 });
+      await expect(fileWrapper(page, 'src/utils.js').locator('.user-comment-form')).toBeVisible();
+      await expect(fileWrapper(page, 'src/utils.js').locator('.user-comment-form .expanded-context-warning')).toHaveCount(0);
+      await expect(fileWrapper(page, 'src/utils.js').locator('.pierre-comment-btn').first()).toHaveAttribute('title', 'Add comment');
+    });
+
     test('a comment whose line is outside the displayed range is still shown in the file', async ({ page }) => {
       // The server adds a context range when a comment is saved on a file
       // outside the diff. Model its result: a stored comment on line 22 and a
@@ -369,15 +448,75 @@ for (const mode of MODES) {
       await expect(wrapper.locator('.file-comments-zone', { hasText: body })).toBeVisible();
     });
 
+    test('a context file whose path ends like a changed file\'s has its own comment zone: the header button opens a form in it', async ({ page }) => {
+      // 'vendor/src/utils.js' ends in '/src/utils.js', a file of the diff. A
+      // path lookup that accepts either form of a path must not hand the
+      // context file the changed file's zone.
+      const TWIN = 'vendor/src/utils.js';
+      await open(page);
+      await addContextRange(page, TWIN, 5, 15);
+      await expectContextFile(page, TWIN);
+      // It sorts after every changed file: bring it into the viewer's window.
+      await scrollFileIntoView(page, TWIN);
+      const wrapper = contextFile(page, TWIN);
+      await expect(wrapper).toBeVisible();
+      await waitForDiffSettled(page);
+      // The scroll is animated, and scrollFileIntoView returns as soon as the
+      // file shows. A click on a control that is still moving does not just
+      // wait: from its second attempt on it scrolls the control somewhere
+      // else itself (scrollIntoView with block 'end', then 'center', then
+      // 'start'), here from the end of the pane to 364 px above it, and
+      // presses at once. In the one frame after such a jump the files below a
+      // file that is being drawn again are 39 to 45 px above their places; a
+      // press in that frame is released over the pane, and no control gets
+      // the click (10 of 3,798 runs, both modes). The file is the last and
+      // short, so its scroll ends at the end of the pane: the click waits
+      // for the pane to be there, and is then made once, on a control at rest.
+      await expect.poll(async () => {
+        const pane = await scrollState(page);
+        return pane.height - pane.client - pane.top;
+      }).toBeLessThan(1);
+
+      await wrapper.locator('.file-header-comment-btn').click();
+      const form = wrapper.locator('.file-comments-zone textarea');
+      await expect(form).toBeVisible();
+      await expect(fileWrapper(page, 'src/utils.js').locator('.file-comments-zone textarea')).toHaveCount(0);
+      const body = `Twin context file-level comment ${Date.now()}`;
+      await form.fill(body);
+      await wrapper.locator('.file-comments-zone .file-comment-form .submit-btn').click();
+      await expect(wrapper.locator('.file-comments-zone', { hasText: body })).toBeVisible();
+      await expect(fileWrapper(page, 'src/utils.js').locator('.file-comments-zone', { hasText: body })).toHaveCount(0);
+      const saved = await page.evaluate(async ({ rid, text }) => {
+        const data = await (await fetch(`/api/reviews/${rid}/comments`)).json();
+        return (data.comments || []).find((c) => c.body === text) || null;
+      }, { rid: mode.reviewId, text: body });
+      expect(saved).toMatchObject({ file: TWIN });
+      // The page holds one zone for the file, however often it is asked.
+      const zones = await page.evaluate((file) => {
+        const seen = [];
+        window.prManager.forEachFileCommentsZone((zone, name) => { if (name === file) seen.push(zone); });
+        return { count: seen.length, same: window.prManager._ensureFileCommentsZone(file, { context: true }) === seen[0] };
+      }, TWIN);
+      expect(zones).toEqual({ count: 1, same: true });
+    });
+
     test('the gutter chat control on a context line opens the chat panel', async ({ page }) => {
       await open(page);
       await enableChat(page);
       await addContextRange(page, MIDDLE, 5, 15);
       const row = contextLine(page, MIDDLE, 9);
-      await row.hover();
       const chat = contextLineChatButton(page, MIDDLE, 9);
-      await expect(chat).toBeVisible();
-      await chat.click();
+      // The gutter's controls are on the hovered line only and are hidden
+      // while the pane moves. A click that finds the control still being
+      // placed scrolls it into view again, which takes the line from under
+      // the pointer: the gesture is made again from the hover, as
+      // openContextLineCommentForm does for the comment control.
+      await expect(async () => {
+        await page.mouse.move(0, 0);
+        await row.hover({ timeout: 2000 });
+        await expect(chat).toBeVisible({ timeout: 2000 });
+        await chat.click({ timeout: 2000 });
+      }).toPass({ timeout: 20000 });
       await expect(page.locator('.chat-panel')).toBeVisible();
     });
 

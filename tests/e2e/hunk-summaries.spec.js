@@ -18,7 +18,12 @@
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender, whenReviewEventsBound } from './helpers.js';
-import { waitForFileRendered } from './diff-dom.js';
+import { waitForFileRendered, waitForDiffSettled, scrollFileIntoView, fileWrapper } from './diff-dom.js';
+import { allCorpora, routeDiff } from './fixtures/diffs.js';
+
+// A file at the top, a 4,000-line file and a file at the bottom: far enough
+// apart for the viewer to unmount the first while the last is on screen.
+const { eviction: EVICTION } = allCorpora();
 
 const PR_REVIEW_ID = 1;
 const PR_PATH = '/pr/test-owner/test-repo/1';
@@ -242,6 +247,54 @@ for (const mode of MODES) {
       const fileToggleAfterReload = fileWrapperAfterReload.locator('.file-header-summary-toggle');
       await fileToggleAfterReload.click();
       await expect(fileWrapperAfterReload).not.toHaveClass(/summaries-hidden-file/);
+    });
+
+    test('a file whose summaries were hidden in an earlier session: the mark is on that file only, also after it has left the screen', async ({ page }) => {
+      // The viewer reuses a file's element for another file. A class the
+      // page writes on the element itself goes with it to the next file
+      // (ledger H108): that file's summaries are then hidden while its own
+      // toggle says they are shown.
+      const { target, tail } = EVICTION.roles;
+      // The stored choice is read when the page's configuration has been
+      // answered. That answer is held here until the first files are drawn,
+      // which is the order in which the mark was written from outside.
+      let releaseConfig;
+      const configHeld = new Promise((resolve) => { releaseConfig = resolve; });
+      await enableSummariesConfig(page);
+      await page.route('**/api/config', async (route) => {
+        await configHeld;
+        return route.fallback();
+      });
+      await page.route('**/api/reviews/*/hunk-summaries', (route) => route.fulfill({ json: { summaries: [] } }));
+      await routeDiff(page, EVICTION);
+      await page.addInitScript(({ id, file }) => {
+        window.localStorage.setItem(`pair-review:summaries-hidden-files:${id}`, JSON.stringify([file]));
+      }, { id: mode.reviewId, file: target });
+
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await waitForFileRendered(page, target);
+      // Every file has been drawn with its contents: nothing draws the first
+      // file again after this.
+      await waitForDiffSettled(page);
+      await expect(fileWrapper(page, target)).not.toHaveClass(/summaries-hidden-file/);
+      releaseConfig();
+      await expect(fileWrapper(page, target)).toHaveClass(/summaries-hidden-file/);
+
+      const marked = () => page.evaluate(() => [...document.querySelectorAll('#diff-container .d2h-file-wrapper.summaries-hidden-file')]
+        .map((host) => host.dataset.fileName));
+      expect(await marked()).toEqual([target]);
+
+      // The last file of the pane: the first one is unmounted and its element is used again.
+      await scrollFileIntoView(page, tail);
+      await expect(fileWrapper(page, target)).toHaveCount(0);
+      await expect(fileWrapper(page, tail)).toBeVisible();
+      expect(await marked()).toEqual([]);
+
+      // Back at the first file the mark is there again, from data.
+      await scrollFileIntoView(page, target);
+      await expect(fileWrapper(page, target)).toHaveClass(/summaries-hidden-file/);
+      expect(await marked()).toEqual([target]);
     });
 
     test('shows generating pulse when job is in flight, clears on finish', async ({ page }) => {

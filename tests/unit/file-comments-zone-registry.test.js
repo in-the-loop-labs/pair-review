@@ -19,6 +19,7 @@ const path = require('path');
 const { makePageManager } = require('../utils/page-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
 const PostedComment = require('../../public/js/utils/posted-comment.js');
+const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 
 function makeManager() {
   const manager = makePageManager();
@@ -29,6 +30,9 @@ function makeManager() {
 
 beforeEach(() => {
   document.body.innerHTML = '';
+  // Loading the module puts the class on `window`; a test that wants the
+  // page's path matcher sets it itself.
+  delete window.DiffRenderer;
   window.PostedComment = PostedComment;
   PostedComment.setShowPostedOverride(null);
 });
@@ -157,6 +161,57 @@ describe('a context file that leaves the pane takes its zone out of the registry
   });
 });
 
+describe('a context file whose path ends like another file\'s has its own zone', () => {
+  // With the page's own path matcher, as in the browser.
+  beforeEach(() => { window.DiffRenderer = DiffRenderer; });
+  afterEach(() => { delete window.DiffRenderer; });
+
+  it('the zone that carries exactly the path wins over a file whose path it ends like', () => {
+    const manager = makeManager();
+    const root = manager.fileCommentManager.createFileCommentsZone('package.json');
+    const nested = manager.fileCommentManager.createFileCommentsZone('packages/foo/package.json', { context: true });
+    expect(manager.getFileCommentsZone('packages/foo/package.json')).toBe(nested);
+    expect(manager.getFileCommentsZone('package.json')).toBe(root);
+    // Another form of a path still finds its file, the changed file first.
+    expect(manager.getFileCommentsZone('./package.json')).toBe(root);
+    expect(manager.getFileCommentsZone('foo/package.json')).toBe(root);
+    expect(manager.getFileCommentsZone('./packages/foo/package.json')).toBe(nested);
+  });
+
+  it('two context files, one path the end of the other, in either order of creation', () => {
+    for (const order of [['index.js', 'src/index.js'], ['src/index.js', 'index.js']]) {
+      const manager = makeManager();
+      const zones = new Map(order.map((path) => [path, manager.fileCommentManager.createFileCommentsZone(path, { context: true })]));
+      for (const path of order) expect(manager.getFileCommentsZone(path)).toBe(zones.get(path));
+    }
+  });
+
+  it('_ensureFileCommentsZone answers the same zone however often it is asked, and the zone is released with its file', () => {
+    const manager = makeManager();
+    manager.changedFilesByPath.set('package.json', { file: 'package.json' });
+    const twin = 'packages/foo/package.json';
+    manager.pierreBridge = { files: new Map([['package.json', { id: 'package.json', kind: 'diff' }], [twin, { id: twin, kind: 'context' }]]) };
+    manager.contextFiles = [{ id: 1, file: twin }];
+    const root = manager._ensureFileCommentsZone('package.json');
+    const first = manager._ensureFileCommentsZone(twin, { context: true });
+    expect(first).not.toBe(root);
+    expect(manager._ensureFileCommentsZone(twin, { context: true })).toBe(first);
+    expect(manager._ensureFileCommentsZone(twin)).toBe(first);
+    const visited = [];
+    manager.forEachFileCommentsZone((zone, file) => visited.push(file));
+    expect(visited).toEqual(['package.json', twin]);
+
+    expect(manager._noteContextItems()).toEqual({ created: [twin], removed: [] });
+    manager.pierreBridge.files.delete(twin);
+    manager.contextFiles = [];
+    expect(manager._noteContextItems()).toEqual({ created: [], removed: [twin] });
+    expect(manager.getFileCommentsZone('package.json')).toBe(root);
+    const left = [];
+    manager.forEachFileCommentsZone((zone, file) => left.push(file));
+    expect(left).toEqual(['package.json']);
+  });
+});
+
 describe('the sources', () => {
   it('nothing queries the document, or a wrapper, for a file-comment zone', () => {
     const root = path.join(__dirname, '../../public/js');
@@ -180,5 +235,37 @@ describe('the sources', () => {
     };
     walk(root);
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('PRManager.countDisplayedSuggestions', () => {
+  it('counts the suggestion annotations of every file and the suggestion cards of every zone, in the document or not', () => {
+    const manager = makeManager();
+    const annotations = {
+      'src/a.js': [{ metadata: { type: 'suggestion' } }, { metadata: { type: 'comment' } }],
+      'src/far.js': [{ metadata: { type: 'suggestion' } }, { metadata: { type: 'suggestion' } }],
+    };
+    manager.pierreBridge = {
+      files: new Map(Object.keys(annotations).map((name) => [name, { id: name, kind: 'diff' }])),
+      getAnnotations: (name, type) => annotations[name].filter((a) => a.metadata.type === type),
+    };
+    const attached = manager.fileCommentManager.createFileCommentsZone('src/a.js');
+    document.body.appendChild(attached);
+    const detached = manager.fileCommentManager.createFileCommentsZone('src/far.js');
+    const card = (zone, suggestion) => {
+      const el = document.createElement('div');
+      el.className = suggestion ? 'file-comment-card ai-suggestion' : 'file-comment-card user-comment';
+      if (suggestion) el.dataset.suggestionId = '7';
+      zone.querySelector('.file-comments-container').appendChild(el);
+    };
+    card(attached, false);
+    card(detached, true);
+    expect(manager.countDisplayedSuggestions()).toBe(4);
+  });
+
+  it('is 0 without a viewer and without zones', () => {
+    const manager = makeManager();
+    manager.pierreBridge = null;
+    expect(manager.countDisplayedSuggestions()).toBe(0);
   });
 });

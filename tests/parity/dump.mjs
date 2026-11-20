@@ -139,7 +139,7 @@ async function measureLandings(page, corpus) {
   const sortedOrder = (await dom.filesInPane(page)).filter((e) => e.kind === 'diff').map((e) => e.file);
   // The jump target is the corpus's `target` file, or the file in the middle
   // of the pane. Not the last file: whether the last file can reach the top
-  // depends on the scroll extent below it, and on the current engine that
+  // depends on the scroll extent below it, and on the per-file renderer that
   // extent was not the same from one run to the next (edge corpus, PR mode:
   // the header landed flush in one dump and 365 px lower, at the end of the
   // diff, in the next).

@@ -10,8 +10,16 @@
  * rules, and the CodeView bridge passes them in its `unsafeCSS`. The specs
  * that pin the vendor behaviour behind it (layout.spec.js, gate G11) import
  * it from here.
+ *
+ * The rules key on a class of the file's host, which production's
+ * `PierreStyles.markRowless` sets after every draw. A spec that runs the
+ * viewer without the bridge loads the module into the page
+ * (`harness.open({ scripts: ROWLESS_SCRIPTS })`) and installs the same call
+ * as its post-render hook (`MARK_ROWLESS`, evaluated in the page).
  */
 const { ROWLESS_FIX } = require('../../../public/js/modules/pierre-styles.js');
+const ROWLESS_SCRIPTS = ['/app/js/modules/pierre-styles.js'];
+const MARK_ROWLESS = 'window.H.hooks.onPostRender = (node, instance, phase) => { window.PierreStyles.markRowless(node, phase !== "unmount"); };';
 
 /**
  * The rule as the plan's first draft had it. Kept so specs can show what it
@@ -42,4 +50,4 @@ function appStylesheets() {
   return pr;
 }
 
-module.exports = { ROWLESS_FIX, ROWLESS_FIX_FIRST_DRAFT, appStylesheets };
+module.exports = { ROWLESS_FIX, ROWLESS_SCRIPTS, MARK_ROWLESS, ROWLESS_FIX_FIRST_DRAFT, appStylesheets };

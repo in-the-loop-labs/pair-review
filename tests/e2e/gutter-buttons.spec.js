@@ -15,10 +15,12 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, setDiffView, hoverSplitDiffLine, waitForDiffType, analysesUrl } from './helpers.js';
+import { waitForDiffToRender, setDiffView, hoverSplitDiffLine, waitForDiffType, analysesUrl, mockViewedStateApi } from './helpers.js';
 import {
-  gutterButtonsState, additionsContentPoint, scrollDiffUnderPointer
+  gutterButtonsState, additionsContentPoint, scrollDiffUnderPointer, waitForFileRendered, waitForDiffSettled, mountedRowCount,
+  openLineCommentForm, rowCount
 } from './diff-dom.js';
+import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
 
 const FILE = 'src/utils.js';
 
@@ -158,6 +160,66 @@ for (const mode of MODES) {
       await page.evaluate(() => window.prManager.handleDiffViewChange('unified'));
       await waitForDiffType(page, 'single', 5000, { fileName: FILE });
       await expectNoStaleButtons(page);
+    });
+  });
+}
+
+/**
+ * How many elements the browser decided the style of again while `action`
+ * ran (the `elementCount` of every style pass in a trace of it).
+ */
+async function elementsRestyledDuring(page, action) {
+  const session = await page.context().newCDPSession(page);
+  const events = [];
+  session.on('Tracing.dataCollected', (data) => events.push(...data.value));
+  await session.send('Tracing.start', { categories: 'devtools.timeline', transferMode: 'ReportEvents' });
+  await action();
+  const complete = new Promise((resolve) => session.once('Tracing.tracingComplete', resolve));
+  await session.send('Tracing.end');
+  await complete;
+  await session.detach();
+  return events
+    .filter((event) => event.name === 'UpdateLayoutTree' && event.ph === 'X')
+    .reduce((sum, event) => sum + (event.args?.elementCount || 0), 0);
+}
+
+// What a change in one file costs the others (ledger H169). Every update of
+// a file goes through one pass of the viewer over the mounted files, which
+// touches the code block of each. A stylesheet rule that asks `:has()` about
+// what a file's code block holds makes the browser decide the block's style
+// again whenever something is added to it or taken out of it, and with a rule
+// for the block's descendants the style of every row: a comment form opened in
+// one file restyled every row of every mounted file, and the viewer's hover,
+// which moves a button from row to row, every row of its file.
+const EVICTION = allCorpora().eviction;
+
+for (const mode of MODES) {
+  test.describe(`The cost of a change in one file (${mode.name})`, () => {
+    test('a comment form opened in one file restyles that file, not the rows of every mounted file', async ({ page }) => {
+      // Tall enough for the 4,000-line file after the first one to be mounted with it.
+      await page.setViewportSize({ width: 1280, height: 1600 });
+      await mockViewedStateApi(page);
+      await routeDiff(page, EVICTION);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      const { target, big } = EVICTION.roles;
+      await waitForFileRendered(page, target);
+      await waitForFileRendered(page, big);
+      await waitForDiffSettled(page);
+      // Every row the viewer has in the document, of every mounted file.
+      const mountedRows = await mountedRowCount(page);
+      const targetRows = await rowCount(page, target);
+      // The other mounted files hold many times the rows of the one that changes.
+      expect(mountedRows).toBeGreaterThan(20 * targetRows);
+
+      const line = changedLines(EVICTION, target).additions[0];
+      const restyled = await elementsRestyledDuring(page, async () => {
+        await openLineCommentForm(page, { file: target, line });
+      });
+      // The form, its row and the changed file's rows. A row is four
+      // elements and more: every mounted row restyled is several times this.
+      expect(restyled).toBeGreaterThan(0);
+      expect(restyled).toBeLessThan(mountedRows);
     });
   });
 }

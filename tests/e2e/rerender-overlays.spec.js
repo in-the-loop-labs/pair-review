@@ -389,8 +389,8 @@ test.describe('Re-rendering the whole diff: external threads (PR mode)', () => {
    *
    * Three things make it certain here. The file is at rest, highlighted,
    * from its patch (contents held). The comments are reloaded once after
-   * that, as every comment save or delete does: on the current engine the
-   * file's annotation list is then no longer the array the engine last drew
+   * that, as every comment save or delete does: on the per-file renderer the
+   * file's annotation list was then no longer the array the engine last drew
    * from, which is what decides whether a card added during the window is
    * drawn at all (ledger H60). And the worker's results are held, so the
    * window stays open until the test has looked.

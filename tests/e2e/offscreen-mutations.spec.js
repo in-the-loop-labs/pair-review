@@ -4,10 +4,11 @@
  *
  * Every scenario has the same shape: something about a file changes while
  * that file is scrolled several viewports away, and the reader then comes
- * back to it. On a virtualized viewer the file is not in the DOM while it is
- * away, so anything that was only written to its cards is lost and anything
- * that reads its cards sees nothing. On the current engine the file stays in
- * the DOM; these scenarios pass there and state what must keep holding.
+ * back to it. On the virtualized viewer the file is not in the DOM while it
+ * is away, so anything that was only written to its cards is lost and
+ * anything that reads its cards sees nothing. (The scenarios were written on
+ * the per-file renderer, which kept the file in the DOM; they passed there
+ * and state what must keep holding.)
  *
  * The corpus is three files: the target at the top, a 4,000-line file, and a
  * tail file at the bottom (about 70,000 px from the target).
@@ -26,13 +27,13 @@
 import { test, expect } from './fixtures.js';
 import {
   MODES, waitForDiffToRender, seedComment, seedSuggestions, reloadComments, cleanupAllComments, expectResponse,
-  setMinimize, mockAppConfig, mockHunkSummaries, pushHunkSummaries, mockTour, mockExternalComments, externalThread
+  setMinimize, mockAppConfig, mockHunkSummaries, pushHunkSummaries, mockTour, mockExternalComments, externalThread, enableChat
 } from './helpers.js';
 import { allCorpora, changedLines, customCorpus, hunkHashes, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, inlineComment, inlineSuggestion, lineCards, fileSelector, inAnnotationGroup, scrollFileIntoView, scrollFileOutOfView,
   waitForFileRendered, waitForFileSettled, isLineVisible, revealOffHunkLine, lineNumberCell, assertNoOrphanHosts, expectLineCardsInPane,
-  openLineCommentForm, hasRenderedBody, waitForDiffSettled, scrollDiffToEdge, scrollState
+  openLineCommentForm, hasRenderedBody, waitForDiffSettled, scrollDiffToEdge, scrollState, scrollDiffTo
 } from './diff-dom.js';
 
 const { eviction: EVICTION, edge: EDGE } = allCorpora();
@@ -397,6 +398,59 @@ for (const mode of MODES) {
       await indicator.click();
       await expect(inlineComment(page, id)).toBeVisible();
       await setMinimize(page, false);
+    });
+
+    test('minimize switched off and on while a far file had its file comments open: on return they are behind the indicator again', async ({ page }) => {
+      await seedComment(page, mode.reviewId, { file: TARGET, fileLevel: true, body: 'File comment, minimized and far away' });
+      await reloadComments(page);
+      const card = fileWrapper(page, TARGET).locator('.file-comment-card', { hasText: 'File comment, minimized and far away' });
+      await expect(card).toBeVisible();
+      await setMinimize(page, true);
+      const indicator = fileWrapper(page, TARGET).locator('.file-comment-indicator');
+      await expect(indicator).toHaveCount(1);
+      await expect(card).toBeHidden();
+      await indicator.click();
+      await expect(card).toBeVisible();
+      await expect(indicator).toHaveClass(/expanded/);
+
+      // Away: the file's comment zone is not in the document while minimize
+      // is switched off (which closes whatever was opened) and on again.
+      await leave(page);
+      await expect(fileWrapper(page, TARGET)).toHaveCount(0);
+      await setMinimize(page, false);
+      await setMinimize(page, true);
+
+      await comeBack(page);
+      await expect(indicator).toHaveCount(1);
+      await expect(indicator).not.toHaveClass(/expanded/);
+      await expect(card).toBeHidden();
+      // One click opens it, as for any file.
+      await indicator.click();
+      await expect(card).toBeVisible();
+      await setMinimize(page, false);
+    });
+
+    test('the chat is told how many suggestions the analysis has, also when their files are far away', async ({ page }) => {
+      // The chat panel shows "N suggestions loaded" for the analysis it takes
+      // as context, and takes none when N is 0. The number is the review's,
+      // not the number of cards that happen to be in the document.
+      await enableChat(page);
+      await seedSuggestions(page, mode.reviewId, [
+        { file: TARGET, line_start: LINE_A, title: 'Near the top', body: 'First suggestion' },
+        { file: TAIL, line_start: TAIL_LINE, title: 'At the far end', body: 'Second suggestion' },
+        { file: TAIL, title: 'For the whole file', body: 'Third suggestion', is_file_level: true }
+      ]);
+      // Reading in the middle of the long file: neither file with a suggestion is on screen.
+      await scrollDiffTo(page, 30000);
+      await expect(fileWrapper(page, TARGET)).toHaveCount(0);
+      await expect(fileWrapper(page, TAIL)).toHaveCount(0);
+
+      await page.waitForFunction(() => !!window.chatPanel);
+      await page.evaluate(() => window.chatPanel.open());
+      await expect(page.locator('.chat-panel')).toBeVisible();
+      const card = page.locator('.chat-panel__context-card[data-analysis]');
+      await expect(card).toBeVisible();
+      await expect(card).toContainText('3 suggestions loaded');
     });
 
     test('deleting a comment and then revealing lines in the same file does not bring the comment back', async ({ page }) => {

@@ -4288,13 +4288,12 @@ class ChatPanel {
       return;
     }
 
-    // Count suggestions from the DOM (from the latest analysis run)
-    const suggestionEls = typeof document !== 'undefined' && document.querySelectorAll
-      ? document.querySelectorAll('.ai-suggestion[data-suggestion-id]')
-      : [];
-    const count = suggestionEls.length;
+    // Count the suggestions the diff pane holds (from the latest analysis
+    // run). The pane's data is asked, not the document: the viewer has cards
+    // in the document only for the files near the viewport.
+    const count = this._countDisplayedSuggestions();
     if (count === 0) {
-      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — no suggestions in DOM');
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — no suggestions displayed');
       return;
     }
     console.debug('[ChatPanel] _ensureAnalysisContext: adding card with', count, 'suggestions');
@@ -4327,6 +4326,21 @@ class ChatPanel {
     // Mark that analysis context is loaded for this session.
     // Use the actual run ID if available, otherwise fall back to 'dom'.
     tab.sessionAnalysisRunId = currentRunId || 'dom';
+  }
+
+  /**
+   * How many AI suggestions the diff pane shows: the page's count when the
+   * page has one (PRManager.countDisplayedSuggestions, from data), and the
+   * cards in the document otherwise.
+   * @returns {number}
+   * @private
+   */
+  _countDisplayedSuggestions() {
+    const manager = typeof window !== 'undefined' ? window.prManager : null;
+    if (typeof manager?.countDisplayedSuggestions === 'function') return manager.countDisplayedSuggestions();
+    return typeof document !== 'undefined' && document.querySelectorAll
+      ? document.querySelectorAll('.ai-suggestion[data-suggestion-id]').length
+      : 0;
   }
 
   /**

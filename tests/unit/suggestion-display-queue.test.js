@@ -34,7 +34,6 @@ function makePrManager(overrides = {}) {
   return {
     currentPR: { id: 'review-1' },
     pierreBridge: null,
-    ensureFileBodyRendered: vi.fn(async () => null),
     ensureLinesVisible: vi.fn(async () => {}),
     findFileElement: vi.fn(() => null),
     fileCommentManager: { loadFileComments: vi.fn() },

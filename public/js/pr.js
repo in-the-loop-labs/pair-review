@@ -1435,16 +1435,17 @@ class PRManager {
       document.body.classList.toggle('summaries-hidden', hidden);
       this._syncSummaryToolbarButton();
       this._restoreSummariesHiddenFiles();
-      // Apply per-file hidden state to wrappers already in the DOM, syncing
-      // both the wrapper class AND the toggle button so its visible state and
-      // aria-pressed match the persisted hidden flag.
+      // Apply per-file hidden state to the files that are drawn already,
+      // syncing both the file's class AND the toggle button so its visible
+      // state and aria-pressed match the persisted hidden flag. The file's
+      // element is the viewer's, which uses it again for another file: the
+      // class is the bridge's to stamp from data (_fileHostClasses), as in
+      // toggleFileSummaries, never written on the element from here.
       for (const filePath of this.summariesHiddenFiles) {
         this._noteSummaryToggleSynced(filePath);
-        const wrapper = document.querySelector(
-          `.d2h-file-wrapper[data-file-name="${CSS.escape(filePath)}"]`
-        );
+        this.pierreBridge?.refreshHostState(filePath);
+        const wrapper = this.pierreBridge?.findFileElement(filePath);
         if (!wrapper) continue;
-        wrapper.classList.add('summaries-hidden-file');
         const btn = wrapper.querySelector('.file-header-summary-toggle');
         if (btn) this._syncFileSummaryToggleButton(btn, filePath);
       }
@@ -3823,6 +3824,8 @@ class PRManager {
         escapeHtml: (text) => this.escapeHtml(text),
         PostedComment: window.PostedComment,
         suggestionManager: this.suggestionManager,
+        // The card of a comment on a context file says how it is posted.
+        isContextFile: (path) => this.fileKind(path) === 'context',
       }),
     });
     if (!bridge.available) {
@@ -4621,7 +4624,7 @@ class PRManager {
     return `${Math.ceil(bytes / 1024)} KB`;
   }
 
-  _createDeferredDiffPlaceholder(file, wrapper) {
+  _createDeferredDiffPlaceholder(file) {
     const metrics = this._getPatchMetrics(file);
     const placeholder = document.createElement('div');
     placeholder.className = 'no-diff large-diff-placeholder';
@@ -5706,6 +5709,8 @@ class PRManager {
         diffPosition: diffPosition,
         side: side,
         showSuggestionBtn: true,
+        // A context file's line has no position in the diff (the form warns).
+        outsideDiff: this.fileKind(fileName) === 'context',
       },
     });
   }
@@ -6290,6 +6295,25 @@ class PRManager {
    */
   getFileCommentsZone(filePath) {
     return this.fileCommentManager?.getZone?.(filePath) || null;
+  }
+
+  /**
+   * How many AI suggestions the diff pane shows, whether or not their files
+   * are on screen: a card under a line is an annotation of its file, a
+   * file-level card is in its file's comment zone. Collapsed cards (adopted,
+   * dismissed) count, as their cards do in the document.
+   * @returns {number}
+   */
+  countDisplayedSuggestions() {
+    let count = 0;
+    const bridge = this.pierreBridge;
+    if (bridge) {
+      for (const fileName of bridge.files.keys()) count += bridge.getAnnotations(fileName, 'suggestion').length;
+    }
+    this.forEachFileCommentsZone((zone) => {
+      count += zone.querySelectorAll('.ai-suggestion[data-suggestion-id]').length;
+    });
+    return count;
   }
 
   /**

@@ -1468,6 +1468,22 @@ describe('scroll targets, selection, code text', () => {
     expect(bridge.getCodeFromLines('src/a.js', 10, 12, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines('nope.js', 1, 2, 'RIGHT')).toBeNull();
   });
+
+  it('getCodeFromLines on a context file answers the lines it shows, without their line breaks, whatever the side', () => {
+    // Stored ranges 4-24 and 28-40 of 400 lines: 1-3 and 25-27 are gaps the viewer paints in full.
+    bridge.renderAll([diffEntry(A), contextEntry('ctx/c.js', { ranges: [{ startLine: 4, endLine: 24 }, { startLine: 28, endLine: 40 }] })]);
+    const text = (from, to) => numberedLines(400).slice(from - 1, to).join('\n');
+    expect(bridge.getCodeFromLines('ctx/c.js', 10, 12, 'RIGHT')).toBe(text(10, 12));
+    expect(bridge.getCodeFromLines('ctx/c.js', 10, 10, 'LEFT')).toBe(text(10, 10));
+    expect(bridge.getCodeFromLines('ctx/c.js', 2, 2, 'RIGHT')).toBe(text(2, 2));
+    expect(bridge.getCodeFromLines('ctx/c.js', 20, 30, 'RIGHT')).toBe(text(20, 30));
+    for (const line of [2, 26, 30]) expect(bridge.isLineVisible('ctx/c.js', line, 'RIGHT')).toBe(true);
+    // A hidden line has no text to offer; a range that runs into hidden lines holds the shown ones.
+    expect(bridge.isLineVisible('ctx/c.js', 41, 'RIGHT')).toBe(false);
+    expect(bridge.getCodeFromLines('ctx/c.js', 41, 60, 'RIGHT')).toBeNull();
+    expect(bridge.getCodeFromLines('ctx/c.js', 39, 45, 'RIGHT')).toBe(text(39, 40));
+    expect(bridge.getCodeFromLines('ctx/c.js', 399, 450, 'RIGHT')).toBeNull();
+  });
 });
 
 describe('navigation to what is not mounted, a collapse while inside a file, a flashed range', () => {
@@ -2172,7 +2188,6 @@ describe('side helpers', () => {
     expect(PierreBridge.toPierreSide(undefined)).toBe('additions');
     expect(PierreBridge.toPairReviewSide('deletions')).toBe('LEFT');
     expect(PierreBridge.toPairReviewSide('additions')).toBe('RIGHT');
-    expect(PierreBridge.normalizeSide('LEFT')).toBe('LEFT');
   });
 });
 
@@ -2772,5 +2787,353 @@ describe('a click the browser does not deliver because the file was drawn betwee
     expect(bridge._hostDraws.get(element)).toBe(2);
     bridge._onPostRender(element, {}, 'unmount', { item: { id: record.id }, element });
     expect(bridge._hostDraws.get(element)).toBe(2);
+  });
+});
+
+describe('what counts as the reader scrolling toward the end of the pane (H163)', () => {
+  let root;
+  const note = (event) => bridge._noteReaderScrollInput(event);
+  const button = () => env.window.document.createElement('button');
+  /** The pane as tall as `height`, the reader at `top`. */
+  const pane = (height, top) => {
+    Object.defineProperty(root, 'scrollHeight', { configurable: true, value: height });
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 100 });
+    root.scrollTop = top;
+  };
+  const running = () => { bridge._endFollow = { still: 0, top: 0, until: Infinity }; bridge._readerScroll = { at: performance.now(), end: 0 }; };
+
+  beforeEach(() => {
+    create();
+    bridge.renderAll([diffEntry(A)]);
+    root = bridge.root;
+  });
+
+  it('a wheel step down, a touch dragged up and a key that scrolls down outside a text field are the reader\'s scroll toward the end', () => {
+    for (const event of [
+      { type: 'wheel', deltaY: 120, target: root },
+      { type: 'keydown', key: 'End', target: env.window.document.body },
+      { type: 'keydown', key: 'PageDown', target: root },
+      { type: 'keydown', key: ' ', target: root },
+    ]) {
+      bridge._readerScroll = null;
+      note(event);
+      expect(bridge._readerScroll, `${event.type} ${event.key || ''}`).toMatchObject({ end: root.scrollHeight - root.clientHeight });
+    }
+    bridge._readerScroll = null;
+    note({ type: 'pointerdown', pointerType: 'touch', clientY: 400, target: button() });
+    note({ type: 'touchmove', touches: [{ clientY: 380 }], target: root });
+    expect(bridge._readerScroll, 'a touch dragged up').toMatchObject({ end: root.scrollHeight - root.clientHeight });
+  });
+
+  it('everything else is not, and forgets the last scroll toward the end', () => {
+    const textarea = env.window.document.createElement('textarea');
+    for (const event of [
+      { type: 'wheel', deltaY: -120, target: root },
+      { type: 'keydown', key: 'End', target: textarea },
+      { type: 'keydown', key: 'a', target: env.window.document.body },
+      { type: 'keydown', key: 'Home', target: root },
+      { type: 'keydown', key: 'PageUp', target: root },
+      { type: 'keydown', key: 'ArrowUp', target: root },
+      { type: 'keydown', key: ' ', shiftKey: true, target: root },
+      { type: 'pointerdown', target: button() },
+      // A press on the pane's own scrollbar.
+      { type: 'pointerdown', target: root },
+    ]) {
+      running();
+      note(event);
+      expect(bridge._readerScroll, `${event.type} ${event.key || ''}`).toBeNull();
+      expect(bridge._endFollow, `${event.type} ${event.key || ''}`).toBeNull();
+    }
+    // A touch dragged down.
+    running();
+    note({ type: 'pointerdown', pointerType: 'touch', clientY: 400, target: button() });
+    note({ type: 'wheel', deltaY: 120, target: root });
+    note({ type: 'touchmove', touches: [{ clientY: 430 }], target: root });
+    expect(bridge._readerScroll).toBeNull();
+  });
+
+  it('a wheel step sideways and a touch move without a direction change nothing', () => {
+    running();
+    const before = bridge._readerScroll;
+    const follow = bridge._endFollow;
+    note({ type: 'wheel', deltaY: 0, deltaX: 40, target: root });
+    note({ type: 'touchmove', touches: [{ clientY: 10 }], target: root });
+    expect(bridge._readerScroll).toBe(before);
+    expect(bridge._endFollow).toBe(follow);
+  });
+
+  it('a scroll toward the end while a follow is running leaves it running', () => {
+    running();
+    const follow = bridge._endFollow;
+    note({ type: 'wheel', deltaY: 120, target: root });
+    expect(bridge._endFollow).toBe(follow);
+  });
+
+  it('a scroll target and a view restore of the application\'s end a follow', () => {
+    running();
+    bridge.scrollToItem('src/a.js');
+    expect(bridge._endFollow).toBeNull();
+    expect(bridge._readerScroll).toBeNull();
+  });
+
+  it('a scroll that is not the reader\'s, or does not reach the end, starts no follow', () => {
+    pane(1000, 900);
+    // No input of the reader's at all.
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).toBeNull();
+    // An input long ago: forgotten.
+    bridge._readerScroll = { at: performance.now() - 60000, end: 900 };
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).toBeNull();
+    expect(bridge._readerScroll).toBeNull();
+    // An input just now, and the pane short of its end.
+    pane(1000, 500);
+    note({ type: 'keydown', key: 'End', target: root });
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).toBeNull();
+    expect(bridge._readerScroll).not.toBeNull();
+  });
+
+  it('the scroll that reaches the end starts one follow and uses the input up: a scroll up right after End is not undone', () => {
+    // The verifier's finding: the End key, the pane grows, Page Up within the
+    // window. The remembered (old, smaller) end must not count again.
+    pane(1000, 0);
+    note({ type: 'keydown', key: 'End', target: root });
+    root.scrollTop = 900;
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).not.toBeNull();
+    expect(bridge._readerScroll).toBeNull();
+    // The pane has grown and the follow has put the reader at the new end and ended.
+    pane(3000, 2900);
+    bridge._endFollow = null;
+    // Page Up: its key, then its scroll event, at a position beyond the end as it was at the End key.
+    note({ type: 'keydown', key: 'PageUp', target: root });
+    root.scrollTop = 2400;
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).toBeNull();
+    // The same with no key at all between (a scroll the bridge has no input for).
+    root.scrollTop = 2300;
+    bridge._followEndAfterReaderScroll();
+    expect(bridge._endFollow).toBeNull();
+  });
+
+  describe('the pane\'s scrollbar, held and let go', () => {
+    /** The pane's box on the screen, with a scrollbar `own` px wide beside the content (0: drawn over the content, or not drawn). */
+    const box = (own) => {
+      root.getBoundingClientRect = () => ({ left: 0, right: 800, top: 100, bottom: 700, width: 800, height: 600 });
+      Object.defineProperty(root, 'clientWidth', { configurable: true, value: 800 - own });
+      Object.defineProperty(root, 'clientLeft', { configurable: true, value: 0 });
+    };
+    /** A press on the scrollbar as the browser sends it: its target is the pane itself, at the pane's right edge. */
+    const press = (at = {}) => note({ type: 'pointerdown', target: root, button: 0, clientX: 796, clientY: 110, ...at });
+    /** The thumb moves the pane: the position, then its scroll event. */
+    const drag = (top) => { root.scrollTop = top; bridge._handleRootScroll(); };
+    const letGo = (at = {}) => bridge._handlePointerUp({ type: 'pointerup', button: 0, clientX: 796, clientY: 400, ...at });
+    /** The page is told of a pointer move, as it is of every move of a pointer that holds no scrollbar. */
+    const moveTold = (buttons) => bridge._handlePointerMove({ isTrusted: true, isPrimary: true, buttons, clientX: 5, clientY: 5 });
+
+    beforeEach(() => box(8));
+
+    it('nothing is followed while the scrollbar is held; let go at the end of the pane, it is', () => {
+      pane(1000, 0);
+      press();
+      expect(bridge._scrollbarPress).toMatchObject({ from: 0, moved: false, atEnd: false });
+      // Dragged to the end, still held: the scroll events start nothing.
+      drag(900);
+      expect(bridge._scrollbarPress).toMatchObject({ moved: true });
+      expect(bridge._endFollow).toBeNull();
+      // Dragged back up and let go short of the end: nothing.
+      drag(700);
+      letGo();
+      expect(bridge._scrollbarPress).toBeNull();
+      expect(bridge._endFollow).toBeNull();
+      // Held again, dragged to the end and let go there: followed.
+      press();
+      drag(900);
+      letGo();
+      expect(bridge._endFollow).not.toBeNull();
+      // The same when the thumb's last scroll has not been reported by the release.
+      bridge._endFollow = null;
+      pane(1000, 0);
+      press();
+      root.scrollTop = 900;
+      letGo();
+      expect(bridge._endFollow).not.toBeNull();
+      // A press that was not on the scrollbar, released with the pane at its end: nothing.
+      bridge._endFollow = null;
+      note({ type: 'pointerdown', target: button(), button: 0, clientX: 796, clientY: 110 });
+      expect(bridge._scrollbarPress).toBeNull();
+      letGo();
+      expect(bridge._endFollow).toBeNull();
+      // A cancelled press on the scrollbar: nothing.
+      pane(1000, 0);
+      press();
+      drag(900);
+      bridge._handlePointerUp({ type: 'pointercancel' });
+      expect(bridge._scrollbarPress).toBeNull();
+      expect(bridge._endFollow).toBeNull();
+      // A press on the scrollbar whose release never arrived: the pointer
+      // moving with no button down ends it, and the release of a later press
+      // elsewhere is not its release.
+      pane(1000, 0);
+      press();
+      drag(900);
+      pane(3000, 900);
+      expect(bridge._scrollbarPress).not.toBeNull();
+      moveTold(0);
+      expect(bridge._scrollbarPress).toBeNull();
+      letGo();
+      expect(bridge._endFollow).toBeNull();
+    });
+
+    it('a press that holds no scrollbar is let go with nothing done, wherever it began and wherever it is let go', () => {
+      // The verifier's finding (phase 9, round 2). Where the scrollbar has no
+      // width of its own the strip it may be in is the pane's own padding. A
+      // press there, dragged down and let go at the pane's bottom edge, sent
+      // the reader to the end of the review.
+      box(0);
+      const atBottomEdge = { clientY: 700 };
+      // The page is told of the pointer's moves: the press holds no scrollbar.
+      pane(45000, 3122);
+      press({ clientX: 795, clientY: 300 });
+      expect(bridge._scrollbarPress).not.toBeNull();
+      moveTold(1);
+      expect(bridge._scrollbarPress).toBeNull();
+      letGo(atBottomEdge);
+      expect(bridge._endFollow).toBeNull();
+      // The same press dragged into the code: the browser scrolls the pane
+      // under the text selection, and the release is still nobody's scrollbar.
+      pane(45000, 3122);
+      press({ clientX: 795, clientY: 300 });
+      moveTold(1);
+      drag(3227);
+      letGo({ clientX: 400, ...atBottomEdge });
+      expect(bridge._endFollow).toBeNull();
+      // A selection that scrolled the pane all the way to its end.
+      pane(45000, 3122);
+      press({ clientX: 795, clientY: 300 });
+      moveTold(1);
+      drag(44900);
+      letGo({ clientX: 400, ...atBottomEdge });
+      expect(bridge._endFollow).toBeNull();
+      // No move told and nothing moved under the press (a move the page
+      // never heard of): pulled to the bottom edge or not, nothing is done.
+      pane(45000, 3122);
+      press({ clientX: 795, clientY: 300 });
+      letGo(atBottomEdge);
+      expect(bridge._endFollow).toBeNull();
+      // Pressed and let go with the pane at its end: nothing moved, nothing is done.
+      pane(45000, 44900);
+      press({ clientX: 795, clientY: 300 });
+      letGo({ clientY: 300 });
+      expect(bridge._endFollow).toBeNull();
+      // A press on the pane itself that is not where a scrollbar is: the
+      // space between two files, the left padding, beyond the pane's edge.
+      for (const clientX of [400, 5, 783, 801]) {
+        press({ clientX });
+        expect(bridge._scrollbarPress, `x ${clientX}`).toBeNull();
+      }
+      // A press of another button (the middle one scrolls the pane by itself on some systems).
+      press({ clientX: 795, button: 1 });
+      expect(bridge._scrollbarPress).toBeNull();
+      // A press whose event says nothing of where it was.
+      press({ clientX: undefined });
+      expect(bridge._scrollbarPress).toBeNull();
+      press({ clientY: undefined });
+      expect(bridge._scrollbarPress).toBeNull();
+      // Beside a scrollbar that has a width of its own, the padding is not the scrollbar.
+      box(8);
+      press({ clientX: 788 });
+      expect(bridge._scrollbarPress).toBeNull();
+      press({ clientX: 793 });
+      expect(bridge._scrollbarPress).not.toBeNull();
+    });
+
+    it('a thumb taken to the end of its track, under which the pane then grew, is followed when it is let go', () => {
+      // The files at the end are measured in the frames after the thumb
+      // arrives: the pane grows, nothing scrolls, and at the release the pane
+      // is short of its end by that growth.
+      pane(1000, 0);
+      press();
+      drag(900);
+      expect(bridge._scrollbarPress.atEnd).toBe(true);
+      pane(3000, 900);
+      expect(bridge._endFollow).toBeNull();
+      letGo();
+      expect(bridge._endFollow).not.toBeNull();
+      bridge._endFollow = null;
+
+      // The same thumb dragged back up before the release: its last scroll did not leave the pane at its end.
+      pane(1000, 0);
+      press();
+      drag(900);
+      pane(3000, 900);
+      drag(600);
+      expect(bridge._scrollbarPress.atEnd).toBe(false);
+      letGo();
+      expect(bridge._endFollow).toBeNull();
+
+      // The browser moves the thumb down again by as much as the pointer is
+      // ahead of it, not all the way: a scroll down that leaves the pane short
+      // of its end takes nothing back.
+      pane(1000, 0);
+      press();
+      drag(900);
+      pane(3000, 1100);
+      bridge._handleRootScroll();
+      expect(bridge._scrollbarPress.atEnd).toBe(true);
+      letGo();
+      expect(bridge._endFollow).not.toBeNull();
+      bridge._endFollow = null;
+
+      // A scroll that stops short of the end of a pane that had already grown: not the end.
+      pane(1000, 0);
+      press();
+      pane(3000, 950);
+      bridge._handleRootScroll();
+      expect(bridge._scrollbarPress.atEnd).toBe(false);
+      letGo();
+      expect(bridge._endFollow).toBeNull();
+    });
+
+    it('a scrollbar pulled down to the pane\'s bottom edge is followed when it is let go, wherever the thumb had got to', () => {
+      // The pane grew while the thumb was dragged: the thumb slid back up
+      // under the pointer, and the pointer is at the bottom of the track
+      // before the thumb is.
+      const pull = (down, up, { from = 0, to = 2500 } = {}) => {
+        bridge._endFollow = null;
+        pane(3000, from);
+        press(down);
+        if (to !== from) drag(to);
+        letGo({ clientY: 700, ...up });
+        return bridge._endFollow;
+      };
+      // Let go at the bottom edge, and below it (the pointer may leave the pane).
+      expect(pull({}, { clientY: 699 })).not.toBeNull();
+      expect(pull({}, { clientY: 860 })).not.toBeNull();
+      // Let go above the bottom edge: where the thumb is.
+      expect(pull({}, { clientY: 690 })).toBeNull();
+      // A press at the bottom of the track that did not travel (the track clicked there, which pages the pane down).
+      expect(pull({ clientY: 698 }, { clientY: 699 })).toBeNull();
+      // The pane did not go down with the pointer: nothing was held, or it was taken up on the way.
+      expect(pull({}, { clientY: 700 }, { from: 1000, to: 1000 })).toBeNull();
+      expect(pull({}, { clientY: 700 }, { from: 1000, to: 400 })).toBeNull();
+      // A scrollbar drawn over the content has no width of its own: the
+      // strip at the pane's edge is where it is, and what was held there
+      // was a scrollbar when the pane moved under it and the page was told
+      // of no pointer move.
+      box(0);
+      expect(pull({ clientX: 790 }, { clientY: 700 })).not.toBeNull();
+      expect(pull({ clientX: 770 }, { clientY: 700 })).toBeNull();
+      bridge._endFollow = null;
+      pane(3000, 0);
+      press({ clientX: 790 });
+      moveTold(1);
+      drag(2500);
+      letGo({ clientY: 700 });
+      expect(bridge._endFollow).toBeNull();
+      // A release that says nothing of where it was decides nothing.
+      expect(pull({}, { clientY: undefined })).toBeNull();
+    });
   });
 });

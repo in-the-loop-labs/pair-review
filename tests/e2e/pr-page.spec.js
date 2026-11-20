@@ -10,7 +10,7 @@ import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 import {
   fileWrapper, lineNumberCells, rowsOfType, separators, expandableSeparators, expandControls,
-  waitForContentUpgrade, waitForDiffSettled, clickExpandControl, headerLanding, scrollState
+  waitForContentUpgrade, waitForDiffSettled, clickExpandControl, clickDelivered, headerLanding, scrollState
 } from './diff-dom.js';
 
 const DIFF_MODES = [
@@ -163,7 +163,10 @@ test.describe('PR Page', () => {
         // Not while the diff is still drawing itself: every draw of a file
         // re-creates its rows and separators, and a click whose press and
         // release fall on either side of one is not delivered, on either
-        // engine (ledger H43, H143; 1 of 120 executions under load).
+        // engine (ledger H43, H143; 1 of 120 executions under load). The
+        // file is drawn once more after these two waits (measured: its rows
+        // replaced 19 to 54 ms later, and 30 to 74 ms later on main), so the
+        // click below is made again when the browser sent none.
         await waitForContentUpgrade(page, 'src/utils.js');
         await waitForDiffSettled(page);
 
@@ -177,7 +180,7 @@ test.describe('PR Page', () => {
         const expandBtn = (await expandUp.count()) > 0
           ? expandUp.first()
           : expandControls(targetSeparator, 'any').first();
-        await expandBtn.click();
+        await clickDelivered(page, expandBtn);
 
         // Poll until context-expanded lines are present AND line-number cell count grew.
         await expect

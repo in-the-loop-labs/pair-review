@@ -229,7 +229,6 @@ describe('context entry collapse independence (#540)', () => {
     beforeEach(() => {
       manager.currentPR = { id: 1 };
       manager.diffFiles = [];
-      manager.renderContextFile = vi.fn().mockResolvedValue(undefined);
       manager.rebuildFileListWithContext = vi.fn();
       manager.loadUserComments = vi.fn().mockResolvedValue(undefined);
     });

@@ -3,8 +3,8 @@
  * Per-PR cache of the blob info the PR-mode file-content endpoints need.
  *
  * `pr_metadata.pr_data` holds the whole PR diff, and the file-content
- * endpoints are hit on every lazy file body, gap expansion, context file and
- * chat snippet. Parsing the row and scanning the diff on each request is
+ * endpoints are hit for every changed file's full contents, every context
+ * file and every chat snippet. Parsing the row and scanning the diff on each request is
  * wasteful on large PRs, so this module parses it once per PR into a
  * path -> blob info index plus the base SHA, and serves lookups from that.
  *

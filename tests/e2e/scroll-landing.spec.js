@@ -17,11 +17,11 @@ import { test, expect } from './fixtures.js';
 import {
   MODES, waitForDiffToRender, setDiffView, seedSuggestions, cleanupAllComments, mockViewedStateApi
 } from './helpers.js';
-import { allCorpora, changedLines, routeDiff } from './fixtures/diffs.js';
+import { allCorpora, changedLines, customCorpus, routeDiff, wrappingFilesCorpus } from './fixtures/diffs.js';
 import {
   fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, rowCount, scrollDiffTo,
   scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts, clickExpandControl,
-  scrollThroughDiff, ensureMounted
+  scrollThroughDiff, ensureMounted, lineNumberCell
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -44,6 +44,35 @@ async function scrollSettled(page) {
     return still;
   }, { intervals: [150, 150, 150, 250] }).toBe(true);
   return last;
+}
+
+/**
+ * Watch the pane's `scroll` and `scrollend` events from now on. The function
+ * returned waits until no scroll of the pane is in flight: its last
+ * `scrollend` is not older than its last `scroll`, for two frames.
+ *
+ * What a test waits for before it presses a key that scrolls. Chromium drops
+ * a scroll key that arrives while the smooth scroll of the key before it is
+ * finishing (measured on a page with nothing of the application: 28 of 30
+ * Page Ups pressed in the frame the End key's scroll arrived did nothing; 30
+ * of 30 pressed after the `scrollend` moved the pane), and a position that
+ * has not changed between two looks does not say that scroll is over.
+ */
+async function watchPaneScrolls(page) {
+  const pane = page.locator('#diff-container');
+  await pane.evaluate((element) => {
+    const seen = { scroll: 0, end: 0 };
+    element.addEventListener('scroll', () => { seen.scroll = performance.now(); }, { passive: true });
+    element.addEventListener('scrollend', () => { seen.end = performance.now(); });
+    window.__paneScrolls = seen;
+  });
+  return () => pane.evaluate(async () => {
+    const seen = window.__paneScrolls;
+    for (let quiet = 0; quiet < 2;) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      quiet = seen.end >= seen.scroll ? quiet + 1 : 0;
+    }
+  });
 }
 
 /** Every file's top edge in document coordinates (independent of the scroll position). */
@@ -278,6 +307,166 @@ for (const mode of MODES) {
       // The collapsed header (53 px) and the 24 px between two files.
       expect(following.belowPinned).toBeGreaterThan(60);
       expect(following.belowPinned).toBeLessThan(100);
+    });
+  });
+}
+
+/** Eight added files whose heights are estimates until the reader gets to them (ledger H163). */
+const WRAPPING = wrappingFilesCorpus('wrapping-files');
+
+for (const mode of MODES) {
+  test.describe(`The end of the pane (${mode.name})`, () => {
+    test.beforeEach(async ({ page }) => {
+      await mockViewedStateApi(page);
+      await routeDiff(page, WRAPPING.corpus);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+    });
+
+    for (const gesture of ['the wheel', 'the End key']) {
+      test(`one scroll to the end with ${gesture} ends at the end, with the last line of the last file in view`, async ({ page }) => {
+        const before = await scrollState(page);
+        const box = await page.locator('#diff-container').boundingBox();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        if (gesture === 'the wheel') {
+          await page.mouse.wheel(0, 10000000);
+        } else {
+          await page.locator('#diff-container').evaluate((pane) => { pane.tabIndex = -1; pane.focus({ preventScroll: true }); });
+          await page.keyboard.press('End');
+        }
+        const top = await scrollSettled(page);
+        const after = await scrollState(page);
+        // The files at the end were measured after the scroll: the pane is taller than it was estimated...
+        expect(after.height).toBeGreaterThan(before.height + 500);
+        // ...and the reader is at its end, not where the end was estimated to be.
+        expect(Math.round(after.height - after.client - top)).toBeLessThanOrEqual(1);
+        await expect(fileWrapper(page, WRAPPING.last)).toBeVisible();
+        await expect(lineNumberCell(fileWrapper(page, WRAPPING.last), 600).first()).toBeInViewport();
+        await assertNoOrphanHosts(page);
+      });
+    }
+
+    for (const moment of ['as soon as the End key\'s scroll is over', 'when the pane has come to rest']) {
+      test(`a Page Up pressed ${moment} after the End key took the reader to the end is not undone`, async ({ page }) => {
+        const before = await scrollState(page);
+        const box = await page.locator('#diff-container').boundingBox();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        const scrollOver = await watchPaneScrolls(page);
+        await page.locator('#diff-container').evaluate((pane) => { pane.tabIndex = -1; pane.focus({ preventScroll: true }); });
+        await page.keyboard.press('End');
+        // The files at the end were measured, and the reader was kept at the end.
+        await expect.poll(async () => {
+          const now = await scrollState(page);
+          return now.height > before.height + 500 && Math.round(now.height - now.client - now.top) <= 1;
+        }, { intervals: [50] }).toBe(true);
+        // The browser's own scroll for the End key must be over before the
+        // next key (scrollOver; ledger H163). That moment is inside the time
+        // the pane is kept at its end; or wait for a full rest.
+        await scrollOver();
+        if (moment === 'when the pane has come to rest') {
+          await scrollSettled(page);
+          await scrollOver();
+        }
+        const short = async () => { const now = await scrollState(page); return Math.round(now.height - now.client - now.top); };
+        await page.keyboard.press('PageUp');
+        // The scroll of a key begins when the browser gets to it (on a busy
+        // machine, later than one look at the position): wait for the move,
+        // then for its end, then judge. Judged by the distance from the end
+        // and by what is in view: files above may still be measured, which
+        // moves the position and not what the reader sees.
+        await expect.poll(short, { timeout: 10000 }).toBeGreaterThan(300);
+        await scrollOver();
+        await scrollSettled(page);
+        // The reader went up and stays up: the end of the pane is no longer theirs.
+        const first = await short();
+        expect(first).toBeGreaterThan(300);
+        await expect(lineNumberCell(fileWrapper(page, WRAPPING.last), 600).first()).not.toBeInViewport();
+        await scrollOver();
+        await page.keyboard.press('PageUp');
+        await expect.poll(short, { timeout: 10000 }).toBeGreaterThan(first + 300);
+        await scrollOver();
+        await scrollSettled(page);
+        expect(await short()).toBeGreaterThan(first + 300);
+        await assertNoOrphanHosts(page);
+      });
+    }
+  });
+}
+
+/**
+ * A press on the pane itself at its right edge, where a scrollbar would be.
+ * The browser of these tests draws none (a scrollbar with no width of its
+ * own, as one drawn over the content has none): what is there is the pane's
+ * padding, and a press on it holds nothing. Let go at the pane's bottom edge
+ * it was taken for a scrollbar pulled to the end of its track, and the reader
+ * was sent to the end of the review (ledger H163; found by the phase-9
+ * verifier). tests/e2e/scrollbar-drag.spec.js drags a real thumb.
+ */
+for (const mode of MODES) {
+  test.describe(`A press on the pane's edge that holds no scrollbar (${mode.name})`, () => {
+    let pane;
+    let box;
+    let from;
+
+    test.beforeEach(async ({ page }) => {
+      await mockViewedStateApi(page);
+      await routeDiff(page, MANY);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      pane = page.locator('#diff-container');
+      // The reader is somewhere in the middle of the review.
+      await pane.evaluate((element) => { element.scrollTop = 3000; });
+      await expect.poll(async () => (await scrollState(page)).top).toBeGreaterThan(2000);
+      from = await scrollSettled(page);
+      box = await pane.boundingBox();
+      expect(await pane.evaluate((element) => element.offsetWidth - element.clientWidth)).toBe(0);
+      // The pane's position at the release, read in the release's own event.
+      await pane.evaluate((element) => {
+        window.__paneAtRelease = null;
+        window.addEventListener('pointerup', () => { window.__paneAtRelease = element.scrollTop; }, { capture: true, once: true });
+      });
+    });
+
+    /** Press 5 px inside the pane's right edge and drag to `endX` at the pane's bottom edge, in eight moves a frame apart. */
+    async function pressAndDrag(page, endX) {
+      const x = box.x + box.width - 5;
+      const y = box.y + 200;
+      expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, { x, y })).toBe('diff-container');
+      const endY = box.y + box.height - 0.5;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      for (let step = 1; step <= 8; step++) {
+        await page.mouse.move(x + ((endX - x) * step) / 8, y + ((endY - y) * step) / 8);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      }
+    }
+
+    test('dragged straight down to the pane\'s bottom edge and let go, the reader is where they were', async ({ page }) => {
+      await pressAndDrag(page, box.x + box.width - 5);
+      // Nothing was held: the pane has not moved under the press.
+      expect((await scrollState(page)).top).toBe(from);
+      await page.mouse.up();
+      expect(await page.evaluate(() => window.__paneAtRelease)).toBe(from);
+      // A release taken for the scrollbar's writes the end of the pane in its own task.
+      expect(await scrollSettled(page)).toBe(from);
+      const after = await scrollState(page);
+      expect(Math.round(after.height - after.client - after.top)).toBeGreaterThan(10000);
+      await assertNoOrphanHosts(page);
+    });
+
+    test('dragged down and into the code (a text selection) and let go at the pane\'s bottom edge, the reader is not sent to the end', async ({ page }) => {
+      await pressAndDrag(page, box.x + box.width - 400);
+      await page.mouse.up();
+      const atRelease = await page.evaluate(() => window.__paneAtRelease);
+      const top = await scrollSettled(page);
+      // The browser scrolls the pane under a selection dragged to its edge,
+      // a few lines; at the release that is over, and nothing else moves it.
+      expect(Math.abs(top - atRelease)).toBeLessThanOrEqual(120);
+      expect(top).toBeLessThan(from + 2000);
+      const after = await scrollState(page);
+      expect(Math.round(after.height - after.client - after.top)).toBeGreaterThan(10000);
+      expect(await page.evaluate(() => String(window.getSelection()).length)).toBeGreaterThan(0);
+      await assertNoOrphanHosts(page);
     });
   });
 }
