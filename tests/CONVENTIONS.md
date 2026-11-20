@@ -142,9 +142,9 @@ because violating it produced a real, observed flake or measurable waste.
   `window.PierreDiffs`; it asks `diff-dom.js` (`rows`, `lineNumberCell`,
   `fileLayout`, `selectLineRange`, `contextFileState`, ...).
   `tests/unit/e2e-vendor-dom-boundary.test.js` fails otherwise, comments
-  included. The same specs must run unchanged against two diff engines; when
-  the engine changes, that one file changes. A spec may name what the
-  application owns on both engines: `.d2h-file-wrapper[data-file-name]`,
+  included. The specs ran unchanged against two diff engines while the
+  viewer was replaced; when the vendor's DOM changes, that one file changes.
+  A spec may name what the application owns: `.d2h-file-wrapper[data-file-name]`,
   `.d2h-file-header`, card classes, `.pierre-comment-btn`, `#diff-container`.
   The same test forbids `inPage` / `waitInPage` and the fields of the bridge's
   file record (`baseMetadata`, `fileDiff`, `getRenderedDiff`) outside
@@ -202,6 +202,20 @@ because violating it produced a real, observed flake or measurable waste.
   one `expect(...).toPass()`; the final action of an attempt is the click
   itself, so it cannot happen twice. Do not retry an assertion about what
   the application did.
+- **A click on a control inside a file is read from the page, not from
+  Playwright.** The browser sends no `click` when the pressed element was
+  replaced between the press and the release (ledger H143, on main too), and
+  Playwright reports such a click as made. A file is drawn once more after
+  it reports settled: after `waitForContentUpgrade` and `waitForDiffSettled`
+  the rows of a changed file were replaced 19 to 54 ms later in 12 of 12
+  loads (30 to 74 ms later on main at `3223ecce`), and a context file is
+  drawn again about 0.13 s after a range was added to it. Nothing a test can
+  wait for announces that draw. `clickOnce` (`diff-dom.js`) counts the
+  trusted `click` events the page receives during one Playwright click;
+  `clickDelivered`, `clickExpandControl` and `clickGapControl` make the click
+  again while none arrived. A click that arrived is never repeated, so
+  nothing can be expanded twice. Use them for expand controls and gap bars;
+  do not call `.click()` on one directly.
 - **A behaviour the migration changes on purpose, or a defect main has, is
   asserted through a named constant in `diff-dom.js`** (`CONTEXT_FILE_PLACEMENT`,
   `LAYOUT_TOGGLE_KEEPS`, `UPGRADE_WAITS_FOR_FOCUS`,
@@ -232,7 +246,7 @@ because violating it produced a real, observed flake or measurable waste.
   `waitForFileSettled` and `waitForDiffSettled` wait for it, and the two
   helpers that change what a file displays by hand (`redisplayBaseDiff`,
   `expandHunkBy`) wait themselves: a manual expansion lives in the vendor
-  instance on the current engine and is lost with it at the rebuild. A spec
+  instance and is lost with it at the rebuild. A spec
   that holds a row does so only after one of the waits.
 - **When two answers race, the test decides the order.** Two requests the
   application makes independently (a diff's file contents and a list of
@@ -398,19 +412,106 @@ because violating it produced a real, observed flake or measurable waste.
   reader's window does not cover, and more than 10,000 for a file whose top
   is not drawn while the reader is at its end (N11 "Navigation to a card far
   down a file longer than the rows the viewer draws").
-- **A pane scrolled to its end is not at its end a frame later when a card
-  below got its height.** The card of a line the viewer has not drawn yet
-  has no measured height; the pane grows by it after the scroll that drew the
-  row. Do what a reader does: scroll to the end again until the pane rests
-  there, with `expect(async () => { ... }).toPass()` around the scroll, the
+- **A position written as "the end" is not the end a frame later.** The
+  pane's height is an estimate for everything the viewer has not drawn: a
+  file with wrapping lines, and the card of a line that has no row yet, have
+  no measured height, and the pane grows by them after the scroll that drew
+  them. A scroll toward the end that the reader makes with the wheel or a
+  scroll key is followed to the end by the bridge
+  (`_followEndAfterReaderScroll`; N4 "The end of the pane" drives the real
+  gestures), once, and anything else the reader does ends it: a key that
+  scrolls up, a wheel step up, a press. While the pane's own scrollbar is
+  held nothing is followed (the position is the thumb's:
+  `scrollbar-drag.spec.js` drags a real one, which needs the browser started
+  without `--hide-scrollbars`); let go after it was taken to the end of its
+  track (the pane at its end, or the thumb at the end of its track earlier in
+  the press and not taken back up, or the pointer pulled to the pane's bottom
+  edge), the pane is put at its end and kept there. A press is a held
+  scrollbar only when it began where the scrollbar is (the pane itself, at
+  its right edge: as wide as the scrollbar, or 16 px where the scrollbar has
+  no width of its own), the page was told of no pointer move during it, and
+  the pane moved under it. The browser tells the page nothing of the pointer
+  while a scrollbar is held (measured in Chromium), and every move of a
+  press on the pane's padding: the default headless browser draws no
+  scrollbar, so a real press at the pane's edge there is a press on the
+  padding and must move nothing when it is let go (N4 "A press on the pane's
+  edge that holds no scrollbar"). A test that dispatches a scrollbar press
+  gives the `pointerdown` coordinates at the pane's right edge and moves the
+  pane before the `pointerup`. A position a test writes
+  (`scrollDiffToEdge`, `scrollTop = scrollHeight`) is nobody's gesture and is
+  not followed. A test that writes the position scrolls to the end again until
+  the pane rests there, with `expect(async () => { ... }).toPass()` around the scroll, the
   `scrollState` check and the assertions on what must be in the viewport
   (N11 "The last rows of a file a few rows longer than one block of the
   viewer's rows ..."). Never one `scrollDiffToEdge` followed by
   `toBeInViewport()` on the last line of a file that has cards.
+- **A scroll key pressed while the previous key's scroll is finishing does
+  nothing: wait for the pane's `scrollend`.** Chromium scrolls smoothly for a
+  key and drops a scroll key that arrives while that scroll is finishing. On
+  a page with nothing of the application, 28 of 30 Page Ups pressed in the
+  frame the End key's scroll arrived at the end did nothing, and 30 of 30
+  pressed after the box's `scrollend` event moved it (the event came 20 to
+  45 ms after that frame). A position that has not changed between two looks
+  does not say the scroll is over. In this application the moment lasts a few
+  frames longer after an End key, while the bridge keeps the pane at its end
+  (7 of 20 Page Ups pressed 3 ms after such a write did nothing, 0 of 60
+  pressed 100 ms or more after it). A test that presses a scroll key first
+  waits until no scroll of the pane is in flight: its last `scrollend` is not
+  older than its last `scroll`, for two frames (`watchPaneScrolls` in N4
+  "a Page Up pressed ... after the End key"). And after any scroll key it
+  waits for the move before it waits for the end and the rest: on a busy
+  machine the key's scroll begins later than one look at the position, and
+  "no scroll in flight" is true before it has begun (seen once in 1,920
+  executions).
+- **The gutter's buttons are seen, then clicked.** They are on the hovered
+  line only and are hidden while the pane moves, until it has rested: two
+  frames, or eight frames and 120 ms while a file that shows 2,000 rows or
+  more is mounted (`_watchScrollRest`; a hover is a layout of the whole
+  file there). `hover()` may scroll, so right after it the buttons can be
+  hidden. A `click()` on a control that is not shown yet does not just wait:
+  its retries scroll the control to another place, which takes the line from
+  under the pointer, and the gesture never completes. So: hover, wait for
+  the button to be visible, click, check that the form opened, and repeat
+  the whole gesture from the hover when any of it fails
+  (`openLineCommentForm`, `openContextLineCommentForm`). The last check is
+  not a formality: the hover is told to a file's new rows a frame after the
+  file is drawn again (on main as well), and a click that arrives in that
+  frame opens nothing.
+- **A control is clicked when the scroll that brought it has ended.**
+  `scrollFileIntoView` starts the application's animated scroll and returns
+  as soon as the file shows. Playwright's `click()` finds the control "not
+  stable" while it moves, and from its second attempt on it scrolls the
+  control itself before it presses (`scrollIntoView` with block `end`, then
+  `center`, then `start`; the sixth attempt, the one that usually succeeds
+  after such a scroll, is an `end` one). That jump can bring a file that had
+  left the viewer's window back into it, and for the one frame until the
+  viewer has drawn that file the files below it are 39 to 45 px above their
+  places (0 frames for a wheel or a Page Up, which bring a file back before
+  it is needed). A press made in that frame is released over something
+  else and no control gets the click: 10 of 3,798 runs of
+  `context-files.spec.js` "a context file whose path ends like a changed
+  file's ..." before it waited. So a test that clicks a control of a file it
+  has just scrolled to waits for a state that says the scroll is over (there:
+  the pane is at its end, where the scroll to the last file ends) and then
+  clicks once. It does not repeat the click: a click that is lost on a pane
+  at rest is a defect. The same holds for a control in a panel that is
+  still opening: `external-comments.spec.js` "clicking the right chevron
+  ..." shrinks the review panel a moment after `expand()` started its width
+  transition, the chevron moves with the panel's edge, and a press released
+  a frame later was released beside it (1 of 999 runs alone on main at
+  `3223ecce`; a press held for 50 ms: 5 of 5). It waits for the panel's own
+  transitions (`getAnimations()`, each `finished`) before the click.
+- **What a change costs is counted, not timed.** `gutter-buttons.spec.js`
+  "The cost of a change in one file" records a trace of one action through
+  the browser's debugging protocol and adds up how many elements had their
+  style decided again (169 with the stylesheet as it is, 40,885 with a rule
+  that asks `:has()` about a file's code block). A count does not depend on
+  how fast the machine is. `pierre-shared-modules.test.js` refuses such a
+  rule in the stylesheet text.
 - **Two navigations can start from one key press.** The review panel and the
   suggestion navigator both answer `j` and `k`, each with its own cursor, so
   a test that presses a key and expects one card in view depends on which of
-  the two wins. On both engines it is the one that started last
+  the two wins. It is the one that started last
   (`PRManager.revealInDiff`); a test must not assume the other's target was
   never asked for.
 
@@ -521,14 +622,22 @@ because violating it produced a real, observed flake or measurable waste.
   `appStylesheets()` (`tests/contract/harness/constants.js`), which reads the
   two pages.
 - **A change to how the diff pane is drawn is checked with
-  `node tests/parity/visual.mjs --out <dir>`.** It opens both diff engines on
-  one test server with the file contents held back, and compares every
+  `node tests/parity/visual.mjs --out <dir> --reference-checkout <path>`.**
+  The reference is the application before the change: `<path>` is a second
+  checkout of the commit the change started from (`git worktree add --detach
+  <path> <commit>`, outside this repository's directory, with `node_modules`
+  in place and `node scripts/build-pierre-diffs.mjs` run there). The script
+  captures that checkout first and then this tree, each on its own test
+  server with the file contents held back, and compares every
   changed file as numbers (header box and its parts, distance to the first
   row, frame, space to the next file, gutter, row height, fonts) and the pane
   as pixels at fixed positions (top, a pinned header, the end, a collapsed
   file, during a tour). A difference that is not listed in its `ACCEPTED`
-  with the decision that covers it fails the run. Do not run it while the E2E
-  suite is running.
+  with the decision that covers it fails the run. A capture that was saved
+  earlier is given with `--reference <dir>` instead (`tests/parity/reference.mjs`
+  saves one, together with the golden dump and the performance medians of the
+  same checkout). Without one of the two the script stops: it has nothing to
+  compare with. Do not run it while the E2E suite is running.
 - **Pixels are compared with a tolerance for anti-aliasing only**: a pixel
   counts when it is outside the range of the 3x3 pixels around the same place
   in the other image by more than 8 of 255. The same glyph or curve painted in

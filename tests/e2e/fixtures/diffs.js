@@ -624,6 +624,27 @@ async function routeDiff(page, corpus) {
   }
 }
 
+/**
+ * Eight added files of 600 lines, a wrapping line in every ten. Each is drawn
+ * whole when the reader gets to it; until then the pane has an estimate of
+ * its height, which does not know about the wrapping (ledger H163): the pane
+ * grows by about 2,000 px for each file the reader arrives at.
+ * @param {string} name - the corpus name (one per spec file)
+ * @returns {{corpus: Object, last: string}}
+ */
+function wrappingFilesCorpus(name) {
+  const long = ` // ${'these words make the line long enough to wrap in the pane '.repeat(6)}`;
+  const files = {};
+  let diff = '';
+  for (let f = 1; f <= 8; f++) {
+    const path = `wrap/file${f}.js`;
+    const lines = Array.from({ length: 600 }, (_, i) => `export const w${f}_${i + 1} = ${i + 1};${(i + 1) % 10 === 0 ? long : ''}`);
+    diff += `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..${f}${f}${f}${f}${f}${f}${f}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join('\n')}\n`;
+    files[path] = { old: null, new: `${lines.join('\n')}\n` };
+  }
+  return { corpus: customCorpus({ name, diff, files }), last: 'wrap/file8.js' };
+}
+
 module.exports = {
   defaultFixture,
   evictionDiff,
@@ -638,5 +659,6 @@ module.exports = {
   changedLines,
   checkRows,
   customCorpus,
+  wrappingFilesCorpus,
   routeDiff,
 };

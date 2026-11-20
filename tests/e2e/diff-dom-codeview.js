@@ -98,10 +98,10 @@ function extendInPage() {
     return !!(record && record.kind === 'diff' && record.upgraded);
   };
 
-  // D.dump: the cards under a file's lines. On this engine the file-comment
-  // zone and a file's notice are slotted under "line 0" of the item; they
-  // are not line cards (the other engine has them beside the diff body), and
-  // the notice is reported as a notice.
+  // D.dump: the cards under a file's lines. The file-comment zone and a
+  // file's notice are slotted under "line 0" of the item; they are not line
+  // cards (the per-file renderer the dumps were first taken on had them
+  // beside the diff body), and the notice is reported as a notice.
   const dumpAsDrawn = D.dump;
   D.dump = (file) => {
     const out = dumpAsDrawn(file);
@@ -110,8 +110,8 @@ function extendInPage() {
       .map((slot) => ({ ...slot, cards: slot.cards.filter((card) => !/(^| )(file-comments-zone|large-diff-placeholder)( |$)/.test(card.classes)) }))
       .filter((slot) => slot.cards.length > 0);
     // A file without a line (binary, mode change, empty, pure rename) is an
-    // item with an empty code block here and has no code block at all on the
-    // other engine. A reader sees the header either way: no layout to name.
+    // item with an empty code block here and had no code block at all on the
+    // per-file renderer. A reader sees the header either way: no layout to name.
     if (out.columns.every((column) => column.rows.length === 0) && out.separators.length === 0) {
       out.diffType = null;
       out.columns = [];
@@ -804,13 +804,13 @@ const layoutValidator = {
 
 /**
  * The Node side of this engine.
- * @param {Object} base - what diff-dom.js has for both engines: inPage,
+ * @param {Object} base - what diff-dom.js has itself: inPage,
  *   waitInPage, contextFile, fileWrapper, waitForContentUpgrade
  * @returns {Object} functions that replace diff-dom.js's own under the same
  *   names, and the values of the named expectations on this engine
  */
 function createCodeViewAdapter(base) {
-  const { inPage, waitInPage, contextFile } = base;
+  const { inPage, waitInPage, contextFile, clickOnce } = base;
 
   const GAP = '[data-gutter] > [data-separator][data-expand-index]';
 
@@ -872,8 +872,24 @@ function createCodeViewAdapter(base) {
    */
   async function clickGapControl(page, file, gapIndex, pick) {
     await ensureMounted(page, file);
+    // The gap as it was when a click on its control was last attempted.
+    let attempted = null;
+    const sameGap = (a, b) => !!a && !!b && a.start === b.start && a.end === b.end;
     // Separators are re-created with the item's rows; a click whose target
-    // was replaced under it never happened and is made again.
+    // was replaced under it never happened and is made again. A click that
+    // Playwright reports as timed out may have been delivered all the same
+    // (the report can come from what it waits for after the click, on a
+    // busy machine): the gap is then not what it was, and clicking again
+    // would reveal a second step.
+    //
+    // And a click Playwright reports as made may have been sent to nothing:
+    // the browser sends no click when the file was drawn between the press
+    // and the release (ledger H143, on main too; `clickOnce` in diff-dom.js
+    // reads from the page whether a click arrived). The viewer draws a
+    // context file once more about 0.13 s after a range was added to it,
+    // with nothing changed in it (measured), and a press can meet that draw
+    // (the phase-9 verifier, 1 of 400). A click that did not arrive is made
+    // again; the gap is as it was, so it is the same click.
     await expect(async () => {
       const found = await inPage(page, (D, a) => {
         const gap = D.contextGaps(a.file)[a.gapIndex];
@@ -883,17 +899,20 @@ function createCodeViewAdapter(base) {
           // Outside the row window: go to the line next to the gap.
           const line = gap.position === 'start' ? gap.end + 1 : gap.start - 1;
           window.prManager.pierreBridge.scrollToLine(a.file, line, 'RIGHT', { align: 'center', behavior: 'instant', flash: false });
-          return { error: 'the separator is not in the DOM yet' };
+          return { gap, error: 'the separator is not in the DOM yet' };
         }
         return { expandIndex: separator.expandIndex, gap, hasExpandAll: separator.hasExpandAll };
       }, { file, gapIndex });
+      if (attempted && !sameGap(attempted, found.gap)) return;
       if (found.error) throw new Error(`gap ${gapIndex} of ${file}: ${found.error}`);
       const control = contextFile(page, file).locator(`${GAP}[data-expand-index="${found.expandIndex}"]`)
         .locator(pick(found)).first();
       await control.scrollIntoViewIfNeeded({ timeout: 2000 });
       const box = await control.boundingBox();
       if (!box) throw new Error(`gap ${gapIndex} of ${file}: its control is not on screen`);
-      await control.click({ timeout: 2000, position: { x: Math.min(box.width / 2, 12), y: box.height / 2 } });
+      attempted = { start: found.gap.start, end: found.gap.end };
+      const arrived = await clickOnce(page, control, { position: { x: Math.min(box.width / 2, 12), y: box.height / 2 } });
+      if (!arrived) throw new Error(`gap ${gapIndex} of ${file}: the browser sent no click (the file was drawn under the press)`);
     }).toPass({ timeout: 10000 });
   }
 
@@ -946,7 +965,11 @@ function createCodeViewAdapter(base) {
       await page.mouse.move(0, 0);
       await cell.scrollIntoViewIfNeeded({ timeout: 2000 });
       await cell.hover({ timeout: 2000 });
+      // Seen, then clicked (see openLineCommentForm in diff-dom.js).
+      await expect(scope.locator('.pierre-comment-btn').first()).toBeVisible({ timeout: 2000 });
       await scope.locator('.pierre-comment-btn').first().click({ timeout: 2000 });
+      // The click opened a form, or the gesture is made again (see openLineCommentForm).
+      await expect(forms).toHaveCount(before + 1, { timeout: 2000 });
     }).toPass({ timeout: 20000 });
     await expect(forms).toHaveCount(before + 1);
     await scope.locator('.user-comment-form').first().waitFor({ state: 'visible', timeout: 5000 });

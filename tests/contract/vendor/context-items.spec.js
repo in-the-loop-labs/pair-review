@@ -68,6 +68,8 @@ async function setUp(page, { diffStyle = 'unified', type = 'new', contextCss = t
     H.hooks.onPostRender = (node, instance, phase, context) => {
       // The stamp the bridge puts on a context record's host; CONTEXT_CSS keys on it.
       node.classList.toggle('context-file', phase !== 'unmount' && context.item.id === CONTEXT);
+      // And the one ROWLESS_FIX keys on.
+      window.PierreStyles.markRowless(node, phase !== 'unmount');
     };
     if (pool) H.createPool({});
     H.create({

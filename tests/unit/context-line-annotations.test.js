@@ -218,7 +218,6 @@ describe('revealing a line of a context file', () => {
     manager._ensurePierreContentUpgrade = vi.fn(manager._ensurePierreContentUpgrade.bind(manager));
     manager._getOrStartPierreContentUpgrade = vi.fn();
     manager._materializeDeferredDiff = vi.fn(async () => true);
-    manager.ensureFileBodyRendered = vi.fn(async () => null);
     expect(bridge.isLineVisible(CONTEXT, 200, 'RIGHT')).toBe(false);
 
     await manager.ensureLinesVisible([{ file: CONTEXT, line_start: 200, line_end: 202, side: 'LEFT' }]);

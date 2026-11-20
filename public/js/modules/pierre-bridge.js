@@ -150,6 +150,31 @@
   /** What the function coverPaneWithRowWindow installs is marked with. */
   const COVERS_PANE = 'pairReviewRowWindowCoversPane';
   const FALLBACK_HEADER_HEIGHT = 53;
+
+  // The end of the pane after a reader's scroll (_followEndAfterReaderScroll).
+  // A scroll toward the end that the reader starts (a wheel step down, a
+  // scroll key down, a touch drag up) counts as theirs for this long; a
+  // smooth scroll to the end of a long pane takes several hundred
+  // milliseconds.
+  const READER_SCROLL_MS = 1500;
+  // The pane is kept at its end until its height has not grown for this many
+  // frames, and for this long at most.
+  const END_FOLLOW_STILL_FRAMES = 20;
+  const END_FOLLOW_MAX_MS = 2000;
+  const SCROLL_DOWN_KEYS = new Set(['End', 'PageDown', 'ArrowDown', ' ', 'Spacebar']);
+  // A release of the pane's scrollbar (_followEndAfterScrollbarRelease): the
+  // pointer went down the track by at least this much during the press, and
+  // the strip at the pane's edge a scrollbar may be in where the browser
+  // draws it over the content and it has no width of its own
+  // (_pressOnScrollbar).
+  const SCROLLBAR_PULL_PX = 8;
+  const OVERLAY_SCROLLBAR_PX = 16;
+  // When the pane counts as at rest after a scroll while a file that shows
+  // this many rows or more is mounted (_watchScrollRest): it has not moved
+  // for this many frames and for this long. Two frames otherwise.
+  const COSTLY_HOVER_ROWS = 2000;
+  const SCROLL_REST_FRAMES = 8;
+  const SCROLL_REST_MS = 120;
   /** Above these a context file's lines are not coloured (the limits a changed file's contents have). */
   const CONTEXT_PLAIN_TEXT_MAX_CHARS = 400 * 1024;
   const CONTEXT_PLAIN_TEXT_MAX_LINES = 12000;
@@ -301,6 +326,17 @@
       this._onRootContextMenu = () => { this._press = null; };
       this._onRootPressKind = (event) => this._notePressKind(event);
       this._onRootScroll = () => this._handleRootScroll();
+      // The reader's last scroll input toward the end of the pane, with the
+      // end of the pane at that moment; the follow that is running
+      // (_followEndAfterReaderScroll); the press in progress when it began
+      // on the pane's own scrollbar (where, whether the pane moved under it
+      // and whether the thumb has been at the end of its track); and where
+      // the finger of a touch was.
+      this._readerScroll = null;
+      this._endFollow = null;
+      this._scrollbarPress = null;
+      this._touchY = null;
+      this._onReaderScrollInput = (event) => this._noteReaderScrollInput(event);
       // How often each file's element was drawn, and the press in progress (_handleRootPointerDown).
       this._hostDraws = new WeakMap();
       this._press = null;
@@ -331,10 +367,6 @@
     static toPairReviewSide(side) {
       if (side === 'deletions' || side === 'LEFT') return 'LEFT';
       return 'RIGHT';
-    }
-
-    static normalizeSide(side) {
-      return PierreBridge.toPairReviewSide(side);
     }
 
     /**
@@ -538,6 +570,10 @@
       this.root.addEventListener('mousedown', this._onRootPressKind, { capture: true, passive: true });
       this.root.addEventListener('touchstart', this._onRootPressKind, { capture: true, passive: true });
       this.root.addEventListener('scroll', this._onRootScroll, { passive: true });
+      this.root.addEventListener('wheel', this._onReaderScrollInput, { capture: true, passive: true });
+      this.root.addEventListener('touchmove', this._onReaderScrollInput, { capture: true, passive: true });
+      this.root.addEventListener('pointerdown', this._onReaderScrollInput, { capture: true, passive: true });
+      document.addEventListener('keydown', this._onReaderScrollInput, { capture: true, passive: true });
     }
 
     /** @private */
@@ -1505,6 +1541,8 @@
       const { anchor, selection, focus } = view;
       // The scroll events this restore causes are not the reader scrolling.
       this._ownScrollUntil = performance.now() + 250;
+      this._endFollow = null;
+      this._readerScroll = null;
       if (view.atTop) {
         // The pane stays at its top, whatever is the first file now.
         if (this.root.scrollTop !== 0) this.root.scrollTop = 0;
@@ -1695,6 +1733,10 @@
           onCommentClick: (line, side, target) => {
             if (this.options.onCommentClick) this.options.onCommentClick(id, line, side, target);
           },
+          // A line of a file outside the diff has no position in it: its
+          // comment is posted to GitHub as a file-level comment, and the
+          // button says so, as it always has on a context file.
+          commentTitle: record.kind === 'context' ? 'Add comment (expanded context - may not submit to GitHub)' : undefined,
         });
         if (this._gutterHiddenByScroll) record._gutter.style.visibility = 'hidden';
       }
@@ -1704,6 +1746,11 @@
     /** @private */
     _onPostRender(node, instance, phase, context) {
       const id = context?.item?.id;
+      // Whether the file shows a card and no line, read from what was just
+      // drawn, for every item and before the viewer measures it (the
+      // stylesheet keys on a class, not on :has(): PierreStyles.ROWLESS_FIX).
+      // A host that goes back to the pool loses the class.
+      window.PierreStyles.markRowless(context?.element || node, phase !== 'unmount');
       const record = this._listedRecord(id);
       if (!record) {
         // An item of no record (its file was taken out of the pane): the
@@ -1945,6 +1992,16 @@
         this._gutterHiddenByScroll = false;
         for (const record of this._listed.values()) record._gutter?.style.removeProperty('visibility');
       }
+      // The page is told of a pointer move: the press in progress, if it was
+      // taken for one on the pane's scrollbar, holds no scrollbar. While a
+      // scrollbar is held the browser moves it and tells the page nothing of
+      // the pointer until the release (measured in Chromium: no move in a
+      // thumb's drag of 8 and of 40 steps, every move of a press on the
+      // pane's padding). And with no button down, a press whose release
+      // never arrived (the window lost the pointer while it was held) is
+      // over: a later release of something else is not its release
+      // (_followEndAfterScrollbarRelease).
+      if (this._scrollbarPress) this._scrollbarPress = null;
     }
 
     /**
@@ -2097,6 +2154,12 @@
       } else if (press && event && event.type === 'pointercancel') {
         this._press = null;
       }
+      const scrollbarPress = this._scrollbarPress;
+      if (scrollbarPress) {
+        // The scrollbar was let go. See _followEndAfterScrollbarRelease.
+        this._scrollbarPress = null;
+        if (event && event.type === 'pointerup') this._followEndAfterScrollbarRelease(scrollbarPress, event);
+      }
       if (!this._pointerDownOnRoot) return;
       this._pointerDownOnRoot = false;
       this._runPendingReconcile();
@@ -2112,6 +2175,8 @@
      * @private
      */
     _handleRootScroll() {
+      this._noteScrollbarScroll();
+      this._followEndAfterReaderScroll();
       if (performance.now() < this._ownScrollUntil) return;
       if (!this._gutterHiddenByScroll) {
         this._gutterHiddenByScroll = true;
@@ -2123,8 +2188,278 @@
     }
 
     /**
-     * Wait until the pane has not moved for two frames, then re-derive the
-     * hover from the resting pointer.
+     * Something the reader did that may scroll the pane, or that says they
+     * are doing something else: a wheel step, a touch move, a key, a press.
+     *
+     * A scroll toward the end of the pane is noted, with the end of the
+     * pane as it is now: a wheel step down, a touch dragged up, a key that
+     * scrolls down pressed outside a text field. The scroll it causes is
+     * followed when it reaches that end (_followEndAfterReaderScroll); a
+     * follow that is already running goes on, it is where this scroll is
+     * going too.
+     *
+     * Everything else ends a follow that is running and forgets the last
+     * scroll toward the end: a wheel step up, a touch dragged down, any
+     * other key (one that scrolls up, one typed into a form), a press
+     * anywhere on the pane. What the reader does next is not undone by a
+     * scroll they made before it.
+     *
+     * A press on the pane's own scrollbar (_pressOnScrollbar) is such a
+     * press, and is remembered until its release: while the reader holds
+     * the scrollbar the position is the thumb's, and the browser puts it
+     * back there at the next pointer move whatever was written in between.
+     * @private
+     */
+    _noteReaderScrollInput(event) {
+      const root = this.root;
+      if (!root || this._destroyed) return;
+      let towardEnd = false;
+      if (event.type === 'keydown') {
+        const target = event.target;
+        const typing = !!target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || ''));
+        const spaceUp = event.shiftKey && (event.key === ' ' || event.key === 'Spacebar');
+        towardEnd = !typing && !spaceUp && SCROLL_DOWN_KEYS.has(event.key);
+      } else if (event.type === 'wheel') {
+        // A step sideways moves the pane neither way.
+        if (!(event.deltaY > 0) && !(event.deltaY < 0)) return;
+        towardEnd = event.deltaY > 0;
+      } else if (event.type === 'touchmove') {
+        const y = event.touches && event.touches[0] ? event.touches[0].clientY : null;
+        const from = this._touchY;
+        this._touchY = y;
+        if (y === null || from === null || y === from) return;
+        // The finger moves up: the pane moves toward its end.
+        towardEnd = y < from;
+      } else if (event.type === 'pointerdown') {
+        this._scrollbarPress = this._pressOnScrollbar(event)
+          ? { y: event.clientY, from: root.scrollTop, top: root.scrollTop, moved: false, atEnd: false }
+          : null;
+        this._touchY = event.pointerType === 'touch' ? event.clientY : null;
+      }
+      if (!towardEnd) {
+        this._endFollow = null;
+        this._readerScroll = null;
+        return;
+      }
+      this._readerScroll = { at: performance.now(), end: root.scrollHeight - root.clientHeight };
+    }
+
+    /**
+     * Whether a press may be one on the pane's own scrollbar: it is a
+     * press of the primary button, its target is the pane itself (the
+     * browser sends a press on a scrollbar to the element that scrolls),
+     * and it is where the scrollbar is, at the pane's right edge. A
+     * scrollbar with a width of its own, beside the content, is that wide,
+     * and a press there is on nothing else. One the browser draws over the
+     * content has none, and neither has one that is not drawn: there the
+     * strip is OVERLAY_SCROLLBAR_PX of the pane's own padding, and a press
+     * in it may hold no scrollbar at all.
+     *
+     * So a press that passes is a candidate, no more. What tells a held
+     * scrollbar from a press on the padding is what follows it: the page
+     * is told of no pointer move while a scrollbar is held
+     * (_handlePointerMove forgets the press at the first one), and the
+     * pane's position changes under it (_noteScrollbarScroll,
+     * _followEndAfterScrollbarRelease). Without the two, a drag that
+     * began on the padding and was let go at the pane's bottom edge sent
+     * the reader to the end of the review (44,843 px from 3,122 on a
+     * review of 60 files), with a text selection or without.
+     * @private
+     */
+    _pressOnScrollbar(event) {
+      const root = this.root;
+      if (event.target !== root || event.button !== 0) return false;
+      if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return false;
+      const rect = root.getBoundingClientRect();
+      const own = rect.right - (rect.left + root.clientLeft + root.clientWidth);
+      const strip = own >= 1 ? own : OVERLAY_SCROLLBAR_PX;
+      return event.clientX >= rect.right - strip && event.clientX <= rect.right;
+    }
+
+    /**
+     * Keep the pane at its end when the reader scrolled it there.
+     *
+     * The pane's height is an estimate for every file the viewer has not
+     * drawn: a file with wrapping lines is taller than its estimate. When
+     * the reader goes to the end (the End key, the wheel), the last files
+     * are drawn and measured in the frames after the scroll, the pane
+     * grows, and the place the scroll ended at is no longer the end: on a
+     * review of eight 600-line files with a wrapping line in every ten it
+     * was 2,095 px short, and a second scroll was needed. So a scroll
+     * toward the end that the reader started (_noteReaderScrollInput) and
+     * that reaches the end of the pane (as it is now, or as it was when
+     * they started) is followed: for as long as the pane goes on growing,
+     * and nothing else has moved it, it is put at its end again
+     * (_startEndFollow).
+     *
+     * The input is used up by the follow it starts. A later scroll event,
+     * of whatever cause, starts another one only after another input
+     * toward the end: without this, the position beyond the remembered
+     * (old, smaller) end counted as "reached the end" for every scroll in
+     * the next second and a half, and a Page Up pressed right after End was
+     * undone.
+     *
+     * Only the reader's own scroll is followed. A position the application
+     * writes (a navigation, a view restore) is somebody's target, and the
+     * end of the pane is not. And nothing is followed while the reader
+     * holds the pane's scrollbar: see _followEndAfterScrollbarRelease.
+     * @private
+     */
+    _followEndAfterReaderScroll() {
+      const root = this.root;
+      const input = this._readerScroll;
+      if (!root || !input || this._endFollow) return;
+      if (performance.now() - input.at > READER_SCROLL_MS) {
+        this._readerScroll = null;
+        return;
+      }
+      const end = root.scrollHeight - root.clientHeight;
+      if (end <= 0 || root.scrollTop < Math.min(end, input.end) - 1) return;
+      this._readerScroll = null;
+      this._startEndFollow();
+    }
+
+    /**
+     * A scroll while the reader holds the pane's scrollbar: that the
+     * position changed under the press, and whether the thumb has been at
+     * the end of its track in this press and has not been taken back up
+     * since. Read at the release (_followEndAfterScrollbarRelease).
+     *
+     * A scroll that leaves the pane at its end says the thumb is at the end
+     * of its track. The pane growing afterwards moves nothing and is no
+     * scroll. The browser then moves the thumb down again by as much as the
+     * pointer is ahead of it, which may not be all the way: such a scroll
+     * goes down and leaves the answer as it is. A scroll that goes up is the
+     * reader taking the thumb back.
+     * @private
+     */
+    _noteScrollbarScroll() {
+      const press = this._scrollbarPress;
+      const root = this.root;
+      if (!press || !root) return;
+      const top = root.scrollTop;
+      const end = root.scrollHeight - root.clientHeight;
+      if (Math.abs(top - press.top) > 1) press.moved = true;
+      if (end > 0 && top >= end - 1) press.atEnd = true;
+      else if (top < press.top - 1) press.atEnd = false;
+      press.top = top;
+    }
+
+    /**
+     * The reader let go of the pane's scrollbar. When they had taken it to
+     * the end, the pane is put at its end and kept there while the files
+     * at the end are measured, as after a key or the wheel.
+     *
+     * Only a press that held the scrollbar: one that began where the
+     * scrollbar is (_pressOnScrollbar), during which the page was told of
+     * no pointer move (_handlePointerMove), and under which the pane's
+     * position changed. A press that moved nothing is let go with nothing
+     * done, wherever the pane is.
+     *
+     * "Taken to the end" is one of three things:
+     *  - the pane is at its end at the release;
+     *  - the thumb was at the end of its track during the press and was
+     *    not taken back up (_noteScrollbarScroll), and the pane has grown
+     *    since: the files down there are measured in the frames after the
+     *    thumb arrives;
+     *  - the pointer was pulled down the scrollbar to the pane's bottom
+     *    edge or beyond it (_pulledToTrackEnd). The browser moves a thumb
+     *    by as much as the pointer moves; a pane that grows while it is
+     *    dragged slides the thumb back up under the pointer, and the
+     *    pointer is at the bottom of the track before the thumb is
+     *    (measured on a review of eight 600-line files with wrapping
+     *    lines: 2,883 px short with the pointer at the pane's bottom
+     *    edge; main, whose pane grows by a quarter as much, 0).
+     *
+     * Not before the release. A thumb that is held decides the position:
+     * the browser computes it from the pointer at every pointer move, so a
+     * position written to the end during a drag is put back at the next
+     * move (measured: a jump of about 4,000 px to the end and back for
+     * each time the pane grew), and a thumb the reader then drags up would
+     * be fought. Until the release the reader sees where the thumb is.
+     * Released anywhere else, nothing is followed.
+     * @param {{y: number, from: number, top: number, moved: boolean, atEnd: boolean}} press - the press that began on the scrollbar
+     * @param {PointerEvent} event - its `pointerup`
+     * @private
+     */
+    _followEndAfterScrollbarRelease(press, event) {
+      const root = this.root;
+      if (!root || this._destroyed || this._endFollow) return;
+      const end = root.scrollHeight - root.clientHeight;
+      if (end <= 0) return;
+      // The last scroll of the press may not have been reported yet.
+      if (!press.moved && Math.abs(root.scrollTop - press.top) <= 1) return;
+      if (root.scrollTop < end - 1 && !press.atEnd && !this._pulledToTrackEnd(press, event)) return;
+      this._startEndFollow();
+    }
+
+    /**
+     * Whether a press that held the pane's scrollbar was a pull down to
+     * the end of its track: the pointer went down, the pane went down with
+     * it, and it was let go at the pane's bottom edge or below it. With a
+     * thumb that follows the pointer that is the end of the track whatever
+     * the thumb's length and wherever it was taken hold of.
+     * @private
+     */
+    _pulledToTrackEnd(press, event) {
+      const root = this.root;
+      if (!Number.isFinite(press.y) || !Number.isFinite(event.clientY)) return false;
+      if (event.clientY - press.y < SCROLLBAR_PULL_PX) return false;
+      if (root.scrollTop <= press.from + 1) return false;
+      return event.clientY >= root.getBoundingClientRect().bottom - 1;
+    }
+
+    /**
+     * Put the pane at its end in every frame in which it is not, until its
+     * height has not grown for END_FOLLOW_STILL_FRAMES frames, for
+     * END_FOLLOW_MAX_MS at most, and only while nothing else moves it: an
+     * input of the reader's or a scroll of the application's ends the
+     * follow (`_endFollow = null`), and so does a position above the one
+     * the follow last saw.
+     * @private
+     */
+    _startEndFollow() {
+      const root = this.root;
+      const follow = { until: performance.now() + END_FOLLOW_MAX_MS, still: 0, top: root.scrollTop };
+      this._endFollow = follow;
+      const tick = () => {
+        if (this._endFollow !== follow) return;
+        if (this._destroyed || this.root !== root || root.scrollTop < follow.top - 1) {
+          // Gone, or something moved the pane up: that was not this follow.
+          this._endFollow = null;
+          return;
+        }
+        const now = root.scrollHeight - root.clientHeight;
+        if (now - root.scrollTop > 0.5) {
+          root.scrollTop = now;
+          follow.still = 0;
+        } else {
+          follow.still++;
+        }
+        follow.top = root.scrollTop;
+        if (follow.still >= END_FOLLOW_STILL_FRAMES || performance.now() > follow.until) {
+          this._endFollow = null;
+          return;
+        }
+        schedule(tick);
+      };
+      tick();
+    }
+
+    /**
+     * Wait until the pane has come to rest, then re-derive the hover from
+     * the resting pointer.
+     *
+     * At rest: not moved for two frames. With a long file mounted, not
+     * moved for SCROLL_REST_FRAMES frames and SCROLL_REST_MS, because what
+     * follows is not free there. The viewer marks the row under the pointer
+     * by moving its gutter button into that row, and the browser lays the
+     * file's rows out again for it: 7 ms in a file of 5,000 drawn rows and
+     * 16 ms in one of 10,000, measured, and nothing a reader could tell in
+     * a file of a few hundred. The steps of a wheel and the frames of a
+     * smooth scroll are more than two frames apart often enough; in a long
+     * file that was a layout of the whole file between the steps of one
+     * scroll gesture (H169).
      * @private
      */
     _watchScrollRest() {
@@ -2132,6 +2467,7 @@
       this._scrollRestWatched = true;
       let last = this.root ? this.root.scrollTop : 0;
       let still = 0;
+      let movedAt = performance.now();
       const tick = () => {
         if (!this._gutterHiddenByScroll || !this.root || this._destroyed) {
           // A real pointer move showed the buttons already, or the viewer is gone.
@@ -2142,10 +2478,13 @@
         if (now !== last) {
           last = now;
           still = 0;
+          movedAt = performance.now();
         } else {
           still++;
         }
-        if (still < 2) {
+        const rested = still >= 2
+          && (!this._hasLongFileMounted() || (still >= SCROLL_REST_FRAMES && performance.now() - movedAt >= SCROLL_REST_MS));
+        if (!rested) {
           schedule(tick);
           return;
         }
@@ -2153,6 +2492,20 @@
         this._rederiveHoverAtRest();
       };
       schedule(tick);
+    }
+
+    /**
+     * Whether a file that shows COSTLY_HOVER_ROWS rows or more is mounted
+     * (see _watchScrollRest). From the diffs the bridge published, not from
+     * the document.
+     * @private
+     */
+    _hasLongFileMounted() {
+      for (const record of this._listed.values()) {
+        if (!record._element || !record._element.isConnected || record.collapsed) continue;
+        if (PierreBridge.drawnRowCount(record.metadata, this.diffStyle) >= COSTLY_HOVER_ROWS) return true;
+      }
+      return false;
     }
 
     /**
@@ -3038,6 +3391,9 @@
       this._onList(() => {
         if (!this._listed.has(target.id)) return;
         if (target.type === 'line' && !this._listShowsLine(target.id, target.lineNumber, target.side)) return;
+        // A target of the application's ends a follow of the pane's end.
+        this._endFollow = null;
+        this._readerScroll = null;
         this.codeView.scrollTo(target);
       });
     }
@@ -3393,6 +3749,13 @@
 
     /**
      * The text of a range of lines a file shows, for a suggestion block.
+     *
+     * A changed file answers the lines of its hunks, as they are stored (each
+     * ends in its line break). A context file answers every line it shows,
+     * which is more than its hunks: a gap small enough for the viewer to
+     * paint in full and the lines the reader expanded are on screen too, and
+     * a comment form opens on them (isLineVisible counts them the same way).
+     * Its lines are answered without their line breaks.
      * @param {string} fileName
      * @param {number} startLine
      * @param {number} endLine
@@ -3403,7 +3766,8 @@
       const record = this._record(fileName);
       const metadata = record?.metadata;
       if (!metadata) return null;
-      const useAdditions = record.kind === 'context' || (side || 'RIGHT') === 'RIGHT';
+      if (record.kind === 'context') return this._contextCodeFromLines(record, startLine, endLine);
+      const useAdditions = (side || 'RIGHT') === 'RIGHT';
       const lines = useAdditions ? metadata.additionLines : metadata.deletionLines;
       const hunks = metadata.hunks;
       if (!lines || !hunks) return null;
@@ -3422,6 +3786,30 @@
       return codeLines.length > 0 ? codeLines.join('\n') : null;
     }
 
+    /**
+     * The text of the lines of a context file that are on screen, between
+     * two line numbers. A context record holds every line of its file
+     * (line n at index n - 1) and has one side.
+     * @private
+     */
+    _contextCodeFromLines(record, startLine, endLine) {
+      const metadata = record.metadata;
+      const lines = metadata.additionLines;
+      const hunks = metadata.hunks;
+      if (!Array.isArray(lines) || !Array.isArray(hunks) || hunks.length === 0) return null;
+      const shown = this._expandedRanges(record, 'RIGHT');
+      for (const hunk of hunks) {
+        if (hunk.additionCount) shown.push({ startLine: hunk.additionStart, endLine: hunk.additionStart + hunk.additionCount - 1 });
+      }
+      const codeLines = [];
+      const last = Math.min(endLine, lines.length);
+      for (let lineNumber = Math.max(1, startLine); lineNumber <= last; lineNumber++) {
+        if (!shown.some((range) => lineNumber >= range.startLine && lineNumber <= range.endLine)) continue;
+        codeLines.push(String(lines[lineNumber - 1]).replace(/\r?\n$/, ''));
+      }
+      return codeLines.length > 0 ? codeLines.join('\n') : null;
+    }
+
     // ─── Teardown ────────────────────────────────────────────────────
 
     /**
@@ -3429,6 +3817,9 @@
      * destroyed bridge renders nothing (renderAll answers false).
      */
     destroy() {
+      document.removeEventListener('keydown', this._onReaderScrollInput, { capture: true });
+      this._endFollow = null;
+      this._readerScroll = null;
       document.removeEventListener('pointermove', this._onPointerMove);
       document.removeEventListener('pointerup', this._onPointerUp);
       document.removeEventListener('pointercancel', this._onPointerUp);
@@ -3439,6 +3830,9 @@
         this.root.removeEventListener('mousedown', this._onRootPressKind, { capture: true });
         this.root.removeEventListener('touchstart', this._onRootPressKind, { capture: true });
         this.root.removeEventListener('scroll', this._onRootScroll);
+        this.root.removeEventListener('wheel', this._onReaderScrollInput, { capture: true });
+        this.root.removeEventListener('touchmove', this._onReaderScrollInput, { capture: true });
+        this.root.removeEventListener('pointerdown', this._onReaderScrollInput, { capture: true });
       }
       for (const record of new Set([...this._listed.values(), ...this.files.values()])) this._discardRecord(record);
       this.files.clear();

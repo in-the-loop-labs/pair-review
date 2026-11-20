@@ -339,7 +339,7 @@ describe('_summariesGenerated reset on re-render', () => {
     mgr.currentPR = { id: 1, owner: 'o', repo: 'r', number: 1, reviewType: 'pr' };
 
     // Stubs for methods called AFTER the reset block when files.length === 0
-    // (renderFileDiff is not called with empty files)
+    // (no file is built into a pane entry with empty files)
   });
 
   it('renderDiff resets _summariesGenerated; click then routes to _startGenerationJob("summary")', async () => {

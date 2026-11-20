@@ -254,7 +254,7 @@ async function mockViewedStateApi(page) {
     // `fulfill` resolves when the browser has taken the response, which is
     // before the page's `fetch` has it: wait for the load to finish in the
     // page (measured: without this the reload aborted the save in 1 of 60
-    // executions, on either engine).
+    // executions).
     await route.fulfill({ json: { success: true } });
     const response = await route.request().response().catch(() => null);
     if (response) await response.finished().catch(() => {});

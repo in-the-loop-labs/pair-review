@@ -21,6 +21,8 @@
  *   suggestionManager                    SuggestionManager (createSuggestionRow,
  *                                        syncSuggestionElement)
  *   chatPanel, emojiPicker               the page's chat panel and emoji picker
+ *   isContextFile(path)                  whether a file of the pane is a context
+ *                                        file (a comment on one says how it is posted)
  *
  * Wrapped in a function: this file is a classic script, and top-level
  * `const` names are shared by every script on the page.
@@ -84,12 +86,23 @@
    */
   function renderComment(comment, id, env) {
     const {
-      escapeHtml = identity, PostedComment, getPostedCommentIcon, renderMarkdown, escapeHtmlAttribute,
+      escapeHtml = identity, PostedComment, getPostedCommentIcon, renderMarkdown, escapeHtmlAttribute, isContextFile,
     } = resolveEnv(env);
 
     const lineInfo = comment.line_end && comment.line_end !== comment.line_start
       ? `Lines ${comment.line_start}-${comment.line_end}`
       : `Line ${comment.line_start}`;
+
+    // A comment on a line of a file outside the diff cannot be posted to
+    // GitHub on its line: it is submitted as a file-level comment. The card
+    // says so, as the card of a context file always has.
+    const expandedContextIndicator = typeof isContextFile === 'function' && isContextFile(comment.file)
+      ? `<span class="expanded-context-indicator" title="This expanded context comment will be posted to GitHub as a file-level comment">
+           <svg viewBox="0 0 16 16" width="14" height="14">
+             <path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v11.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V6H9.75A1.75 1.75 0 018 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v8.086A1.75 1.75 0 0112.25 15h-8.5A1.75 1.75 0 012 13.25V1.75z"></path>
+           </svg>
+         </span>`
+      : '';
 
     // Build metadata display for adopted comments (praise badge + title)
     let metadataHTML = '';
@@ -135,6 +148,7 @@
             <span class="comment-origin-icon">${commentIcon}</span>
             <span class="user-comment-line-info">${lineInfo}</span>
             ${getPostedCommentIcon?.(comment, { link: true }) || ''}
+            ${expandedContextIndicator}
             ${metadataHTML}
           </div>
           <div class="user-comment-actions">
@@ -249,7 +263,9 @@
    * in the light DOM (slotted) and use the page's comment form classes so page
    * CSS applies.
    * @param {Object} data - { lineStart, lineEnd, side, diffPosition,
-   *   headerTitle, showSuggestionBtn, initialValue }
+   *   headerTitle, showSuggestionBtn, initialValue, outsideDiff } (`outsideDiff`:
+   *   the line is in a file outside the diff; the form warns that the comment
+   *   may not be submitted to GitHub on its line)
    * @param {string} id - annotation id
    * @param {Map<string, HTMLElement>} formElements - the file's open forms
    * @param {string} fileName
@@ -289,6 +305,16 @@
       header.appendChild(rangeLabel);
     }
     container.appendChild(header);
+
+    // A line outside the diff (a context file's line): the form says what
+    // happens to the comment on submission, as the form of such a line
+    // always has.
+    if (data.outsideDiff) {
+      const warning = document.createElement('div');
+      warning.className = 'expanded-context-warning';
+      warning.textContent = 'Warning: Expanded context line - may not submit to GitHub';
+      container.appendChild(warning);
+    }
 
     // Suggestion toolbar — suggestionBtn is declared in the outer scope so
     // the textarea input listener below can re-evaluate its disabled state.

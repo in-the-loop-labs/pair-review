@@ -553,11 +553,15 @@ async function waitForFileRendered(page, file, { timeout = 10000 } = {}) {
 /**
  * Number of code rows `file` currently shows (0 when collapsed, deferred or
  * not rendered). A row counts when it has a box, wherever it is relative to
- * the viewport: the current engine keeps a collapsed file's rows in the DOM,
- * hidden, until its next re-render, and a reader sees none of them.
+ * the viewport: a row that is in the DOM and hidden is not one a reader sees.
  */
 async function rowCount(page, file) {
   return inPage(page, (D, f) => D.rows(f).filter((row) => row.getClientRects().length > 0).length, file);
+}
+
+/** Number of code rows in the document, over every file that is mounted (on screen or near it). */
+async function mountedRowCount(page) {
+  return inPage(page, (D) => D.hosts().reduce((sum, host) => sum + (host.shadowRoot ? host.shadowRoot.querySelectorAll('[data-content] > [data-line]').length : 0), 0));
 }
 
 /** True when `file` has a rendered diff body at all (rows or not). False for a deferred or never-rendered file. */
@@ -939,9 +943,9 @@ async function holdWorkerResults(page) {
  *
  * Pointing at a row before that is pointing at a moving target. Each upgrade
  * re-creates its file's rows and usually makes the file taller, which moves
- * every file below it; on the current engine a gutter button positioned for a
- * file that then moved is left where the file used to be, on top of another
- * file's button, and takes its click (the "subtree intercepts pointer events"
+ * every file below it: the row under a resting pointer is another row a
+ * moment later, and a click goes to whatever is there by then (ledger H161;
+ * on the per-file renderer this was the "subtree intercepts pointer events"
  * failures of comment-crud and comments-review in the phase 1 and 2 logs).
  */
 async function waitForDiffSettled(page, { timeout = 15000 } = {}) {
@@ -1002,9 +1006,18 @@ async function openLineCommentForm(page, { file, line, side = 'additions', lineI
   await expect(async () => {
     await page.mouse.move(0, 0);
     await cell.hover({ timeout: 2000 });
+    // Seen, then clicked. The buttons are hidden while the pane moves (the
+    // hover may have scrolled it); a click on a control that is not shown yet
+    // makes Playwright scroll it elsewhere and take the line from under the pointer.
+    await expect(scope.locator('.pierre-comment-btn').first()).toBeVisible({ timeout: 2000 });
     await scope.locator('.pierre-comment-btn').first().click({ timeout: 2000 });
-    if (!file) return;
+    // The click opened a form. One that arrives in the frame after the file
+    // was drawn again finds no button under the pointer (the hover is told
+    // to the new rows a frame after a draw, on main as well) and opens
+    // nothing: seen twice in some 500 executions of one describe (ledger,
+    // phase 9 round 2). The gesture is made again, as a reader would.
     await expect(forms).toHaveCount(before + 1, { timeout: 2000 });
+    if (!file) return;
     const opened = (await formKeys()).filter((key) => !known.includes(key));
     if (opened.length === 1 && isOnLine(opened[0])) return;
     // Another row's button took the click: close what it opened and start over.
@@ -1251,9 +1264,9 @@ async function scrollFileIntoView(page, file, { timeout = 10000 } = {}) {
 
 /**
  * Scroll so that `file` is far outside the viewport (at least `margin`
- * viewport heights away), toward whichever end of the diff has room. On a
- * virtualized engine this unmounts the file; on the current engine it stays
- * in the DOM. Either way a user would say "I scrolled far away from it".
+ * viewport heights away), toward whichever end of the diff has room. The
+ * virtualized viewer unmounts the file then: it has no element until the
+ * reader comes back. A user would say "I scrolled far away from it".
  * @returns {Promise<{distance: number}>} how far the file is from the viewport, in px
  */
 async function scrollFileOutOfView(page, file, { margin = 3, timeout = 10000 } = {}) {
@@ -1408,6 +1421,50 @@ async function selectedText(page) {
 }
 
 /**
+ * Click `control` once, and say whether the browser sent the click.
+ *
+ * A browser sends no `click` when the pressed element was replaced between
+ * the press and the release, and every draw of a file re-creates its rows
+ * and separators (ledger H43, H143; main loses the click the same way).
+ * Playwright reports such a click as made. And a file is drawn once more
+ * after it reports settled: measured after `waitForContentUpgrade` and
+ * `waitForDiffSettled`, the rows of a changed file were replaced 19 to 54 ms
+ * later in 12 of 12 loads (30 to 74 ms later on main at 3223ecce, 12 of 12),
+ * and a context file is drawn again about 0.13 s after a range was added to
+ * it. So "the click was made" is read from the page: a trusted `click` event
+ * arrived, anywhere, since the press.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} control
+ * @param {Object} [options] - Playwright's click options
+ * @returns {Promise<boolean>} whether the page received the click
+ */
+async function clickOnce(page, control, options = {}) {
+  await page.evaluate(() => {
+    if (!window.__diffDomClicks) {
+      window.__diffDomClicks = { seen: 0 };
+      window.addEventListener('click', (event) => { if (event.isTrusted) window.__diffDomClicks.seen++; }, { capture: true });
+    }
+    window.__diffDomClicks.seen = 0;
+  });
+  await control.click({ timeout: 2000, ...options });
+  return page.evaluate(() => window.__diffDomClicks.seen > 0);
+}
+
+/**
+ * Click a control of the viewer's (an expand control, a gap's bar) and make
+ * the click again for as long as the browser sends none (see clickOnce).
+ * Nothing the application did is asserted or retried here: a click that
+ * arrived is never made twice.
+ */
+async function clickDelivered(page, control, options = {}) {
+  await expect(async () => {
+    if (!(await clickOnce(page, control, options))) {
+      throw new Error('the browser sent no click: the pressed element was replaced between the press and the release');
+    }
+  }).toPass({ timeout: 10000 });
+}
+
+/**
  * Click the expand control of the Nth expandable separator of `file`
  * (0-based, top to bottom), in the gutter column, where it is clickable.
  * @param {('up'|'down'|'both'|'directional')} [direction='directional']
@@ -1416,10 +1473,8 @@ async function clickExpandControl(page, file, index = 0, direction = 'directiona
   const separator = expandableSeparators(fileWrapper(page, file)).nth(index);
   // Rows and separators are re-created by every re-render of the file (H43);
   // a click whose target was replaced under it never happened and is made
-  // again. The click itself is the only step, so it cannot land twice.
-  await expect(async () => {
-    await expandControls(separator, direction).first().click({ timeout: 2000 });
-  }).toPass({ timeout: 10000 });
+  // again, whether Playwright says so (it throws) or not (clickOnce).
+  await clickDelivered(page, expandControls(separator, direction).first());
 }
 
 /**
@@ -1545,7 +1600,7 @@ function expectedContextRanges(ranges, totalLines) {
 // The viewer's half: the helpers that must not assume a file is mounted, the
 // bridge's records and the context-file helpers, under the names specs use.
 const viewerAdapter = viewerHalf.createCodeViewAdapter(
-  { inPage, waitInPage, contextFile, fileWrapper, waitForContentUpgrade }
+  { inPage, waitInPage, contextFile, fileWrapper, waitForContentUpgrade, clickOnce }
 );
 
 module.exports = {
@@ -1568,6 +1623,7 @@ module.exports = {
   waitForDiffToRender,
   waitForFileRendered,
   rowCount,
+  mountedRowCount,
   hasRenderedBody,
   // rows
   rows,
@@ -1631,6 +1687,7 @@ module.exports = {
   wrapInfo,
   setLineLayout,
   clickExpandControl,
+  clickDelivered,
   parkPointerOnLine,
   // named expectations and context files
   WORKER_LOAD_FAILURE_ERROR,

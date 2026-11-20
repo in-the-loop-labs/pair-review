@@ -750,3 +750,303 @@ for (const position of ['only', 'last']) {
     expect(harness.validatorErrors(page)).toEqual([]);
   });
 }
+
+// ─── The end of the pane after the reader's own scroll (ledger H163) ────────
+
+/** Eight files of 600 lines, a wrapping line in every ten: none of them is drawn whole until the reader gets there. */
+const WRAPPING_FILES = `
+  window.wrappingFiles = async () => {
+    const { H, BH } = window;
+    const long = ' // ' + 'these words make the line long enough to wrap in the pane '.repeat(6);
+    const entries = Array.from({ length: 8 }, (_, f) => BH.contextEntry('wrap/file' + (f + 1) + '.js', {
+      contents: Array.from({ length: 600 }, (_, i) => 'const w' + (f + 1) + '_' + (i + 1) + ' = ' + (i + 1) + ';' + ((i + 1) % 10 === 0 ? long : '')).join('\\n') + '\\n',
+      ranges: [{ startLine: 1, endLine: 600 }],
+    }));
+    await BH.up({ entries, quietMs: 400 });
+    const root = H.root;
+    return {
+      state: () => ({ top: Math.round(root.scrollTop), height: root.scrollHeight, short: Math.round(root.scrollHeight - root.clientHeight - root.scrollTop) }),
+      first: entries[0].id,
+      last: entries[7].id,
+    };
+  };
+`;
+
+/** A fresh page with the eight files, the pointer over the pane. */
+async function openWrappingFiles(harness) {
+  const page = await openBridge(harness);
+  await page.addScriptTag({ content: WRAPPING_FILES });
+  const before = await page.evaluate(async () => { window.w = await window.wrappingFiles(); return window.w.state(); });
+  const box = await page.locator('#root').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  return { page, before, box };
+}
+const paneState = (page) => page.evaluate(() => window.w.state());
+const settled = (page, ms = 900) => page.evaluate((quiet) => window.H.settle(quiet), ms);
+
+test('a position the page writes as "the end" is short of the end once the files there are measured (the viewer\'s estimate; not followed)', async ({ harness }) => {
+  // What the viewer does by itself, and what a reader's scroll is not left to (next test).
+  const { page, before } = await openWrappingFiles(harness);
+  await page.evaluate(() => { window.H.root.scrollTop = window.H.root.scrollHeight; });
+  await settled(page);
+  const after = await paneState(page);
+  expect(after.height).toBeGreaterThan(before.height + 500);
+  expect(after.short).toBeGreaterThan(500);
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+for (const gesture of ['wheel', 'End key']) {
+  test(`a scroll of the reader's that reaches the end of the pane stays at the end while the files there are measured (${gesture})`, async ({ harness }) => {
+    const { page, before } = await openWrappingFiles(harness);
+    if (gesture === 'wheel') {
+      await page.mouse.wheel(0, 10000000);
+    } else {
+      await page.evaluate(() => { window.H.root.tabIndex = -1; window.H.root.focus({ preventScroll: true }); });
+      await page.keyboard.press('End');
+    }
+    await settled(page);
+    const after = await paneState(page);
+    const lastLine = await page.evaluate(() => {
+      const { H } = window;
+      const rows = [...H.host(window.w.last).shadowRoot.querySelectorAll('[data-content] > [data-line]')];
+      const lastRow = rows[rows.length - 1];
+      const pane = H.root.getBoundingClientRect();
+      const row = lastRow.getBoundingClientRect();
+      return { line: Number(lastRow.getAttribute('data-line')), inPane: row.bottom <= pane.bottom + 1 && row.top >= pane.top };
+    });
+    expect(after.height).toBeGreaterThan(before.height + 500);
+    expect(after.short).toBe(0);
+    expect(lastLine).toEqual({ line: 600, inPane: true });
+    // It stays there, and the layout is the viewer's.
+    await settled(page, 600);
+    expect((await paneState(page)).short).toBe(0);
+    expect(await page.evaluate(() => window.BH.sound())).toEqual({ orphans: 0, clean: true });
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}
+
+for (const moment of ['as soon as the End key\'s own scroll is over', 'after the follow has ended']) {
+  test(`a Page Up pressed after the End key is not undone (${moment})`, async ({ harness }) => {
+    // The follow starts once per scroll toward the end and remembers nothing
+    // after it: the place a Page Up leaves the reader at is beyond the end of
+    // the pane as it was when End was pressed, and was taken for "the end
+    // reached" again for a second and a half.
+    const { page, before } = await openWrappingFiles(harness);
+    // No scroll of the pane in flight: its last `scrollend` is not older
+    // than its last `scroll`, for two frames. Chromium drops a scroll key
+    // that arrives while the smooth scroll of the key before it is finishing
+    // (on any page; measured, ledger H163), and a position that has not
+    // changed between two looks does not say that scroll is over.
+    await page.evaluate(() => {
+      const seen = window.__rootScrolls = { scroll: 0, end: 0 };
+      window.H.root.addEventListener('scroll', () => { seen.scroll = performance.now(); }, { passive: true });
+      window.H.root.addEventListener('scrollend', () => { seen.end = performance.now(); });
+    });
+    const scrollOver = () => page.evaluate(async () => {
+      const seen = window.__rootScrolls;
+      for (let quiet = 0; quiet < 2;) {
+        await window.H.raf(1);
+        quiet = seen.end >= seen.scroll ? quiet + 1 : 0;
+      }
+    });
+    await page.evaluate(() => { window.H.root.tabIndex = -1; window.H.root.focus({ preventScroll: true }); });
+    await page.keyboard.press('End');
+    await page.waitForFunction((height) => { const s = window.w.state(); return s.height > height + 500 && s.short === 0; }, before.height);
+    // (What a key pressed while a follow is running does is a unit test's: it ends the follow.)
+    await scrollOver();
+    if (moment === 'after the follow has ended') {
+      await page.waitForFunction(() => window.BH.bridge._endFollow === null);
+      await scrollOver();
+    }
+    expect((await paneState(page)).short).toBe(0);
+    await page.keyboard.press('PageUp');
+    // The key's scroll begins when the browser gets to it: wait for the
+    // move, then for its end and the rest. Judged by the distance from the
+    // end: the files above may still be measured, which moves the position
+    // and not what the reader sees.
+    await page.waitForFunction(() => window.w.state().short > 300);
+    await scrollOver();
+    await settled(page);
+    const after = await paneState(page);
+    expect(after.short).toBeGreaterThan(300);
+    // And a second one goes on up from there.
+    await scrollOver();
+    await page.keyboard.press('PageUp');
+    await page.waitForFunction((from) => window.w.state().short > from + 300, after.short);
+    await scrollOver();
+    await settled(page);
+    expect((await paneState(page)).short).toBeGreaterThan(after.short + 300);
+    expect(harness.validatorErrors(page)).toEqual([]);
+  });
+}
+
+test('nothing is followed while the pane\'s scrollbar is held; let go with the pane at its end, the end is kept while the files there are measured', async ({ harness }) => {
+  // The press and the release are dispatched (a press on the scrollbar is a
+  // pointerdown whose target is the pane itself, at the pane's right edge);
+  // the growth is the viewer's own. tests/e2e/scrollbar-drag.spec.js drags a
+  // real thumb.
+  const { page, before } = await openWrappingFiles(harness);
+  const press = () => page.evaluate(() => {
+    const { H } = window;
+    const box = H.root.getBoundingClientRect();
+    H.root.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse', clientX: box.right - 5, clientY: box.top + 10 }));
+    H.root.scrollTop = H.root.scrollHeight;
+  });
+  const release = () => page.evaluate(() => {
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse' }));
+  });
+  // Held at the end while the files there are measured: the position is the thumb's.
+  await press();
+  await settled(page);
+  const held = await paneState(page);
+  expect(held.height).toBeGreaterThan(before.height + 500);
+  expect(held.short).toBeGreaterThan(500);
+  // Dragged up, still held: it stays where the thumb put it.
+  await page.evaluate(() => { window.H.root.scrollTop -= 400; });
+  await settled(page);
+  const up = await paneState(page);
+  expect(up.top).toBe(held.top - 400);
+  // Let go short of the end: nothing happens.
+  await release();
+  await settled(page);
+  expect((await paneState(page)).top).toBe(up.top);
+
+  // A fresh pane: the thumb taken to the end and let go at once.
+  const second = await openWrappingFiles(harness);
+  await second.page.evaluate(() => {
+    const { H } = window;
+    const box = H.root.getBoundingClientRect();
+    H.root.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse', clientX: box.right - 5, clientY: box.top + 10 }));
+    H.root.scrollTop = H.root.scrollHeight;
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse' }));
+  });
+  await settled(second.page);
+  const let_go = await paneState(second.page);
+  expect(let_go.height).toBeGreaterThan(second.before.height + 500);
+  expect(let_go.short).toBe(0);
+  expect(await second.page.evaluate(() => window.BH.sound())).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(second.page)).toEqual([]);
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+test('a scrollbar taken to the end of its track is put at the end of the pane when it is let go, however much the pane grew under it', async ({ harness }) => {
+  // What a drag of the thumb to the bottom comes to on a pane whose last
+  // files are measured only when the reader gets there. The press, the
+  // thumb's scrolls and the release are dispatched; the growth is the
+  // viewer's own. tests/e2e/scrollbar-drag.spec.js drags a real thumb.
+  const edge = (page) => page.evaluate(() => { const r = window.H.root.getBoundingClientRect(); return { right: r.right, top: r.top, bottom: r.bottom }; });
+  const press = (page, at) => page.evaluate(({ x, y }) => {
+    window.H.root.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse', clientX: x, clientY: y }));
+  }, at);
+  const release = (page, at) => page.evaluate(({ x, y }) => {
+    document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1, pointerType: 'mouse', clientX: x, clientY: y }));
+  }, at);
+  const lastLineInPane = (page) => page.evaluate(() => {
+    const { H } = window;
+    const rows = [...H.host(window.w.last).shadowRoot.querySelectorAll('[data-content] > [data-line]')];
+    const lastRow = rows[rows.length - 1];
+    const pane = H.root.getBoundingClientRect();
+    const row = lastRow.getBoundingClientRect();
+    return { line: Number(lastRow.getAttribute('data-line')), inPane: row.bottom <= pane.bottom + 1 && row.top >= pane.top };
+  });
+
+  // The thumb arrives at the end of its track, and the files there are
+  // measured after it: held, the reader sees where the thumb is.
+  const first = await openWrappingFiles(harness);
+  const box = await edge(first.page);
+  await press(first.page, { x: box.right - 5, y: box.top + 10 });
+  await first.page.evaluate(() => { window.H.root.scrollTop = window.H.root.scrollHeight; });
+  await settled(first.page);
+  const held = await paneState(first.page);
+  expect(held.height).toBeGreaterThan(first.before.height + 500);
+  expect(held.short).toBeGreaterThan(500);
+  // Let go, with the pointer still on the thumb (above the pane's bottom edge): the end.
+  await release(first.page, { x: box.right - 5, y: box.bottom - 30 });
+  await settled(first.page);
+  expect((await paneState(first.page)).short).toBe(0);
+  expect(await lastLineInPane(first.page)).toEqual({ line: 600, inPane: true });
+  expect(await first.page.evaluate(() => window.BH.sound())).toEqual({ orphans: 0, clean: true });
+  expect(harness.validatorErrors(first.page)).toEqual([]);
+
+  // The pane grew while the thumb was on its way: the thumb fell behind
+  // the pointer, and its last scroll left the pane short of its end. The
+  // pointer pulled to the pane's bottom edge says where the reader was going.
+  for (const letGo of ['at the bottom edge', 'above the bottom edge']) {
+    const { page, before } = await openWrappingFiles(harness);
+    const at = await edge(page);
+    await press(page, { x: at.right - 5, y: at.top + 10 });
+    await page.evaluate(() => { const { root } = window.H; root.scrollTop = root.scrollHeight - root.clientHeight - 300; });
+    await settled(page);
+    const short = (await paneState(page)).short;
+    expect(short).toBeGreaterThan(500);
+    await release(page, { x: at.right - 5, y: letGo === 'at the bottom edge' ? at.bottom : at.bottom - 40 });
+    await settled(page);
+    const after = await paneState(page);
+    expect(after.height, letGo).toBeGreaterThan(before.height + 500);
+    if (letGo === 'at the bottom edge') {
+      expect(after.short, letGo).toBe(0);
+      expect(await lastLineInPane(page), letGo).toEqual({ line: 600, inPane: true });
+    } else {
+      // Where the thumb is: nothing was written.
+      expect(after.short, letGo).toBe(short);
+    }
+    expect(harness.validatorErrors(page)).toEqual([]);
+  }
+});
+
+test('a press on the pane\'s edge that holds no scrollbar, dragged down to the pane\'s bottom edge and let go, moves nothing', async ({ harness }) => {
+  // The verifier's finding (phase 9, round 2). The browser of these tests
+  // draws no scrollbar: the strip a scrollbar may be in is the pane's own
+  // padding, and a press there holds nothing. A real mouse: the page is told
+  // of its moves, which is what says so (a held scrollbar's are not told).
+  const { page } = await openWrappingFiles(harness);
+  await page.evaluate(() => { window.H.root.style.padding = '0 17px'; window.H.root.scrollTop = 3000; });
+  await settled(page);
+  const box = await page.locator('#root').boundingBox();
+  const drags = [
+    ['straight down', box.x + box.width - 5],
+    ['down and into the code', box.x + box.width - 400],
+  ];
+  for (const [name, endX] of drags) {
+    const from = await paneState(page);
+    const x = box.x + box.width - 5;
+    const y = box.y + 100;
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === window.H.root, { x, y }), name).toBe(true);
+    await page.evaluate(() => {
+      window.__release = null;
+      document.addEventListener('pointerup', () => { window.__release = window.H.root.scrollTop; }, { capture: true, once: true });
+    });
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    const endY = box.y + box.height - 0.5;
+    for (let step = 1; step <= 8; step++) {
+      await page.mouse.move(x + ((endX - x) * step) / 8, y + ((endY - y) * step) / 8);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    }
+    await page.mouse.up();
+    // A follow writes the end of the pane in the release's own task.
+    const atRelease = await page.evaluate(() => window.__release);
+    await settled(page);
+    const after = await paneState(page);
+    // The browser may scroll the pane under a text selection; nothing sends it to the end.
+    expect(Math.abs(after.top - atRelease), name).toBeLessThanOrEqual(120);
+    expect(after.top, name).toBeLessThan(from.top + 2000);
+    expect(after.short, name).toBeGreaterThan(5000);
+  }
+  expect(harness.validatorErrors(page)).toEqual([]);
+});
+
+test('a navigation that starts right after the reader scrolled to the end is not pulled back to the end', async ({ harness }) => {
+  const { page } = await openWrappingFiles(harness);
+  await page.mouse.wheel(0, 10000000);
+  const after = await page.evaluate(async () => {
+    const { H, BH } = window;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    BH.bridge.scrollToItem(window.w.first, { align: 'start', behavior: 'instant' });
+    await H.settle(900);
+    return { top: window.w.state().top, firstTop: Math.round(H.host(window.w.first).getBoundingClientRect().top - H.root.getBoundingClientRect().top) };
+  });
+  expect(after.firstTop).toBeLessThanOrEqual(1);
+  expect(after.top).toBeLessThan(100);
+  expect(harness.validatorErrors(page)).toEqual([]);
+});

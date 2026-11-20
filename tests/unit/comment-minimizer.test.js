@@ -698,6 +698,29 @@ describe('CommentMinimizer — file-level indicators', () => {
     expect(document.querySelector('.file-comments-expanded')).toBeNull();
     expect(document.querySelector('.file-comment-indicator')).toBeNull();
   });
+
+  it('clears the expansion of a zone that is not in the document when disabled (its file is outside the viewer\'s window)', () => {
+    const { wrapper, zone } = makeFile('a.js', { withZone: true });
+    fileCommentCard(zone, 'user-comment');
+
+    const cm = new CommentMinimizer();
+    cm.setMinimized(true);
+    fileIndicator().click();
+    expect(zone.classList.contains('file-comments-expanded')).toBe(true);
+
+    // The viewer unmounts the file: the zone leaves the document and stays in the registry.
+    wrapper.remove();
+    expect(zone.isConnected).toBe(false);
+    cm.setMinimized(false);
+    expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+
+    // Back on screen with minimize on again: closed, and its indicator says so.
+    cm.setMinimized(true);
+    diffContainer().appendChild(wrapper);
+    cm.refreshIndicators();
+    expect(zone.classList.contains('file-comments-expanded')).toBe(false);
+    expect(fileIndicator().classList.contains('expanded')).toBe(false);
+  });
 });
 
 // ===========================================================================

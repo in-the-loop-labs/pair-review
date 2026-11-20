@@ -881,6 +881,19 @@ test.describe('Review panel segment overflow scroll', () => {
     );
     expect(initialScroll).toBe(0);
 
+    // The panel is still opening when it is shrunk (expand() started its
+    // width transition a moment ago), and the chevron moves with the panel's
+    // edge. A press on it that is released a frame later is released beside
+    // it: the click goes to the row, no handler runs and nothing scrolls
+    // (1 of 999 runs alone on main at 3223ecce). The click waits for the
+    // panel's own transitions to be over.
+    await page.evaluate(async () => {
+      const panel = document.getElementById('ai-panel');
+      for (let running = panel.getAnimations(); running.length > 0; running = panel.getAnimations()) {
+        await Promise.allSettled(running.map((animation) => animation.finished));
+      }
+    });
+
     await page.locator('#segment-scroll-right').click();
 
     // Smooth scroll completes asynchronously — poll briefly.

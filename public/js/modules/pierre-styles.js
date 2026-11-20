@@ -154,12 +154,54 @@
    *    window (a header-only mount at the edge of the viewport). There the
    *    vendor DOES count the 8 px, so the rule must not match. Such a mount
    *    renders no annotation wrapper either, while a row-less item with a
-   *    file-level annotation always has one. Hence `:has([data-line-annotation])`.
+   *    file-level annotation always has one. Hence "a card and no line".
+   *
+   * The condition is a class of the file's host (ROWLESS_CLASS), which
+   * markRowless sets from the drawn code block after every draw of the file,
+   * before the viewer measures it. It is NOT written as a selector
+   * (`pre[data-diff]:has([data-line-annotation]):not(:has([data-line]))`,
+   * as it was until phase 9): with `:has()` on the code block, every element
+   * added to or taken out of a file's rows makes the browser decide the
+   * block's style again, and with a rule for the block's descendants under
+   * that condition (FRAME_CSS has one) the style of every row of the file.
+   * Measured: the viewer's hover moves its gutter button from row to row, so
+   * each row the pointer came to rest on cost a style pass over the whole
+   * file (21 ms in a file of 10,000 drawn rows, 3.2 s in 50 steps of a wheel
+   * scroll), and an update of one file a style pass over every mounted file
+   * (19,867 elements and 46 ms for one revealed line; 61 elements without).
    */
+  const ROWLESS_CLASS = 'pierre-rowless';
   const ROWLESS_FIX = [
-    '[data-code]:has([data-line-annotation]):not(:has([data-line])) { padding-bottom: 0 !important; }',
-    'pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { padding-bottom: 0 !important; }',
+    `:host(.${ROWLESS_CLASS}) [data-code] { padding-bottom: 0 !important; }`,
+    `:host(.${ROWLESS_CLASS}) pre[data-diff] { padding-bottom: 0 !important; }`,
   ].join('\n');
+
+  /**
+   * Whether the code block a file's host has drawn shows a card and no line
+   * (see ROWLESS_FIX).
+   * @param {Element} host - the viewer's element of a file
+   * @returns {boolean}
+   */
+  function isRowless(host) {
+    const block = host && host.shadowRoot ? host.shadowRoot.querySelector('pre[data-diff]') : null;
+    return !!block && !!block.querySelector('[data-line-annotation]') && !block.querySelector('[data-line]');
+  }
+
+  /**
+   * Put ROWLESS_CLASS on a file's host, or take it off, by what the host
+   * has drawn. Called after every draw of a file (the viewer's
+   * `onPostRender`, which comes before it measures the file) and with
+   * `drawn` false when the host goes back to the viewer's pool.
+   * @param {Element} host
+   * @param {boolean} [drawn=true]
+   * @returns {boolean} whether the host has the class now
+   */
+  function markRowless(host, drawn = true) {
+    if (!host || !host.classList) return false;
+    const rowless = drawn && isRowless(host);
+    host.classList.toggle(ROWLESS_CLASS, rowless);
+    return rowless;
+  }
 
   /**
    * Context files (files outside the diff, shown as ranges of lines) are
@@ -238,6 +280,7 @@
    *    the colour has a fallback.
    *  - A file without a line has no bottom padding in the viewer's layout
    *    (and ROWLESS_FIX removes the vendor's), so it gets no bottom border
+   *    (keyed on the same class of the host, never on :has(): ROWLESS_FIX)
    *    either; pr.css draws its 1 px line in the file's comment zone, which
    *    the viewer measures.
    *    Such a file has no code background either: what it shows (its
@@ -281,9 +324,9 @@
 [data-line-annotation='-1,-1'],
 [data-gutter] > [data-gutter-buffer='annotation']:first-child { background-color: var(--diffs-bg) !important; }
 :host(.context-file) pre[data-diff] { border-bottom: 1px solid transparent; }
-pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { border-bottom: 0 !important; border-color: transparent !important; }
-pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) { background-color: transparent !important; }
-pre[data-diff]:has([data-line-annotation]):not(:has([data-line])) * { background-color: transparent !important; border-color: transparent !important; }
+:host(.${ROWLESS_CLASS}) pre[data-diff] { border-bottom: 0 !important; border-color: transparent !important; }
+:host(.${ROWLESS_CLASS}) pre[data-diff] { background-color: transparent !important; }
+:host(.${ROWLESS_CLASS}) pre[data-diff] * { background-color: transparent !important; border-color: transparent !important; }
 [data-diffs-header] { background-color: transparent !important; }
 :host { background-color: transparent !important; }
 `;
@@ -378,6 +421,9 @@ pre[data-diff] [data-unified] > [data-content] > [data-line-annotation='-1,-1'],
   const PierreStyles = {
     ANNOTATION_CSS,
     ROWLESS_FIX,
+    ROWLESS_CLASS,
+    isRowless,
+    markRowless,
     CONTEXT_CSS,
     FRAME_CSS,
     ZONE_CSS,

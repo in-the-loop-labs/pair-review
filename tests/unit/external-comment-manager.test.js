@@ -980,7 +980,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
 // File-level threads (GitHub subject_type='file')
 //
 // File-level comments have no line anchor. They render into the per-file
-// `.file-comments-zone` above the diff (shared light DOM for both engines),
+// `.file-comments-zone` above the diff (light DOM the page owns),
 // NOT as a line-1 annotation. Unanchorable line threads (outdated / dropped
 // line) fall back into the SAME zone when one exists.
 // =======================================================================

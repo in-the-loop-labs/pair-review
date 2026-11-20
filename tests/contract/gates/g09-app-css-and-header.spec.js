@@ -213,6 +213,8 @@ async function setUpAppShapedViewer(page, { theme, diffStyle, lineHeightMode = '
     // drawn (every file here but the binary one).
     const MANAGED = ['collapsed', 'generated-file', 'summaries-hidden-file'];
     H.hooks.onPostRender = (node, instance, phase, context) => {
+      // What the bridge does first at every draw: the class ROWLESS_FIX keys on.
+      window.PierreStyles.markRowless(node, phase !== 'unmount');
       if (phase === 'unmount') {
         node.removeAttribute('data-file-name');
         node.classList.remove('d2h-file-wrapper', 'has-diff-lines', 'has-diff-body', ...MANAGED);

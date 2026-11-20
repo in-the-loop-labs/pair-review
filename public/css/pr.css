@@ -3488,6 +3488,22 @@ body:not(.tour-active) #diff-container [data-annotation-slot] {
   padding: 16px;
 }
 
+.expanded-context-warning {
+  background: #fff8c5;
+  border: 1px solid #d4a72c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #6f5e00;
+}
+
+[data-theme="dark"] .expanded-context-warning {
+  background: #3b2e00;
+  border-color: #7d6600;
+  color: #e3b341;
+}
+
 .comment-form-header {
   display: flex;
   align-items: center;
@@ -3687,6 +3703,25 @@ body:not(.tour-active) #diff-container [data-annotation-slot] {
 [data-theme="dark"] .user-comment-line-info {
   background: rgba(167, 139, 250, 0.1);
   color: #8b949e;
+}
+
+/* WORKAROUND indicator: Comments on lines outside the diff (a context file's lines) will be posted as
+   file-level comments since GitHub's API doesn't support line-level comments outside diff hunks.
+   When GitHub opens their API for this, remove this indicator. */
+.expanded-context-indicator {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: #bf8700;
+  cursor: help;
+}
+
+.expanded-context-indicator svg {
+  fill: currentColor;
+}
+
+[data-theme="dark"] .expanded-context-indicator {
+  color: #d29922;
 }
 
 /* Adopted comment badges - HIDDEN in favor of unified badges (issue pair_review-pqb) */

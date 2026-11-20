@@ -206,7 +206,7 @@ describe('PRManager._buildPaneEntries', () => {
     it('seeds once: a generated file the reader expanded stays expanded when the entries are built again', async () => {
       const files = changed('gen.js');
       files.get('gen.js').generated = true;
-      const manager = makeManager({ changedFilesByPath: files, ensureFileBodyRendered: async () => null });
+      const manager = makeManager({ changedFilesByPath: files });
       manager._fileCollapsed.clear();
       expect(manager._buildPaneEntries()[0].collapsed).toBe(true);
       await manager.setFileCollapsed('gen.js', false);

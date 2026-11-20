@@ -167,6 +167,10 @@ class FileCommentManager {
    * Resolves the path the way DiffRenderer.findFileElement does: the exact
    * path, then its normalized form, then a tolerant path match; a changed
    * file's zone wins over a context entry's zone for the same path.
+   *
+   * A zone that carries exactly the path asked for wins over every tolerant
+   * match, for a context entry too: 'vendor/src/a.js' ends like 'src/a.js'
+   * and is another file, with a zone of its own.
    * @param {string} fileName - The file path
    * @returns {HTMLElement|null}
    */
@@ -176,13 +180,13 @@ class FileCommentManager {
     const candidates = [fileName];
     const normalized = DiffRenderer?.normalizeFilePath?.(fileName);
     if (normalized && normalized !== fileName) candidates.push(normalized);
-    for (const candidate of candidates) {
-      const entry = this._zones.get(this._zoneKey(candidate, false));
-      if (entry) return entry.zone;
+    for (const context of [false, true]) {
+      for (const candidate of candidates) {
+        const entry = this._zones.get(this._zoneKey(candidate, context));
+        if (entry) return entry.zone;
+      }
     }
-    if (typeof DiffRenderer?.pathsMatch !== 'function') {
-      return this._zones.get(this._zoneKey(fileName, true))?.zone || null;
-    }
+    if (typeof DiffRenderer?.pathsMatch !== 'function') return null;
     let contextMatch = null;
     for (const entry of this._zones.values()) {
       if (!DiffRenderer.pathsMatch(entry.fileName, fileName)) continue;

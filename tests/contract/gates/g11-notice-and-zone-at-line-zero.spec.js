@@ -11,11 +11,12 @@
  */
 
 import { test, expect } from '../harness/contract-test.js';
-import { ROWLESS_FIX } from '../harness/constants.js';
+import { ROWLESS_FIX, ROWLESS_SCRIPTS, MARK_ROWLESS } from '../harness/constants.js';
 
 for (const diffStyle of ['unified', 'split']) {
   test(`G11: zone and notice at lineNumber 0 stack in array order with exact heights (${diffStyle})`, async ({ harness }) => {
-    const page = await harness.open();
+    const page = await harness.open({ scripts: ROWLESS_SCRIPTS });
+    await page.evaluate(MARK_ROWLESS);
     const result = await page.evaluate(async ({ fix, diffStyle }) => {
       const H = window.H;
       const { roles } = H.workload;

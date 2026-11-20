@@ -570,7 +570,7 @@ test('a suggestion whose status changed while its card was untouched shows it at
     reopened: { collapsed: true, adoption: 'true' },
   });
   // Adding the restored comment on the suggestion's line draws no other card
-  // again: the suggestion keeps showing "dismissed", as on the current engine.
+  // again: the suggestion keeps showing "dismissed", as on main.
   expect(result.afterRestore).toEqual({
     restored: { collapsed: true, adoption: null },
     reopened: { collapsed: false, adoption: 'true' },
