@@ -215,7 +215,12 @@ because violating it produced a real, observed flake or measurable waste.
   `clickDelivered`, `clickExpandControl` and `clickGapControl` make the click
   again while none arrived. A click that arrived is never repeated, so
   nothing can be expanded twice. Use them for expand controls and gap bars;
-  do not call `.click()` on one directly.
+  do not call `.click()` on one directly. Every click made again is counted
+  and shown: one line `[diff-dom] lost click ...` in the run's output and a
+  `lost-click` annotation on the test (`noteLostClick`). A test passes
+  however many were lost, so compare the count between runs
+  (`grep -c '\[diff-dom\] lost click' <log>`); the self-test in
+  `fixture-isolation.spec.js` loses one click per mode on purpose.
 - **A behaviour the migration changes on purpose, or a defect main has, is
   asserted through a named constant in `diff-dom.js`** (`CONTEXT_FILE_PLACEMENT`,
   `LAYOUT_TOGGLE_KEEPS`, `UPGRADE_WAITS_FOR_FOCUS`,

@@ -17,10 +17,17 @@
  * context-file-header.test.js.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
 const { DiffRenderer } = require('../../public/js/modules/diff-renderer.js');
 const { PRManager } = require('../../public/js/pr.js');
+const { createBridgeHarness, restoreBridgeHarnesses, numberedLines } = require('../utils/pierre-bridge-harness.js');
+
+let vendor;
+beforeAll(async () => {
+  vendor = await import('@pierre/diffs');
+});
+afterEach(() => restoreBridgeHarnesses());
 
 // jsdom exposes CSS.escape via window; make sure the global exists for code
 // that references bare `CSS`.
@@ -79,7 +86,6 @@ describe('context entry collapse independence (#540)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="diff-container"></div>';
     window.DiffRenderer = DiffRenderer;
-    window.HeaderAnchor = HeaderAnchor;
 
     manager = createManager();
     diffWrapper = buildWrapper(FILE);
@@ -217,6 +223,92 @@ describe('context entry collapse independence (#540)', () => {
 
       expect(diffItem.classList.contains('viewed')).toBe(false);
       expect(contextItem.classList.contains('viewed')).toBe(true);
+    });
+  });
+
+  describe('toggleContextFileCollapse', () => {
+    // The two cases main added with "Keep a collapsed file's header where it
+    // was stuck". There the page measured the header around a class change
+    // and scrolled the pane (HeaderAnchor). Here the collapse is the
+    // viewer's, and the one place that moves the pane is
+    // PierreBridge.setCollapsed: these run PRManager against the production
+    // bridge (over the recording viewer) and read what the bridge sends.
+    const CONTEXT = 'lib/context.js';
+    const PANE_TOP = 100;
+    let bridge, host;
+
+    /** Where the context file's element is: `top` and `bottom` in viewport pixels. */
+    function place(top, bottom) {
+      host.getBoundingClientRect = () => ({ top, bottom, height: bottom - top, left: 0, right: 100, width: 100 });
+    }
+
+    beforeEach(() => {
+      bridge = createBridgeHarness(vi, vendor);
+      bridge.renderAll([{
+        id: CONTEXT, kind: 'context', contents: `${numberedLines(200).join('\n')}\n`, contentsSeq: 1,
+        ranges: [{ startLine: 1, endLine: 200 }],
+      }]);
+      bridge.root.getBoundingClientRect = () => ({ top: PANE_TOP, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+      bridge.root.scrollBy = vi.fn();
+      // The file's element, as the viewer's mount callback hands it over.
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      const instance = { hunksRenderer: { expandedHunks: new Map() }, getRenderedDiff: () => bridge.files.get(CONTEXT).metadata };
+      bridge.codeView.options.onPostRender(host, instance, 'mount', { item: { id: CONTEXT }, element: host, instance });
+      bridge.codeView.calls.length = 0;
+
+      manager.pierreBridge = bridge;
+      manager.changedFilesByPath = new Map();
+      manager.contextFiles = [{ id: 1, file: CONTEXT, line_start: 1, line_end: 200 }];
+      manager._contextItemIds.add(CONTEXT);
+      manager._fileCollapsed.set(`context:${CONTEXT}`, false);
+    });
+
+    // The bridge re-applies the split layout of a mounted file in the next
+    // frame; let that frame pass while the bridge's modules are still loaded
+    // (this hook runs before the file's own afterEach unloads them).
+    afterEach(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
+
+    it('anchors the header on collapse but not on expand', () => {
+      // The reader is half way through the file: its header is stuck at the
+      // pane's top edge.
+      place(PANE_TOP - 2000, PANE_TOP + 2000);
+
+      manager.toggleContextFileCollapse(CONTEXT);
+      expect(bridge.codeView.count('scrollTo')).toBe(1);
+      expect(bridge.codeView.last('scrollTo').args[0]).toEqual({
+        type: 'item', id: CONTEXT, align: 'start', offset: 0, behavior: 'instant',
+      });
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(true);
+      expect(bridge.files.get(CONTEXT).collapsed).toBe(true);
+
+      // Collapsed, the file is its header: still at the pane's top edge.
+      place(PANE_TOP, PANE_TOP + 53);
+      manager.toggleContextFileCollapse(CONTEXT);
+      expect(bridge.codeView.count('scrollTo')).toBe(1);
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(false);
+      expect(bridge.files.get(CONTEXT).collapsed).toBe(false);
+      expect(manager.collapsedFiles.has(`context:${CONTEXT}`)).toBe(false);
+      // Nothing but the bridge's one target moved the pane.
+      expect(bridge.root.scrollBy).not.toHaveBeenCalled();
+      expect(bridge.root.scrollTop).toBe(0);
+    });
+
+    it('does not scroll the diff pane when expanding a partly covered header', () => {
+      // A collapsed file whose header is 20 px above the pane's top edge.
+      // Expanded, the header drops to that edge; compensating for it would
+      // push the top of the newly revealed body up under the header.
+      manager.setFileCollapsed(CONTEXT, true);
+      bridge.codeView.calls.length = 0;
+      place(PANE_TOP - 20, PANE_TOP + 33);
+
+      manager.toggleContextFileCollapse(CONTEXT);
+
+      expect(manager.isFileCollapsed(CONTEXT)).toBe(false);
+      expect(bridge.files.get(CONTEXT).collapsed).toBe(false);
+      expect(bridge.codeView.count('scrollTo')).toBe(0);
+      expect(bridge.root.scrollBy).not.toHaveBeenCalled();
+      expect(bridge.root.scrollTop).toBe(0);
     });
   });
 

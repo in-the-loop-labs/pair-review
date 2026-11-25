@@ -26,12 +26,11 @@
  *   - landings: within 1 px, measured from whatever is pinned above the diff
  *     when both dumps have that measurement (the toolbar is inside the
  *     scroll container on one engine and above it on the other), else from
- *     the top of the scroll container. One landing differs by decision and is
- *     LISTED: collapsing a file while scrolled inside it leaves its header
- *     above the viewport on the per-file renderer (nothing scrolls) and
- *     flush under the toolbar on the virtualized viewer (ledger H111, H145,
- *     `COLLAPSE_INSIDE_FILE`). Listed only in that form: the candidate is
- *     the virtualized viewer, its header is flush, the reference's is above.
+ *     the top of the scroll container. That includes the landing after a
+ *     file is collapsed while the reader is scrolled inside it: the
+ *     application keeps the collapsed header where it was stuck (main since
+ *     v5.4.3, and the virtualized viewer; ledger H145), so a difference
+ *     there is a regression like any other landing.
  *   - `classes` on the file wrapper are engine bookkeeping and are reported
  *     as notes only; `collapsed` is compared.
  *
@@ -225,10 +224,7 @@ for (const name of names) {
       if (pa == null || pb == null || Math.abs(pa - pb) > 1) {
         // A landing at the very end of the diff is bounded by the scroll extent, not by the target.
         if (la.atEnd && lb.atEnd) continue;
-        const headerKept = key === 'collapseInside' && isViewer(b) && !isViewer(a)
-          && pa != null && pb != null && pa < -1 && Math.abs(pb) <= 1;
-        if (headerKept) listed.push(`${name}: landing collapseInside: the collapsed file's header is ${pa} px from the toolbar on the per-file renderer (above the viewport) and ${pb} px on the virtualized viewer (flush under it)`);
-        else regressions.push(`${name}: landing ${key}: ${pa} vs ${pb}`);
+        regressions.push(`${name}: landing ${key}: ${pa} vs ${pb}`);
       }
     }
   }
@@ -236,7 +232,7 @@ for (const name of names) {
 
 console.log(`compared ${names.length} dump(s)`);
 if (notes.length) console.log(`\nNotes (${notes.length}):\n  ${notes.join('\n  ')}`);
-if (listed.length) console.log(`\nListed differences, each decided: context files against the small-gap rule and a file's final newline, and the collapse of a file the reader is inside (${listed.length}):\n  ${listed.join('\n  ')}`);
+if (listed.length) console.log(`\nListed differences, each decided: context files against the small-gap rule and a file's final newline (${listed.length}):\n  ${listed.join('\n  ')}`);
 if (regressions.length) {
   console.log(`\nREGRESSIONS (${regressions.length}):\n  ${regressions.join('\n  ')}`);
   process.exit(1);

@@ -1838,10 +1838,93 @@ describe('navigation to what is not mounted, a collapse while inside a file, a f
     mount('src/a.js', { box: { top: -200, bottom: 900 } });
     viewer().calls.length = 0;
     bridge.setCollapsed('src/a.js', true);
-    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', behavior: 'instant' });
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', offset: 0, behavior: 'instant' });
     // The collapse is published before the target is sent.
     const names = viewer().calls.map((c) => c.name);
     expect(names.indexOf('updateItem')).toBeLessThan(names.lastIndexOf('scrollTo'));
+    // And both are drawn by one flush, after the target: the viewer never
+    // draws the collapsed file anywhere but at its header's place.
+    expect(names.filter((name) => name === 'render')).toHaveLength(1);
+    expect(names.lastIndexOf('scrollTo')).toBeLessThan(names.indexOf('render'));
+    expect(viewer().last('render').args[0]).toBe(true);
+  });
+
+  it('collapsing a file whose stuck header is where it was measured: at the pane\'s top, or partly above it at the file\'s last rows', () => {
+    bridge.root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    /** The header slot of a mounted file, in the document, with its top at `top`. */
+    const header = (id, top) => {
+      const slot = bridge._headerSlotOf(bridge.files.get(id));
+      env.window.document.body.appendChild(slot);
+      slot.getBoundingClientRect = () => ({ top, bottom: top + 53, height: 53, left: 0, right: 100, width: 100 });
+    };
+    // The reader is in the middle of the file: the header is stuck at the pane's top edge.
+    mount('src/a.js', { box: { top: -200, bottom: 900 } });
+    header('src/a.js', 100);
+    bridge.setCollapsed('src/a.js', true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/a.js', align: 'start', offset: 0, behavior: 'instant' });
+    // The file ends 30 px below the pane's top edge: its last rows have
+    // pushed the 53 px header 23 px above that edge. It stays there.
+    mount('src/b.js', { box: { top: -900, bottom: 130 } });
+    header('src/b.js', 77);
+    bridge.setCollapsed('src/b.js', true);
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/b.js', align: 'start', offset: -23, behavior: 'instant' });
+    expect(viewer().count('scrollTo')).toBe(2);
+  });
+
+  it('a stuck header a fraction of a pixel below the pane\'s top edge is not pushed down by a collapse', () => {
+    bridge.root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    mount('src/a.js', { box: { top: -200, bottom: 900 } });
+    const slot = bridge._headerSlotOf(bridge.files.get('src/a.js'));
+    env.window.document.body.appendChild(slot);
+    slot.getBoundingClientRect = () => ({ top: 100.39, bottom: 153.39, height: 53, left: 0, right: 100, width: 100 });
+    bridge.setCollapsed('src/a.js', true);
+    expect(viewer().last('scrollTo').args[0].offset).toBe(0);
+  });
+
+  it('an expand leaves the pane\'s scroll position where it was when the file reaches into the pane, whatever the flush did to it', () => {
+    bridge.root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    let scrollTop = 500;
+    const writes = [];
+    Object.defineProperty(bridge.root, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => { writes.push(value); scrollTop = value; },
+    });
+    // The viewer, left to itself, moves the pane by a few pixels when it
+    // draws a file expanded that is at the pane's top edge (ledger H173).
+    const render = viewer().render.bind(viewer());
+    let moveBy = 8;
+    viewer().render = (...args) => { render(...args); scrollTop += moveBy; };
+
+    // A collapsed file whose header is 20 px above the pane's top edge.
+    const a = mount('src/a.js', { box: { top: 80, bottom: 133 } });
+    bridge.setCollapsed('src/a.js', true);
+    scrollTop = 500;
+    writes.length = 0;
+    viewer().calls.length = 0;
+    bridge.setCollapsed('src/a.js', false);
+    expect(scrollTop).toBe(500);
+    expect(writes).toEqual([500]);
+    expect(viewer().count('scrollTo')).toBe(0);
+
+    // The same file lower in the pane, and a flush that moves nothing: nothing is written.
+    a.host.getBoundingClientRect = () => ({ top: 300, bottom: 353, height: 53, left: 0, right: 100, width: 100 });
+    bridge.setCollapsed('src/a.js', true);
+    moveBy = 0;
+    scrollTop = 500;
+    writes.length = 0;
+    bridge.setCollapsed('src/a.js', false);
+    expect(writes).toEqual([]);
+
+    // A file that ends above the pane is the viewer's to keep the reader's place under.
+    a.host.getBoundingClientRect = () => ({ top: -400, bottom: -347, height: 53, left: 0, right: 100, width: 100 });
+    bridge.setCollapsed('src/a.js', true);
+    moveBy = 900;
+    scrollTop = 500;
+    writes.length = 0;
+    bridge.setCollapsed('src/a.js', false);
+    expect(scrollTop).toBe(1400);
+    expect(writes).toEqual([]);
   });
 
   it('collapsing a file whose top is in view, a file below or above the pane, or an unmounted file scrolls nowhere; neither does expanding', () => {

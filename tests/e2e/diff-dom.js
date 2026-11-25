@@ -46,7 +46,7 @@
 // Selectors (vendor attribute names live here and nowhere else in tests/e2e)
 // ---------------------------------------------------------------------------
 
-const { expect } = require('@playwright/test');
+const { expect, test } = require('@playwright/test');
 const viewerHalf = require('./diff-dom-codeview.js');
 
 const ROW = '[data-line]';
@@ -1308,6 +1308,138 @@ async function scrollFileOutOfView(page, file, { margin = 3, timeout = 10000 } =
   return handle.jsonValue();
 }
 
+// --- collapse landings: begin ------------------------------------------------
+// What collapse-scroll-anchor.spec.js and collapse-landing.spec.js ask. Written
+// with the in-page library's scroller, file wrappers and pinned toolbar only,
+// which every renderer this module has stood in front of has had: the block
+// runs unchanged against the application before the virtualized viewer.
+
+/**
+ * Where the entry a selector names is, as a reader sees it. Positions are
+ * measured from the bottom of the toolbar pinned above the diff.
+ * @param {string} wrapperSelector - a file's wrapper (changed file or context file)
+ * @returns {Promise<{mounted: boolean, headerTop: number|null, headerBottomInViewport: boolean|null,
+ *   stuck: boolean|null, gapBelow: number|null, spacing: number|null, collapsed: boolean|null,
+ *   scrollTop: number, maxScrollTop: number}>} `stuck`: the entry starts above its header (the header is
+ *   held at the toolbar); `gapBelow`: px to the entry drawn directly below, null when none is drawn;
+ *   `spacing`: the space the pane keeps below an entry (its margin, or the viewer's gap between two entries)
+ */
+async function entryPlace(page, wrapperSelector) {
+  return inPage(page, (D, selector) => {
+    const scroller = D.scroller();
+    const pane = { scrollTop: scroller.scrollTop, maxScrollTop: scroller.scrollHeight - scroller.clientHeight };
+    const wrapper = document.querySelector(selector);
+    const header = wrapper && wrapper.querySelector('.d2h-file-header');
+    if (!header) {
+      return {
+        mounted: false, headerTop: null, headerBottomInViewport: null, stuck: null, gapBelow: null, spacing: null, collapsed: null, ...pane,
+      };
+    }
+    const box = wrapper.getBoundingClientRect();
+    const headerBox = header.getBoundingClientRect();
+    // The entry drawn directly below, by position: a virtualized pane does
+    // not keep its entries in pane order in the document.
+    const below = D.wrappers()
+      .filter((other) => other !== wrapper && other.getBoundingClientRect().top >= box.bottom - 0.5)
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+    return {
+      mounted: true,
+      headerTop: headerBox.top - D.pinnedBottom(),
+      headerBottomInViewport: headerBox.bottom <= window.innerHeight,
+      stuck: box.top < headerBox.top,
+      gapBelow: below ? below.getBoundingClientRect().top - box.bottom : null,
+      spacing: (parseFloat(getComputedStyle(wrapper).marginBottom) || 0) + (D.viewerGap ? D.viewerGap() : 0),
+      collapsed: wrapper.classList.contains('collapsed'),
+      ...pane,
+    };
+  }, wrapperSelector);
+}
+
+/** The distance from the bottom of an entry to the top of the entry drawn directly below it, in px (entryPlace). */
+async function gapBelowFile(page, wrapperSelector) {
+  return (await entryPlace(page, wrapperSelector)).gapBelow;
+}
+
+/** The space the pane keeps below an entry before the next one, in px (entryPlace). */
+async function spacingBelowFile(page, wrapperSelector) {
+  return (await entryPlace(page, wrapperSelector)).spacing;
+}
+
+/**
+ * Scroll the pane, the way a reader's own scrolling does, to a place given
+ * relative to an entry that has an element:
+ *   { halfway: true }       half the entry's height into it (its header is stuck)
+ *   { inside: n }           n px into it, measured at the toolbar's bottom edge
+ *   { fromBottom: n }       the entry ends n px below the toolbar (its last rows push the header up)
+ *   { headerAt: n }         its header is n px below the toolbar (not stuck)
+ *   { headerMidPane: true } its header is half the scroll container's height below the container's top
+ * @param {string} wrapperSelector
+ */
+async function scrollPaneToEntry(page, wrapperSelector, where) {
+  await inPage(page, (D, a) => {
+    const scroller = D.scroller();
+    const wrapper = document.querySelector(a.selector);
+    const box = wrapper.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    const line = D.pinnedBottom();
+    let by;
+    if (a.where.halfway) by = (box.top - view.top) + wrapper.offsetHeight / 2;
+    else if (a.where.inside != null) by = (box.top - line) + a.where.inside;
+    else if (a.where.fromBottom != null) by = (box.bottom - line) - a.where.fromBottom;
+    else if (a.where.headerAt != null) by = (box.top - line) - a.where.headerAt;
+    else by = wrapper.querySelector('.d2h-file-header').getBoundingClientRect().top - view.top - scroller.clientHeight / 2;
+    D.setScrollTop(scroller.scrollTop + by);
+  }, { selector: wrapperSelector, where });
+}
+
+/**
+ * Note the place of an entry's header in every frame the page draws from
+ * now on, read after the frame's rendering, in a task of its own. The
+ * function returned stops the watch and gives the samples: px below the
+ * toolbar, or null for a frame in which the entry had no element.
+ * @param {string} wrapperSelector
+ * @returns {Promise<function(): Promise<Array<number|null>>>}
+ */
+async function watchEntryHeader(page, wrapperSelector) {
+  await inPage(page, (D, selector) => {
+    const watch = { samples: [], stopped: false };
+    window.__entryHeaderWatch = watch;
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      if (watch.stopped) return;
+      const wrapper = document.querySelector(selector);
+      const header = wrapper && wrapper.querySelector('.d2h-file-header');
+      watch.samples.push(header ? header.getBoundingClientRect().top - D.pinnedBottom() : null);
+      requestAnimationFrame(() => channel.port2.postMessage(0));
+    };
+    requestAnimationFrame(() => channel.port2.postMessage(0));
+  }, wrapperSelector);
+  return () => page.evaluate(() => {
+    window.__entryHeaderWatch.stopped = true;
+    return window.__entryHeaderWatch.samples;
+  });
+}
+/**
+ * Collapse (or expand) a file through what its chevron calls, and read where
+ * its header is in the same page task, before the page draws a frame.
+ * @param {string} file - the file's path
+ * @param {string} wrapperSelector - its wrapper
+ * @returns {Promise<{mounted: boolean, headerTop: number|null, collapsed: boolean|null}>}
+ */
+async function toggleCollapseAndPlaceInOneTask(page, file, wrapperSelector) {
+  return inPage(page, (D, a) => {
+    window.prManager.toggleFileCollapse(a.file);
+    const wrapper = document.querySelector(a.selector);
+    const header = wrapper && wrapper.querySelector('.d2h-file-header');
+    return {
+      mounted: !!header,
+      headerTop: header ? header.getBoundingClientRect().top - D.pinnedBottom() : null,
+      collapsed: wrapper ? wrapper.classList.contains('collapsed') : null,
+    };
+  }, { file, selector: wrapperSelector });
+}
+// --- collapse landings: end --------------------------------------------------
+
 /**
  * Viewport position of a file's header relative to the top of the diff's
  * visible area (0 = flush under whatever is pinned above the diff).
@@ -1447,14 +1579,45 @@ async function clickOnce(page, control, options = {}) {
     window.__diffDomClicks.seen = 0;
   });
   await control.click({ timeout: 2000, ...options });
-  return page.evaluate(() => window.__diffDomClicks.seen > 0);
+  const arrived = await page.evaluate(() => window.__diffDomClicks.seen > 0);
+  if (!arrived) noteLostClick(control);
+  return arrived;
+}
+
+let lostClicks = 0;
+
+/**
+ * Count a click the browser did not send (clickOnce), and say so where a
+ * reader of the run sees it: one line in the run's output, and a
+ * `lost-click` annotation on the test, which the HTML and JSON reports
+ * show. Every caller of clickOnce makes such a click again, so a test passes
+ * however many were lost; the count is what shows a rise.
+ *
+ *   grep -c '\[diff-dom\] lost click' <the run's log>
+ * @param {import('@playwright/test').Locator} control
+ */
+function noteLostClick(control) {
+  lostClicks++;
+  let where = 'outside a test';
+  try {
+    const info = test.info();
+    where = info.titlePath.join(' > ');
+    info.annotations.push({ type: 'lost-click', description: `the browser sent no click to ${control}; the click was made again` });
+  } catch { /* not called from a test: the line below is all there is */ }
+  console.log(`[diff-dom] lost click (${lostClicks} in this worker): the browser sent no click to ${control}; made again. ${where}`);
+}
+
+/** How many clicks the browser did not send in this worker process so far (noteLostClick). */
+function lostClickCount() {
+  return lostClicks;
 }
 
 /**
  * Click a control of the viewer's (an expand control, a gap's bar) and make
  * the click again for as long as the browser sends none (see clickOnce).
  * Nothing the application did is asserted or retried here: a click that
- * arrived is never made twice.
+ * arrived is never made twice. Every click made again is counted and
+ * reported (noteLostClick).
  */
 async function clickDelivered(page, control, options = {}) {
   await expect(async () => {
@@ -1674,6 +1837,13 @@ module.exports = {
   scrollFileOutOfView,
   headerPosition,
   headerLanding,
+  // collapse landings
+  entryPlace,
+  gapBelowFile,
+  spacingBelowFile,
+  scrollPaneToEntry,
+  watchEntryHeader,
+  toggleCollapseAndPlaceInOneTask,
   firstFileBelowToolbar,
   watchScrollRequests,
   scrollRequests,
@@ -1688,6 +1858,7 @@ module.exports = {
   setLineLayout,
   clickExpandControl,
   clickDelivered,
+  lostClickCount,
   parkPointerOnLine,
   // named expectations and context files
   WORKER_LOAD_FAILURE_ERROR,

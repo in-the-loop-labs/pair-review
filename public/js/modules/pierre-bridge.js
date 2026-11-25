@@ -2691,6 +2691,18 @@
 
     /**
      * Collapse or expand a file. Works for a file that is not mounted.
+     *
+     * The one place that moves the pane on a collapse. A file collapsed
+     * while the reader is inside it keeps its header at the place in the
+     * pane it had (_stuckHeaderOffset), with the files after it below; a
+     * pane that is too short for that now is at its end. A file whose
+     * header is not stuck and a file that is not mounted move nothing.
+     *
+     * An expand is not anchored: when the file is in the pane or reaches
+     * into it from above, the pane's scroll position stays the number it
+     * was. A collapsed header that was partly above the pane's top edge
+     * drops to that edge with the file's first rows under it, and the pane
+     * is not moved to make up for it.
      * @param {string} fileName
      * @param {boolean} collapsed
      * @returns {boolean} false when there is no such file
@@ -2699,29 +2711,57 @@
       const record = this._record(fileName);
       if (!record) return false;
       if (record.collapsed === !!collapsed) return true;
-      // The reader is inside the file: its top edge is above the pane and
-      // its header is pinned at the pane's top. Collapsed, the file is its
-      // header alone, and that header stays where the reader was looking,
-      // with the files after it below. (Left to itself the viewer anchors
-      // on a row that no longer exists and the pane ends up somewhere else.)
-      const readerInside = !!collapsed && this._isReaderInside(record);
+      // Read before the publish: collapsed, the file is its header alone.
+      // (Left to itself the viewer anchors on a row that no longer exists
+      // and the pane ends up somewhere else.)
+      const headerOffset = collapsed ? this._stuckHeaderOffset(record) : null;
+      // Left to itself the viewer moves the pane by a few pixels when the
+      // file that expands is at the pane's top edge.
+      const expandAt = !collapsed && this._reachesIntoPane(record) ? this.root.scrollTop : null;
       record.collapsed = !!collapsed;
-      this._publish(record.id);
-      if (readerInside) this._scrollTo({ type: 'item', id: record.id, align: 'start', behavior: 'instant' });
+      // One flush for the publish and the target: the viewer draws the
+      // collapsed file where its header was, in this task, and never
+      // anywhere else first.
+      this.batch(() => {
+        this._publish(record.id);
+        if (headerOffset !== null) {
+          this._scrollTo({ type: 'item', id: record.id, align: 'start', offset: headerOffset, behavior: 'instant' });
+        }
+      });
+      if (expandAt !== null && this.root && this.root.scrollTop !== expandAt) this.root.scrollTop = expandAt;
       return true;
     }
 
     /**
-     * Whether the pane's top edge is inside a file's item: the file is
-     * mounted, starts above the pane and ends below its top.
+     * Where the header of the file the reader is inside is, in pixels from
+     * the pane's top edge: 0 while it is stuck there, negative once the
+     * file's last rows have pushed it partly above that edge. Null when the
+     * reader is not inside the file: it is not mounted, it starts at or
+     * below the pane's top (its header is not stuck), or it ends above it.
      * @private
      */
-    _isReaderInside(record) {
+    _stuckHeaderOffset(record) {
       const element = record._element;
-      if (!element?.isConnected || !this.root) return false;
+      if (!element?.isConnected || !this.root) return null;
       const paneTop = this.root.getBoundingClientRect().top;
       const box = element.getBoundingClientRect();
-      return box.top < paneTop - 0.5 && box.bottom > paneTop;
+      if (!(box.top < paneTop - 0.5 && box.bottom > paneTop)) return null;
+      const header = record._headerSlot;
+      if (!header?.isConnected) return 0;
+      return Math.min(0, header.getBoundingClientRect().top - paneTop);
+    }
+
+    /**
+     * Whether a file is mounted and ends below the pane's top edge: it is
+     * in the pane, below it, or reaches into it from above. (A file that
+     * ends above the pane is the viewer's to keep the reader's place
+     * under.)
+     * @private
+     */
+    _reachesIntoPane(record) {
+      const element = record._element;
+      if (!element?.isConnected || !this.root) return false;
+      return element.getBoundingClientRect().bottom > this.root.getBoundingClientRect().top;
     }
 
     // ─── Contents, ranges, visibility ────────────────────────────────

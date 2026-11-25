@@ -219,6 +219,9 @@ for (const mode of MODES) {
       await sidebarItem(page, middle).click();
       await expectHeaderFlush(page, middle);
       await waitForFileRendered(page, middle);
+      // The count is compared with the one after the file is opened again:
+      // it is taken of the file as it stays, with its contents loaded.
+      await waitForFileSettled(page, middle);
       const rowsShown = await rowCount(page, middle);
       expect(rowsShown).toBeGreaterThan(0);
       const toggle = fileWrapper(page, middle).locator('.file-collapse-toggle');
@@ -294,8 +297,10 @@ for (const mode of MODES) {
 
       await wrapper.locator('.file-collapse-toggle').click();
       const next = MANY.order[MANY.order.indexOf(middle) + 1];
-      // The header of the file that was collapsed is where the reader was
-      // looking, flush under the toolbar, and the next file follows it.
+      // The header of the file that was collapsed is where it was stuck,
+      // flush under the toolbar, and the next file follows it (main's
+      // behaviour since v5.4.3; collapse-scroll-anchor.spec.js and
+      // collapse-landing.spec.js hold it to the half pixel).
       await expect(wrapper).toHaveClass(/collapsed/);
       await scrollSettled(page);
       const landing = await headerLanding(page, middle);
