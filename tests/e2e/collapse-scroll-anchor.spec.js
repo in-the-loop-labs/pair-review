@@ -8,10 +8,17 @@
  * reader somewhere further down the diff. Like GitHub, the diff pane scrolls
  * so the collapsed header sits exactly where it was stuck, with the next file
  * directly below it.
+ *
+ * The pane is a virtualized viewer: its scroll container, the files that
+ * have an element and the space between two files are asked of diff-dom.js.
+ * What is asserted, and how closely, is as the spec was written.
  */
 
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
+import {
+  scrollState, ensureMounted, filesInPane, waitForDiffSettled, gapBelowFile, spacingBelowFile, scrollPaneToEntry
+} from './diff-dom.js';
 
 const MODES = [
   { name: 'PR mode', path: '/pr/test-owner/test-repo/1' },
@@ -111,12 +118,7 @@ const CONTEXT_ENTRY = `.d2h-file-wrapper.context-file[data-file-name="${CONTEXT_
  * @returns {Promise<number>}
  */
 async function scrollPartwayInto(page, wrapperSelector) {
-  await page.evaluate((selector) => {
-    const view = document.querySelector('.diff-view');
-    const wrapper = document.querySelector(selector);
-    const offset = wrapper.getBoundingClientRect().top - view.getBoundingClientRect().top;
-    view.scrollTop += offset + wrapper.offsetHeight / 2;
-  }, wrapperSelector);
+  await scrollPaneToEntry(page, wrapperSelector, { halfway: true });
 
   await expect.poll(() => headerIsStuck(page, wrapperSelector)).toBe(true);
   return headerTop(page, wrapperSelector);
@@ -143,11 +145,7 @@ function headerTop(page, wrapperSelector) {
  * @param {string} wrapperSelector
  */
 function gapToNextFile(page, wrapperSelector) {
-  return page.evaluate((selector) => {
-    const wrapper = document.querySelector(selector);
-    const nextWrapper = wrapper.nextElementSibling;
-    return nextWrapper.getBoundingClientRect().top - wrapper.getBoundingClientRect().bottom;
-  }, wrapperSelector);
+  return gapBelowFile(page, wrapperSelector);
 }
 
 for (const mode of MODES) {
@@ -167,9 +165,8 @@ for (const mode of MODES) {
 
       await expect(page.locator(FIRST_ENTRY)).toHaveClass(/collapsed/);
       expect(await headerTop(page, FIRST_ENTRY)).toBeCloseTo(stuckTop, 0);
-      const wrapperMargin = await page.locator(FIRST_ENTRY).evaluate(
-        (el) => parseFloat(getComputedStyle(el).marginBottom)
-      );
+      const wrapperMargin = await spacingBelowFile(page, FIRST_ENTRY);
+      expect(wrapperMargin).toBeGreaterThan(0);
       expect(await gapToNextFile(page, FIRST_ENTRY)).toBeCloseTo(wrapperMargin, 0);
     });
 
@@ -184,18 +181,17 @@ for (const mode of MODES) {
 
     test('marking a file viewed leaves the pane where it was when the header was not stuck', async ({ page }) => {
       const secondEntry = diffEntry(SECOND_FILE);
-      await page.evaluate((selector) => {
-        const view = document.querySelector('.diff-view');
-        const header = document.querySelector(selector).querySelector('.d2h-file-header');
-        view.scrollTop += header.getBoundingClientRect().top - view.getBoundingClientRect().top - view.clientHeight / 2;
-      }, secondEntry);
+      // The second file has an element once the viewer has it near the viewport.
+      await ensureMounted(page, SECOND_FILE);
+      await scrollPaneToEntry(page, secondEntry, { headerMidPane: true });
+      await waitForDiffSettled(page);
       expect(await headerIsStuck(page, secondEntry)).toBe(false);
-      const scrollTopBefore = await page.locator('.diff-view').evaluate((view) => view.scrollTop);
+      const scrollTopBefore = (await scrollState(page)).top;
 
       await page.locator(secondEntry).locator('.file-viewed-checkbox').check();
 
       await expect(page.locator(secondEntry)).toHaveClass(/collapsed/);
-      expect(await page.locator('.diff-view').evaluate((view) => view.scrollTop)).toBe(scrollTopBefore);
+      expect((await scrollState(page)).top).toBe(scrollTopBefore);
     });
   });
 
@@ -204,10 +200,10 @@ for (const mode of MODES) {
       await mockLongFiles(page);
       await mockLongContextFile(page);
       await page.goto(mode.path);
-      // The context entry fills the viewport, so the lazy diff bodies below it
-      // may not render; wait for the entries themselves instead.
+      // The context entry fills the viewport, so the diff files below it
+      // may have no element; wait for the entries themselves instead.
       await expect(page.locator(CONTEXT_ENTRY).locator('.d2h-file-header')).toBeVisible();
-      await expect(page.locator(diffEntry(FIRST_FILE))).toBeAttached();
+      await expect.poll(async () => (await filesInPane(page)).map((entry) => entry.file)).toContain(FIRST_FILE);
     });
 
     test('marking a context entry viewed keeps its collapsed header where it was stuck', async ({ page }) => {

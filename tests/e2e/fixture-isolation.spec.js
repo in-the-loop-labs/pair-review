@@ -17,7 +17,9 @@
 
 import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender, seedComment, seedSuggestions } from './helpers.js';
-import { filesInPane, layoutValidator, layoutValidatorState, waitForDiffSettled } from './diff-dom.js';
+import {
+  filesInPane, layoutValidator, layoutValidatorState, waitForDiffSettled, clickDelivered, lostClickCount
+} from './diff-dom.js';
 import { allCorpora, routeDiff } from './fixtures/diffs.js';
 
 /** Rows of one review in the worker's database, counted the way the reset checks them. */
@@ -206,6 +208,16 @@ for (const mode of MODES) {
     // `Error loading local review` were on its list this failed a test about
     // once in a few hundred runs, whenever the reload came before the first
     // answer (ledger H148).
+    //
+    // Whether the page gets to log that line depends on the browser. The
+    // Chromium of Playwright 1.59 (147) delivered it in every run of this
+    // test. The Chromium of Playwright 1.65 (158) delivers nothing for a
+    // request that a reload cuts short: measured in both modes, with the
+    // request aborted after the reload and with it left hanging (ledger,
+    // phase 10). So the test proves the two halves apart: that the reload did
+    // interrupt the first request, with whatever the page logs for it
+    // tolerated by the guard; and that the line the loader writes for a
+    // request that fails under it is one the guard takes for an interruption.
     test('the interruption the top-level loader logs does not fail a test', async ({ page }) => {
       const first = mode.local ? /\/api\/local\/2$/ : /\/api\/pr\/test-owner\/test-repo\/1$/;
       let requested;
@@ -213,12 +225,14 @@ for (const mode of MODES) {
       let release;
       const held = new Promise((resolve) => { release = resolve; });
       let holding = true;
+      let interrupted = false;
       await page.route(first, async (route) => {
         if (!holding) return route.continue();
         holding = false;
         requested();
         await held;
         // The page that asked has been reloaded: there is nothing to answer.
+        interrupted = true;
         return route.abort().catch(() => {});
       });
       const logged = [];
@@ -229,9 +243,63 @@ for (const mode of MODES) {
       await page.reload();
       release();
       await waitForDiffToRender(page);
+      // The first request was in flight when the page was reloaded, and was
+      // never answered.
+      await expect.poll(() => interrupted).toBe(true);
       const line = mode.local ? /^Error loading local review: TypeError: Failed to fetch/ : /^Error loading PR: TypeError: Failed to fetch/;
+      // Whatever a loader logged about it is that line and no other.
+      expect(logged.filter((text) => /^Error loading /.test(text) && !line.test(text))).toEqual([]);
+
+      // The line itself, as the loader writes it (`console.error(prefix, error)`):
+      // on the guard's list, or this test fails when it ends.
+      await page.evaluate((prefix) => { console.error(prefix, new TypeError('Failed to fetch')); }, mode.local ? 'Error loading local review:' : 'Error loading PR:');
       await expect.poll(() => logged.some((text) => line.test(text))).toBe(true);
     });
   });
 }
 
+for (const mode of MODES) {
+  test.describe(`A click the browser does not send (${mode.name})`, () => {
+    // A browser sends no `click` when the pressed element is replaced
+    // between the press and the release, which is what a draw of a file does
+    // to an expand control (ledger H143). The helpers that click such a
+    // control make the click again, so a test passes however often that
+    // happens; they count every one and say so in the run's output, where a
+    // rise can be seen. This test loses one click on purpose.
+    test('is made again by clickDelivered, counted, and shown as a line of the run and an annotation of the test', async ({ page }) => {
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await page.evaluate(() => {
+        window.__probeClicks = 0;
+        const make = (replacedUnderFirstPress) => {
+          const button = document.createElement('button');
+          button.id = 'lost-click-probe';
+          button.textContent = 'probe';
+          button.style.cssText = 'position: fixed; left: 8px; top: 8px; z-index: 2147483647; width: 80px; height: 30px;';
+          button.addEventListener('click', () => { window.__probeClicks++; });
+          if (replacedUnderFirstPress) {
+            button.addEventListener('pointerdown', () => button.replaceWith(make(false)), { once: true });
+          }
+          return button;
+        };
+        document.body.appendChild(make(true));
+      });
+      const probe = page.locator('#lost-click-probe');
+      const lostBefore = lostClickCount();
+      const annotations = () => test.info().annotations.filter((annotation) => annotation.type === 'lost-click');
+
+      // The first press replaces the button: no click. The second arrives.
+      await clickDelivered(page, probe);
+      expect(await page.evaluate(() => window.__probeClicks)).toBe(1);
+      expect(lostClickCount() - lostBefore).toBe(1);
+      expect(annotations()).toHaveLength(1);
+      expect(annotations()[0].description).toContain('lost-click-probe');
+
+      // A click that arrives is made once and is not counted.
+      await clickDelivered(page, probe);
+      expect(await page.evaluate(() => window.__probeClicks)).toBe(2);
+      expect(lostClickCount() - lostBefore).toBe(1);
+      expect(annotations()).toHaveLength(1);
+    });
+  });
+}

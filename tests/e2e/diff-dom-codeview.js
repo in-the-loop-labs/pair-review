@@ -129,6 +129,12 @@ function extendInPage() {
     });
   };
 
+  /** The space the viewer keeps between two files of the pane, in px (its layout's gap; the files' elements have no margin). */
+  D.viewerGap = () => {
+    const gap = bridge()?.codeView?.options?.layout?.gap;
+    return typeof gap === 'number' ? gap : 0;
+  };
+
   /** Hosts in the DOM against the items the viewer says it has rendered. */
   D.hostAccounting = () => {
     const b = bridge();
