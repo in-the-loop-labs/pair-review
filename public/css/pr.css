@@ -5851,6 +5851,36 @@ a.posted-comment-icon:focus-visible {
   color: rgba(255, 255, 255, 0.9);
 }
 
+/* Scoped to .toast-content so the settings pages' own .toast-close stays unchanged */
+.toast-content .toast-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin: -4px -8px -4px 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.8;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.toast-content .toast-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  opacity: 1;
+}
+
+.toast-content .toast-close:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+  opacity: 1;
+}
+
 /* Dark theme toast styles */
 [data-theme="dark"] .toast-success {
   background-color: #238636;
