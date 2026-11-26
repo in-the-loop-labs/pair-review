@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.4.4
+
+### Patch Changes
+
+- 04a2fe2: Add Gemini 4 Neon to the Antigravity provider: `gemini-4-neon-xhigh` and `gemini-4-neon-high` (thorough; bare `gemini-4-neon` is an alias of High) and `gemini-4-neon-medium` (balanced). Neon needs a paid Google AI Pro, Ultra, or Gemini Enterprise plan or a paid API key, so Gemini 3.8 Flash stays the default and still leads every tier.
+- 02e2d23: Fix unstyled toast notifications on the dashboard, and settings-page toasts that never became visible. Toast styles now live in a shared stylesheet loaded by every page that shows them.
+- 7d0696d: Add a close button to toast notifications so they can be dismissed without waiting for the timer
+
 ## 5.4.3
 
 ### Patch Changes
