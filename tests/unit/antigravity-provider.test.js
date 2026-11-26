@@ -96,11 +96,16 @@ describe('AntigravityProvider', () => {
       expect(AntigravityProvider.getDefaultModel()).toBe('gemini-3.8-flash-high');
     });
 
-    it('should not make plan-gated Argon or rolling-out Hydrogen the default', () => {
+    it('should not make plan-gated Argon/Neon or rolling-out Hydrogen the default', () => {
       // Argon needs a paid Google AI Pro / Ultra / eligible Enterprise plan;
-      // Hydrogen is rolling out to paid plans first and costs twice 3.8 Flash.
+      // Hydrogen is rolling out to paid plans first and costs twice 3.8 Flash;
+      // Neon is paid-plan only and costs four times 3.8 Flash.
       const models = AntigravityProvider.getModels();
-      for (const id of ['gemini-4-argon-high', 'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium']) {
+      for (const id of [
+        'gemini-4-argon-high',
+        'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium',
+        'gemini-4-neon-xhigh', 'gemini-4-neon-high', 'gemini-4-neon-medium'
+      ]) {
         const model = models.find(m => m.id === id);
         expect(model.default).toBeUndefined();
       }
@@ -120,20 +125,23 @@ describe('AntigravityProvider', () => {
       expect(new AntigravityProvider()._resolveCliModel('gemini-3.1-pro-low')).toBe('gemini-3.1-pro-low');
     });
 
-    it('should return the 7 built-in models with expected ids', () => {
+    it('should return the 10 built-in models with expected ids', () => {
       const models = AntigravityProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(7);
+      expect(models.length).toBe(10);
 
       const modelIds = models.map(m => m.id);
       // Ordered thorough -> balanced -> fast, matching the other providers.
       expect(modelIds).toEqual([
         'gemini-3.8-flash-high',
+        'gemini-4-neon-xhigh',
+        'gemini-4-neon-high',
         'gemini-4-hydrogen-xhigh',
         'gemini-4-hydrogen-high',
         'gemini-4-argon-high',
         'gemini-3.8-flash-medium',
         'gemini-4-hydrogen-medium',
+        'gemini-4-neon-medium',
         'gemini-3.8-flash-low'
       ]);
     });
@@ -159,6 +167,9 @@ describe('AntigravityProvider', () => {
       expect(tierMap['gemini-4-hydrogen-xhigh']).toBe('thorough');
       expect(tierMap['gemini-4-hydrogen-high']).toBe('thorough');
       expect(tierMap['gemini-4-hydrogen-medium']).toBe('balanced');
+      expect(tierMap['gemini-4-neon-xhigh']).toBe('thorough');
+      expect(tierMap['gemini-4-neon-high']).toBe('thorough');
+      expect(tierMap['gemini-4-neon-medium']).toBe('balanced');
     });
 
     it('should keep gemini-3.8-flash-low as the only fast-tier (extraction) model', () => {
@@ -177,6 +188,9 @@ describe('AntigravityProvider', () => {
       expect(cliNameMap['gemini-4-hydrogen-high']).toBe('Gemini 4 Hydrogen (High)');
       expect(cliNameMap['gemini-4-hydrogen-medium']).toBe('Gemini 4 Hydrogen (Medium)');
       expect(cliNameMap['gemini-4-argon-high']).toBe('Gemini 4 Argon (High)');
+      expect(cliNameMap['gemini-4-neon-xhigh']).toBe('Gemini 4 Neon (XHigh)');
+      expect(cliNameMap['gemini-4-neon-high']).toBe('Gemini 4 Neon (High)');
+      expect(cliNameMap['gemini-4-neon-medium']).toBe('Gemini 4 Neon (Medium)');
     });
 
     it('should never pass a bare effortless display name to agy', () => {
@@ -197,6 +211,23 @@ describe('AntigravityProvider', () => {
       expect(AntigravityProvider.getModels().map(m => m.id)).not.toContain('gemini-4-argon');
     });
 
+    it('should resolve the bare gemini-4-neon id to Neon at High effort', () => {
+      // agy resolves the bare `gemini-4-neon` slug to High, so the alias lands
+      // on the entry that runs exactly that.
+      const provider = new AntigravityProvider();
+      const neon = AntigravityProvider.getModels().find(m => m.id === 'gemini-4-neon-high');
+      expect(neon.aliases).toEqual(['gemini-4-neon']);
+      expect(provider._resolveCliModel('gemini-4-neon')).toBe('Gemini 4 Neon (High)');
+      expect(AntigravityProvider.getModels().map(m => m.id)).not.toContain('gemini-4-neon');
+    });
+
+    it('should not build in the Orchestrator composite entries', () => {
+      const allIds = AntigravityProvider.getModels().flatMap(m => [m.id, ...(m.aliases || [])]);
+      for (const id of ['gemini-pro-orchestrator-neon', 'gemini-pro-orchestrator-g1-pro']) {
+        expect(allIds).not.toContain(id);
+      }
+    });
+
     it('should mark exactly one model (gemini-3.8-flash-high) as default', () => {
       const models = AntigravityProvider.getModels();
       const defaults = models.filter(m => m.default === true);
@@ -207,9 +238,9 @@ describe('AntigravityProvider', () => {
       expect(defaults[0].badgeClass).toBe('badge-recommended');
     });
 
-    it('should offer 3.8 Flash and Hydrogen at medium effort in the balanced tier', () => {
+    it('should offer 3.8 Flash, Hydrogen, and Neon at medium effort in the balanced tier', () => {
       const balanced = AntigravityProvider.getModels().filter(m => m.tier === 'balanced');
-      expect(balanced.map(m => m.id)).toEqual(['gemini-3.8-flash-medium', 'gemini-4-hydrogen-medium']);
+      expect(balanced.map(m => m.id)).toEqual(['gemini-3.8-flash-medium', 'gemini-4-hydrogen-medium', 'gemini-4-neon-medium']);
       for (const model of balanced) {
         expect(model.badgeClass).toBe('badge-balanced');
       }
