@@ -7835,16 +7835,20 @@ class PRManager {
     return 'modified';
   }
 
-  groupFilesByDirectory(files) {
-    const groups = {};
-    files.forEach(file => {
+  /**
+   * Build the file navigator's directory tree. Directories that only contain
+   * a single subdirectory are collapsed into one node (e.g. `src/js/utils`),
+   * so long shared prefixes take one row instead of one row per segment.
+   * @param {Array} files - Diff/context file entries
+   * @returns {Object} Root node from FileOrderUtils.buildDirectoryTree whose
+   *   `files` are navigator items and `dirs` are nested nodes
+   */
+  buildFileNavigatorTree(files) {
+    const items = files.map(file => {
       const filePath = file.file;
       const lastSlashIndex = filePath.lastIndexOf('/');
-      const dirPath = lastSlashIndex === -1 ? '.' : filePath.substring(0, lastSlashIndex);
       const fileName = lastSlashIndex === -1 ? filePath : filePath.substring(lastSlashIndex + 1);
-
-      if (!groups[dirPath]) groups[dirPath] = [];
-      groups[dirPath].push({
+      return {
         name: fileName,
         fullPath: filePath,
         status: this.getFileStatus(file),
@@ -7859,14 +7863,9 @@ class PRManager {
         label: file.label || null,
         lineStart: file.lineStart || null,
         lineEnd: file.lineEnd || null,
-      });
+      };
     });
-
-    const sortedGroups = {};
-    Object.keys(groups).sort().forEach(key => {
-      sortedGroups[key] = groups[key];
-    });
-    return sortedGroups;
+    return window.FileOrderUtils.buildDirectoryTree(items, item => item.fullPath);
   }
 
   updateFileList(files) {
@@ -7887,22 +7886,27 @@ class PRManager {
       return;
     }
 
-    const groupedFiles = this.groupFilesByDirectory(files);
+    const tree = this.buildFileNavigatorTree(files);
     fileListContainer.innerHTML = '';
 
-    for (const [dirPath, dirFiles] of Object.entries(groupedFiles)) {
-      const groupElement = this.renderFileGroup(dirPath, dirFiles);
-      fileListContainer.appendChild(groupElement);
-    }
+    // Root-level files sit directly in the list, followed by top-level folders
+    tree.files.forEach(file => fileListContainer.appendChild(this.renderFileItem(file)));
+    tree.dirs.forEach(dir => fileListContainer.appendChild(this.renderFileGroup(dir)));
   }
 
-  renderFileGroup(dirPath, files) {
+  /**
+   * Render a directory node and, recursively, its subdirectories.
+   * @param {{name: string, path: string, files: Array, dirs: Array}} node
+   * @returns {HTMLElement}
+   */
+  renderFileGroup(node) {
     const group = document.createElement('div');
     group.className = 'file-group';
-    group.dataset.path = dirPath;
+    group.dataset.path = node.path;
 
     const header = document.createElement('div');
     header.className = 'file-group-header';
+    header.title = node.path;
 
     const chevron = document.createElement('span');
     chevron.className = 'file-group-chevron';
@@ -7913,7 +7917,8 @@ class PRManager {
     folderIcon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>`;
 
     const dirName = document.createElement('span');
-    dirName.textContent = dirPath === '.' ? '(root)' : dirPath;
+    dirName.className = 'file-group-name';
+    dirName.textContent = node.name;
 
     header.appendChild(chevron);
     header.appendChild(folderIcon);
@@ -7923,10 +7928,8 @@ class PRManager {
     const fileList = document.createElement('div');
     fileList.className = 'file-group-items';
 
-    files.forEach(file => {
-      const fileItem = this.renderFileItem(file);
-      fileList.appendChild(fileItem);
-    });
+    node.files.forEach(file => fileList.appendChild(this.renderFileItem(file)));
+    node.dirs.forEach(dir => fileList.appendChild(this.renderFileGroup(dir)));
 
     group.appendChild(fileList);
     group.classList.add('expanded');

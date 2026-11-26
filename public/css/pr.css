@@ -951,6 +951,17 @@
   margin-bottom: 8px;
 }
 
+/* Nested folders sit tight under their parent */
+.file-group .file-group {
+  margin-bottom: 0;
+}
+
+/* Collapsed folder chains (e.g. "src/js/utils") can be long */
+.file-group-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .file-group-header {
   display: flex;
   align-items: center;
@@ -1001,7 +1012,7 @@
 }
 
 .file-group-items {
-  margin-left: 16px;
+  margin-left: 12px;
 }
 
 /* Hide file items when group is collapsed */
