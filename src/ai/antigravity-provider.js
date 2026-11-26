@@ -6,7 +6,7 @@
  * the official successor to the Gemini CLI.
  *
  * ============================================================================
- * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16; models re-verified against 1.5.7)
+ * HOW THIS ADAPTER DRIVES `agy` (verified against agy 1.0.16; models re-verified against 1.5.12)
  * ============================================================================
  * The Antigravity CLI's non-interactive "print" mode (`agy -p`) IS a real
  * agentic loop — it reads files, searches the tree, and runs shell commands to
@@ -96,7 +96,8 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * fast, matching the other providers' pickers. Every built-in passes an
  * effort-suffixed display name (`Gemini 4 Argon (High)`): as of agy 1.5.7 a
  * bare display name is "not recognized", and a bare slug resolves to the
- * server-default effort (Medium for Argon), so effort stays in the `cliName`.
+ * server-default effort (Medium for Argon, High for Neon), so effort stays in
+ * the `cliName`.
  *
  * Gemini 3.8 Flash at high effort stays the default: it is the strongest
  * Gemini every agy plan can run (DeepSWE v1.1 73.7, Terminal-Bench 2.1 89.4),
@@ -105,6 +106,18 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * RepoSettingsPage) map the previous model's tier onto the first model of
  * that tier here, and getFastTierModel() picks the first `tier: 'fast'` model
  * for JSON extraction, so each tier must be LED by a model every plan can run.
+ *
+ * Gemini 4 Neon (GA 2026-11-18) is the mid-tier Gemini 4 model, adapted from
+ * Carbon: "Carbon tackles your hardest, long-horizon projects and Hydrogen
+ * handles fast everyday execution, Neon balances depth and efficiency."
+ * Terminal-Bench 4.1 65.2 (Hydrogen 57.0, 3.8 Flash 18.2); default effort
+ * High, with XHigh available. It is an explicit choice, not the default or a
+ * tier leader: at $3/$15 per 1M tokens it costs four times 3.8 Flash and
+ * twice Hydrogen, has no API free tier, and is rolling out to paid Google AI
+ * Pro, Ultra, Gemini Enterprise, and `GEMINI_API_KEY` sign-ins only. agy
+ * resolves the bare `gemini-4-neon` slug to High, so that id is an alias of
+ * the High entry. Antigravity made Neon its own default for new conversations;
+ * pair-review keeps 3.8 Flash because every plan can run it.
  *
  * Gemini 4 Hydrogen (GA 2026-11-12) is the everyday Gemini 4 model and 3.8
  * Flash's successor (Terminal-Bench 4.1 57.0 vs 18.2; xhigh is a new level).
@@ -119,9 +132,14 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * High, which is exactly what `gemini-4-argon-high` now runs.
  *
  * Gemini 4 Carbon (Ultra / Enterprise only) is not built in: agy offers it
- * only to Application Default Credentials sign-ins (`AGY_ADC_AUTH`), and a
- * Google-account sign-in reports it as "not recognized". Reach it via a
- * `providers.antigravity.models` config override with `cli_model`.
+ * only to Application Default Credentials (`AGY_ADC_AUTH`) and `GEMINI_API_KEY`
+ * sign-ins, and a Google-account sign-in reports it as "not recognized". Reach
+ * it via a `providers.antigravity.models` config override with `cli_model`.
+ *
+ * The Orchestrator entries (`gemini-pro-orchestrator-neon`, `-g1-pro` for
+ * Argon, and Carbon) are not built in either: each pairs a planner with
+ * Gemini 4 Hydrogen as the implementer at a fixed effort, a split built for
+ * editing code, not for a read-only review pass.
  *
  * Deprecated: gemini-3.1-pro-high, gemini-3.1-pro-low (alias gemini-3.1-pro) —
  * agy no longer offers 3.1 Pro outside Enterprise ("not recognized as a known
@@ -132,7 +150,7 @@ const TIMEOUT_BACKSTOP_GRACE_MS = 15000;
  * an unknown-model error. Retired 3.5 Flash ids are aliases of their 3.8 Flash
  * counterparts at the same effort, so saved selections keep working.
  *
- * `agy` also exposes Claude and GPT-OSS models; those remain reachable via a
+ * `agy` also exposes Claude (Opus 5.5, Sonnet 5.5) and GPT-OSS models; those remain reachable via a
  * `providers.antigravity.models` config override but are intentionally left
  * out of the default picker to keep the cross-provider model-mismatch guard
  * and the UX unambiguous.
@@ -152,13 +170,35 @@ const ANTIGRAVITY_MODELS = [
     default: true
   },
   {
+    id: 'gemini-4-neon-xhigh',
+    cliName: 'Gemini 4 Neon (XHigh)',
+    name: '4 Neon (XHigh)',
+    tier: 'thorough',
+    tagline: 'Deepest Review — Paid Plan',
+    description: 'Gemini 4 Neon (Nov 2026), Google\'s mid-tier model adapted from Gemini 4 Carbon, at extra-high effort — Terminal-Bench 4.1 65.2 vs Hydrogen\'s 57.0. $3/$15 per 1M tokens, four times 3.8 Flash; rolling out to paid Google AI Pro, Ultra, and Gemini Enterprise plans and paid API keys. Uses the thorough prompt set.',
+    badge: 'Newest',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gemini-4-neon-high',
+    cliName: 'Gemini 4 Neon (High)',
+    // agy resolves the bare `gemini-4-neon` slug to High.
+    aliases: ['gemini-4-neon'],
+    name: '4 Neon (High)',
+    tier: 'thorough',
+    tagline: 'Deep Review — Paid Plan',
+    description: 'Gemini 4 Neon at its default high effort, which balances depth and efficiency between Hydrogen and Carbon. $3/$15 per 1M tokens; rolling out to paid Google AI Pro, Ultra, and Gemini Enterprise plans and paid API keys. Uses the thorough prompt set.',
+    badge: 'Paid Plan',
+    badgeClass: 'badge-power'
+  },
+  {
     id: 'gemini-4-hydrogen-xhigh',
     cliName: 'Gemini 4 Hydrogen (XHigh)',
     name: '4 Hydrogen (XHigh)',
     tier: 'thorough',
     tagline: 'Deepest Everyday Review',
     description: 'Gemini 4 Hydrogen (Nov 2026), the 3.8 Flash successor, at its new extra-high effort — Terminal-Bench 4.1 57.0 vs 3.8 Flash\'s 18.2. $1.50/$7.50 per 1M tokens, twice 3.8 Flash; rolling out to paid Google AI Pro and Ultra plans first. Uses the thorough prompt set.',
-    badge: 'Newest',
+    badge: 'XHigh Effort',
     badgeClass: 'badge-power'
   },
   {
@@ -202,6 +242,16 @@ const ANTIGRAVITY_MODELS = [
     tagline: 'Newer Standard Review',
     description: 'Gemini 4 Hydrogen at medium effort — the newer model for routine PRs. $1.50/$7.50 per 1M tokens, twice 3.8 Flash; rolling out to paid Google AI Pro and Ultra plans first.',
     badge: 'Medium Effort',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gemini-4-neon-medium',
+    cliName: 'Gemini 4 Neon (Medium)',
+    name: '4 Neon (Medium)',
+    tier: 'balanced',
+    tagline: 'Deeper Standard Review',
+    description: 'Gemini 4 Neon at medium effort — more depth than Hydrogen for routine PRs. $3/$15 per 1M tokens, four times 3.8 Flash; rolling out to paid Google AI Pro, Ultra, and Gemini Enterprise plans and paid API keys.',
+    badge: 'Paid Plan',
     badgeClass: 'badge-balanced'
   },
   {

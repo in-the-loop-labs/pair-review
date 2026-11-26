@@ -90,8 +90,11 @@ Each CLI has different model listing commands:
   provider's clean ids (`gemini-3.8-flash-low`) work as `--model` values too.
   The model's reply never states its effort. To see which variant actually ran, add
   `--log-file <path>` and grep it for `model alias ... resolved to` or
-  `Propagating selected model override ... label=`. Bare slugs resolve to **Medium**
-  (`gemini-4-argon` → `gemini-4-argon-medium`), and as of 1.5.7 bare display names
+  `Propagating selected model override ... label=`. Bare slugs resolve to the
+  model's server-default effort, which varies by model: **Medium** for Argon
+  (`gemini-4-argon` → `gemini-4-argon-medium`), **High** for Neon (`gemini-4-neon`
+  → `gemini-4-neon-high`, agy 1.5.12). Probe a bare slug before aliasing it onto an
+  entry. As of 1.5.7 bare display names
   (`Gemini 4 Argon`) are rejected as `not recognized`. Every built-in `cliName` must
   therefore carry an effort suffix (`Gemini 4 Argon (High)`).
   A plan-gated model answers differently from an unknown one: on 2026-10-14 (agy
@@ -289,13 +292,20 @@ unaffected); its entries were removed on 2026-11-12.
 - Copilot CLI may have limited model availability depending on subscription tier
 - Some CLIs may need authentication before they can list models or respond to queries
 - Antigravity only ships Gemini models in the built-in picker; agy also exposes Claude
-  and GPT-OSS models, reachable via config override only (Antigravity drops Claude
-  Opus/Sonnet 4.6 and GPT-OSS 120B on 2026-11-18). Gemini 3.1 Pro remains in agy for
+  and GPT-OSS models, reachable via config override only (Antigravity dropped Claude
+  Opus/Sonnet 4.6 on 2026-11-18; agy 1.5.12 lists Claude Opus 5.5, Sonnet 5.5, and
+  still `gpt-oss-120b-medium`). Gemini 3.1 Pro remains in agy for
   Enterprise only. Gemini 4 Argon is gated to paid Google AI Pro / Ultra / eligible
   Enterprise plans, and Gemini 4 Hydrogen (2026-11-12) is still rolling out to paid
-  plans, so neither is the default and neither leads a tier; 3.8 Flash leads every
-  tier. Gemini 4 Carbon is offered only to Application Default Credentials sign-ins
-  (`AGY_ADC_AUTH`) and answers `not recognized` otherwise, so it is not built in.
+  plans, so neither is the default and neither leads a tier. Gemini 4 Neon
+  (2026-11-18, agy 1.5.12, $3/$15, no API free tier) is paid-plan only (Pro, Ultra,
+  Enterprise, paid `GEMINI_API_KEY`) and follows the same rule even though
+  Antigravity made it its own default; 3.8 Flash leads every tier. Gemini 4 Carbon
+  is offered only to Application Default Credentials (`AGY_ADC_AUTH`) and
+  `GEMINI_API_KEY` sign-ins and answers `not recognized` otherwise, so it is not
+  built in. The `gemini-pro-orchestrator-*` rows (a Neon/Argon/Carbon planner plus a
+  Hydrogen implementer at fixed effort) are an editing workflow, not a review
+  model; do not build them in.
   agy 1.5.x also added `acp`, `--output-format json|stream-json`, and `--effort`;
   the provider still treats agy as plain-text, analysis-only (separate follow-up)
 - Codex retires models per sign-in type: a slug can be dead for ChatGPT accounts while
