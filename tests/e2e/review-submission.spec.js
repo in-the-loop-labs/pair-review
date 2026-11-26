@@ -179,6 +179,21 @@ test.describe('Review Submission Success', () => {
     await expect(toast).toContainText(/review submitted/i);
   });
 
+  test('should dismiss success toast with its close button', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await openReviewModal(page);
+
+    await page.locator('#review-body-modal').fill('Test review');
+    await page.locator('#submit-review-btn-modal').click();
+
+    const toast = page.locator('.toast-success');
+    await expect(toast).toBeVisible({ timeout: 10000 });
+
+    // Well under the 5s auto-dismiss, so only the click can close it in time
+    await toast.getByRole('button', { name: 'Dismiss notification' }).click();
+    await expect(toast).toBeHidden({ timeout: 1000 });
+  });
+
   test('should close modal after successful submission', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await openReviewModal(page);
