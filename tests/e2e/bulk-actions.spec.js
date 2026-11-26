@@ -260,6 +260,43 @@ test.describe('Bulk Actions - PR Tab', () => {
     expect(rowsAfter).toBe(rowsBefore - 2);
   });
 
+  test('bulk delete shows a styled toast at the top of the viewport', async ({ page }) => {
+    await page.locator('.btn-select-toggle[data-selection-tab="pr-tab"]').click();
+    await page.locator('#recent-reviews-tbody .col-select input[type="checkbox"]').first().check();
+    await page.locator('#pr-tab .bulk-action-buttons .btn-bulk-delete').click();
+    await page.locator('#pr-tab .bulk-confirm-buttons .btn-bulk-delete').click();
+
+    const toast = page.locator('#toast-container .toast-success');
+    await expect(toast).toContainText('Deleted 1 review');
+
+    // toBeVisible() passes at opacity 0 and off-screen, so check computed
+    // styles and geometry: an unstyled toast is a static block at the end
+    // of <body> with a transparent background.
+    await expect.poll(() => toast.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+    const styles = await page.evaluate(() => {
+      const container = document.getElementById('toast-container');
+      const el = container.querySelector('.toast-success');
+      return {
+        containerPosition: getComputedStyle(container).position,
+        background: getComputedStyle(el).backgroundColor
+      };
+    });
+    expect(styles.containerPosition).toBe('fixed');
+    expect(styles.background).not.toBe('rgba(0, 0, 0, 0)');
+
+    const viewport = page.viewportSize();
+    const box = await toast.boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThan(viewport.height / 2);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+
+    // The close button is laid out as a 24px square, not an unstyled button.
+    const closeBox = await toast.locator('.toast-content .toast-close').boundingBox();
+    expect(closeBox.width).toBe(24);
+    expect(closeBox.height).toBe(24);
+  });
+
   test('bulk delete cancel returns to selection state', async ({ page }) => {
     const selectBtn = page.locator('.btn-select-toggle[data-selection-tab="pr-tab"]');
     await selectBtn.click();

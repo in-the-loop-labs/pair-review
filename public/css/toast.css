@@ -1,0 +1,147 @@
+/* Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0 */
+
+/* Toast notifications rendered by js/components/Toast.js.
+ * Loaded by every page that loads Toast.js (dashboard, PR, Local), so it must
+ * not depend on variables defined only in pr.css.
+ *
+ * Do NOT load on settings.html or repo-settings.html. Those pages have their
+ * own toast system using the same class names (.toast, .toast-container,
+ * .toast-icon, .toast-message) and show toasts with `.show`, not `.toast-show`,
+ * so `.toast { opacity: 0 }` here would hide them. */
+
+.toast-container {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(-20px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: auto;
+  max-width: 500px;
+}
+
+.toast-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-fade-out {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast-success {
+  background-color: #1f883d;
+  color: white;
+  border: 1px solid #1a7f37;
+}
+
+.toast-error {
+  background-color: #d1242f;
+  color: white;
+  border: 1px solid #cf222e;
+}
+
+.toast-warning {
+  background-color: #9a6700;
+  color: white;
+  border: 1px solid #bf8700;
+}
+
+.toast-info {
+  background-color: #0969da;
+  color: white;
+  border: 1px solid #0550ae;
+}
+
+.toast-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+}
+
+.toast-message {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.toast-link {
+  color: white;
+  text-decoration: underline;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.toast-link:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Scoped to .toast-content to target only the Toast.js close button */
+.toast-content .toast-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin: -4px -8px -4px 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.8;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.toast-content .toast-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  opacity: 1;
+}
+
+.toast-content .toast-close:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+/* Dark theme toast styles */
+[data-theme="dark"] .toast-success {
+  background-color: #238636;
+  border-color: #2ea043;
+}
+
+[data-theme="dark"] .toast-error {
+  background-color: #da3633;
+  border-color: #f85149;
+}
+
+[data-theme="dark"] .toast-warning {
+  background-color: #9e6a03;
+  border-color: #d29922;
+}
+
+[data-theme="dark"] .toast-info {
+  background-color: #1f6feb;
+  border-color: #58a6ff;
+}
