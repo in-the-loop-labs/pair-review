@@ -10,7 +10,7 @@ global.window = {};
 // Import the file-order module which exports to window.FileOrderUtils
 require('../../public/js/utils/file-order.js');
 
-const { sortFilesByPath, createFileOrderMap } = window.FileOrderUtils;
+const { sortFilesByPath, createFileOrderMap, buildDirectoryTree } = window.FileOrderUtils;
 
 describe('FileOrderUtils', () => {
   describe('sortFilesByPath', () => {
@@ -271,9 +271,9 @@ describe('FileOrderUtils', () => {
     });
 
     describe('matches file navigator order', () => {
-      it('should group files by directory matching groupFilesByDirectory behavior', () => {
-        // The file navigator uses groupFilesByDirectory which groups by directory
-        // then sorts directory keys alphabetically
+      it('should list files in navigator tree order', () => {
+        // The file navigator renders a directory tree listing each directory's
+        // files before its subdirectories
         const files = [
           { file: 'public/css/pr.css' },
           { file: 'public/js/components/AIPanel.js' },
@@ -313,6 +313,124 @@ describe('FileOrderUtils', () => {
           'src/routes/local.js'
         ]);
       });
+    });
+  });
+
+  describe('buildDirectoryTree', () => {
+    // Flatten a tree into indented "label" lines to make expectations readable
+    const outline = (node, depth = 0, getName = f => f.split('/').pop()) => {
+      const pad = '  '.repeat(depth);
+      return [
+        ...node.files.map(f => `${pad}${getName(f)}`),
+        ...node.dirs.flatMap(d => [`${pad}${d.name}/`, ...outline(d, depth + 1, getName)])
+      ];
+    };
+    const tree = paths => buildDirectoryTree(paths, p => p);
+
+    it('collapses a shared prefix and nests subdirectories', () => {
+      const result = tree([
+        'root/foo/bar/xyz/example.rb',
+        'root/foo/bar/index.md',
+        'root/foo/README.md'
+      ]);
+
+      expect(outline(result)).toEqual([
+        'root/foo/',
+        '  README.md',
+        '  bar/',
+        '    index.md',
+        '    xyz/',
+        '      example.rb'
+      ]);
+    });
+
+    it('collapses single-child chains below a branching directory', () => {
+      const result = tree([
+        'packages/app/web/config.yml',
+        'packages/app/web-rs/crates/api/src/a.rs',
+        'packages/app/web-rs/crates/api/src/a/pins.rs',
+        'packages/app/web-rs/crates/cli/b.txt'
+      ]);
+
+      expect(outline(result)).toEqual([
+        'packages/app/',
+        '  web/',
+        '    config.yml',
+        '  web-rs/crates/',
+        '    api/src/',
+        '      a.rs',
+        '      a/',
+        '        pins.rs',
+        '    cli/',
+        '      b.txt'
+      ]);
+    });
+
+    it('keeps the full directory path on collapsed nodes', () => {
+      const result = tree(['a/b/c/file.js', 'a/b/d.js']);
+      const ab = result.dirs[0];
+      expect(ab.name).toBe('a/b');
+      expect(ab.path).toBe('a/b');
+      expect(ab.dirs[0].name).toBe('c');
+      expect(ab.dirs[0].path).toBe('a/b/c');
+    });
+
+    it('collapses a lone directory holding a single file', () => {
+      expect(outline(tree(['src/js/utils/file-order.js']))).toEqual([
+        'src/js/utils/',
+        '  file-order.js'
+      ]);
+    });
+
+    it('keeps root-level files on the root node, before directories', () => {
+      const result = tree(['src/index.js', 'README.md', 'package.json']);
+      expect(result.path).toBe('');
+      expect(outline(result)).toEqual([
+        'package.json',
+        'README.md',
+        'src/',
+        '  index.js'
+      ]);
+    });
+
+    it('sorts directories and files with numeric awareness', () => {
+      expect(outline(tree(['v10/a.js', 'v2/a.js', 'x/file10.js', 'x/file2.js']))).toEqual([
+        'v2/',
+        '  a.js',
+        'v10/',
+        '  a.js',
+        'x/',
+        '  file2.js',
+        '  file10.js'
+      ]);
+    });
+
+    it('defaults to reading the `file` property', () => {
+      const result = buildDirectoryTree([{ file: 'a/b.js' }, { file: 'c.js' }]);
+      expect(result.files).toEqual([{ file: 'c.js' }]);
+      expect(result.dirs[0].files).toEqual([{ file: 'a/b.js' }]);
+    });
+
+    it('returns an empty root for empty or invalid input', () => {
+      for (const input of [[], null, undefined, 'nope']) {
+        expect(buildDirectoryTree(input)).toEqual({ name: '', path: '', files: [], dirs: [] });
+      }
+    });
+
+    it('produces the same order as sortFilesByPath', () => {
+      const paths = [
+        'public/js/pr.js',
+        'a-c/x.js',
+        'a/b/y.js',
+        'README.md',
+        'public/css/pr.css',
+        'public/local.html',
+        'a/z.js',
+        'public/js/components/AIPanel.js'
+      ];
+      const flatten = node => [...node.files, ...node.dirs.flatMap(flatten)];
+
+      expect(flatten(tree(paths))).toEqual(sortFilesByPath(paths.map(file => ({ file }))).map(f => f.file));
     });
   });
 
