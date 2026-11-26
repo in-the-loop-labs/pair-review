@@ -107,6 +107,33 @@ test.describe('Global Settings - Toggle + persist + reset', () => {
   });
 });
 
+test.describe('Global Settings - Toast', () => {
+  test('save toast slides fully on-screen and is opaque', async ({ page }) => {
+    await page.goto('/settings');
+
+    const row = page.locator(`.setting-row[data-key="${BOOLEAN_KEY}"]`);
+    await expect(row).toBeVisible({ timeout: 5000 });
+    await row.locator('.toggle').click();
+
+    const toast = page.locator('#toast-container .toast.success');
+    await expect(toast).toContainText('saved');
+
+    // The settings page styles its own toasts (settings.css). Toast.js's
+    // shared rules (.toast opacity 0, centered container) must not leak in:
+    // toBeVisible() passes at opacity 0 and off-screen, so check both.
+    await expect.poll(() => toast.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+    const viewport = page.viewportSize();
+    await expect.poll(async () => {
+      const box = await toast.boundingBox();
+      return box.x >= 0 && box.x + box.width <= viewport.width && box.y >= 0;
+    }).toBe(true);
+
+    // Clear the override so later tests in this worker see the default.
+    await row.locator('[data-role="reset"]').click();
+    await expect(row.locator('[data-role="badge"]')).toHaveText('default', { timeout: 5000 });
+  });
+});
+
 test.describe('Global Settings - Repositories', () => {
   test('lists a configured repo and navigates to its settings page', async ({ page }) => {
     await seedConfiguredRepo(page, 'test-owner', 'test-repo');
