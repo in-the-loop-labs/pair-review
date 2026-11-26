@@ -1,9 +1,13 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 /**
  * Toast Notification Component
- * Shows temporary success/error/warning/info messages at the top of the page
+ * Shows temporary success/error/warning/info messages at the top of the page.
+ * Each toast closes on its timer, or at once when the user clicks its close button.
  */
 class Toast {
+  // Length of the fade-out animation before the toast node is removed
+  static FADE_MS = 300;
+
   constructor() {
     this.toastContainer = null;
     this.activeToasts = [];
@@ -134,6 +138,8 @@ class Toast {
    * @param {number} duration - Duration in ms
    */
   showToast(toast, duration) {
+    this.addCloseButton(toast);
+
     // Add to container
     this.toastContainer.appendChild(toast);
     this.activeToasts.push(toast);
@@ -144,9 +150,30 @@ class Toast {
     }, 10);
 
     // Auto dismiss after duration
-    setTimeout(() => {
+    toast._dismissTimer = setTimeout(() => {
       this.dismissToast(toast);
     }, duration);
+  }
+
+  /**
+   * Append a close button to the toast's content row
+   * @param {HTMLElement} toast - The toast element
+   */
+  addCloseButton(toast) {
+    const content = toast.querySelector('.toast-content');
+    if (!content || content.querySelector('.toast-close')) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-close';
+    button.setAttribute('aria-label', 'Dismiss notification');
+    button.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"></path>
+      </svg>
+    `;
+    button.addEventListener('click', () => this.dismissToast(toast));
+    content.appendChild(button);
   }
 
   /**
@@ -155,11 +182,14 @@ class Toast {
    */
   dismissToast(toast) {
     if (!toast || !toast.parentNode) return;
+    if (toast.classList.contains('toast-fade-out')) return;
+
+    clearTimeout(toast._dismissTimer);
 
     // Add fade-out class
     toast.classList.add('toast-fade-out');
 
-    // Remove after fade animation (300ms)
+    // Remove after fade animation
     setTimeout(() => {
       if (toast.parentNode) {
         toast.parentNode.removeChild(toast);
@@ -170,7 +200,7 @@ class Toast {
       if (index > -1) {
         this.activeToasts.splice(index, 1);
       }
-    }, 300);
+    }, Toast.FADE_MS);
   }
 
   /**
@@ -190,4 +220,9 @@ if (typeof window !== 'undefined' && !window.toast) {
   } else {
     window.toast = new Toast();
   }
+}
+
+// Export for CommonJS testing environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { Toast };
 }
