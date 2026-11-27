@@ -287,13 +287,19 @@ describe('a path that is not in the diff\'s own form', () => {
     expect(manager.pierreBridge.setCollapsed).not.toHaveBeenCalled();
   });
 
-  it('_canonicalFilePath: the exact path, the wrapper\'s name, the changed-file list, else null', () => {
-    const manager = makeVariantManager();
+  it('_canonicalFilePath: the exact path, then the changed and context files of the data, else null; never an element', () => {
+    const manager = makeVariantManager({ contextFiles: [{ id: 1, file: 'lib/context-only.js' }] });
     expect(manager._canonicalFilePath('src/a.js')).toBe('src/a.js');
     expect(manager._canonicalFilePath('./src/unmounted.js')).toBe('src/unmounted.js');
+    // A context file is found from data, with its element or without one
+    // (tests/unit/canonical-file-path.test.js has the cases of virtualization).
+    expect(manager._canonicalFilePath('./lib/context-only.js')).toBe('lib/context-only.js');
     const context = addWrapper('lib/context-only.js');
     context.classList.add('context-file');
     expect(manager._canonicalFilePath('./lib/context-only.js')).toBe('lib/context-only.js');
+    // An element alone names no file.
+    addWrapper('lib/element-only.js');
+    expect(manager._canonicalFilePath('./lib/element-only.js')).toBeNull();
     expect(manager._canonicalFilePath('./nowhere.js')).toBeNull();
     expect(manager._canonicalFilePath('')).toBeNull();
     expect(manager._canonicalFilePath(null)).toBeNull();

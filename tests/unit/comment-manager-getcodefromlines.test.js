@@ -56,25 +56,30 @@ describe('CommentManager.getCodeFromLines', () => {
     expect(bridge.getCodeFromLines).toHaveBeenCalledWith('src/a.js', 3, 3, undefined);
   });
 
-  it('returns an empty string when the bridge has no text for the lines', () => {
+  it('returns null when the bridge has no text for the whole range (the caller then refuses)', () => {
     withBridge(['src/a.js'], () => null);
-    expect(commentManager.getCodeFromLines('src/a.js', 400, 401, 'RIGHT')).toBe('');
+    expect(commentManager.getCodeFromLines('src/a.js', 400, 401, 'RIGHT')).toBeNull();
   });
 
-  it('returns an empty string for a file the bridge does not hold, without asking it', () => {
+  it('returns the text of an empty line as an empty string, not as no text', () => {
+    withBridge(['src/a.js'], () => '');
+    expect(commentManager.getCodeFromLines('src/a.js', 5, 5, 'RIGHT')).toBe('');
+  });
+
+  it('returns null for a file the bridge does not hold, without asking it', () => {
     const bridge = withBridge(['src/a.js'], () => 'x');
-    expect(commentManager.getCodeFromLines('src/other.js', 1, 1, 'RIGHT')).toBe('');
+    expect(commentManager.getCodeFromLines('src/other.js', 1, 1, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines).not.toHaveBeenCalled();
   });
 
-  it('returns an empty string without a page manager or a bridge, and never asks the document', () => {
+  it('returns null without a page manager or a bridge, and never asks the document', () => {
     const query = vi.fn(() => []);
     const previous = global.document;
     global.document = { querySelectorAll: query, querySelector: query };
     try {
-      expect(commentManager.getCodeFromLines('src/a.js', 1, 1, 'RIGHT')).toBe('');
+      expect(commentManager.getCodeFromLines('src/a.js', 1, 1, 'RIGHT')).toBeNull();
       commentManager.prManager = {};
-      expect(commentManager.getCodeFromLines('src/a.js', 1, 1, 'RIGHT')).toBe('');
+      expect(commentManager.getCodeFromLines('src/a.js', 1, 1, 'RIGHT')).toBeNull();
       expect(query).not.toHaveBeenCalled();
     } finally {
       global.document = previous;

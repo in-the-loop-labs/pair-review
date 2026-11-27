@@ -331,7 +331,7 @@ describe('PRManager Pierre render budgeting', () => {
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
       files: new Map([['src/needs-anchor.js', { baseMetadata: null }]]),
-      isLineVisible: vi.fn(() => false),
+      isLineInDiff: vi.fn(() => false),
       addContextRanges: vi.fn(() => true),
     };
 
@@ -357,10 +357,10 @@ describe('PRManager Pierre render budgeting', () => {
     const manager = createManager();
     manager._materializeDeferredDiff = vi.fn(async () => true);
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
-    const isLineVisible = vi.fn((_file, line) => line === 40); // start visible, end hidden
+    const isLineInDiff = vi.fn((_file, line) => line === 40); // start visible, end hidden
     manager.pierreBridge = {
       files: new Map([['src/partial.js', { baseMetadata: { hunks: [] } }]]),
-      isLineVisible,
+      isLineInDiff,
       addContextRanges: vi.fn(() => true),
     };
 
@@ -371,8 +371,8 @@ describe('PRManager Pierre render budgeting', () => {
       side: 'RIGHT',
     }]);
 
-    expect(isLineVisible).toHaveBeenCalledWith('src/partial.js', 40, 'RIGHT');
-    expect(isLineVisible).toHaveBeenCalledWith('src/partial.js', 50, 'RIGHT');
+    expect(isLineInDiff).toHaveBeenCalledWith('src/partial.js', 40, 'RIGHT');
+    expect(isLineInDiff).toHaveBeenCalledWith('src/partial.js', 50, 'RIGHT');
     expect(manager.pierreBridge.addContextRanges).toHaveBeenCalledWith(
       'src/partial.js',
       [{ startLine: 40, endLine: 50 }]
@@ -387,7 +387,7 @@ describe('PRManager Pierre render budgeting', () => {
     manager._ensurePierreContentUpgrade = vi.fn(async () => true);
     manager.pierreBridge = {
       files: new Map([['src/visible.js', { baseMetadata: { hunks: [] } }]]),
-      isLineVisible: vi.fn(() => true),
+      isLineInDiff: vi.fn(() => true),
       addContextRanges: vi.fn(() => true),
     };
 

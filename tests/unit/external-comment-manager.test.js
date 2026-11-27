@@ -760,7 +760,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     const bridge = makePierreBridge({ files: ['src/app.js'] });
     const order = [];
     const ensureLinesVisible = vi.fn(async () => { order.push('ensure'); });
-    vi.spyOn(bridge, 'isLineVisible').mockImplementation(() => { order.push('visible?'); return true; });
+    vi.spyOn(bridge, 'isLineInDiff').mockImplementation(() => { order.push('in diff?'); return true; });
     bridge.addAnnotation.mockImplementation(() => { order.push('add'); });
     window.prManager = { pierreBridge: bridge, ensureLinesVisible };
 
@@ -771,9 +771,9 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(ensureLinesVisible).toHaveBeenCalledWith([
       { file: 'src/app.js', line_start: 10, line_end: 10, side: 'RIGHT' },
     ]);
-    // Reveal, then ask the oracle, then annotate.
-    expect(order).toEqual(['ensure', 'visible?', 'add']);
-    expect(bridge.isLineVisible).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
+    // Reveal, then ask the data, then annotate.
+    expect(order).toEqual(['ensure', 'in diff?', 'add']);
+    expect(bridge.isLineInDiff).toHaveBeenCalledWith('src/app.js', 10, 'RIGHT');
   });
 
   it('_isPierreFile: a file the viewer has a record of, mounted or not; no other, and none without a viewer', () => {
@@ -867,19 +867,22 @@ describe('ExternalCommentManager pierre annotation path', async () => {
     expect(bridge.codeView.getItem('src/app.js').annotations.map((a) => a.metadata.type)).toContain('external-comment');
   });
 
-  it('falls back to file level for a collapsed file, and when the oracle is missing or throws', async () => {
-    const collapsed = makePierreBridge({ files: ['src/app.js'] });
-    collapsed.files.get('src/app.js').collapsed = true;
+  it('keeps a thread on its line in a collapsed file; falls back to file level when the oracle is missing or throws', async () => {
+    // A collapsed file (viewed, generated, or collapsed by the reader) keeps
+    // its annotations hidden and shows them when it is opened, so its
+    // threads are annotations like any file's (collapsed-file-lines.test.js
+    // collapses the file through the page's own writer).
+    const collapsed = createBridgeHarness(vi, vendor, { files: [{ name: 'src/app.js', collapsed: true }] });
     window.prManager = { pierreBridge: collapsed, ensureLinesVisible: vi.fn(async () => {}) };
     let mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 21 })]);
     await mgr.render();
-    expect(collapsed.addAnnotation).not.toHaveBeenCalled();
-    expect(document.querySelectorAll('.external-comment-row--file-fallback')).toHaveLength(1);
+    expect(collapsed.getAnnotations('src/app.js', 'external-comment').map((a) => a.lineNumber)).toEqual([10]);
+    expect(document.querySelectorAll('.external-comment-row--file-fallback')).toHaveLength(0);
 
     document.body.innerHTML = '';
     const throwing = makePierreBridge({ files: ['src/app.js'] });
-    vi.spyOn(throwing, 'isLineVisible').mockImplementation(() => { throw new Error('boom'); });
+    vi.spyOn(throwing, 'isLineInDiff').mockImplementation(() => { throw new Error('boom'); });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     window.prManager = { pierreBridge: throwing, ensureLinesVisible: vi.fn(async () => {}) };
     mgr = makeManager();
@@ -890,7 +893,7 @@ describe('ExternalCommentManager pierre annotation path', async () => {
 
     document.body.innerHTML = '';
     const noOracle = makePierreBridge({ files: ['src/app.js'] });
-    noOracle.isLineVisible = undefined;
+    noOracle.isLineInDiff = undefined;
     window.prManager = { pierreBridge: noOracle, ensureLinesVisible: vi.fn(async () => {}) };
     mgr = makeManager();
     mgr.threadsBySource.set('github', [makeComment({ id: 23 })]);

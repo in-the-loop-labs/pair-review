@@ -39,7 +39,7 @@ function createTestPRManager({ files = ['a.js'], visible = () => false } = {}) {
   prManager._ensurePierreContentUpgrade = vi.fn(async (file) => { order.push(`contents:${file}`); return true; });
   prManager.pierreBridge = {
     files: new Map(files.map((file) => [file, {}])),
-    isLineVisible: vi.fn((file, line, side) => visible(file, line, side)),
+    isLineInDiff: vi.fn((file, line, side) => visible(file, line, side)),
     convertOldToNew: vi.fn((file, start, end) => ({ startLine: start, endLine: end })),
     addContextRanges: vi.fn((file) => { order.push(`reveal:${file}`); return true; }),
   };
@@ -62,7 +62,7 @@ describe('PRManager.ensureLinesVisible()', () => {
 
       expect(manager.pierreBridge.addContextRanges.mock.calls).toEqual([['a.js', [{ startLine: 10, endLine: 50 }]]]);
       // Both ends were asked, on the side the caller named.
-      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([['a.js', 10, 'RIGHT'], ['a.js', 50, 'RIGHT']]);
+      expect(manager.pierreBridge.isLineInDiff.mock.calls).toEqual([['a.js', 10, 'RIGHT'], ['a.js', 50, 'RIGHT']]);
     });
 
     it('a range whose two ends are shown is left alone, and the file\'s contents are not asked for', async () => {
@@ -72,7 +72,7 @@ describe('PRManager.ensureLinesVisible()', () => {
 
       expect(manager.pierreBridge.addContextRanges).not.toHaveBeenCalled();
       expect(manager._ensurePierreContentUpgrade).not.toHaveBeenCalled();
-      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([['a.js', 10, 'LEFT'], ['a.js', 50, 'LEFT']]);
+      expect(manager.pierreBridge.isLineInDiff.mock.calls).toEqual([['a.js', 10, 'LEFT'], ['a.js', 50, 'LEFT']]);
     });
 
     it('a held-back diff is shown first, then the contents are loaded, then the range is revealed', async () => {
@@ -89,7 +89,7 @@ describe('PRManager.ensureLinesVisible()', () => {
       const manager = createTestPRManager();
       await manager.ensureLinesVisible([]);
       expect(manager._materializeDeferredDiff).not.toHaveBeenCalled();
-      expect(manager.pierreBridge.isLineVisible).not.toHaveBeenCalled();
+      expect(manager.pierreBridge.isLineInDiff).not.toHaveBeenCalled();
     });
 
     it('skips items without a file or a start line', async () => {
@@ -107,7 +107,7 @@ describe('PRManager.ensureLinesVisible()', () => {
         { file: 'b.js', line_start: 20, line_end: 25, side: 'RIGHT' },
       ]);
 
-      expect(manager.pierreBridge.isLineVisible.mock.calls.map((call) => call[0])).toEqual(['b.js', 'b.js']);
+      expect(manager.pierreBridge.isLineInDiff.mock.calls.map((call) => call[0])).toEqual(['b.js', 'b.js']);
       expect(manager.pierreBridge.addContextRanges.mock.calls).toEqual([['b.js', [{ startLine: 20, endLine: 25 }]]]);
     });
 
@@ -123,20 +123,20 @@ describe('PRManager.ensureLinesVisible()', () => {
     it('defaults the side to RIGHT', async () => {
       const manager = createTestPRManager();
       await manager.ensureLinesVisible([{ file: 'a.js', line_start: 5, line_end: 5 }]);
-      expect(manager.pierreBridge.isLineVisible).toHaveBeenCalledWith('a.js', 5, 'RIGHT');
+      expect(manager.pierreBridge.isLineInDiff).toHaveBeenCalledWith('a.js', 5, 'RIGHT');
       expect(manager.pierreBridge.convertOldToNew).not.toHaveBeenCalled();
     });
 
     it('uppercases the side', async () => {
       const manager = createTestPRManager();
       await manager.ensureLinesVisible([{ file: 'a.js', line_start: 5, line_end: 5, side: 'left' }]);
-      expect(manager.pierreBridge.isLineVisible).toHaveBeenCalledWith('a.js', 5, 'LEFT');
+      expect(manager.pierreBridge.isLineInDiff).toHaveBeenCalledWith('a.js', 5, 'LEFT');
     });
 
     it('treats a missing line_end as equal to line_start', async () => {
       const manager = createTestPRManager();
       await manager.ensureLinesVisible([{ file: 'a.js', line_start: 7 }]);
-      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([['a.js', 7, 'RIGHT'], ['a.js', 7, 'RIGHT']]);
+      expect(manager.pierreBridge.isLineInDiff.mock.calls).toEqual([['a.js', 7, 'RIGHT'], ['a.js', 7, 'RIGHT']]);
       expect(manager.pierreBridge.addContextRanges.mock.calls).toEqual([['a.js', [{ startLine: 7, endLine: 7 }]]]);
     });
 
@@ -154,7 +154,7 @@ describe('PRManager.ensureLinesVisible()', () => {
       await manager.ensureLinesVisible([
         { file: 'a.js', line_start: 10, line_end: 12, side: 'LEFT', contextPadding: 3 },
       ]);
-      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([
+      expect(manager.pierreBridge.isLineInDiff.mock.calls).toEqual([
         ['a.js', 10, 'LEFT'], ['a.js', 12, 'LEFT'],
       ]);
       expect(manager.pierreBridge.convertOldToNew.mock.calls).toEqual([['a.js', 10, 12]]);
@@ -168,7 +168,7 @@ describe('PRManager.ensureLinesVisible()', () => {
       await manager.ensureLinesVisible([
         { file: 'a.js', line_start: 100, line_end: 100, contextPadding: 3 },
       ]);
-      expect(manager.pierreBridge.isLineVisible.mock.calls).toEqual([
+      expect(manager.pierreBridge.isLineInDiff.mock.calls).toEqual([
         ['a.js', 100, 'RIGHT'], ['a.js', 100, 'RIGHT'],
       ]);
       expect(manager.pierreBridge.addContextRanges).not.toHaveBeenCalled();

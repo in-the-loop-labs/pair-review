@@ -496,9 +496,10 @@ test('getCodeFromLines answers the text of every line a context file shows: stor
       // A context file has one side: a comment stored LEFT reads the same lines.
       left: same(26, 26, 'LEFT'),
       sample: ask(26, 26),
-      // A line the file does not show has no text to offer; a selection that runs past the shown lines holds the shown ones.
+      // A line the file does not show has no text to offer, and neither has a selection that runs past the
+      // shown lines: a suggestion block is every line of its range or nothing (ledger H181).
       hidden: ask(61, 61),
-      pastTheEnd: ask(59, 62) === text(59, 60),
+      pastTheEnd: ask(59, 62),
     };
   }, CONTEXT);
   expect(result.oracle).toEqual([true, true, true, true, true, false]);
@@ -510,5 +511,5 @@ test('getCodeFromLines answers the text of every line a context file shows: stor
   expect(result.left).toEqual({ drawn: true, equal: true });
   expect(result.sample).toBe('const value26 = compute(26); // line 26');
   expect(result.hidden).toBeNull();
-  expect(result.pastTheEnd).toBe(true);
+  expect(result.pastTheEnd).toBeNull();
 });
