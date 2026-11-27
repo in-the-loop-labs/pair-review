@@ -406,6 +406,9 @@ class AIPanel {
         const next = lib.parseSeverityState({ ...this.severityState, ...updates });
         const prev = this.severityState;
         const changed = next.sort !== prev.sort || next.hidden.join() !== prev.hidden.join();
+        // Navigation updates the index, so capture its identity using the old
+        // sort/filter before changing which items that index refers to.
+        if (changed) this.saveCurrentSelection();
         this.severityState = next;
         this.updateFilterMenuVisual();
         if (!changed) return false;
@@ -413,6 +416,8 @@ class AIPanel {
         this.saveSeverityState();
         this.renderFindings();
         if (!this.restoreSelection()) {
+            this.selectedItemKey = null;
+            this.currentIndex = -1;
             this.autoSelectFirst();
         }
         return true;
