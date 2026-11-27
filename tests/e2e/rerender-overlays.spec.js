@@ -22,7 +22,8 @@
 import { test, expect } from './fixtures.js';
 import {
   MODES, waitForDiffToRender, seedComment, seedSuggestions, reloadComments, cleanupAllComments, expectResponse,
-  mockAppConfig, mockHunkSummaries, mockExternalComments, externalThread, holdFileContents
+  mockAppConfig, mockHunkSummaries, mockExternalComments, externalThread, holdFileContents,
+  expandReviewPanel, openDiffOptions
 } from './helpers.js';
 import { allCorpora, routeDiff, hunkHashes, prDiffResponse, localDiffResponse } from './fixtures/diffs.js';
 import {
@@ -49,7 +50,7 @@ async function toggleWhitespace(page, hide) {
 
 /** Set the "Hide whitespace changes" option through the diff-options popover. */
 async function setHideWhitespace(page, hide) {
-  await page.locator('#diff-options-btn').click();
+  await openDiffOptions(page);
   const checkbox = page.locator('.diff-options-popover')
     .locator('label', { hasText: 'Hide whitespace changes' })
     .locator('input[type="checkbox"]');
@@ -404,7 +405,7 @@ test.describe('Re-rendering the whole diff: external threads (PR mode)', () => {
     const contents = await holdFileContents(page);
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
     await waitForHighlightedDisplay(page, UTILS);
     await expect.poll(() => external.lists).toBe(1);
     await reloadComments(page);

@@ -221,6 +221,81 @@ describe('around renderDiff on the virtualized viewer', () => {
     expect(manager.handleDiffViewChange('sideways')).toBe(false);
   });
 
+  it('says whether a drawn file is still to be given its contents: until the catch-up sweep has run, while a file is queued or in flight, and never for a render that was replaced', async () => {
+    vi.useFakeTimers();
+    try {
+      const files = [file('src/a.js'), file('src/b.js')];
+      const manager = rendered(files);
+      manager.currentPR = { id: 7 };
+      // What the bridge's hook asks (PierreBridge._holdEndAfterCollapse).
+      const awaited = () => manager._isContentUpgradeAwaited();
+      expect(awaited()).toBe(false);
+
+      // The files drawn first wait for the sweep, with nothing queued.
+      manager._upgradeFilesWithContents(files);
+      expect(manager._fileContentsUpgradeState).toBeNull();
+      expect(awaited()).toBe(true);
+      await vi.advanceTimersByTimeAsync(1100);
+      // The sweep ran and found no file mounted.
+      expect(awaited()).toBe(false);
+
+      // A file is mounted: queued, then in flight for as long as its upgrade takes
+      // (the request, and the wait while the pointer rests on the file).
+      let land;
+      manager._fetchAndUpgradePierreFileContents = vi.fn(() => new Promise((resolve) => { land = resolve; }));
+      manager._onDiffItemLifecycle('src/a.js', 'mount');
+      expect(awaited()).toBe(true);
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(manager._fetchAndUpgradePierreFileContents).toHaveBeenCalledTimes(1);
+      expect(awaited()).toBe(true);
+      land(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(awaited()).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(manager._fileContentsUpgradeState).toBeNull();
+      expect(awaited()).toBe(false);
+
+      // An upgrade a navigation asked for.
+      manager.pierreBridge.files.get('src/b.js').baseMetadata = null;
+      const asked = manager._ensurePierreContentUpgrade('src/b.js');
+      expect(awaited()).toBe(true);
+      land(false);
+      await asked;
+      expect(awaited()).toBe(false);
+
+      // A render that was replaced awaits nothing, whatever it had started.
+      manager._onDiffItemLifecycle('src/b.js', 'mount');
+      expect(awaited()).toBe(true);
+      manager._abortContentUpgrades();
+      expect(awaited()).toBe(false);
+      manager._upgradeFilesWithContents(files);
+      expect(awaited()).toBe(true);
+      manager._abortContentUpgrades();
+      expect(awaited()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(awaited()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the bridge is given the hook that asks it', () => {
+    const manager = makeManager();
+    let options = null;
+    window.PierreBridge = class {
+      constructor(given) { options = given; this.available = true; }
+      registerAnnotationRenderer() {}
+    };
+    try {
+      manager._createBridge({});
+      manager._isContentUpgradeAwaited = vi.fn(() => true);
+      expect(options.hooks.contentsAwaited()).toBe(true);
+      expect(manager._isContentUpgradeAwaited).toHaveBeenCalledTimes(1);
+    } finally {
+      delete window.PierreBridge;
+    }
+  });
+
   it('a file whose item comes into the mounted window is queued for its content upgrade; a context file is not', () => {
     const manager = rendered();
     manager._enqueuePierreContentUpgrade = vi.fn();

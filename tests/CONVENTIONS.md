@@ -468,6 +468,81 @@ because violating it produced a real, observed flake or measurable waste.
   machine the key's scroll begins later than one look at the position, and
   "no scroll in flight" is true before it has begun (seen once in 1,920
   executions).
+- **A control of the review panel is clicked when the panel has stopped
+  opening.** The panel is collapsed at the suite's viewport;
+  `window.aiPanel.expand()` opens it with a width transition of 0.2 s, and
+  what is in it travels in from the right edge of the page. A click made
+  right after `expand()` can press where the control no longer is: no
+  click, and the test goes on in the state before it (the "AI" segment, in
+  which no user comment is listed). Two tests failed that way once each in
+  fifteen whole runs on a busy machine: `comment-crud-advanced.spec.js`
+  "should correctly refresh UI state after bulk deletion" and
+  `comment-filter-menu.spec.js` ""Show posted" overrides the
+  hide-after-posting preference ...". `expandReviewPanel(page)` in
+  `helpers.js` opens the panel and waits for its transitions; every spec
+  opens the panel through it, and none calls `expand()` itself.
+- **A pointer that rests on a file keeps that file's contents back for ten
+  seconds** (`PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS`). After a wheel
+  scroll the pointer is on the pane, and a `waitForDiffSettled` then waits
+  those ten seconds for the file under it. A test that is not about that
+  delay takes the pointer off the pane before it waits
+  (`page.mouse.move(5, 5)`: `collapse-at-end-contents.spec.js`); one that
+  is about it says so and calls `test.slow()`.
+- **A control of the diff options popover is clicked when the popover has
+  stopped opening.** The gear's popover opens with a transition of 0.15 s
+  on its transform, and the first time it opens on a page that transform
+  also centres it under the gear: it travels half its width, 160 px, to
+  the left ("Split" is 43 px wide). A press that begins on a control during
+  the travel is released where the control no longer is: the control is
+  focused, gets no click, and nothing is switched
+  (`scroll-landing.spec.js` "a sidebar jump lands the same way in split
+  layout", once in 40; `split-view.spec.js:130` once in phase 9).
+  Playwright's own wait is two frames with the control in one place, and
+  on a busy machine the first two frames of a transition both show it
+  where it starts. `openDiffOptions(page)` in `helpers.js` clicks the gear
+  and waits for the popover's transitions; `setDiffView` and `setMinimize`
+  use it, and no spec clicks the gear itself. (The layout picker and the
+  notification popover open the same way; their tests have not failed.)
+- **After a scroll made by a script, the pane's position is read when the
+  files there have their contents.** The viewer draws the files of the new
+  place on the next frame, their contents arrive later, and a file that
+  grows above the reader's line takes the scroll position with it (3,000
+  becomes 3,122 in the sixty-file review). Two looks at the position
+  0.15 s apart say "still" before that on a busy machine, and a test that
+  then states "the pane has not moved" fails on a move that was not its
+  subject. `waitForPaneSettledInPlace(page)` in `diff-dom.js` waits for
+  the files at the pane's place and for their contents; a test reads its
+  starting position after it.
+- **A place measured to less than a pixel below many files needs those
+  files in one state.** A scroll position is a whole number of pixels and
+  a row is 17.390625 px, so a collapse that keeps a header "where it was"
+  keeps it within half a pixel, and how far off depends on the heights of
+  every file above. In the background a file gets its contents only once
+  it has been drawn, and an animated navigation draws some of the files it
+  passes and not others: fifty different states above the thirty-first
+  file in 300 runs, one of which puts its top at exactly half a pixel, the
+  header 0.5 px away and `toBeCloseTo(…, 0)` at its edge. Such a test
+  gives every file above its contents first (`ensureContentUpgrades` in
+  `diff-dom.js`; `readFile` in `collapse-landing.spec.js` has the
+  arithmetic for that review).
+- **The "Viewed" box of a file is set with `setViewedBox`, never with
+  `check()` or `uncheck()`.** A file's header is taken out of the document
+  and put back by every draw of that file. When a draw falls between a
+  press and its release the browser sends no click, and the bridge makes
+  the click itself in a task of its own right after the release (ledger
+  H140). `locator.check()` reads the box as soon as its release has been
+  handled, which can be before that task, and throws "Clicking the checkbox
+  did not change its state" on a page that then does what was asked
+  (`collapse-scroll-anchor.spec.js` "marking a file viewed keeps its
+  collapsed header where it was stuck", once in 1,800 executions of a
+  repeat stage: the file was viewed and collapsed in the failure's own
+  screenshot). With a draw forced into the press, 29 of 240 checks threw
+  and all 240 pages ended ticked and collapsed; in the test's own steps
+  the scroll just before the press is what draws the file, inside the
+  press 1 time in 2,000 with twenty workers. `setViewedBox(entry, viewed)`
+  in `diff-dom.js` clicks the box and waits for it: 200 of 200 with the
+  forced draw. The same holds for any checkbox a test adds to a file's
+  header, comment zone or card.
 - **The gutter's buttons are seen, then clicked.** They are on the hovered
   line only and are hidden while the pane moves, until it has rested: two
   frames, or eight frames and 120 ms while a file that shows 2,000 rows or

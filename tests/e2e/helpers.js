@@ -74,6 +74,37 @@ async function dragResizeHandle(page, handleLocator, deltaX) {
 }
 
 /**
+ * Open the diff options popover (the gear, #diff-options-btn) and wait until
+ * it has stopped moving. The popover opens with a transition of 0.15 s on
+ * its transform, and the first time it opens on a page that transform also
+ * centres it under the gear: it travels half its own width to the left
+ * (160 px; its "Split" button is 43 px wide). After that it only rises 4 px.
+ * A press that begins on a control of the popover during that travel is
+ * released where the control no longer is: the control is focused and gets
+ * no click (measured: a press on "Split" begun two frames after the gear's
+ * click and held for three frames switched the layout 1 time in 20, and 20
+ * times in 20 once the popover's transitions were over). Playwright's own
+ * wait for a control to stop moving is two frames with the control in one
+ * place, and on a busy machine the first two frames of the transition both
+ * show it where it starts (40 of 300 first openings with twenty workers).
+ * Ledger H171.
+ *
+ * @param {import('@playwright/test').Page} page
+ */
+async function openDiffOptions(page) {
+  await page.locator('#diff-options-btn').click();
+  await page.evaluate(async () => {
+    const popover = document.querySelector('.diff-options-popover');
+    if (!popover) return;
+    // A transition begins with the next style pass, not with the style.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let running = popover.getAnimations(); running.length > 0; running = popover.getAnimations()) {
+      await Promise.allSettled(running.map((animation) => animation.finished));
+    }
+  });
+}
+
+/**
  * Switch the diff layout via the gear (#diff-options-btn) → "Diff view"
  * segmented control, then wait for the new layout to take effect. The popover
  * is dismissed afterward (Escape) so it cannot intercept later interactions.
@@ -82,8 +113,7 @@ async function dragResizeHandle(page, handleLocator, deltaX) {
  * @param {('unified'|'split')} mode
  */
 async function setDiffView(page, mode) {
-  const gearBtn = page.locator('#diff-options-btn');
-  await gearBtn.click();
+  await openDiffOptions(page);
   const option = page.locator(`.diff-view-option[data-diff-view="${mode}"]`);
   await option.waitFor({ state: 'visible', timeout: 5000 });
   await option.click();
@@ -94,7 +124,7 @@ async function setDiffView(page, mode) {
 
 /** Enable/disable "Minimize comments" via the diff-options gear dropdown. */
 async function setMinimize(page, enabled) {
-  await page.locator('#diff-options-btn').click();
+  await openDiffOptions(page);
   const checkbox = page.locator('label:has-text("Minimize comments") input[type="checkbox"]');
   await expect(checkbox).toBeVisible();
   if (enabled) {
@@ -800,8 +830,36 @@ async function cleanupAllComments(page, reviewId = 1) {
   await cleanupContextFiles(page, reviewId);
 }
 
+/**
+ * Open the review panel beside the diff and wait until it has stopped
+ * moving. The panel is collapsed at the suite's viewport and opens with a
+ * width transition of 0.2 s, during which everything in it travels in from
+ * the page's right edge (the "User" segment button by about 300 px). A click
+ * made in that time can press where its control no longer is: the control
+ * gets no click and the test goes on in the state before it (measured: a
+ * press on that button begun two frames after `expand()` and held for three
+ * frames reached the button 0 times in 20, and 20 times in 20 once the
+ * panel's transitions were over; ledger H171).
+ *
+ * @param {import('@playwright/test').Page} page
+ */
+async function expandReviewPanel(page) {
+  await page.evaluate(async () => {
+    window.aiPanel?.expand();
+    const panel = document.getElementById('ai-panel');
+    if (!panel) return;
+    // A transition begins with the next style pass, not with the class.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let running = panel.getAnimations(); running.length > 0; running = panel.getAnimations()) {
+      await Promise.allSettled(running.map((animation) => animation.finished));
+    }
+  });
+}
+
 module.exports = {
   MODES,
+  expandReviewPanel,
+  openDiffOptions,
   analysesUrl,
   enableChat,
   mockViewedStateApi,

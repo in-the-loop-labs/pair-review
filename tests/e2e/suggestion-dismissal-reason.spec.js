@@ -17,7 +17,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions } from './helpers.js';
+import { waitForDiffToRender, seedAISuggestions, expandReviewPanel } from './helpers.js';
 
 const REASON = 'Dismissed by the agent: guarded by an upstream null check.';
 const TITLE = 'Seeded dismissed finding';
@@ -74,7 +74,7 @@ test.describe('AI suggestion dismissal reason', () => {
     await expect(note.locator('.ai-dismissal-note-label')).toBeAttached();
 
     // --- AI panel: dismissed finding shows the muted reason line + tooltip ---
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
     await page.waitForSelector('.finding-item', { timeout: 5000 });
 
     const dismissedFinding = page.locator('.finding-item.finding-dismissed', { hasText: TITLE }).first();

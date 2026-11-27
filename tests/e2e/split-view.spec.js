@@ -24,7 +24,8 @@
 
 import { test, expect } from './fixtures.js';
 import {
-  waitForDiffToRender, waitForDiffType, setDiffView, openSplitCommentForm, expectAnnotationInSplitColumn, seedAISuggestions, cleanupAISuggestions, cleanupComments, cleanupAllComments
+  waitForDiffToRender, waitForDiffType, setDiffView, openSplitCommentForm, expectAnnotationInSplitColumn, seedAISuggestions, cleanupAISuggestions, cleanupComments, cleanupAllComments,
+  openDiffOptions
 } from './helpers.js';
 import { anyFileInSplitLayout, fileLayout, annotationCell, paintProbe } from './diff-dom.js';
 import { customCorpus, routeDiff } from './fixtures/diffs.js';
@@ -398,7 +399,7 @@ test.describe(`Split diff view — one-sided files (${mode.name})`, () => {
    * one-sided files have re-rendered too.
    */
   async function switchToSplit(page) {
-    await page.locator('#diff-options-btn').click();
+    await openDiffOptions(page);
     const option = page.locator('.diff-view-option[data-diff-view="split"]');
     await option.waitFor({ state: 'visible', timeout: 5000 });
     await option.click();

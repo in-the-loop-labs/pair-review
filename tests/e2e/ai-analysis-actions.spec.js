@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { MODES, waitForDiffToRender, seedAISuggestions, dismissProgressModalIfVisible, cleanupAllComments } from './helpers.js';
+import { MODES, waitForDiffToRender, seedAISuggestions, dismissProgressModalIfVisible, cleanupAllComments, expandReviewPanel } from './helpers.js';
 
 // Helper to handle modals when triggering analysis
 async function handleAnalysisModals(page) {
@@ -313,7 +313,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so nav controls are visible
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -343,7 +343,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -384,7 +384,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -424,7 +424,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -453,7 +453,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -506,7 +506,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -537,7 +537,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -586,7 +586,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });
@@ -642,7 +642,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed by default; expand it so findings are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Seed AI suggestions
       await seedAISuggestions(page, { reviewId: mode.reviewId });

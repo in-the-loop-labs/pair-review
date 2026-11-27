@@ -25,12 +25,21 @@
  * holds nothing, and its release moves nothing (the last describe, with the
  * scrollbar the application's own style sheet gives the pane; a scrollbar
  * with no width of its own is in tests/e2e/scroll-landing.spec.js).
+ *
+ * And the thumb after a collapse at the pane's end (ledger H174): the pane is
+ * held at its end while the files above the collapsed header get their
+ * contents, until the reader does something. Taking the thumb up is that:
+ * the pane stays where the thumb left it (the describe before the last).
  */
 
 import { test, expect } from './fixtures.js';
-import { MODES, waitForDiffToRender, mockViewedStateApi } from './helpers.js';
-import { routeDiff, wrappingFilesCorpus } from './fixtures/diffs.js';
-import { scrollState, assertNoOrphanHosts, fileWrapper, lineNumberCell } from './diff-dom.js';
+import { MODES, waitForDiffToRender, mockViewedStateApi, holdFileContents } from './helpers.js';
+import { allCorpora, routeDiff, wrappingFilesCorpus } from './fixtures/diffs.js';
+import {
+  scrollState, assertNoOrphanHosts, fileWrapper, lineNumberCell,
+  waitForFileRendered, waitForDiffSettled, waitForContentUpgrade, contentsApplied, entryPlace,
+  waitForPaneSettledInPlace
+} from './diff-dom.js';
 
 test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } });
 
@@ -185,6 +194,72 @@ for (const mode of MODES) {
 }
 
 for (const mode of MODES) {
+  test.describe(`The pane's scrollbar after the last file was collapsed at the pane's end (${mode.name})`, () => {
+    const { many: MANY } = allCorpora();
+    const LAST = MANY.roles.last;
+    const ABOVE_LAST = MANY.order[MANY.order.length - 2];
+    const entryOf = (file) => `.d2h-file-wrapper:not(.context-file)[data-file-name="${file}"]`;
+
+    test('the thumb taken up after the collapse stays where the reader left it when the file above gets its contents', async ({ page }) => {
+      await mockViewedStateApi(page);
+      await routeDiff(page, MANY);
+      await page.goto(mode.path);
+      await waitForDiffToRender(page);
+      await page.addStyleTag({ content: SCROLLBAR_CSS });
+      const pane = page.locator('#diff-container');
+      await expect.poll(() => pane.evaluate((element) => element.offsetWidth - element.clientWidth)).toBe(SCROLLBAR_WIDTH);
+
+      // The reader's own scroll to the end, and the pane at rest there.
+      const box = await pane.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height, 600) / 2);
+      await expect(async () => {
+        await page.mouse.wheel(0, 200000);
+        await expect.poll(async () => short(await scrollState(page)), { timeout: 2000 }).toBeLessThanOrEqual(1);
+      }).toPass({ timeout: 20000 });
+      // Off the pane, so that the last file is given its contents at once
+      // (a pointer resting on a file keeps them back for ten seconds).
+      await page.mouse.move(5, 5);
+      await waitForFileRendered(page, LAST);
+      await scrollSettled(page);
+      await waitForDiffSettled(page);
+      await scrollSettled(page);
+
+      // The last file collapsed; the file above is in view, its contents kept back.
+      const contents = await holdFileContents(page);
+      await page.locator(entryOf(LAST)).locator('.file-collapse-toggle').click();
+      await expect(page.locator(entryOf(LAST))).toHaveClass(/collapsed/);
+      const landed = await entryPlace(page, entryOf(LAST));
+      expect(landed.maxScrollTop - landed.scrollTop).toBeLessThanOrEqual(1);
+      expect(landed.headerTop).toBeGreaterThan(0);
+      await expect(page.locator(entryOf(ABOVE_LAST)).locator('.d2h-file-header')).toBeAttached();
+      expect(await contentsApplied(page, ABOVE_LAST)).toBe(false);
+
+      // The thumb is at the bottom of its track: take it and pull it up a little.
+      const x = box.x + box.width - SCROLLBAR_WIDTH / 2;
+      const y = box.y + box.height - 12;
+      await pane.evaluate((element) => {
+        element.addEventListener('pointerdown', (event) => { window.__scrollbarPressTarget = event.target === element ? 'pane' : event.target.tagName; }, { capture: true, once: true });
+      });
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      expect(await page.evaluate(() => window.__scrollbarPressTarget)).toBe('pane');
+      for (let step = 1; step <= 3; step++) await page.mouse.move(x, y - step);
+      await expect.poll(async () => short(await scrollState(page))).toBeGreaterThan(50);
+      await scrollSettled(page);
+      await page.mouse.up();
+      const left = await scrollState(page);
+
+      contents.release();
+      await waitForContentUpgrade(page, ABOVE_LAST);
+      await waitForDiffSettled(page);
+      await scrollSettled(page);
+
+      // Not taken back to the end: at least as far from it as the thumb left the pane.
+      expect(short(await scrollState(page))).toBeGreaterThanOrEqual(short(left) - 1);
+      await assertNoOrphanHosts(page);
+    });
+  });
+
   test.describe(`Beside the pane's scrollbar (${mode.name})`, () => {
     // The scrollbar as the application styles it (public/css/pr.css): 8 px
     // wide, beside the content. The pane's padding begins where it ends.
@@ -199,6 +274,9 @@ for (const mode of MODES) {
       await expect.poll(() => pane.evaluate((element) => element.offsetWidth - element.clientWidth)).toBe(APP_SCROLLBAR_WIDTH);
       await pane.evaluate((element) => { element.scrollTop = 3000; });
       await expect.poll(async () => (await scrollState(page)).top).toBeGreaterThan(2000);
+      // The files drawn there get their contents, and one that grows above
+      // the reader's line moves the position once more, by itself.
+      await waitForPaneSettledInPlace(page);
       const from = await scrollSettled(page);
       const box = await pane.boundingBox();
       // 4 px into the padding: not the scrollbar, and the pane itself.

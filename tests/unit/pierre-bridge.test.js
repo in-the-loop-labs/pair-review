@@ -3220,3 +3220,390 @@ describe('what counts as the reader scrolling toward the end of the pane (H163)'
     });
   });
 });
+
+describe('the pane\'s end after a collapse that its end cut short (H174)', () => {
+  let root;
+  /** What the hook `contentsAwaited` answers. */
+  let awaited;
+  /** The pane as tall as `height` with 600 px of it in view, the reader at `top`. */
+  const pane = (height, top) => {
+    Object.defineProperty(root, 'scrollHeight', { configurable: true, value: height });
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: 600 });
+    root.scrollTop = top;
+  };
+  /**
+   * A file's element as the viewer's mount callback hands it over. `box()`
+   * answers its place on the screen each time it is asked; the pane's top
+   * edge is at 100.
+   */
+  function mount(id, box, { renderedDiff } = {}) {
+    const host = env.window.document.createElement('div');
+    env.window.document.body.appendChild(host);
+    host.getBoundingClientRect = () => {
+      const { top, bottom } = box();
+      return { top, bottom, height: bottom - top, left: 0, right: 100, width: 100 };
+    };
+    const instance = { hunksRenderer: { expandedHunks: new Map() }, getRenderedDiff: () => (renderedDiff ? renderedDiff() : bridge.files.get(id).metadata) };
+    const context = { item: { id }, element: host, instance };
+    viewer().options.onPostRender(host, instance, 'mount', context);
+    return { host, instance, context };
+  }
+  /**
+   * The measured case in round numbers: the reader is inside the last file,
+   * its header stuck at the pane's top; collapsed, the pane is too short to
+   * keep the header there, is at its end, and the header is `landed` px
+   * below the pane's top.
+   */
+  function collapseAtTheEnd({ landed = 500 } = {}) {
+    pane(5000, 4300);
+    const place = { top: 100 - 300, bottom: 100 + 800 };
+    const file = mount('src/b.js', () => place);
+    // What the flush of the collapse does to the page: the pane is shorter and at its end.
+    const render = viewer().render.bind(viewer());
+    viewer().render = (...args) => {
+      render(...args);
+      if (bridge.files.get('src/b.js').collapsed) {
+        pane(3500, 2900);
+        place.top = 100 + landed;
+        place.bottom = 100 + landed + 53;
+      }
+    };
+    bridge.setCollapsed('src/b.js', true);
+    return { file, place };
+  }
+  /** The files above grew by `above` px over the pane's top edge and `below` px under it; the viewer kept the line at the top. */
+  function grow(place, { above = 0, below = 0 }) {
+    pane(root.scrollHeight + above + below, root.scrollTop + above);
+    place.top += below;
+    place.bottom += below;
+  }
+  const frame = () => bridge._endFollow.look(true);
+
+  /** A new bridge with two files, the pane's top edge at 100. */
+  function fresh() {
+    awaited = false;
+    create({ hooks: { contentsAwaited: () => awaited } });
+    bridge.renderAll([diffEntry(A), diffEntry(B)]);
+    root = bridge.root;
+    root.getBoundingClientRect = () => ({ top: 100, bottom: 700, height: 600, left: 0, right: 100, width: 100 });
+    viewer().calls.length = 0;
+  }
+
+  beforeEach(fresh);
+
+  it('holds the pane at its end when the collapse left it there with the header below the place it had', () => {
+    collapseAtTheEnd();
+    expect(bridge._endFollow).toMatchObject({ hold: true, headerPlace: 0, top: 2900, end: 2900 });
+    // The collapse itself is what it was: one item target, the header's offset in it.
+    expect(viewer().last('scrollTo').args[0]).toEqual({ type: 'item', id: 'src/b.js', align: 'start', offset: 0, behavior: 'instant' });
+  });
+
+  it('holds after a collapse from a header that was in view, when the pane\'s end moved it down', () => {
+    pane(5000, 4400);
+    const place = { top: 100 + 200, bottom: 100 + 800 };
+    mount('src/b.js', () => place);
+    const render = viewer().render.bind(viewer());
+    viewer().render = (...args) => {
+      render(...args);
+      pane(4453, 3853);
+      place.top = 100 + 547;
+      place.bottom = 100 + 600;
+    };
+    bridge.setCollapsed('src/b.js', true);
+    expect(viewer().count('scrollTo')).toBe(0);
+    expect(bridge._endFollow).toMatchObject({ hold: true, headerPlace: 200 });
+  });
+
+  it('holds nothing when the header is where it was, when the pane is not at its end, for a file that is not mounted, and on an expand', () => {
+    // The pane is long enough: the header stays stuck at the pane's top.
+    pane(5000, 1000);
+    const place = { top: 100 - 300, bottom: 100 + 800 };
+    mount('src/a.js', () => place);
+    const render = viewer().render.bind(viewer());
+    viewer().render = (...args) => {
+      render(...args);
+      if (bridge.files.get('src/a.js').collapsed) {
+        pane(3953, 700);
+        place.top = 100;
+        place.bottom = 153;
+      }
+    };
+    bridge.setCollapsed('src/a.js', true);
+    expect(bridge._endFollow).toBeNull();
+    // A header in view that the collapse did not move, in a pane that is at its end (and at its top).
+    bridge.setCollapsed('src/a.js', false);
+    pane(500, 0);
+    place.top = 300;
+    place.bottom = 500;
+    viewer().render = (...args) => { render(...args); place.bottom = 353; };
+    bridge.setCollapsed('src/a.js', true);
+    expect(bridge._endFollow).toBeNull();
+    // Short of its end, with the header lower than it was.
+    bridge.setCollapsed('src/a.js', false);
+    pane(5000, 4000);
+    place.top = 100 - 300;
+    viewer().render = (...args) => { render(...args); place.top = 100 + 40; };
+    bridge.setCollapsed('src/a.js', true);
+    expect(bridge._endFollow).toBeNull();
+    // Not mounted.
+    pane(5000, 4400);
+    bridge.setCollapsed('src/b.js', true);
+    expect(bridge._endFollow).toBeNull();
+    // An expand ends a hold and starts none.
+    viewer().render = render;
+    bridge._endFollow = { hold: true, look: () => true };
+    bridge.setCollapsed('src/b.js', false);
+    expect(bridge._endFollow).toBeNull();
+  });
+
+  it('holds nothing for a collapse that is not drawn when it returns: inside a batch', () => {
+    pane(5000, 4300);
+    const place = { top: 100 - 300, bottom: 100 + 800 };
+    mount('src/b.js', () => place);
+    bridge.batch(() => {
+      pane(3500, 2900);
+      place.top = 600;
+      bridge.setCollapsed('src/b.js', true);
+    });
+    expect(bridge._endFollow).toBeNull();
+  });
+
+  it('puts the pane at its end again when a file above grew, and leaves it alone otherwise', () => {
+    const { place } = collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    expect(frame()).toBe(true);
+    expect(root.scrollTop).toBe(2900);
+    // The measured growth: 52 px above the line at the pane's top, 92 px below it.
+    grow(place, { above: 52, below: 92 });
+    expect(root.scrollTop).toBe(2952);
+    expect(frame()).toBe(true);
+    expect(root.scrollTop).toBe(3044);
+    expect(bridge._endFollow).toBe(hold);
+    expect(hold).toMatchObject({ top: 3044, end: 3044, still: 0 });
+    // All of the growth above the pane's top: the viewer's own correction leaves the pane at its end.
+    grow(place, { above: 30 });
+    expect(frame()).toBe(true);
+    expect(root.scrollTop).toBe(3074);
+  });
+
+  it('never takes the collapsed header above the place it had: a pane that became long enough ends the hold there', () => {
+    const { place } = collapseAtTheEnd({ landed: 60 });
+    // Files below the header grew by 200 px: the pane is 200 px short of its end, the header 60 px below its place.
+    pane(root.scrollHeight + 200, root.scrollTop);
+    expect(frame()).toBe(false);
+    expect(root.scrollTop).toBe(2960);
+    expect(bridge._endFollow).toBeNull();
+    // And with the header at its place already, nothing is written.
+    const again = collapseAgain(place);
+    pane(root.scrollHeight + 200, root.scrollTop);
+    place.top = 100;
+    const before = root.scrollTop;
+    expect(again.look(true)).toBe(false);
+    expect(root.scrollTop).toBe(before);
+  });
+  /** Expand and collapse the file again, ending at the pane's end with the header 60 px below its place. */
+  function collapseAgain(place) {
+    bridge.setCollapsed('src/b.js', false);
+    pane(5000, 4300);
+    place.top = 100 - 300;
+    place.bottom = 100 + 800;
+    const render = viewer().render;
+    viewer().render = (...args) => {
+      render(...args);
+      pane(3500, 2900);
+      place.top = 160;
+      place.bottom = 213;
+    };
+    bridge.setCollapsed('src/b.js', true);
+    viewer().render = render;
+    expect(bridge._endFollow).toMatchObject({ hold: true });
+    return bridge._endFollow;
+  }
+
+  it('ends when something else moved the pane up, and writes nothing then or when the pane is short of its end without having grown', () => {
+    collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    // Half a pixel up, as the first frame of a smooth scroll: nothing is written, the hold waits.
+    root.scrollTop = 2899.4;
+    expect(frame()).toBe(true);
+    expect(root.scrollTop).toBe(2899.4);
+    // Further up: not this hold's.
+    root.scrollTop = 2600;
+    expect(frame()).toBe(false);
+    expect(root.scrollTop).toBe(2600);
+    expect(bridge._endFollow).toBeNull();
+    expect(hold.look(true)).toBe(false);
+  });
+
+  it('goes on through a pane that got shorter and is still at its end', () => {
+    collapseAtTheEnd();
+    pane(3400, 2800);
+    expect(frame()).toBe(true);
+    expect(bridge._endFollow).toMatchObject({ top: 2800, end: 2800 });
+    expect(root.scrollTop).toBe(2800);
+  });
+
+  it('lasts while contents are awaited or a file draws an older diff, then for the frames at rest, and no longer than its limit', () => {
+    const { place } = collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    // The page still has contents to give.
+    awaited = true;
+    for (let i = 0; i < 100; i++) expect(frame()).toBe(true);
+    expect(hold.still).toBe(0);
+    // The page is done; a mounted file still draws the diff before the one last published.
+    awaited = false;
+    let displayed = false;
+    mount('src/a.js', () => ({ top: 100, bottom: 100 + place.top - 100 - 24 }), { renderedDiff: () => (displayed ? bridge.files.get('src/a.js').metadata : {}) });
+    expect(bridge._awaitsContents()).toBe(true);
+    for (let i = 0; i < 100; i++) expect(frame()).toBe(true);
+    expect(hold.still).toBe(0);
+    // Displayed: twenty frames at rest, and the hold is over.
+    displayed = true;
+    expect(bridge._awaitsContents()).toBe(false);
+    for (let i = 0; i < 19; i++) expect(frame()).toBe(true);
+    expect(frame()).toBe(false);
+    expect(bridge._endFollow).toBeNull();
+
+    // The limit: contents that never come do not keep the pane for ever.
+    const again = collapseAgain(place);
+    awaited = true;
+    expect(again.look(true)).toBe(true);
+    const now = vi.spyOn(performance, 'now').mockReturnValue(again.until + 1);
+    try {
+      expect(again.look(true)).toBe(false);
+    } finally {
+      now.mockRestore();
+    }
+    expect(bridge._endFollow).toBeNull();
+    expect(again.until - performance.now()).toBeLessThanOrEqual(15000);
+    expect(again.until - performance.now()).toBeGreaterThan(10000);
+  });
+
+  it('a look after a draw counts no frame at rest', () => {
+    collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    for (let i = 0; i < 50; i++) expect(hold.look(false)).toBe(true);
+    expect(hold.still).toBe(0);
+  });
+
+  it('a draw of a file while the pane is held is followed by one look, when the viewer\'s pass is over', async () => {
+    const { file, place } = collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    const look = vi.spyOn(hold, 'look');
+    grow(place, { above: 52, below: 92 });
+    viewer().options.onPostRender(file.host, file.instance, 'update', file.context);
+    viewer().options.onPostRender(file.host, file.instance, 'update', file.context);
+    // Not inside the pass.
+    expect(look).not.toHaveBeenCalled();
+    expect(root.scrollTop).toBe(2952);
+    await Promise.resolve();
+    expect(look).toHaveBeenCalledTimes(1);
+    expect(look).toHaveBeenCalledWith(false);
+    expect(root.scrollTop).toBe(3044);
+    // A follow of the reader's own scroll (H163) is not looked at after a draw.
+    bridge._endFollow = { still: 0, top: 0, until: Infinity };
+    viewer().options.onPostRender(file.host, file.instance, 'update', file.context);
+    await Promise.resolve();
+    expect(bridge._endFollow).toMatchObject({ still: 0 });
+  });
+
+  it('ends at any input of the reader\'s, a scroll toward the end included, and the pane is then theirs', () => {
+    const button = env.window.document.createElement('button');
+    for (const event of [
+      { type: 'wheel', deltaY: -120, target: root },
+      { type: 'wheel', deltaY: 120, target: root },
+      { type: 'keydown', key: 'PageUp', target: root },
+      { type: 'keydown', key: 'End', target: env.window.document.body },
+      { type: 'keydown', key: 'ArrowDown', target: root },
+      { type: 'keydown', key: 'a', target: env.window.document.body },
+      { type: 'pointerdown', target: button },
+      // A press on the pane's own scrollbar.
+      { type: 'pointerdown', target: root, button: 0, clientX: 99, clientY: 300 },
+    ]) {
+      fresh();
+      const { place } = collapseAtTheEnd();
+      const hold = bridge._endFollow;
+      expect(hold, `${event.type} ${event.key || event.deltaY || ''}`).toMatchObject({ hold: true });
+      bridge._noteReaderScrollInput(event);
+      expect(bridge._endFollow, `${event.type} ${event.key || event.deltaY || ''}`).toBeNull();
+      // What arrives afterwards moves nothing.
+      grow(place, { above: 52, below: 92 });
+      expect(hold.look(true)).toBe(false);
+      expect(root.scrollTop).toBe(2952);
+    }
+    // A touch dragged either way (the finger went down before the collapse, on the control).
+    for (const to of [380, 430]) {
+      fresh();
+      collapseAtTheEnd();
+      bridge._touchY = 400;
+      bridge._noteReaderScrollInput({ type: 'touchmove', touches: [{ clientY: to }], target: root });
+      expect(bridge._endFollow, `touch to ${to}`).toBeNull();
+    }
+  });
+
+  it('ends at a scroll target of the application\'s, at the next collapse or expand, and when the file is no longer the pane\'s', () => {
+    collapseAtTheEnd();
+    bridge.scrollToItem('src/a.js');
+    expect(bridge._endFollow).toBeNull();
+
+    fresh();
+    collapseAtTheEnd();
+    expect(bridge._endFollow).toMatchObject({ hold: true });
+    // Another file collapsed, out of the pane: the hold of the first is over and none begins.
+    bridge.setCollapsed('src/a.js', true);
+    expect(bridge._endFollow).toBeNull();
+
+    fresh();
+    collapseAtTheEnd();
+    const hold = bridge._endFollow;
+    // A render replaces every record (and restores the view, which ends a hold by itself).
+    bridge.renderAll([diffEntry(A), diffEntry(B)]);
+    expect(bridge._endFollow).toBeNull();
+    bridge._endFollow = hold;
+    expect(hold.look(true)).toBe(false);
+    expect(bridge._endFollow).toBeNull();
+  });
+
+  it('a follow of the reader\'s scroll that is running ends at a collapse or an expand', () => {
+    pane(5000, 1000);
+    bridge._endFollow = { still: 0, top: 0, until: Infinity };
+    bridge.setCollapsed('src/a.js', true);
+    expect(bridge._endFollow).toBeNull();
+    bridge._endFollow = { still: 0, top: 0, until: Infinity };
+    bridge.setCollapsed('src/a.js', false);
+    expect(bridge._endFollow).toBeNull();
+    // A call that changes nothing ends nothing.
+    const follow = bridge._endFollow = { still: 0, top: 0, until: Infinity };
+    bridge.setCollapsed('src/a.js', false);
+    expect(bridge._endFollow).toBe(follow);
+  });
+
+  it('what is awaited: the page\'s answer, and a drawn file that shows an older diff; a hook that throws is not an answer', () => {
+    expect(bridge._awaitsContents()).toBe(false);
+    awaited = true;
+    expect(bridge._awaitsContents()).toBe(true);
+    awaited = false;
+    let rendered = {};
+    const a = mount('src/a.js', () => ({ top: 100, bottom: 400 }), { renderedDiff: () => rendered });
+    expect(bridge._awaitsContents()).toBe(true);
+    // A collapsed file draws no diff; a file whose element has left the document is not drawn.
+    bridge.files.get('src/a.js').collapsed = true;
+    expect(bridge._awaitsContents()).toBe(false);
+    bridge.files.get('src/a.js').collapsed = false;
+    a.host.remove();
+    expect(bridge._awaitsContents()).toBe(false);
+    env.window.document.body.appendChild(a.host);
+    rendered = bridge.files.get('src/a.js').metadata;
+    expect(bridge._awaitsContents()).toBe(false);
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      create({ hooks: { contentsAwaited: () => { throw new Error('boom'); } } });
+      bridge.renderAll([diffEntry(A)]);
+      expect(bridge._awaitsContents()).toBe(false);
+      expect(error).toHaveBeenCalledWith('[PierreBridge] contentsAwaited hook failed:', expect.any(Error));
+    } finally {
+      error.mockRestore();
+    }
+  });
+});

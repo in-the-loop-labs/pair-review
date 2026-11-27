@@ -20,7 +20,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { MODES, waitForDiffToRender, seedAISuggestions, openCommentFormOnLine, waitForDiffType, cleanupAllComments, setMinimize } from './helpers.js';
+import { MODES, waitForDiffToRender, seedAISuggestions, openCommentFormOnLine, waitForDiffType, cleanupAllComments, setMinimize, expandReviewPanel, openDiffOptions } from './helpers.js';
 import { customCorpus, routeDiff } from './fixtures/diffs.js';
 import { fileSelector, lineCardSelector, inAnnotationGroup, annotationGroups, lineCards } from './diff-dom.js';
 
@@ -112,7 +112,7 @@ for (const mode of MODES) {
       // Open the AI panel and navigate to the first finding — this drives
       // expandForElement + scroll-to-wrapper, the path that regressed under the
       // sticky toolbar without scroll-margin on the wrapper.
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await page.waitForSelector('.finding-item', { timeout: 5000 });
       await page.locator('.finding-item').first().click();
 
@@ -198,7 +198,7 @@ for (const mode of MODES) {
       await expect(comment).toBeVisible();
 
       // Switch to split (gate on the two-sided reference file flipping).
-      await page.locator('#diff-options-btn').click();
+      await openDiffOptions(page);
       await page.locator('.diff-view-option[data-diff-view="split"]').click();
       await page.keyboard.press('Escape');
       await waitForDiffType(page, 'split', 5000, { fileName: REF_FILE });

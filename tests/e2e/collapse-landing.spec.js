@@ -35,7 +35,7 @@ import { MODES, waitForDiffToRender, mockViewedStateApi } from './helpers.js';
 import { allCorpora, customCorpus, routeDiff } from './fixtures/diffs.js';
 import {
   waitForFileRendered, waitForFileSettled, waitForDiffSettled, scrollState, scrollDiffTo,
-  entryPlace, scrollPaneToEntry, watchEntryHeader, toggleCollapseAndPlaceInOneTask
+  entryPlace, scrollPaneToEntry, watchEntryHeader, toggleCollapseAndPlaceInOneTask, ensureContentUpgrades, setViewedBox
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -112,11 +112,26 @@ async function paneAtRest(page) {
 
 /**
  * Bring a file's header under the toolbar through the application's own
- * navigation, wait for the file to show what it is going to show, then put
- * the pane where the scenario wants the reader:
+ * navigation, wait for the file to show what it is going to show, give the
+ * files before it their contents, then put the pane where the scenario wants
+ * the reader:
  *   { inside: n }      n px into the file (its header is stuck)
  *   { fromBottom: n }  the file ends n px below the toolbar (its last rows push the header up)
  *   { headerAt: n }    the file's header is n px below the toolbar (not stuck)
+ *
+ * The files before it: a collapse puts the header at the whole pixel nearest
+ * to its place, so "where it was" is true to half a pixel, and how far off
+ * it is depends on the heights of everything above the file (rows are
+ * 17.390625 px). Which of those files hold their contents is otherwise left
+ * to the frames the animated navigation happened to draw (a file is given
+ * its contents in the background only once it has been drawn), and in some
+ * of those states the file's top is at exactly half a pixel: the header is
+ * then 0.5 px from its place, which is as near as a scroll position gets
+ * and not "less than half a pixel" (seen once in 40 runs; ledger H174,
+ * "the three failed executions"). With every file above holding its
+ * contents, as on a pane that draws every file, the top is at 0.39 px plus
+ * the same again for each wrapped row drawn above, of which this review has
+ * fifteen; half a pixel would take thirty-one.
  */
 async function readFile(page, file, selector, where) {
   await page.evaluate((f) => window.prManager.scrollToFile(f), file);
@@ -124,6 +139,7 @@ async function readFile(page, file, selector, where) {
   await waitForFileRendered(page, file);
   await waitForFileSettled(page, file);
   await paneAtRest(page);
+  await ensureContentUpgrades(page, MANY.order.slice(0, MANY.order.indexOf(file)));
   await scrollPaneToEntry(page, selector, where);
   await paneAtRest(page);
   await waitForDiffSettled(page);
@@ -149,7 +165,7 @@ for (const mode of MODES) {
         const stopWatching = await watchEntryHeader(page, entry);
 
         if (control === 'chevron') await page.locator(entry).locator('.file-collapse-toggle').click();
-        else await page.locator(entry).locator('.file-viewed-checkbox').check();
+        else await setViewedBox(page.locator(entry));
 
         await expect(page.locator(entry)).toHaveClass(/collapsed/);
         const landed = await place(page, entry);
@@ -268,9 +284,9 @@ for (const mode of MODES) {
       await mockViewedStateApi(page);
       await routeDiff(page, THREE_LONG);
       // No file gets its full contents later: what the pane does here is
-      // the collapse alone. (Contents that arrive in a file above the
-      // collapsed header make that file taller a second or more afterwards,
-      // which moves what is below it, on any pane.)
+      // the collapse alone. (What it does when contents arrive in a file
+      // above the collapsed header afterwards, and make that file taller,
+      // is collapse-at-end-contents.spec.js.)
       await page.route('**/api/reviews/*/file-contents/**', (route) =>
         route.fulfill({ contentType: 'application/json', body: JSON.stringify({ tooLarge: true }) })
       );
@@ -359,7 +375,7 @@ for (const mode of MODES) {
       expect(before.stuck).toBe(false);
       expect(before.scrollTop).toBeGreaterThan(0);
 
-      await page.locator(entry).locator('.file-viewed-checkbox').check();
+      await setViewedBox(page.locator(entry));
 
       await expect(page.locator(entry)).toHaveClass(/collapsed/);
       const landed = await place(page, entry);
@@ -369,7 +385,7 @@ for (const mode of MODES) {
       expect(await paneAtRest(page)).toBe(before.scrollTop);
 
       // Unmarking expands it again; an expand is not anchored.
-      await page.locator(entry).locator('.file-viewed-checkbox').uncheck();
+      await setViewedBox(page.locator(entry), false);
 
       await expect(page.locator(entry)).not.toHaveClass(/collapsed/);
       expect(await paneAtRest(page)).toBe(before.scrollTop);
