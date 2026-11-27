@@ -27,8 +27,15 @@ describe('normalizeSeverity', () => {
     expect(normalizeSeverity(undefined)).toBe('none');
     expect(normalizeSeverity(null)).toBe('none');
     expect(normalizeSeverity('')).toBe('none');
-    expect(normalizeSeverity('blocker')).toBe('none');
+    expect(normalizeSeverity('bogus')).toBe('none');
+    expect(normalizeSeverity('constructor')).toBe('none');
     expect(normalizeSeverity(3)).toBe('none');
+  });
+
+  it('maps other names providers use onto the three levels', () => {
+    ['blocker', 'severe', 'High', 'major', 'error'].forEach(s => expect(normalizeSeverity(s)).toBe('critical'));
+    ['moderate', ' Warning '].forEach(s => expect(normalizeSeverity(s)).toBe('medium'));
+    ['low', 'trivial', 'INFO', 'nit'].forEach(s => expect(normalizeSeverity(s)).toBe('minor'));
   });
 });
 

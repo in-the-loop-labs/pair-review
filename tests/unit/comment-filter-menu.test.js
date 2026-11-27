@@ -415,6 +415,25 @@ describe('AI suggestion severity sort and filter', () => {
     expect(severityNotice().textContent).toMatch(/4 AI suggestions hidden/);
   });
 
+  it('shows the same empty state in the All tab when nothing else is listed', () => {
+    const panel = panelWithFindings();
+    panel.selectedSegment = 'all';
+    panel.setSeverityState({ hidden: ['critical', 'medium', 'minor', 'none'] });
+    expect(document.querySelector('.empty-state-title').textContent).toBe('No suggestions shown');
+    expect(severityNotice().textContent).toMatch(/4 AI suggestions hidden/);
+  });
+
+  it('files a provider severity such as "high" under Critical, not No severity', () => {
+    const panel = makePanel();
+    panel.setFileOrder(new Map([['a.js', 0]]));
+    panel.addFindings([
+      { id: 1, file: 'a.js', line_start: 1, type: 'praise', title: 'nice' },
+      { id: 2, file: 'a.js', line_start: 5, type: 'bug', title: 'bad', severity: 'high' }
+    ]);
+    panel.setSeverityState({ sort: 'severity', hidden: ['none'] });
+    expect(itemIds(panel)).toEqual([2]);
+  });
+
   it('never hides user comments, and sorts them after AI suggestions', () => {
     const panel = panelWithFindings();
     panel.comments = [{ id: 99, file: 'a.js', line_start: 0, body: 'mine', status: 'active' }];

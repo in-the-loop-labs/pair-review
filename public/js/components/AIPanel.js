@@ -1125,7 +1125,9 @@ class AIPanel {
                     <div class="empty-state-title">No comments yet</div>
                     <div class="empty-state-description">Click the <strong>+</strong> button next to any line to add a comment.</div>
                 `;
-            } else if (this.selectedSegment === 'ai' && this.severityHiddenCount > 0) {
+            } else if ((this.selectedSegment === 'ai' || this.selectedSegment === 'all')
+                && this.severityHiddenCount > 0) {
+                // Nothing else to show (in All: no comments or threads either)
                 emptyContent = `
                     <div class="empty-state-icon">${this.getEmptyStateIcon('sparkle')}</div>
                     <div class="empty-state-title">No suggestions shown</div>
