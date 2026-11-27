@@ -372,12 +372,13 @@
       try {
         await handlers.onCommentFormSubmit(fileName, id, data, textarea.value);
       } finally {
-        // On success the form annotation has been removed and the button
-        // is detached; only touch the button if it's still connected.
-        if (saveBtn.isConnected) {
-          saveBtn.dataset.saving = 'false';
-          saveBtn.disabled = !textarea.value.trim();
-        }
+        // Reset whether or not the button is in the document. A form whose
+        // file the viewer has unmounted (the reader scrolled it away) is
+        // kept by the bridge and comes back when the file is mounted again,
+        // so a failed save must leave it usable. After a successful save
+        // the form has been removed and nothing reads the button again.
+        saveBtn.dataset.saving = 'false';
+        saveBtn.disabled = !textarea.value.trim();
       }
     });
     actions.appendChild(saveBtn);

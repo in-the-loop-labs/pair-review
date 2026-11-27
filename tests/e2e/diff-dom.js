@@ -1457,6 +1457,45 @@ async function watchEntryHeader(page, wrapperSelector) {
     return window.__entryHeaderWatch.samples;
   });
 }
+
+/**
+ * Note, in every frame the page draws from now on (read after the frame's
+ * rendering, in a task of its own), whether the pane shows a hole: a point
+ * 40 px below the toolbar or one halfway down the pane that no entry (with
+ * the space the pane keeps below it) covers. A reader sees a hole as no
+ * file in view at all, or a file ending near the top with nothing below it.
+ * The function returned stops the watch and gives the count of frames and
+ * of frames with a hole.
+ * @returns {Promise<function(): Promise<{frames: number, holes: number}>>}
+ */
+async function watchPaneHoles(page) {
+  await inPage(page, (D) => {
+    const watch = { frames: 0, holes: 0, stopped: false };
+    window.__paneHoleWatch = watch;
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      if (watch.stopped) return;
+      const scroller = D.scroller();
+      const top = D.pinnedBottom();
+      const bottom = scroller.getBoundingClientRect().bottom;
+      const gap = D.viewerGap ? D.viewerGap() : 0;
+      const boxes = D.wrappers().map((w) => {
+        const box = w.getBoundingClientRect();
+        return { top: box.top, reach: box.bottom + (parseFloat(getComputedStyle(w).marginBottom) || 0) + gap };
+      });
+      const covered = (y) => boxes.some((box) => box.top <= y && box.reach >= y);
+      watch.frames++;
+      if (!covered(top + 40) || !covered((top + bottom) / 2)) watch.holes++;
+      requestAnimationFrame(() => channel.port2.postMessage(0));
+    };
+    requestAnimationFrame(() => channel.port2.postMessage(0));
+  });
+  return () => page.evaluate(() => {
+    window.__paneHoleWatch.stopped = true;
+    return { frames: window.__paneHoleWatch.frames, holes: window.__paneHoleWatch.holes };
+  });
+}
+
 /**
  * Collapse (or expand) a file through what its chevron calls, and read where
  * its header is in the same page task, before the page draws a frame.
@@ -1757,11 +1796,12 @@ const WORKER_LOAD_FAILURE_ERROR =
  *   true   "```suggestion\n<the line>\n\n```": the line's text as the diff
  *          holds it ends in a newline and the block's template adds its own.
  *          A defect the application had before the migration to the viewer
- *          (ledger H52; it is in CommentManager, not in the diff), kept as
- *          it is: a fix is separate work.
- *   false  the code is followed by the closing fence at once
+ *          (ledger H52), on main too.
+ *   false  the code is followed by the closing fence at once: each line
+ *          loses its line ending before the lines are joined (ledger H181,
+ *          the review fixes of PR #646; vendor fact F32).
  */
-const SUGGESTION_BLOCK_HAS_EMPTY_LINE = true;
+const SUGGESTION_BLOCK_HAS_EMPTY_LINE = false;
 
 // ---------------------------------------------------------------------------
 // Context files (files outside the diff, shown as line ranges)
@@ -1930,6 +1970,7 @@ module.exports = {
   spacingBelowFile,
   scrollPaneToEntry,
   watchEntryHeader,
+  watchPaneHoles,
   toggleCollapseAndPlaceInOneTask,
   firstFileBelowToolbar,
   watchScrollRequests,

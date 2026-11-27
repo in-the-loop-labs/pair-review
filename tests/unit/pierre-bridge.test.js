@@ -1462,9 +1462,16 @@ describe('scroll targets, selection, code text', () => {
     expect(bridge.getLineSelection('src/a.js')).toBeNull();
   });
 
-  it('getCodeFromLines reads the lines the file shows, on either side', () => {
-    expect(bridge.getCodeFromLines('src/a.js', 119, 121, 'RIGHT').split('\n').map((l) => l.trim()).filter(Boolean)).toEqual(['line 119', 'changed 120', 'line 121']);
-    expect(bridge.getCodeFromLines('src/a.js', 120, 120, 'LEFT').trim()).toBe('line 120');
+  it('getCodeFromLines reads the lines the file shows, on either side, one line break between lines and none after', () => {
+    // The patch is parsed by the vendor, whose lines end in their line break
+    // ('line 119\n'; vendor-line-endings probe of the review evidence).
+    expect(bridge.files.get('src/a.js').metadata.additionLines[2]).toBe('line 119\n');
+    expect(bridge.getCodeFromLines('src/a.js', 119, 121, 'RIGHT')).toBe('line 119\nchanged 120\nline 121');
+    expect(bridge.getCodeFromLines('src/a.js', 120, 120, 'LEFT')).toBe('line 120');
+    expect(bridge.getCodeFromLines('src/a.js', 247, 250, 'RIGHT')).toBe('line 247\nline 248\nline 249\ninserted after 249');
+    // A range of which a line is not shown (the patch's hunk ends at 123)
+    // has no block: a block of the shown lines alone would delete the others.
+    expect(bridge.getCodeFromLines('src/a.js', 122, 124, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines('src/a.js', 10, 12, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines('nope.js', 1, 2, 'RIGHT')).toBeNull();
   });
@@ -1478,10 +1485,11 @@ describe('scroll targets, selection, code text', () => {
     expect(bridge.getCodeFromLines('ctx/c.js', 2, 2, 'RIGHT')).toBe(text(2, 2));
     expect(bridge.getCodeFromLines('ctx/c.js', 20, 30, 'RIGHT')).toBe(text(20, 30));
     for (const line of [2, 26, 30]) expect(bridge.isLineVisible('ctx/c.js', line, 'RIGHT')).toBe(true);
-    // A hidden line has no text to offer; a range that runs into hidden lines holds the shown ones.
+    // A hidden line has no text to offer, and a range that runs into hidden
+    // lines has no block either (one of the shown lines alone would delete the others).
     expect(bridge.isLineVisible('ctx/c.js', 41, 'RIGHT')).toBe(false);
     expect(bridge.getCodeFromLines('ctx/c.js', 41, 60, 'RIGHT')).toBeNull();
-    expect(bridge.getCodeFromLines('ctx/c.js', 39, 45, 'RIGHT')).toBe(text(39, 40));
+    expect(bridge.getCodeFromLines('ctx/c.js', 39, 45, 'RIGHT')).toBeNull();
     expect(bridge.getCodeFromLines('ctx/c.js', 399, 450, 'RIGHT')).toBeNull();
   });
 });

@@ -13903,6 +13903,23 @@ diffs-container {
   .chat-panel__loop-spinner svg {
     animation: loop-spin 1.4s linear infinite !important;
   }
+
+  /* The diff pane's viewer is exempt the other way: it has no transitions
+     and must not be given one. It places what it draws with the `top`,
+     `bottom` and `height` of two elements of its own in the page (its list,
+     the one element child of the scroll container, and the list's sticky
+     child that holds the files it draws), written in the same task as the
+     scroll position. The blanket rule above makes every property of every
+     element without a transition of its own a 0.01ms transition (the
+     initial `transition-property` is `all`), and the first frame of a
+     transition is drawn with the value it starts from: each time the viewer
+     moved its window, the pane showed for one frame the files where the
+     window had been (a header 656 px from its place after a collapse, holes
+     in the pane while wheeling; plans/codeview-virtualized-diff.md, H177). */
+  .main-layout .diff-view > #diff-container > div,
+  .main-layout .diff-view > #diff-container > div > div {
+    transition: none !important;
+  }
 }
 
 /* --------------------------------------------------------------------------

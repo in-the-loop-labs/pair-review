@@ -645,8 +645,109 @@ function wrappingFilesCorpus(name) {
   return { corpus: customCorpus({ name, diff, files }), last: 'wrap/file8.js' };
 }
 
+/**
+ * A modified file of `oldLines` with the lines in `changes` (line number ->
+ * new text; the file keeps its length) replaced, as git writes it: three
+ * lines of context, changes seven lines or fewer apart in one hunk, the
+ * deletions of a run before its additions. Truthful contents included.
+ * @param {string} path
+ * @param {string[]} oldLines
+ * @param {Object<number, string>} changes
+ * @returns {{text: string, file: {old: string, new: string}}}
+ */
+function modifiedSection(path, oldLines, changes) {
+  const newLines = oldLines.map((line, i) => (changes[i + 1] !== undefined ? changes[i + 1] : line));
+  const groups = [];
+  for (const line of Object.keys(changes).map(Number).sort((a, b) => a - b)) {
+    const last = groups[groups.length - 1];
+    if (last && line - last.end <= 7) last.end = line;
+    else groups.push({ start: line, end: line });
+  }
+  let text = `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n`;
+  for (const { start, end } of groups) {
+    const from = Math.max(1, start - 3);
+    const to = Math.min(oldLines.length, end + 3);
+    const body = [];
+    for (let n = from; n <= to;) {
+      if (changes[n] === undefined) { body.push(` ${oldLines[n - 1]}`); n++; continue; }
+      const run = [];
+      while (n <= to && changes[n] !== undefined) run.push(n++);
+      body.push(...run.map((m) => `-${oldLines[m - 1]}`), ...run.map((m) => `+${newLines[m - 1]}`));
+    }
+    const count = to - from + 1;
+    text += `@@ -${from},${count} +${from},${count} @@\n${body.join('\n')}\n`;
+  }
+  return { text, file: { old: `${oldLines.join('\n')}\n`, new: `${newLines.join('\n')}\n` } };
+}
+
+/**
+ * The corpus of the diff-pane fixes made after the owner's review of PR
+ * #646 (ledger, section 11, "Review fixes"), served with `routeDiff`. Not
+ * registered with the test server: no other spec sees it.
+ *
+ *   gen/data.lock   modified; marked generated, so it starts collapsed.
+ *                   Lines 30 and 31 changed (one hunk, 27-34).
+ *   src/alpha.js    modified, 120 lines. Lines 11-13 changed (hunk 8-16)
+ *                   and line 81 (hunk 78-84); 17-77 and 85-120 hidden.
+ *   src/beta.js     modified, 60 lines. Line 30 changed (hunk 27-33).
+ *   src/zeta.js     added, 1,500 lines: while the reader is at its end the
+ *                   viewer has not mounted the three files above it.
+ */
+function reviewFixesCorpus() {
+  const numbered = (count, make) => Array.from({ length: count }, (_, i) => make(i + 1));
+  const sections = [
+    modifiedSection('gen/data.lock', numbered(60, (n) => `"package-${n}": "1.0.${n}",`),
+      { 30: '"package-30": "2.0.30",', 31: '"package-31": "2.0.31",' }),
+    modifiedSection('src/alpha.js', numbered(120, (n) => `const alpha${n} = ${n};`), {
+      11: 'const alpha11 = 11 * 2;', 12: 'const alpha12 = 12 * 2;', 13: 'const alpha13 = 13 * 2;', 81: 'const alpha81 = 81 * 2;'
+    }),
+    modifiedSection('src/beta.js', numbered(60, (n) => `export const beta${n} = '${n}';`), { 30: "export const beta30 = 'thirty';" }),
+  ];
+  const paths = ['gen/data.lock', 'src/alpha.js', 'src/beta.js'];
+  const zeta = numbered(1500, (n) => `export const zeta${n} = ${n};`);
+  const zetaText = 'diff --git a/src/zeta.js b/src/zeta.js\nnew file mode 100644\nindex 0000000..4444444\n'
+    + `--- /dev/null\n+++ b/src/zeta.js\n@@ -0,0 +1,${zeta.length} @@\n${zeta.map((l) => `+${l}`).join('\n')}\n`;
+  return customCorpus({
+    name: 'review-fixes',
+    diff: sections.map((s) => s.text).join('') + zetaText,
+    files: {
+      ...Object.fromEntries(paths.map((path, i) => [path, sections[i].file])),
+      'src/zeta.js': { old: null, new: `${zeta.join('\n')}\n` },
+    },
+    generated: ['gen/data.lock'],
+  });
+}
+
+/**
+ * Two changed files whose paths end alike (`packages/x/src/index.js` and
+ * `src/index.js`) with an added file of 1,500 lines between them in path
+ * order: while the first is on screen the viewer has not mounted the last.
+ * Served with `routeDiff`; not registered with the test server.
+ */
+function sharedSuffixCorpus() {
+  const numbered = (count, make) => Array.from({ length: count }, (_, i) => make(i + 1));
+  const nested = modifiedSection('packages/x/src/index.js', numbered(40, (n) => `export const nested${n} = ${n};`),
+    { 10: 'export const nested10 = 100;' });
+  const top = modifiedSection('src/index.js', numbered(40, (n) => `export const top${n} = ${n};`),
+    { 20: 'export const top20 = 200;' });
+  const longLines = numbered(1500, (n) => `export const long${n} = ${n};`);
+  const longText = 'diff --git a/packages/y/long.js b/packages/y/long.js\nnew file mode 100644\nindex 0000000..3333333\n'
+    + `--- /dev/null\n+++ b/packages/y/long.js\n@@ -0,0 +1,${longLines.length} @@\n${longLines.map((l) => `+${l}`).join('\n')}\n`;
+  return customCorpus({
+    name: 'shared-suffix',
+    diff: nested.text + longText + top.text,
+    files: {
+      'packages/x/src/index.js': nested.file,
+      'packages/y/long.js': { old: null, new: `${longLines.join('\n')}\n` },
+      'src/index.js': top.file,
+    },
+  });
+}
+
 module.exports = {
   defaultFixture,
+  reviewFixesCorpus,
+  sharedSuffixCorpus,
   evictionDiff,
   manyFilesDiff,
   edgeFilesDiff,

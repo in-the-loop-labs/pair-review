@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, vi, beforeAll, afterEach } from 'vite
 
 const { TourRenderer } = require('../../public/js/modules/tour-renderer.js');
 const { createBridgeHarness, restoreBridgeHarnesses, hunk } = require('../utils/pierre-bridge-harness.js');
+const { makePageManager } = require('../utils/page-manager.js');
 
 let vendor;
 beforeAll(async () => {
@@ -32,18 +33,31 @@ function withBridge(manager = {}) {
 }
 
 /**
+ * The page manager of a pane whose changed files are `paths`, over `bridge`:
+ * PRManager's own isFileCollapsed and setFileCollapsed (tests/utils/
+ * page-manager.js), so a file is collapsed and opened the way the page does
+ * it, in the page's data and in the bridge's record. No file has an element:
+ * the renderer must decide from data.
+ */
+function pageManagerFor(bridge, paths, extra = {}) {
+  const page = makePageManager({ changedFilesByPath: new Map(paths.map((path) => [path, { file: path }])), _tourGen: 1, ...extra });
+  Object.defineProperty(page, 'pierreBridge', { get: () => bridge, configurable: true });
+  return page;
+}
+
+/**
  * Build one file of the diff pane: a bridge that holds the file with the
  * given lines shown (the production bridge without the vendor,
- * tests/utils/pierre-bridge-harness.js; nothing is ever drawn), and the
- * file's element in the document, which is where the renderer reads whether
- * the file is collapsed.
+ * tests/utils/pierre-bridge-harness.js; nothing is ever drawn), the page
+ * manager of the pane (pageManagerFor), and the file's element in the
+ * document (a file the viewer has mounted; whether it is collapsed is not
+ * read from it). `collapsed` collapses the file through the page's writer.
  */
-function buildDiff(filePath = 'src/foo.js', extra = {}) {
+async function buildDiff(filePath = 'src/foo.js', extra = {}) {
   document.body.innerHTML = '';
   const wrapper = document.createElement('div');
   wrapper.className = 'd2h-file-wrapper';
   wrapper.dataset.fileName = filePath;
-  if (extra.collapsed) wrapper.classList.add('collapsed');
   document.body.appendChild(wrapper);
 
   const lines = extra.lines || [
@@ -61,7 +75,15 @@ function buildDiff(filePath = 'src/foo.js', extra = {}) {
     else hunks.push(hunk(line, line));
   }
   currentBridge = createBridgeHarness(vi, vendor, { files: [{ name: filePath, hunks }] });
-  return { wrapper, bridge: currentBridge, stopAnnotations: () => currentBridge.getAnnotations(filePath, 'tour-stop') };
+  const page = pageManagerFor(currentBridge, [filePath]);
+  if (extra.collapsed) await page.setFileCollapsed(filePath, true);
+  return {
+    wrapper,
+    page,
+    bridge: currentBridge,
+    isCollapsed: () => page.isFileCollapsed(filePath),
+    stopAnnotations: () => currentBridge.getAnnotations(filePath, 'tour-stop'),
+  };
 }
 
 function makeStop(overrides = {}) {
@@ -98,7 +120,7 @@ describe('TourRenderer', () => {
   describe('mountStop', () => {
 
     it('mounts a stop as an annotation on its line, and looks the line up by side as well as number', async () => {
-      const { stopAnnotations } = buildDiff();
+      const { stopAnnotations } = await buildDiff();
       renderer.setStops([makeStop({ line_start: 11 }), makeStop({ side: 'LEFT', line_start: 7, line_end: 7 })]);
       const row = await renderer.mountStop(0);
       expect(row).toBeTruthy();
@@ -108,7 +130,7 @@ describe('TourRenderer', () => {
     });
 
     it('renders title and description from the stop', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ title: 'My title', description: 'My description.' })]);
       const row = await renderer.mountStop(0);
       expect(row.querySelector('.tour-annotation-title').textContent).toBe('My title');
@@ -116,7 +138,7 @@ describe('TourRenderer', () => {
     });
 
     it('includes a per-stop "Stop N of M" marker', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
@@ -127,53 +149,43 @@ describe('TourRenderer', () => {
     });
 
     it('returns null when no wrapper exists for the file', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       renderer.setStops([makeStop({ file_path: 'src/missing.js' })]);
       const row = await renderer.mountStop(0);
       expect(row).toBeNull();
     });
 
     it('returns null when the anchor row is missing', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 9999 })]);
       const row = await renderer.mountStop(0);
       expect(row).toBeNull();
     });
 
-    it('expands a collapsed file wrapper before mounting', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      // Provide a real prManager API; without it the renderer refuses
-      // to expand (we don't strip the collapsed class directly because
-      // that desyncs PRManager.collapsedFiles from the DOM).
-      const pm = {
-        toggleFileCollapse(path) {
-          if (path === 'src/foo.js') wrapper.classList.remove('collapsed');
-        }
-      };
-      renderer = new TourRenderer(withBridge(pm));
+    it('opens a collapsed file before mounting', async () => {
+      // Collapsed through the page's writer: the page's data and the
+      // bridge's record say so; the file's element carries nothing.
+      const { page, bridge, isCollapsed, stopAnnotations } = await buildDiff('src/foo.js', { collapsed: true });
+      expect(bridge.files.get('src/foo.js').collapsed).toBe(true);
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 11 })]);
-      await renderer.mountStop(0);
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
+      expect(await renderer.mountStop(0)).toBeTruthy();
+      expect(isCollapsed()).toBe(false);
+      expect(bridge.files.get('src/foo.js').collapsed).toBe(false);
+      expect(stopAnnotations().map((a) => a.lineNumber)).toEqual([11]);
     });
 
-    it('prefers prManager.toggleFileCollapse when available', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      let called = null;
-      const pm = {
-        toggleFileCollapse(path) {
-          called = path;
-          wrapper.classList.remove('collapsed');
-        },
-      };
-      renderer = new TourRenderer(withBridge(pm));
+    it('opens it through prManager.setFileCollapsed, the page\'s one writer', async () => {
+      const { page } = await buildDiff('src/foo.js', { collapsed: true });
+      const writer = vi.spyOn(page, 'setFileCollapsed');
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 11 })]);
       await renderer.mountStop(0);
-      expect(called).toBe('src/foo.js');
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
+      expect(writer.mock.calls).toEqual([['src/foo.js', false]]);
     });
 
     it('is idempotent — remount of the same index returns the existing row', async () => {
-      const { stopAnnotations } = buildDiff();
+      const { stopAnnotations } = await buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
       const first = await renderer.mountStop(0);
       const second = await renderer.mountStop(0);
@@ -184,7 +196,7 @@ describe('TourRenderer', () => {
 
   describe('"Chat about" button', () => {
     it('renders a chat button on every mounted stop annotation', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
       const row = await renderer.mountStop(0);
       const btn = row.querySelector('.tour-annotation-chat-btn');
@@ -198,7 +210,7 @@ describe('TourRenderer', () => {
     });
 
     it('invokes window.chatPanel.open with the stop context on click', async () => {
-      buildDiff();
+      await buildDiff();
       const opened = [];
       window.chatPanel = {
         open: (opts) => opened.push(opts),
@@ -238,7 +250,7 @@ describe('TourRenderer', () => {
     });
 
     it('is a no-op when window.chatPanel is missing', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
       const row = await renderer.mountStop(0);
       const btn = row.querySelector('.tour-annotation-chat-btn');
@@ -250,7 +262,7 @@ describe('TourRenderer', () => {
 
   describe('unmountStop / unmountAll', () => {
     it('removes a specific stop row', async () => {
-      const { stopAnnotations } = buildDiff();
+      const { stopAnnotations } = await buildDiff();
       renderer.setStops([makeStop({ line_start: 11 })]);
       await renderer.mountStop(0);
       expect(stopAnnotations()).toHaveLength(1);
@@ -261,7 +273,7 @@ describe('TourRenderer', () => {
     });
 
     it('removes every mounted row', async () => {
-      const { stopAnnotations } = buildDiff();
+      const { stopAnnotations } = await buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
@@ -280,7 +292,7 @@ describe('TourRenderer', () => {
 
   describe('highlightActive', () => {
     it('moves the active-stop class to the indexed row', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
@@ -301,7 +313,7 @@ describe('TourRenderer', () => {
 
   describe('setStops', () => {
     it('unmounts every previously-mounted row when stops are replaced', async () => {
-      const { stopAnnotations } = buildDiff();
+      const { stopAnnotations } = await buildDiff();
       renderer.setStops([
         makeStop({ line_start: 10 }),
         makeStop({ line_start: 11 }),
@@ -318,7 +330,7 @@ describe('TourRenderer', () => {
     });
 
     it('clears the internal _mounted map on replace', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 10 })]);
       await renderer.mountStop(0);
       expect(renderer._mounted.size).toBe(1);
@@ -329,71 +341,62 @@ describe('TourRenderer', () => {
   });
 
   describe('mountStop does not expand wrappers when anchor is missing', () => {
-    it('leaves a collapsed wrapper collapsed when no anchor row exists', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
+    it('leaves a collapsed file collapsed when no line of the stop is in its diff', async () => {
+      const { page, isCollapsed } = await buildDiff('src/foo.js', { collapsed: true });
+      const writer = vi.spyOn(page, 'setFileCollapsed');
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 9999 })]);
       const row = await renderer.mountStop(0);
       expect(row).toBeNull();
       // Critical: we must not have expanded the file just to learn the
       // anchor was missing — that would visually disrupt the page for nothing.
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
+      expect(isCollapsed()).toBe(true);
+      expect(writer).not.toHaveBeenCalled();
     });
   });
 
   describe('auto-expanded files are restored on tour exit', () => {
-    it('records the path in _autoExpanded and triggers exactly one toggle', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      const calls = [];
-      const pm = {
-        toggleFileCollapse(path) {
-          calls.push(path);
-          // Reflect the real PRManager behavior of flipping the class.
-          wrapper.classList.toggle('collapsed');
-        }
-      };
-      renderer = new TourRenderer(withBridge(pm));
+    it('records the path in _autoExpanded and opens the file exactly once', async () => {
+      const { page, isCollapsed } = await buildDiff('src/foo.js', { collapsed: true });
+      const writer = vi.spyOn(page, 'setFileCollapsed');
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 11 })]);
       await renderer.mountStop(0);
-      expect(calls).toEqual(['src/foo.js']);
+      expect(writer.mock.calls).toEqual([['src/foo.js', false]]);
       expect(renderer._autoExpanded.has('src/foo.js')).toBe(true);
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
+      expect(isCollapsed()).toBe(false);
     });
 
     it('unmountAll re-collapses everything in _autoExpanded and clears it', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      const calls = [];
-      const pm = {
-        toggleFileCollapse(path) {
-          calls.push(path);
-          wrapper.classList.toggle('collapsed');
-        }
-      };
-      renderer = new TourRenderer(withBridge(pm));
+      const { page, bridge, isCollapsed } = await buildDiff('src/foo.js', { collapsed: true });
+      const writer = vi.spyOn(page, 'setFileCollapsed');
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 11 })]);
       await renderer.mountStop(0);
-      expect(wrapper.classList.contains('collapsed')).toBe(false);
+      expect(isCollapsed()).toBe(false);
 
-      renderer.unmountAll();
-      // toggleFileCollapse was called twice: once to expand, once to
-      // re-collapse on unmountAll.
-      expect(calls).toEqual(['src/foo.js', 'src/foo.js']);
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
+      await renderer.unmountAll();
+      // Opened on mount, closed again on unmountAll, through the one writer.
+      expect(writer.mock.calls).toEqual([['src/foo.js', false], ['src/foo.js', true]]);
+      expect(isCollapsed()).toBe(true);
+      expect(bridge.files.get('src/foo.js').collapsed).toBe(true);
       expect(renderer._autoExpanded.size).toBe(0);
     });
 
-    it('mountStop refuses to strip the class when toggleFileCollapse is missing', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      // prManager without toggleFileCollapse — must NOT strip the class
-      // directly, since that would desync PRManager.collapsedFiles from
-      // the DOM. Instead it should bail and skip the stop.
-      const pm = {};
-      renderer = new TourRenderer(withBridge(pm));
+    it('mountStop refuses to open the file another way when the page has no setFileCollapsed', async () => {
+      const { page, bridge, isCollapsed } = await buildDiff('src/foo.js', { collapsed: true });
+      // A page without the writer: the renderer must NOT open the file
+      // itself (the viewer's record would disagree with the page's
+      // collapsedFiles). It should bail and skip the stop.
+      page.setFileCollapsed = undefined;
+      renderer = new TourRenderer(page);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         renderer.setStops([makeStop({ line_start: 11 })]);
         const row = await renderer.mountStop(0);
         expect(row).toBeNull();
-        expect(wrapper.classList.contains('collapsed')).toBe(true);
+        expect(isCollapsed()).toBe(true);
+        expect(bridge.files.get('src/foo.js').collapsed).toBe(true);
         expect(renderer._autoExpanded.size).toBe(0);
       } finally {
         warnSpy.mockRestore();
@@ -411,22 +414,15 @@ describe('TourRenderer', () => {
     // ever cleans up.
     // ------------------------------------------------------------------
     it('bails without leaking state when the tour exits during the expand await', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
+      const { page: pm, stopAnnotations } = await buildDiff('src/foo.js', { collapsed: true });
       let resolveToggle;
-      const pm = {
-        _tourGen: 1,
-        toggleFileCollapse(path) {
-          // Park: the real toggleFileCollapse awaits the lazy body render
-          // before resolving. We hold it open to simulate a mid-await exit.
-          return new Promise((res) => {
-            resolveToggle = () => {
-              if (path === 'src/foo.js') wrapper.classList.remove('collapsed');
-              res();
-            };
-          });
-        },
-      };
-      renderer = new TourRenderer(withBridge(pm));
+      const write = pm.setFileCollapsed.bind(pm);
+      // Park the page's writer: the expand is held open to simulate a
+      // mid-await exit, and done by the real writer when it is let go.
+      pm.setFileCollapsed = (path, collapsed) => new Promise((res) => {
+        resolveToggle = () => res(write(path, collapsed));
+      });
+      renderer = new TourRenderer(pm);
       renderer.setStops([makeStop({ line_start: 11 })]);
 
       // Kick off mountStop WITHOUT awaiting — it parks on toggleFileCollapse.
@@ -443,7 +439,8 @@ describe('TourRenderer', () => {
       const row = await mountPromise;
 
       expect(row).toBeNull();
-      // No orphaned annotation row left in the DOM.
+      // No orphaned annotation left.
+      expect(stopAnnotations()).toHaveLength(0);
       expect(document.querySelectorAll('.tour-annotation-row')).toHaveLength(0);
       // The file must NOT be recorded as auto-expanded — unmountAll already
       // ran with an empty snapshot, so this entry would orphan and
@@ -454,32 +451,26 @@ describe('TourRenderer', () => {
     });
 
     it('unmountAll honors a user manually re-collapsing during the tour', async () => {
-      const { wrapper } = buildDiff('src/foo.js', { collapsed: true });
-      const calls = [];
-      const pm = {
-        toggleFileCollapse(path) {
-          calls.push(path);
-          wrapper.classList.toggle('collapsed');
-        }
-      };
-      renderer = new TourRenderer(withBridge(pm));
+      const { page, isCollapsed } = await buildDiff('src/foo.js', { collapsed: true });
+      renderer = new TourRenderer(page);
       renderer.setStops([makeStop({ line_start: 11 })]);
       await renderer.mountStop(0);
-      // User manually re-collapses mid-tour:
-      pm.toggleFileCollapse('src/foo.js');
-      expect(wrapper.classList.contains('collapsed')).toBe(true);
-      calls.length = 0;
+      // User manually re-collapses mid-tour (the header's chevron):
+      await page.toggleFileCollapse('src/foo.js');
+      expect(isCollapsed()).toBe(true);
+      const writer = vi.spyOn(page, 'setFileCollapsed');
 
-      renderer.unmountAll();
-      // Since the file is already collapsed, we should NOT toggle again.
-      expect(calls).toEqual([]);
+      await renderer.unmountAll();
+      // Since the file is already collapsed, we should NOT write again.
+      expect(writer).not.toHaveBeenCalled();
+      expect(isCollapsed()).toBe(true);
     });
   });
 
   describe('mountStop range anchor lookup (line_start..line_end)', () => {
 
     it('warns and returns null when no row in [line_start, line_end] exists', async () => {
-      buildDiff('src/foo.js', {
+      await buildDiff('src/foo.js', {
         lines: [
           { line: 100, side: 'RIGHT' }
         ]
@@ -508,7 +499,7 @@ describe('TourRenderer', () => {
         removeEventListener() {},
       });
       try {
-        buildDiff();
+        await buildDiff();
         const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false }));
         const motionRenderer = new TourRenderer(withBridge({ revealInDiff }));
         motionRenderer.setStops([makeStop({ line_start: 11 })]);
@@ -529,7 +520,7 @@ describe('TourRenderer', () => {
         removeEventListener() {},
       });
       try {
-        buildDiff();
+        await buildDiff();
         const revealInDiff = vi.fn(async () => ({ element: null, cancelled: false }));
         const motionRenderer = new TourRenderer(withBridge({ revealInDiff }));
         motionRenderer.setStops([makeStop({ line_start: 11 })]);
@@ -551,7 +542,7 @@ describe('TourRenderer', () => {
   // ----------------------------------------------------------------------
   describe('prepareStop', () => {
     it('returns false when prManager is missing', async () => {
-      buildDiff();
+      await buildDiff();
       const r = new TourRenderer(null);
       r.setStops([makeStop({ line_start: 11 })]);
       expect(await r.prepareStop(0)).toBe(false);
@@ -576,7 +567,7 @@ describe('TourRenderer', () => {
     });
 
     it('calls ensureLinesVisible to unfold a gap covering the stop range', async () => {
-      buildDiff();
+      await buildDiff();
       const pm = {
         ensureLinesVisible: vi.fn().mockResolvedValue(),
       };
@@ -589,7 +580,7 @@ describe('TourRenderer', () => {
     });
 
     it('does NOT call ensureContextFile for a file the bridge holds that has no element (a virtualized viewer far from it)', async () => {
-      buildDiff('src/other.js'); // the only element in the document is another file's
+      await buildDiff('src/other.js'); // the only element in the document is another file's
       for (const kind of ['diff', 'context']) {
         const pm = {
           ensureContextFile: vi.fn().mockResolvedValue({ type: 'context', contextFile: { id: 99 } }),
@@ -610,7 +601,7 @@ describe('TourRenderer', () => {
     });
 
     it('calls ensureContextFile when the file wrapper is missing', async () => {
-      buildDiff('src/other.js'); // wrapper present for a DIFFERENT file
+      await buildDiff('src/other.js'); // wrapper present for a DIFFERENT file
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -626,7 +617,7 @@ describe('TourRenderer', () => {
     });
 
     it('tracks the auto-added context-file id for tour-exit cleanup', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -642,7 +633,7 @@ describe('TourRenderer', () => {
     });
 
     it('does NOT track ids of context files that were already user-added', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -662,7 +653,7 @@ describe('TourRenderer', () => {
     });
 
     it('swallows ensureContextFile errors and still attempts ensureLinesVisible', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockRejectedValue(new Error('network')),
         ensureLinesVisible: vi.fn().mockResolvedValue(),
@@ -676,7 +667,7 @@ describe('TourRenderer', () => {
     });
 
     it('swallows ensureLinesVisible errors so mountStop still gets a chance', async () => {
-      buildDiff();
+      await buildDiff();
       const pm = {
         ensureLinesVisible: vi.fn().mockRejectedValue(new Error('boom')),
       };
@@ -686,7 +677,7 @@ describe('TourRenderer', () => {
     });
 
     it('defaults line_end to line_start when missing', async () => {
-      buildDiff();
+      await buildDiff();
       const pm = { ensureLinesVisible: vi.fn().mockResolvedValue() };
       const r = new TourRenderer(pm);
       r.setStops([{ file_path: 'src/foo.js', side: 'RIGHT', line_start: 11 }]);
@@ -704,7 +695,7 @@ describe('TourRenderer', () => {
     // An add after the snapshot would orphan the context file forever.
     // --------------------------------------------------------------------
     it('rolls back the auto-added context file when the tour exits during the POST', async () => {
-      buildDiff('src/other.js'); // wrapper missing for src/missing.js
+      await buildDiff('src/other.js'); // wrapper missing for src/missing.js
       let resolvePost;
       const ensureCalls = [];
       const pm = {
@@ -754,7 +745,7 @@ describe('TourRenderer', () => {
       // tracking branch is skipped (no id-add, no rollback). The SECOND
       // isStale gate (before ensureLinesVisible) is the only thing that
       // can catch a mid-await exit on this path.
-      buildDiff('src/other.js'); // wrapper missing for src/already.js
+      await buildDiff('src/other.js'); // wrapper missing for src/already.js
       let resolvePost;
       const pm = {
         _tourGen: 1,
@@ -792,7 +783,7 @@ describe('TourRenderer', () => {
   // ----------------------------------------------------------------------
   describe('unmountAll auto-added context-file cleanup', () => {
     it('calls removeContextFile for every auto-added id', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn()
           .mockResolvedValueOnce({ type: 'context', contextFile: { id: 10, file: 'a.js' } })
@@ -815,7 +806,7 @@ describe('TourRenderer', () => {
     });
 
     it('clears _autoAddedContextFileIds after cleanup', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -834,7 +825,7 @@ describe('TourRenderer', () => {
     });
 
     it('survives a rejected removeContextFile promise without throwing', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -851,7 +842,7 @@ describe('TourRenderer', () => {
     });
 
     it('is a no-op when removeContextFile is unavailable', async () => {
-      buildDiff('src/other.js');
+      await buildDiff('src/other.js');
       const pm = {
         ensureContextFile: vi.fn().mockResolvedValue({
           type: 'context',
@@ -891,7 +882,7 @@ describe('TourRenderer', () => {
       'path, where a silent swallow could mask a real upstream bug.';
 
     it('renders the full description text with no clamp wrapper', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 11, description: LONG_DESC })]);
       const row = await renderer.mountStop(0);
       const p = row.querySelector('.tour-annotation-description');
@@ -904,7 +895,7 @@ describe('TourRenderer', () => {
     });
 
     it('never renders a Show more button, even for a long description', async () => {
-      buildDiff();
+      await buildDiff();
       renderer.setStops([makeStop({ line_start: 11, description: LONG_DESC })]);
       const row = await renderer.mountStop(0);
       expect(row.querySelector('.tour-annotation-show-more-btn')).toBeNull();
@@ -955,12 +946,11 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
    * Build a bridge with one file whose diff shows exactly `visibleLines`
    * ('SIDE:line' strings), plus the file's `.d2h-file-wrapper`.
    */
-  function makePierreEnv({ visibleLines = [], filePath = 'src/pierre.js', collapsed = false } = {}) {
+  function makePierreEnv({ visibleLines = [], filePath = 'src/pierre.js' } = {}) {
     document.body.innerHTML = '';
     const wrapper = document.createElement('div');
     wrapper.className = 'd2h-file-wrapper';
     wrapper.dataset.fileName = filePath;
-    if (collapsed) wrapper.classList.add('collapsed');
     document.body.appendChild(wrapper);
 
     const hunks = visibleLines.map((entry) => {
@@ -1127,7 +1117,7 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The oracle says the line is shown, and the file's record goes away
     // before the annotation is added.
-    vi.spyOn(bridge, 'isLineVisible').mockImplementation(() => {
+    vi.spyOn(bridge, 'isLineInDiff').mockImplementation(() => {
       const record = bridge.files.get(filePath);
       bridge.files.clear();
       bridge.files.set('other.js', record);
@@ -1188,33 +1178,28 @@ describe('TourRenderer — pierre-rendered files (annotation path)', () => {
     warnSpy.mockRestore();
   });
 
-  it('expands a collapsed pierre wrapper via toggleFileCollapse and records it', async () => {
-    const { bridge, wrapper } = makePierreEnv({ visibleLines: ['RIGHT:11'], collapsed: true });
-    const pm = {
-      pierreBridge: bridge,
-      _tourGen: 1,
-      toggleFileCollapse(p) { if (p === 'src/pierre.js') wrapper.classList.remove('collapsed'); },
-    };
+  it('opens a collapsed file through setFileCollapsed and records it', async () => {
+    const { bridge } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const pm = pageManagerFor(bridge, ['src/pierre.js']);
+    await pm.setFileCollapsed('src/pierre.js', true);
     const r = new TourRenderer(pm);
     r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11 })]);
     await r.mountStop(0);
-    expect(wrapper.classList.contains('collapsed')).toBe(false);
+    expect(pm.isFileCollapsed('src/pierre.js')).toBe(false);
+    expect(bridge.files.get('src/pierre.js').collapsed).toBe(false);
     expect(r._autoExpanded.has('src/pierre.js')).toBe(true);
     expect(r._pierreMounts.has(0)).toBe(true);
   });
 
   it('bails without leaking state when the tour exits during the collapse-expand await', async () => {
-    const { bridge, wrapper, stopAnnotations } = makePierreEnv({ visibleLines: ['RIGHT:11'], collapsed: true });
+    const { bridge, stopAnnotations } = makePierreEnv({ visibleLines: ['RIGHT:11'] });
+    const pm = pageManagerFor(bridge, ['src/pierre.js']);
+    await pm.setFileCollapsed('src/pierre.js', true);
     let resolveToggle;
-    const pm = {
-      pierreBridge: bridge,
-      _tourGen: 1,
-      toggleFileCollapse() {
-        return new Promise((res) => {
-          resolveToggle = () => { wrapper.classList.remove('collapsed'); res(); };
-        });
-      },
-    };
+    const write = pm.setFileCollapsed.bind(pm);
+    pm.setFileCollapsed = (path, collapsed) => new Promise((res) => {
+      resolveToggle = () => res(write(path, collapsed));
+    });
     const r = new TourRenderer(pm);
     r.setStops([makeStop({ file_path: 'src/pierre.js', line_start: 11 })]);
 

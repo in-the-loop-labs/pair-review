@@ -43,22 +43,6 @@
 // <script> tags into the shared global scope.
 const TOUR_RENDERER_LOCATION_PATH = 'm12.596 11.596-3.535 3.536a1.5 1.5 0 0 1-2.122 0l-3.535-3.536a6.5 6.5 0 1 1 9.192-9.193 6.5 6.5 0 0 1 0 9.193Zm-1.06-8.132v-.001a5 5 0 1 0-7.072 7.072L8 14.07l3.536-3.534a5 5 0 0 0 0-7.072ZM8 9a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 9Z';
 
-/**
- * Escape a string for inclusion in a CSS attribute selector. Prefers the
- * native `CSS.escape` when available (real browsers) and falls back to a
- * minimal escape for jsdom / older runtimes that don't expose it.
- * @param {string} value
- * @returns {string}
- */
-function tourRendererEscapeAttr(value) {
-  const s = String(value);
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-    return CSS.escape(s);
-  }
-  // Fallback: backslash-escape anything that isn't a safe attribute char.
-  return s.replace(/[^a-zA-Z0-9_\-./]/g, (ch) => `\\${ch}`);
-}
-
 class TourRenderer {
   /**
    * @param {Object} prManager - Owning PRManager. Callbacks invoke
@@ -254,18 +238,17 @@ class TourRenderer {
    * Mount the annotation row for the stop at `index`. Returns the row, or
    * null if no anchor could be located.
    *
-   * If the target file's wrapper is collapsed, expand it via the
-   * prManager's `toggleFileCollapse` so the renderer and PRManager's
-   * `collapsedFiles` set stay in sync. The expansion is recorded on
-   * `_autoExpanded` so `unmountAll` can re-collapse on tour exit, restoring
-   * the user's pre-tour collapse state.
+   * If the target file is collapsed (asked of data: PRManager.isFileCollapsed),
+   * open it through the page's one writer, `setFileCollapsed`, so the
+   * page's state, the header and the viewer stay in sync. The expansion is
+   * recorded on `_autoExpanded` so `unmountAll` can re-collapse on tour
+   * exit, restoring the user's pre-tour collapse state.
    *
-   * If `toggleFileCollapse` is missing we refuse to expand rather than
-   * strip the `collapsed` class directly — diverging the DOM from
-   * `collapsedFiles` would leave the file-tree and viewed-badge state
-   * lying.
+   * If `setFileCollapsed` is missing we refuse to expand rather than open
+   * the file another way — diverging the viewer from `collapsedFiles` would
+   * leave the file-tree and viewed-badge state lying.
    *
-   * Async because `toggleFileCollapse` is async. The caller (`_advanceTour`)
+   * Async because `setFileCollapsed` is async. The caller (`_advanceTour`)
    * awaits this so the file is expanded before `scrollToStop` runs —
    * otherwise a stop inside a just-expanded file could be scrolled to while
    * its rows are still hidden.
@@ -307,10 +290,10 @@ class TourRenderer {
    * light DOM (so page CSS + inline handlers work). We anchor at `line_end`
    * (parity with how suggestions anchor; the banner then reads as describing
    * the code above it), scanning backward through the range to the first
-   * VISIBLE line so a stop whose exact line_end sits in a still-folded gap
-   * still finds a home.
+   * line the file's diff shows (isLineInDiff, collapsed or not) so a stop
+   * whose exact line_end sits in a still-folded gap still finds a home.
    *
-   * The `toggleFileCollapse` await is a suspension window guarded against a
+   * The `setFileCollapsed` await is a suspension window guarded against a
    * mid-flight tour teardown — see the inline note. Returns the slotted `<div class="tour-annotation-row">`, or null
    * when no line in the range is mountable (probe advances).
    *
@@ -320,7 +303,7 @@ class TourRenderer {
     const bridge = this.prManager && this.prManager.pierreBridge;
     if (!bridge) return null;
 
-    // Capture the open-generation ONCE at entry, so the `toggleFileCollapse`
+    // Capture the open-generation ONCE at entry, so the `setFileCollapsed`
     // await below can't record state for a torn-down tour.
     const startGen = this.prManager?._tourGen;
     const isStale = () => this.prManager?._tourGen !== startGen;
@@ -339,14 +322,15 @@ class TourRenderer {
     }
 
     // Pick the anchor line: prefer line_end, scan back to line_start for the
-    // first line that renders (isLineVisible checks the instance's current
-    // hunk metadata, so it is correct even while an async repaint is in
-    // flight). No visible line in range → unmountable; return null so the
-    // navigator probes onward.
+    // first line the file's diff shows. Asked of the bridge's data
+    // (isLineInDiff: the hunks of the metadata it last published, so it is
+    // right while an async repaint is in flight), and whether or not the
+    // file is collapsed: a collapsed file is opened below. No such line in
+    // range → unmountable; return null so the navigator probes onward.
     let anchorLine = null;
-    if (typeof bridge.isLineVisible === 'function') {
+    if (typeof bridge.isLineInDiff === 'function') {
       for (let n = lineEnd; n >= lineStart; n--) {
-        if (bridge.isLineVisible(filePath, n, side)) {
+        if (bridge.isLineInDiff(filePath, n, side)) {
           anchorLine = n;
           break;
         }
@@ -360,17 +344,17 @@ class TourRenderer {
       return null;
     }
 
-    // Expand a collapsed file through PRManager.toggleFileCollapse so
-    // `collapsedFiles` stays in sync, and refuse (bail) rather than strip the
-    // class directly when the API is missing. A collapsed file draws no
-    // lines, so its annotation would have no place on screen.
-    const wrapper = document.querySelector(
-      `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
-    );
-    if (wrapper && wrapper.classList.contains('collapsed')) {
-      if (this.prManager && typeof this.prManager.toggleFileCollapse === 'function') {
+    // Open a collapsed file through the page's one writer of the collapsed
+    // state (PRManager.setFileCollapsed), so `collapsedFiles`, the header
+    // and the viewer agree; refuse (bail) when the page has no such writer.
+    // Whether the file is collapsed is asked of the page's data
+    // (isFileCollapsed): a file that is scrolled away has no element. A
+    // collapsed file draws no lines, so the stop would have no place on
+    // screen.
+    if (this._isFileCollapsed(filePath)) {
+      if (this.prManager && typeof this.prManager.setFileCollapsed === 'function') {
         try {
-          await this.prManager.toggleFileCollapse(filePath);
+          await this.prManager.setFileCollapsed(filePath, false);
           // Suspension window: if the tour exited/restarted while the expand
           // was in flight, `unmountAll` already ran against a snapshot that
           // excludes this stop. Recording `_autoExpanded` / adding the
@@ -378,13 +362,13 @@ class TourRenderer {
           if (isStale()) return null;
           this._autoExpanded.add(filePath);
         } catch (err) {
-          console.warn('[TourRenderer] toggleFileCollapse failed; skipping pierre stop', err);
+          console.warn('[TourRenderer] setFileCollapsed failed; skipping pierre stop', err);
           return null;
         }
       } else {
         console.warn(
-          '[TourRenderer] prManager.toggleFileCollapse missing; ' +
-          'refusing to strip collapsed class — pierre stop skipped'
+          '[TourRenderer] prManager.setFileCollapsed missing; ' +
+          'refusing to open the file another way — pierre stop skipped'
         );
         return null;
       }
@@ -429,6 +413,23 @@ class TourRenderer {
   }
 
   // --- pierre helpers -----------------------------------------------------
+
+  /**
+   * Whether a file of the pane is collapsed, from data: the page's answer
+   * (PRManager.isFileCollapsed), else the viewer's record of the file. Never
+   * the element: a file that is scrolled away has none.
+   * @param {string} filePath
+   * @returns {boolean|null} null when neither knows the file
+   */
+  _isFileCollapsed(filePath) {
+    const pm = this.prManager;
+    if (pm && typeof pm.isFileCollapsed === 'function') {
+      const collapsed = pm.isFileCollapsed(filePath);
+      return typeof collapsed === 'boolean' ? collapsed : null;
+    }
+    const record = pm?.pierreBridge?.files?.get?.(filePath);
+    return record ? record.collapsed === true : null;
+  }
 
   /**
    * Whether `filePath` is a file of the diff viewer (it has a record there,
@@ -536,7 +537,9 @@ class TourRenderer {
    * Remove every mounted annotation. Call on tour exit.
    *
    * Also restores pre-tour state:
-   *   - Re-collapses any files in `_autoExpanded` (via toggleFileCollapse).
+   *   - Re-collapses any files in `_autoExpanded` that are still expanded
+   *     (via setFileCollapsed; asked of data, so a file without an element
+   *     is re-collapsed too).
    *   - Deletes any context files in `_autoAddedContextFileIds` (via
    *     removeContextFile) so transient tour-injected files don't
    *     persist in the user's context-files list.
@@ -575,18 +578,20 @@ class TourRenderer {
     if (
       this._autoExpanded.size > 0 &&
       this.prManager &&
-      typeof this.prManager.toggleFileCollapse === 'function'
+      typeof this.prManager.setFileCollapsed === 'function'
     ) {
       for (const filePath of this._autoExpanded) {
         try {
           // Only re-collapse if the file is still expanded — the user may
-          // have toggled it manually during the tour, in which case we
-          // honor their explicit action and leave it alone.
-          const wrapper = document.querySelector(
-            `.d2h-file-wrapper[data-file-name="${tourRendererEscapeAttr(filePath)}"]`
-          );
-          if (wrapper && !wrapper.classList.contains('collapsed')) {
-            this.prManager.toggleFileCollapse(filePath);
+          // have collapsed it again during the tour, in which case we
+          // honor their explicit action and leave it alone. Asked of data,
+          // and written through the page's writer, so a file that is
+          // scrolled away (it has no element) is collapsed again too.
+          if (this._isFileCollapsed(filePath) === false) {
+            const done = this.prManager.setFileCollapsed(filePath, true);
+            if (done && typeof done.catch === 'function') {
+              done.catch((err) => console.warn('[TourRenderer] re-collapse failed for', filePath, err));
+            }
           }
         } catch (err) {
           console.warn('[TourRenderer] re-collapse failed for', filePath, err);

@@ -3350,6 +3350,22 @@
     }
 
     /**
+     * Whether a line is part of what a file's diff shows, collapsed or not:
+     * isLineVisible without the collapse. The question for anything that
+     * belongs on a line of the file (an external thread, a tour stop, a
+     * reveal): a collapsed file keeps its annotations, hides them, and shows
+     * them on their lines when it is expanded. Decided from data.
+     * @param {string} fileName
+     * @param {number} lineNumber
+     * @param {string} side - 'LEFT'/'RIGHT'; ignored for a context file
+     * @returns {boolean}
+     */
+    isLineInDiff(fileName, lineNumber, side) {
+      const record = this._record(fileName);
+      return !!record && this._showsLine(record, record.metadata, lineNumber, side);
+    }
+
+    /**
      * Whether a line is part of what the viewer's item of a file shows: the
      * same question as isLineVisible, asked of the list the viewer has (the
      * record the item was made from, the metadata and collapsed state the
@@ -3975,66 +3991,61 @@
     // ─── Code extraction ─────────────────────────────────────────────
 
     /**
-     * The text of a range of lines a file shows, for a suggestion block.
+     * The text of a range of lines a file shows, for a suggestion block:
+     * every line from `startLine` to `endLine` on one side, without line
+     * breaks at their ends, joined by one line break. Applied on GitHub, a
+     * suggestion replaces every line of its range with the block, so the
+     * answer is all of the range or nothing: null when a line of it has no
+     * text (it is not shown, or not loaded), and the caller refuses
+     * (CommentManager.insertSuggestionBlock). Never a part of the range.
      *
-     * A changed file answers the lines of its hunks, as they are stored (each
-     * ends in its line break). A context file answers every line it shows,
-     * which is more than its hunks: a gap small enough for the viewer to
-     * paint in full and the lines the reader expanded are on screen too, and
-     * a comment form opens on them (isLineVisible counts them the same way).
-     * Its lines are answered without their line breaks.
+     * The lines shown are those isLineVisible counts, collapse aside: the
+     * lines of the hunks, and the lines the viewer draws outside them (a gap
+     * small enough to paint in full, lines the reader expanded), which a
+     * comment form opens on too. A line of a hunk is read where the hunk
+     * says; a line outside the hunks is read from the file's contents, which
+     * a metadata that is not partial holds whole (line n at index n - 1). A
+     * context file holds its whole contents and has one side.
+     *
+     * The vendor's parsed lines keep their line ending ('a\n', 'a\r\n'); it
+     * is removed here.
      * @param {string} fileName
      * @param {number} startLine
      * @param {number} endLine
-     * @param {string} side - 'LEFT' or 'RIGHT'
+     * @param {string} side - 'LEFT' or 'RIGHT' (ignored for a context file)
      * @returns {string|null}
      */
     getCodeFromLines(fileName, startLine, endLine, side) {
       const record = this._record(fileName);
       const metadata = record?.metadata;
-      if (!metadata) return null;
-      if (record.kind === 'context') return this._contextCodeFromLines(record, startLine, endLine);
-      const useAdditions = (side || 'RIGHT') === 'RIGHT';
-      const lines = useAdditions ? metadata.additionLines : metadata.deletionLines;
-      const hunks = metadata.hunks;
-      if (!lines || !hunks) return null;
-      const codeLines = [];
-      for (const hunk of hunks) {
-        const hunkStart = useAdditions ? hunk.additionStart : hunk.deletionStart;
-        const hunkCount = useAdditions ? hunk.additionCount : hunk.deletionCount;
-        const hunkLineIndex = useAdditions ? hunk.additionLineIndex : hunk.deletionLineIndex;
-        if (hunkStart + hunkCount - 1 < startLine || hunkStart > endLine) continue;
-        for (let i = 0; i < hunkCount; i++) {
-          const lineNumber = hunkStart + i;
-          if (lineNumber < startLine || lineNumber > endLine) continue;
-          if (hunkLineIndex + i < lines.length) codeLines.push(lines[hunkLineIndex + i]);
-        }
-      }
-      return codeLines.length > 0 ? codeLines.join('\n') : null;
-    }
-
-    /**
-     * The text of the lines of a context file that are on screen, between
-     * two line numbers. A context record holds every line of its file
-     * (line n at index n - 1) and has one side.
-     * @private
-     */
-    _contextCodeFromLines(record, startLine, endLine) {
-      const metadata = record.metadata;
-      const lines = metadata.additionLines;
+      if (!metadata || !Number.isInteger(startLine) || !Number.isInteger(endLine)) return null;
+      if (startLine < 1 || endLine < startLine) return null;
+      const deletions = record.kind !== 'context' && (side || 'RIGHT') !== 'RIGHT';
+      const lines = deletions ? metadata.deletionLines : metadata.additionLines;
       const hunks = metadata.hunks;
       if (!Array.isArray(lines) || !Array.isArray(hunks) || hunks.length === 0) return null;
-      const shown = this._expandedRanges(record, 'RIGHT');
-      for (const hunk of hunks) {
-        if (hunk.additionCount) shown.push({ startLine: hunk.additionStart, endLine: hunk.additionStart + hunk.additionCount - 1 });
-      }
+      const sideKey = deletions ? 'deletion' : 'addition';
+      // Outside the hunks a line is drawn when it is in one of these ranges,
+      // and its text is in the contents only when the metadata is whole.
+      const drawn = metadata.isPartial ? [] : this._expandedRanges(record, deletions ? 'LEFT' : 'RIGHT', metadata);
       const codeLines = [];
-      const last = Math.min(endLine, lines.length);
-      for (let lineNumber = Math.max(1, startLine); lineNumber <= last; lineNumber++) {
-        if (!shown.some((range) => lineNumber >= range.startLine && lineNumber <= range.endLine)) continue;
-        codeLines.push(String(lines[lineNumber - 1]).replace(/\r?\n$/, ''));
+      for (let lineNumber = startLine; lineNumber <= endLine; lineNumber++) {
+        let index = -1;
+        for (const hunk of hunks) {
+          const start = hunk[`${sideKey}Start`];
+          const count = hunk[`${sideKey}Count`];
+          if (count && lineNumber >= start && lineNumber < start + count) {
+            index = hunk[`${sideKey}LineIndex`] + (lineNumber - start);
+            break;
+          }
+        }
+        if (index < 0 && drawn.some((range) => lineNumber >= range.startLine && lineNumber <= range.endLine)) {
+          index = lineNumber - 1;
+        }
+        if (index < 0 || index >= lines.length || typeof lines[index] !== 'string') return null;
+        codeLines.push(lines[index].replace(/\r?\n$/, ''));
       }
-      return codeLines.length > 0 ? codeLines.join('\n') : null;
+      return codeLines.join('\n');
     }
 
     // ─── Teardown ────────────────────────────────────────────────────

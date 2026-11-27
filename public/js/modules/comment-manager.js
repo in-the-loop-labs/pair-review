@@ -93,20 +93,22 @@ class CommentManager {
   }
 
   /**
-   * Get code content from diff lines in a range
+   * The text of every line of a range, for a suggestion block.
    * @param {string} fileName - The file name
    * @param {number} startLine - Start line number
    * @param {number} endLine - End line number
    * @param {string} [side] - The side of the diff ('LEFT' or 'RIGHT') to filter by
-   * @returns {string} The code content from the lines
+   * @returns {string|null} null when the text of the whole range is not
+   *   available (a line of it is not shown or not loaded, or the file is not
+   *   in the pane): a block of part of the range would delete the rest when
+   *   it is applied
    */
   getCodeFromLines(fileName, startLine, endLine, side) {
     // The viewer's bridge reads the lines from the file's parsed diff, one
     // side only (a modified line has an OLD and a NEW version).
     const bridge = this.prManager?.pierreBridge;
-    if (!bridge || !bridge.files.has(fileName)) return '';
-    const code = bridge.getCodeFromLines(fileName, startLine, endLine, side);
-    return code !== null ? code : '';
+    if (!bridge || !bridge.files.has(fileName)) return null;
+    return bridge.getCodeFromLines(fileName, startLine, endLine, side);
   }
 
   /**
@@ -131,6 +133,15 @@ class CommentManager {
 
     // Get the code from the selected lines (pass side to avoid including both deleted and added lines)
     const code = this.getCodeFromLines(fileName, startLine, endLine, side);
+    if (code === null) {
+      // No block rather than a block that lacks lines of the range: applied
+      // on GitHub, it would delete them. What the reader typed is kept.
+      const range = endLine !== startLine ? `lines ${startLine}-${endLine}` : `line ${startLine}`;
+      const message = `Cannot insert a suggestion for ${range}: the diff does not show the text of every line of the range. Expand the hidden lines first.`;
+      if (window.toast?.showWarning) window.toast.showWarning(message);
+      else console.warn(`[Suggestion] ${message}`);
+      return;
+    }
 
     // Build the suggestion block
     // Use 4 backticks if the code contains triple backticks

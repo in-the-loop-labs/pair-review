@@ -845,7 +845,10 @@ async function capture(args, name) {
         await frames(4);
         await annotatedShot('forms');
         await dom.fileWrapper(page, annotated).locator('.file-comments-zone .file-comment-form .cancel-btn').click();
-        await page.evaluate(({ f, l }) => window.prManager.pierreBridge.removeAnnotation(f, `form-${f}-${l}-RIGHT`), { f: annotated, l: line(4) });
+        // The line form's id names its first and last line (PRManager.showCommentForm).
+        await page.evaluate(({ f, l }) => window.prManager.pierreBridge.removeAnnotation(f, `form-${f}-${l}-${l}-RIGHT`), { f: annotated, l: line(4) });
+        // Gone, or every later shot of this position would show it.
+        await dom.fileWrapper(page, annotated).locator('.user-comment-form').waitFor({ state: 'detached', timeout: 10000 });
 
         // The review is the next position's too: take everything off again.
         await helpers.cleanupAllComments(page, reviewId);

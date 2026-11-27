@@ -254,45 +254,7 @@ class PRManager {
     const initialDiffStyle = window.readPersistedDiffView
       ? window.readPersistedDiffView()
       : (localStorage.getItem('pair-review-diff-view') === 'split' ? 'split' : 'unified');
-    const bridgeOptions = {
-      theme: this.currentTheme,
-      diffStyle: initialDiffStyle,
-      onCommentClick: (fileName, lineNumber, side, target) => {
-        // target.isRange is true when the user selected multiple lines
-        const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
-        if (target.isRange) {
-          this.showCommentForm(fileName, target.start, diffPosition, target.end, target.side);
-        } else {
-          this.showCommentForm(fileName, lineNumber, diffPosition, null, side);
-        }
-      },
-      onChatClick: (fileName, lineNumber, side, target) => {
-        if (!window.chatPanel) return;
-        window.chatPanel.open({
-          commentContext: {
-            type: 'line',
-            body: null,
-            file: fileName || '',
-            line_start: target.start,
-            line_end: target.end,
-            side: target.side || side || 'RIGHT',
-            source: 'user'
-          }
-        });
-      },
-      onCommentFormSubmit: (fileName, annotationId, data, body) => {
-        this._handleCommentFormSubmit(fileName, annotationId, data, body);
-      },
-      onCommentFormCancel: (fileName, annotationId, data) => {
-        this.pierreBridge.removeAnnotation(fileName, annotationId);
-      },
-      onSuggestionInsert: (textarea, button) => {
-        if (this.commentManager) {
-          this.commentManager.insertSuggestionBlock(textarea, button);
-        }
-      },
-    };
-    this.pierreBridge = this._createBridge(bridgeOptions);
+    this.pierreBridge = this._createBridge(this._bridgeInteractionOptions(initialDiffStyle));
 
     // Stack analysis components
     this.stackAnalysisDialog = window.StackAnalysisDialog ? new window.StackAnalysisDialog() : null;
@@ -2266,8 +2228,8 @@ class PRManager {
           // was awaiting a file fetch / loadContextFiles. Bail before
           // mounting against a torn-down tour.
           if (isStale()) return;
-          // mountStop is async (it awaits toggleFileCollapse so a collapsed
-          // file is rendered + visibly expanded before we scroll to it).
+          // mountStop is async (it awaits setFileCollapsed so a collapsed
+          // file is expanded before we scroll to it).
           const row = await this._tourRenderer.mountStop(probe);
           // Re-check staleness: the await above is a suspension window.
           if (isStale()) return;
@@ -4992,29 +4954,36 @@ class PRManager {
    * Every function that keys state by path resolves its argument here
    * first, so the state, the wrapper and the viewer are always addressed by
    * the same path.
+   *
+   * Answered from data only (the changed files, then the context files),
+   * never from the elements on screen: under the virtualized viewer a file
+   * that is scrolled away has none, and the answer must not depend on where
+   * the reader is. In order: the path as given; the path normalized
+   * (DiffRenderer.normalizeFilePath) equal to a file's normalized path; a
+   * suffix match (DiffRenderer.pathsMatch). A changed file is preferred to a
+   * context file at each step, and a suffix match is taken only when no
+   * file matches exactly; among several suffix matches the first in pane
+   * order wins.
    * @param {string} filePath
    * @returns {string|null} null when the path names no file of the pane
    */
   _canonicalFilePath(filePath) {
     if (!filePath || typeof filePath !== 'string') return null;
-    const changed = this.changedFilesByPath;
-    if (changed?.has(filePath)) return filePath;
+    const changed = this.changedFilesByPath ? [...this.changedFilesByPath.keys()] : [];
+    if (this.changedFilesByPath?.has(filePath)) return filePath;
     // A context file is known from data, on screen or not.
-    if (this._contextItemIds.has(filePath)) return filePath;
-    if ((this.contextFiles || []).some(row => row.file === filePath)) return filePath;
-    // What is on screen: a changed file's wrapper, else a context file's.
-    const rendered = this.findFileElement(filePath)?.dataset?.fileName;
-    if (rendered) return rendered;
-    if (!changed) return null;
+    const context = [...(this._contextItemIds || []), ...(this.contextFiles || []).map(row => row.file)];
+    if (context.includes(filePath)) return filePath;
     const DiffRenderer = window.DiffRenderer;
-    const normalized = DiffRenderer?.normalizeFilePath?.(filePath);
-    if (normalized && changed.has(normalized)) return normalized;
-    if (typeof DiffRenderer?.pathsMatch === 'function') {
-      for (const path of changed.keys()) {
-        if (DiffRenderer.pathsMatch(path, filePath)) return path;
-      }
-    }
-    return null;
+    const normalize = DiffRenderer?.normalizeFilePath;
+    if (typeof normalize !== 'function') return null;
+    const normalized = normalize(filePath);
+    if (!normalized) return null;
+    const known = [...changed, ...context];
+    const exact = known.find(path => normalize(path) === normalized);
+    if (exact) return exact;
+    if (typeof DiffRenderer.pathsMatch !== 'function') return null;
+    return known.find(path => DiffRenderer.pathsMatch(path, filePath)) || null;
   }
 
   /**
@@ -5042,10 +5011,11 @@ class PRManager {
    * It needs no element: a file that is not on screen is collapsed in data
    * and drawn collapsed when it is.
    *
-   * Callers: toggleFileCollapse (header chevron and click, toggleGeneratedFile,
-   * the tour's restore on exit), toggleFileViewed, revealInDiff (navigation
-   * from the review panel, the suggestion navigator), TourRenderer when a
-   * stop is in a collapsed file.
+   * Callers: toggleFileCollapse (header chevron and click, toggleGeneratedFile),
+   * toggleFileViewed, revealInDiff (navigation from the review panel, the
+   * suggestion navigator), TourRenderer when a stop is in a collapsed file
+   * (mountStop opens it, unmountAll collapses it again on exit, both asked
+   * of isFileCollapsed, so a file without an element is restored too).
    *
    * The path is resolved to the file's canonical path once, and that one
    * path addresses all four. Navigation passes the path a finding or a
@@ -5598,6 +5568,58 @@ class PRManager {
   }
 
   /**
+   * What the diff pane's viewer is given besides its hooks: the theme and
+   * layout it starts with and the handlers of its interactions (the gutter's
+   * comment and chat buttons, the comment form's Save, Cancel and suggestion
+   * buttons). Built once, by the constructor.
+   * @param {string} diffStyle - 'unified' or 'split'
+   * @returns {Object}
+   * @private
+   */
+  _bridgeInteractionOptions(diffStyle) {
+    return {
+      theme: this.currentTheme,
+      diffStyle,
+      onCommentClick: (fileName, lineNumber, side, target) => {
+        // target.isRange is true when the user selected multiple lines
+        const diffPosition = this.pierreBridge.getDiffPosition(fileName, target.start, target.side);
+        if (target.isRange) {
+          this.showCommentForm(fileName, target.start, diffPosition, target.end, target.side);
+        } else {
+          this.showCommentForm(fileName, lineNumber, diffPosition, null, side);
+        }
+      },
+      onChatClick: (fileName, lineNumber, side, target) => {
+        if (!window.chatPanel) return;
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: fileName || '',
+            line_start: target.start,
+            line_end: target.end,
+            side: target.side || side || 'RIGHT',
+            source: 'user'
+          }
+        });
+      },
+      // The save's promise is returned: the form's Save button stays
+      // disabled until it settles (PierreAnnotations.renderForm), which is
+      // what keeps a second click or Cmd/Ctrl+Enter from posting twice.
+      onCommentFormSubmit: (fileName, annotationId, data, body) =>
+        this._handleCommentFormSubmit(fileName, annotationId, data, body),
+      onCommentFormCancel: (fileName, annotationId, data) => {
+        this.pierreBridge.removeAnnotation(fileName, annotationId);
+      },
+      onSuggestionInsert: (textarea, button) => {
+        if (this.commentManager) {
+          this.commentManager.insertSuggestionBlock(textarea, button);
+        }
+      },
+    };
+  }
+
+  /**
    * Handle comment form submission from PierreBridge annotation.
    * Saves the comment via API, removes the form annotation, and reloads comments.
    * @param {string} fileName - File the comment belongs to
@@ -5687,10 +5709,12 @@ class PRManager {
       // ranges (comments, suggestions, chat citations); if line_start is on
       // screen but line_end is still inside a collapsed gap, we must still
       // expand. Preserve the skip-when-fully-visible optimization: only expand
-      // when at least one endpoint is hidden.
+      // when at least one endpoint is hidden. Asked of the file's diff, not
+      // of what is on screen: a collapsed file still shows its hunks when it
+      // is opened, so a line in them needs no reveal (and no contents).
       const endLine = line_end || line_start;
-      const startVisible = this.pierreBridge.isLineVisible(file, line_start, resolvedSide);
-      const endVisible = this.pierreBridge.isLineVisible(file, endLine, resolvedSide);
+      const startVisible = this.pierreBridge.isLineInDiff(file, line_start, resolvedSide);
+      const endVisible = this.pierreBridge.isLineInDiff(file, endLine, resolvedSide);
       if (startVisible && endVisible) continue;
 
       await this._ensurePierreContentUpgrade(file);
@@ -5727,7 +5751,14 @@ class PRManager {
    */
   showCommentForm(fileName, lineNumber, diffPosition, endLineNumber, side = 'RIGHT') {
     if (!this.pierreBridge || !this.pierreBridge.files.has(fileName)) return;
-    const formId = `form-${fileName}-${lineNumber}-${side}`;
+    // One form per range and side: the id names the whole range, and a form
+    // that is open on it already is the one the reader gets (with what they
+    // typed in it). A form's Save and Cancel act on the data it was built
+    // with (PierreAnnotations.renderForm caches the element by id), so two
+    // ranges must never share an id. Forms on other ranges stay open, as on
+    // main for a changed file.
+    const formId = `form-${fileName}-${lineNumber}-${endLineNumber || lineNumber}-${side}`;
+    if (this._focusOpenForm(fileName, formId)) return;
     this.pierreBridge.addAnnotation(fileName, {
       lineNumber: endLineNumber || lineNumber,
       side: side,
@@ -5744,6 +5775,27 @@ class PRManager {
         outsideDiff: this.fileKind(fileName) === 'context',
       },
     });
+  }
+
+  /**
+   * When a form annotation with this id is open in the file, put the caret
+   * in its textarea and answer true; the caller then adds nothing. Decided
+   * from the bridge's data: the form of a file that is not mounted is open
+   * all the same, and its element (kept by the bridge) has no place to
+   * take focus in until the file is drawn again.
+   * Callers: showCommentForm (the gutter's +), editAndAdoptSuggestion (a
+   * suggestion's Edit).
+   * @param {string} fileName
+   * @param {string} formId
+   * @returns {boolean}
+   * @private
+   */
+  _focusOpenForm(fileName, formId) {
+    const bridge = this.pierreBridge;
+    if (!bridge?.hasAnnotation?.(fileName, formId)) return false;
+    const textarea = bridge.getAnnotationElement?.(fileName, formId)?.querySelector?.('textarea');
+    if (textarea?.isConnected) textarea.focus({ preventScroll: true });
+    return true;
   }
 
   autoResizeTextarea(textarea, minRows = 4) {
@@ -6619,6 +6671,9 @@ class PRManager {
       // the pane has no line to open it under.
       if (!this.pierreBridge || !this.pierreBridge.files.has(fileName)) return;
       const formId = `edit-suggestion-${suggestionId}`;
+      // One edit form per suggestion: a second Edit goes to the one that is
+      // open (with what the reader typed in it).
+      if (this._focusOpenForm(fileName, formId)) return;
       const onAdoptEdited = async (editedText, _fileName, annotationId) => {
         const reviewId = this.currentPR?.id;
         const editResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/edit`, {

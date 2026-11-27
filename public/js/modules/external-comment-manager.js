@@ -558,9 +558,12 @@ class ExternalCommentManager {
     // awaiting display (a content upgrade whose highlight result has not
     // come back), although its line is in that diff. Reading that as "line
     // not rendered" left the thread in the file's comment zone for good.
+    // Nor from the collapse: a viewed or generated file starts collapsed,
+    // and its threads belong on their lines when the reader opens it; the
+    // bridge hides the annotation meanwhile, as it does a user comment's.
     // An unanchorable (e.g. destroyed-upstream) discussion goes to a
     // file-level card so it stays discoverable rather than vanishing.
-    if (!this._isPierreLineVisible(bridge, anchor)) {
+    if (!this._isPierreLineInDiff(bridge, anchor)) {
       this._renderPierreFileFallback(thread, anchor.file);
       return;
     }
@@ -576,17 +579,17 @@ class ExternalCommentManager {
 
   /**
    * Whether the diff shows the anchor line of a thread, by the bridge's
-   * visibility oracle (hunks of the file's current diff plus revealed and
-   * expanded context; false for a collapsed file).
+   * data (hunks of the file's current diff plus revealed and expanded
+   * context), whether or not the file is collapsed (isLineInDiff).
    * @private
    */
-  _isPierreLineVisible(bridge, anchor) {
-    if (!bridge || typeof bridge.isLineVisible !== 'function') return false;
+  _isPierreLineInDiff(bridge, anchor) {
+    if (!bridge || typeof bridge.isLineInDiff !== 'function') return false;
     try {
-      return bridge.isLineVisible(anchor.file, anchor.line, anchor.side) === true;
+      return bridge.isLineInDiff(anchor.file, anchor.line, anchor.side) === true;
     } catch (err) {
       if (typeof console !== 'undefined') {
-        console.warn('[ExternalCommentManager] isLineVisible threw, treating the line as not shown', err);
+        console.warn('[ExternalCommentManager] isLineInDiff threw, treating the line as not shown', err);
       }
       return false;
     }
