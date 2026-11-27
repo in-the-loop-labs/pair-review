@@ -13,7 +13,9 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { MODES, waitForDiffToRender, openCommentFormOnLine, expectResponse, cleanupAllComments } from './helpers.js';
+import {
+  MODES, waitForDiffToRender, openCommentFormOnLine, expectResponse, cleanupAllComments, expandReviewPanel
+} from './helpers.js';
 
 
 // Turn the comment panel's "Show dismissed" filter on or off through the
@@ -122,7 +124,7 @@ for (const mode of MODES) {
       await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
 
       // Panel starts collapsed by default; expand it so segment buttons are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Switch to the "User" segment in the AI Panel to see comments
       const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
@@ -146,7 +148,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
 
       // Panel starts collapsed again after reload; expand it
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Note: Filter toggle state persists via localStorage, so it should still be enabled
       // The AIPanel restores the filter state from localStorage on page load
@@ -222,7 +224,7 @@ for (const mode of MODES) {
       await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
 
       // Panel starts collapsed by default; expand it so segment buttons are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // First, switch to the "User" segment in the AI Panel to see comments
       // The segment button contains text like "User (1)"
@@ -421,7 +423,7 @@ for (const mode of MODES) {
       await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
 
       // Panel starts collapsed by default; expand it so segment buttons are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Switch to the "User" segment in the AI Panel
       const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
@@ -467,7 +469,7 @@ for (const mode of MODES) {
       const commentId = await commentRow.getAttribute('data-comment-id');
 
       // Panel starts collapsed by default; expand it so segment buttons are interactable
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
 
       // Switch to User segment to verify comment appears
       const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });

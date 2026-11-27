@@ -38,7 +38,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, expectRequest } from './helpers.js';
+import { waitForDiffToRender, expectRequest, expandReviewPanel } from './helpers.js';
 
 // ---------------------------------------------------------------------
 // Fixture data
@@ -418,7 +418,7 @@ test.describe('External comments: manual refresh', () => {
     // Wait for the initial page-load sync to settle. The refresh button
     // lives in the AI panel header; expand the panel so the button is in a
     // visible region for click + interaction.
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
     await page.waitForFunction(() => {
       // The pr.js code clears the is-refreshing class in the finally block
       const btn = document.getElementById('refresh-external-comments-btn-panel');
@@ -599,7 +599,7 @@ test.describe('External segment in Review panel', () => {
 
     // Expand the panel so segment buttons are interactable; the default
     // for a new review is collapsed.
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
     await expect(externalBtn).toBeVisible();
@@ -630,7 +630,7 @@ test.describe('External segment in Review panel', () => {
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
 
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
     await externalBtn.click();
@@ -668,7 +668,7 @@ test.describe('External segment in Review panel', () => {
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
 
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Activate the External segment first
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
@@ -710,7 +710,7 @@ test.describe('External segment in Review panel', () => {
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
 
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const externalCount = page.locator('.segment-btn[data-segment="external"] .segment-count');
     await expect(externalCount).toHaveText('(1)');
@@ -779,7 +779,7 @@ test.describe('External comments: file-level rendering', () => {
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
 
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
     await externalBtn.click();
@@ -810,7 +810,7 @@ test.describe('Local mode: External segment hidden', () => {
   test('External segment button is not visible on /local pages', async ({ page }) => {
     await page.goto('/local/2');
     await waitForDiffToRender(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const externalBtn = page.locator('.segment-btn[data-segment="external"]');
     // Either absent from the DOM or hidden via [hidden]/display:none.
@@ -852,7 +852,7 @@ test.describe('Review panel segment overflow scroll', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Narrow the panel so the inner segment row has to overflow its
     // scroll container. The chevrons sit outside the scroll container
@@ -872,7 +872,7 @@ test.describe('Review panel segment overflow scroll', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     await shrinkPanel(page);
 
@@ -913,7 +913,7 @@ test.describe('Review panel segment overflow scroll', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
     await waitForExternalRowsRendered(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Widen the panel container generously so the four short labels are
     // guaranteed to fit. The default panel width depends on the saved

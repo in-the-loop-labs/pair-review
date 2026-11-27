@@ -1,6 +1,6 @@
 // Copyright 2026 Tim Perkins (tjwp) | SPDX-License-Identifier: Apache-2.0
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expandReviewPanel } from './helpers.js';
 import {
   inlineComment, inlineSuggestion, ensureContentUpgrade, expandHunkBy, hunkContaining,
   isLineVisible, redisplayBaseDiff, holdWorkerResults
@@ -102,7 +102,7 @@ for (const mode of MODES) {
       state.suggestions = [feedback(9203, target, 'ai')];
       await page.evaluate(() => window.prManager.loadAISuggestions());
       await expect(inlineSuggestion(page, 9203)).toBeVisible();
-      await page.evaluate(() => window.aiPanel.expand());
+      await expandReviewPanel(page);
       await page.locator('.ai-panel .finding-item[data-id="9203"]').click();
       await expect(inlineSuggestion(page, 9203)).toBeInViewport();
     });
@@ -128,7 +128,7 @@ for (const mode of MODES) {
       await expect(fileWrapper).toHaveClass(/collapsed/);
       await expect(suggestion).toBeHidden();
       // Use the actual sidebar click path to reveal the collapsed target again.
-      await page.evaluate(() => window.aiPanel.expand());
+      await expandReviewPanel(page);
 
       // The invariant: navigation does not report completion (the scroll
       // helper returning) while the card it navigates to is still not

@@ -15,13 +15,14 @@
 
 import { test, expect } from './fixtures.js';
 import {
-  MODES, waitForDiffToRender, setDiffView, seedSuggestions, cleanupAllComments, mockViewedStateApi
+  MODES, waitForDiffToRender, setDiffView, seedSuggestions, cleanupAllComments, mockViewedStateApi,
+  expandReviewPanel
 } from './helpers.js';
 import { allCorpora, changedLines, customCorpus, routeDiff, wrappingFilesCorpus } from './fixtures/diffs.js';
 import {
   fileWrapper, filesInPane, firstFileBelowToolbar, firstVisibleRow, headerLanding, inlineSuggestion, rowBox, rowCount, scrollDiffTo,
   scrollDiffToEdge, scrollState, waitForFileRendered, waitForFileSettled, assertNoOrphanHosts, clickExpandControl,
-  scrollThroughDiff, ensureMounted, lineNumberCell
+  scrollThroughDiff, ensureMounted, lineNumberCell, waitForPaneSettledInPlace
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -162,7 +163,7 @@ for (const mode of MODES) {
       const [id] = await seedSuggestions(page, mode.reviewId, [
         { file: last, line_start: line, title: 'Far finding', body: 'A finding in the last file.' }
       ]);
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       const item = page.locator(`.finding-item[data-id="${id}"]`);
       await expect(item).toBeVisible();
       await scrollDiffToEdge(page, 'top');
@@ -201,7 +202,7 @@ for (const mode of MODES) {
       await expect(fileWrapper(page, middle)).toHaveClass(/collapsed/);
       await scrollDiffToEdge(page, 'top');
 
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await page.locator(`.finding-item[data-id="${id}"]`).click();
       await expect(fileWrapper(page, middle)).not.toHaveClass(/collapsed/);
       await expect(inlineSuggestion(page, id)).toBeInViewport();
@@ -230,7 +231,7 @@ for (const mode of MODES) {
       await expect.poll(() => rowCount(page, middle)).toBe(0);
       await scrollDiffToEdge(page, 'top');
 
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await page.locator(`.finding-item[data-id="${id}"]`).click();
       // The finding has no card, so nothing scrolls to the file: it is opened
       // where it is, 30 files below. What follows needs its element.
@@ -422,6 +423,9 @@ for (const mode of MODES) {
       // The reader is somewhere in the middle of the review.
       await pane.evaluate((element) => { element.scrollTop = 3000; });
       await expect.poll(async () => (await scrollState(page)).top).toBeGreaterThan(2000);
+      // The files drawn there get their contents, and the one the reader is
+      // in grows above their line: the position moves once more, by itself.
+      await waitForPaneSettledInPlace(page);
       from = await scrollSettled(page);
       box = await pane.boundingBox();
       expect(await pane.evaluate((element) => element.offsetWidth - element.clientWidth)).toBe(0);

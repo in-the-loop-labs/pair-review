@@ -15,7 +15,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions, dismissProgressModalIfVisible } from './helpers.js';
+import { waitForDiffToRender, seedAISuggestions, dismissProgressModalIfVisible, expandReviewPanel } from './helpers.js';
 
 // Helper to handle modals when triggering analysis
 async function handleAnalysisModals(page) {
@@ -262,7 +262,7 @@ test.describe('AI Panel', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default for new reviews; expand it first
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Findings list container should exist
     const findingsList = page.locator('#findings-list, .findings-list');
@@ -307,7 +307,7 @@ test.describe('Segment Control', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so segment buttons are interactable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Seed AI suggestions first
     await seedAISuggestions(page);

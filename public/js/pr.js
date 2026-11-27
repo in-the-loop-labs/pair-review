@@ -99,6 +99,9 @@ class PRManager {
     this.changedFilesByPath = new Map();
     this._fileContentsUpgradeState = null;
     this._pierreContentUpgradePromises = new Map();
+    // The render whose catch-up sweep of content upgrades has not run yet
+    // (_upgradeFilesWithContents, _isContentUpgradeAwaited).
+    this._pierreUpgradeSweepSignal = null;
     // Eligible-by-size files that get a background content upgrade when the
     // viewer mounts them (set in _upgradeFilesWithContents, reset in
     // renderDiff). Null when no upgrade session is active.
@@ -3723,6 +3726,28 @@ class PRManager {
     return !!this.pierreBridge?.files?.get(filePath)?.baseMetadata;
   }
 
+  /**
+   * Whether a changed file that is drawn is still to be given its contents
+   * in the background: the catch-up sweep for the files drawn first has not
+   * run yet (_upgradeFilesWithContents), a file is queued or its upgrade is
+   * in flight (the request, the yield, the wait while the pointer rests on
+   * the file or the reader types in it: _waitForPierrePointerIdle), or an
+   * upgrade a navigation asked for is in flight. The viewer's bridge asks
+   * this while it keeps the pane at its end after a collapse
+   * (PierreBridge._holdEndAfterCollapse); it puts its own limit on the wait.
+   * False once the render these belong to has been replaced.
+   * @returns {boolean}
+   * @private
+   */
+  _isContentUpgradeAwaited() {
+    const signal = this._fileContentsAbort?.signal;
+    if (!signal || signal.aborted) return false;
+    if (this._pierreUpgradeSweepSignal === signal) return true;
+    const state = this._fileContentsUpgradeState;
+    if (state && state.signal === signal && (state.active > 0 || state.pending.length > 0)) return true;
+    return (this._pierreContentUpgradePromises?.size || 0) > 0;
+  }
+
   _yieldForDiffWork(signal) {
     if (signal?.aborted) return Promise.resolve();
     return new Promise(resolve => {
@@ -3819,6 +3844,7 @@ class PRManager {
         hostState: (id) => this._fileHostClasses(id),
         onItemLifecycle: (id, phase) => this._onDiffItemLifecycle(id, phase),
         resolvePath: (path) => this._canonicalFilePath(path),
+        contentsAwaited: () => this._isContentUpgradeAwaited(),
       },
       collaborators: () => ({
         escapeHtml: (text) => this.escapeHtml(text),
@@ -4485,6 +4511,7 @@ class PRManager {
     this._fileContentsUpgradeState = null;
     this._pierreContentUpgradePromises = new Map();
     this._pierreUpgradeCandidates = null;
+    this._pierreUpgradeSweepSignal = null;
     this._deferredDiffRenderPromises = new Map();
   }
 
@@ -4572,8 +4599,12 @@ class PRManager {
     );
     if (this._pierreUpgradeCandidates.size === 0) return;
 
+    // Until the catch-up sweep has run, the files drawn first await their
+    // contents with nothing queued for them (_isContentUpgradeAwaited).
+    this._pierreUpgradeSweepSignal = signal;
     const scheduleUpgrade = window.requestIdleCallback || ((cb) => setTimeout(cb, 50));
     setTimeout(() => scheduleUpgrade(() => {
+      if (this._pierreUpgradeSweepSignal === signal) this._pierreUpgradeSweepSignal = null;
       if (signal.aborted || this._fileContentsAbort?.signal !== signal) return;
       // Catch-up: enqueue any candidate that is mounted by now. Files
       // mounted later are enqueued from _onDiffItemLifecycle.

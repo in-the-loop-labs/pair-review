@@ -9,7 +9,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expandReviewPanel } from './helpers.js';
 
 const COMMENTS_URL = /\/api\/reviews\/\d+\/comments(\?|$)/;
 
@@ -35,7 +35,7 @@ function fileComment(id, status, body) {
 }
 
 async function openUserSegment(page) {
-  await page.evaluate(() => window.aiPanel?.expand());
+  await expandReviewPanel(page);
   const userSegment = page.locator('.segment-btn[data-segment="comments"]');
   await userSegment.click();
   await expect(userSegment).toHaveClass(/active/);
@@ -313,7 +313,7 @@ test.describe('Comment filter menu (Local mode)', () => {
   test('has "Show dismissed" but no "Show posted"', async ({ page }) => {
     await page.goto('/local/2');
     await waitForDiffToRender(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     await page.locator('.comment-filter-btn').click();
     await expect(page.getByRole('checkbox', { name: 'Show dismissed' })).toBeVisible();

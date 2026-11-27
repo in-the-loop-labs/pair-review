@@ -27,7 +27,8 @@
 import { test, expect } from './fixtures.js';
 import {
   MODES, waitForDiffToRender, seedComment, seedSuggestions, reloadComments, cleanupAllComments, expectResponse,
-  setMinimize, mockAppConfig, mockHunkSummaries, pushHunkSummaries, mockTour, mockExternalComments, externalThread, enableChat
+  setMinimize, mockAppConfig, mockHunkSummaries, pushHunkSummaries, mockTour, mockExternalComments, externalThread, enableChat,
+  expandReviewPanel
 } from './helpers.js';
 import { allCorpora, changedLines, customCorpus, hunkHashes, routeDiff } from './fixtures/diffs.js';
 import {
@@ -139,7 +140,7 @@ for (const mode of MODES) {
       // The page loaded before the cleanup: drop what it drew of anything a
       // test that ran earlier in this worker left behind.
       await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await waitForFileRendered(page, TARGET);
       await waitForFileSettled(page, TARGET);
     });
@@ -271,7 +272,7 @@ for (const mode of MODES) {
         { file: TARGET, line_start: LINE_A, title: 'Adopt me from afar', body: 'Suggestion body to adopt' }
       ]);
       await expect(inlineSuggestion(page, id)).toBeVisible();
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await leave(page);
 
       const wrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${id}"])`);
@@ -303,7 +304,7 @@ for (const mode of MODES) {
       const card = inlineSuggestion(page, id);
       await expect(card).toBeVisible();
       await expect(card).not.toHaveClass(/collapsed/);
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       const wrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${id}"])`);
       const item = page.locator(`.finding-item[data-id="${id}"]`);
 
@@ -329,7 +330,7 @@ for (const mode of MODES) {
     test('a click on a far comment in the review panel brings its card into view', async ({ page }) => {
       const id = await seedComment(page, mode.reviewId, { file: TARGET, line: LINE_B, body: 'Find me from the panel' });
       await reloadComments(page);
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
       await userSegment(page).click();
       const item = page.locator(`.finding-item.finding-comment[data-id="${id}"]`);
       await expect(item).toBeVisible();
@@ -753,7 +754,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
       await cleanupAllComments(page, mode.reviewId);
       await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
     });
 
     test.afterEach(async ({ page }) => {
@@ -842,7 +843,7 @@ for (const mode of MODES) {
       await waitForDiffToRender(page);
       await cleanupAllComments(page, mode.reviewId);
       await page.evaluate(() => Promise.all([window.prManager.loadUserComments(), window.prManager.loadAISuggestions()]));
-      await page.evaluate(() => window.aiPanel?.expand());
+      await expandReviewPanel(page);
     });
 
     test.afterEach(async ({ page }) => {
@@ -1060,7 +1061,7 @@ test.describe('Drawn on a far file: external threads (PR mode)', () => {
     const releaseFirstList = external.holdLists();
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
     try {
       await expect.poll(() => external.lists).toBe(1);
       await waitForFileRendered(page, TARGET);

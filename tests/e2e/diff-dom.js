@@ -955,6 +955,43 @@ async function waitForDiffSettled(page, { timeout = 15000 } = {}) {
 }
 
 /**
+ * Wait until the pane, where it is now, shows what it is going to show.
+ *
+ * For a test that puts the pane somewhere with a script and then states
+ * that the pane does not move. The viewer draws the files of a new place on
+ * the frame after the scroll, their contents are asked for then and arrive
+ * later, and a file that grows above the reader's line takes the pane's
+ * scroll position with it: the viewer keeps that line where it is (ledger
+ * H151). Measured 3,000 px into the sixty-file review: the position becomes
+ * 3,122 when the contents are there. That is usually within the 0.3 s a
+ * "has the position stopped changing" poll takes, and after it on a busy
+ * machine: the pane was then seen 122 px further under a press that holds
+ * nothing (scroll-landing.spec.js, once in 40).
+ *
+ * Waits until files are drawn from the toolbar down to the pane's bottom
+ * edge (the viewer's pass for this place has run, and what it mounted is
+ * queued for its contents), then for waitForDiffSettled.
+ */
+async function waitForPaneSettledInPlace(page, { timeout = 15000 } = {}) {
+  await waitInPage(page, (D) => {
+    const scroller = D.scroller();
+    const top = D.pinnedBottom();
+    const bottom = scroller.getBoundingClientRect().bottom;
+    const atEnd = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1;
+    const gap = D.viewerGap ? D.viewerGap() : 0;
+    const boxes = D.wrappers().map((w) => ({
+      top: w.getBoundingClientRect().top,
+      // An entry and the space the pane keeps below it.
+      reach: w.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(w).marginBottom) || 0) + gap,
+    }));
+    const inView = boxes.filter((box) => box.top < bottom && box.reach > top);
+    if (inView.length === 0) return false;
+    return atEnd || boxes.some((box) => box.reach >= bottom - 1);
+  }, null, { timeout });
+  await waitForDiffSettled(page, { timeout });
+}
+
+/**
  * Hover the Nth line-number cell of the page (document order) to reveal the
  * gutter buttons, once the diff has settled (see waitForDiffSettled).
  */
@@ -1310,9 +1347,10 @@ async function scrollFileOutOfView(page, file, { margin = 3, timeout = 10000 } =
 
 // --- collapse landings: begin ------------------------------------------------
 // What collapse-scroll-anchor.spec.js and collapse-landing.spec.js ask. Written
-// with the in-page library's scroller, file wrappers and pinned toolbar only,
-// which every renderer this module has stood in front of has had: the block
-// runs unchanged against the application before the virtualized viewer.
+// with the in-page library's scroller, file wrappers and pinned toolbar only
+// (and, in ensureContentUpgrades, one method of the application's), which
+// every renderer this module has stood in front of has had: the block runs
+// unchanged against the application before the virtualized viewer.
 
 /**
  * Where the entry a selector names is, as a reader sees it. Positions are
@@ -1437,6 +1475,52 @@ async function toggleCollapseAndPlaceInOneTask(page, file, wrapperSelector) {
       collapsed: wrapper ? wrapper.classList.contains('collapsed') : null,
     };
   }, { file, selector: wrapperSelector });
+}
+
+/**
+ * Give each of `files` its full contents now, through what the application
+ * calls for a file a navigation reveals a line of
+ * (`_ensurePierreContentUpgrade`, which the application before the
+ * virtualized viewer has too), and wait: resolves when each has them or
+ * cannot have them.
+ *
+ * In the background a file is given its contents only once the viewer has
+ * drawn it, so after a navigation over many files, which of the files passed
+ * on the way hold their contents is left to which frames the animated scroll
+ * happened to draw. A test that measures to less than a pixel below those
+ * files decides it instead (readFile in collapse-landing.spec.js). On a pane
+ * that draws every file, every file gets them anyway.
+ * @param {string[]} files - paths of changed files
+ */
+async function ensureContentUpgrades(page, files) {
+  return page.evaluate((list) => Promise.all(list.map((f) => window.prManager._ensurePierreContentUpgrade(f))), files);
+}
+
+/**
+ * Tick or clear the "Viewed" box of a file's header, and wait until the box
+ * shows that. Not `locator.check()`.
+ *
+ * The header is something the page put into a file, and the viewer takes it
+ * out of the document and puts it back with every draw of that file. When a
+ * draw falls between a press and its release the browser sends no click, and
+ * the bridge makes the click itself in a task of its own right after the
+ * release (PierreBridge._handlePointerUp, ledger H140): the box is ticked and
+ * the file collapses, one task later than a click the browser sends.
+ * `check()` reads the box the moment its release has been handled, finds it
+ * unchanged, and throws "Clicking the checkbox did not change its state" on
+ * a page that goes on to do what was asked (measured with a draw forced into
+ * the press: 29 of 240 checks threw, and in all 240 the box was ticked and
+ * the file collapsed with its header in place; the scroll a test makes just
+ * before is what draws the file, 1 time in 2,000 under load). A click and a
+ * wait for the box state the same thing without the race.
+ *
+ *  {import('@playwright/test').Locator} entry - the file's entry (its wrapper)
+ *  {boolean} [viewed=true]
+ */
+async function setViewedBox(entry, viewed = true) {
+  const box = entry.locator('.file-viewed-checkbox');
+  if ((await box.isChecked()) !== viewed) await box.click();
+  await expect(box).toBeChecked({ checked: viewed });
 }
 // --- collapse landings: end --------------------------------------------------
 
@@ -1812,6 +1896,8 @@ module.exports = {
   waitForContentUpgrade,
   waitForFileSettled,
   ensureContentUpgrade,
+  ensureContentUpgrades,
+  setViewedBox,
   waitForHighlightedDisplay,
   upgradeAwaitingDisplay,
   contentsApplied,
@@ -1821,6 +1907,7 @@ module.exports = {
   holdWorkerResults,
   // pointer
   waitForDiffSettled,
+  waitForPaneSettledInPlace,
   hoverDiffLine,
   openLineCommentForm,
   selectLineRange,

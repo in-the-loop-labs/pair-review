@@ -12,7 +12,7 @@ import { MODES, waitForDiffToRender, enableChat, mockViewedStateApi } from './he
 import { allCorpora, routeDiff } from './fixtures/diffs.js';
 import {
   fileWrapper, rowCount, waitForFileRendered, waitForContentUpgrade, headerLanding, scrollDiffToEdge,
-  scrollState, assertNoOrphanHosts, redrawFile, waitForDiffSettled
+  scrollState, assertNoOrphanHosts, redrawFile, waitForDiffSettled, setViewedBox
 } from './diff-dom.js';
 
 const { many: MANY } = allCorpora();
@@ -168,7 +168,7 @@ for (const mode of MODES) {
     test('Viewed collapses the file, marks it in the sidebar, and survives a reload', async ({ page }) => {
       await open(page);
       const wrapper = fileWrapper(page, UTILS);
-      await wrapper.locator('.file-viewed-checkbox').check();
+      await setViewedBox(wrapper);
       await expect(wrapper).toHaveClass(/collapsed/);
       await expect.poll(() => rowCount(page, UTILS)).toBe(0);
       await expect(sidebarItem(page, UTILS)).toHaveClass(/viewed/);
@@ -187,7 +187,7 @@ for (const mode of MODES) {
       await expect(fileWrapper(page, MAIN)).not.toHaveClass(/collapsed/);
 
       // Un-viewing expands it and shows its rows.
-      await reloaded.locator('.file-viewed-checkbox').uncheck();
+      await setViewedBox(reloaded, false);
       await expect(reloaded).not.toHaveClass(/collapsed/);
       await waitForFileRendered(page, UTILS);
       await expect(sidebarItem(page, UTILS)).not.toHaveClass(/viewed/);
@@ -197,7 +197,7 @@ for (const mode of MODES) {
     test('a viewed file can be expanded to read without un-viewing it', async ({ page }) => {
       await open(page);
       const wrapper = fileWrapper(page, UTILS);
-      await wrapper.locator('.file-viewed-checkbox').check();
+      await setViewedBox(wrapper);
       await expect(wrapper).toHaveClass(/collapsed/);
       await wrapper.locator('.file-collapse-toggle').click();
       await expect(wrapper).not.toHaveClass(/collapsed/);

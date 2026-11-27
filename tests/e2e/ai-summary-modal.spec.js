@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender, seedAISuggestions } from './helpers.js';
+import { waitForDiffToRender, seedAISuggestions, expandReviewPanel } from './helpers.js';
 
 test.describe('AI Summary Modal', () => {
   test('should have AI summary button in panel header', async ({ page }) => {
@@ -30,7 +30,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Click the summary button
     await page.locator('#ai-summary-btn').click();
@@ -49,7 +49,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -67,7 +67,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -85,7 +85,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -104,7 +104,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -120,7 +120,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal
     await page.locator('#ai-summary-btn').click();
@@ -137,7 +137,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Open modal before running analysis (no summary yet)
     await page.locator('#ai-summary-btn').click();
@@ -153,7 +153,7 @@ test.describe('AI Summary Modal', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so summary button is clickable
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis to get summary. The original inline copy never dismissed the
     // council progress modal, so opt out to preserve that behavior.

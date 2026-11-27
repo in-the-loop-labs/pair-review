@@ -45,7 +45,7 @@ import {
   expandContextGap, expandContextGapFully,
   openContextLineCommentForm, contextLineChatButton, expectedPaneOrder, filesInPane,
   fileWrapper, headerPosition, headerLanding, scrollState, waitForContentUpgrade, assertNoOrphanHosts, contextFileLayout,
-  waitForDiffType, scrollFileIntoView, openLineCommentForm
+  waitForDiffType, scrollFileIntoView, openLineCommentForm, setViewedBox
 } from './diff-dom.js';
 
 const MODES = [
@@ -549,7 +549,7 @@ for (const mode of MODES) {
       await addContextRange(page, MIDDLE, 5, 15);
       const wrapper = contextFile(page, MIDDLE);
 
-      await wrapper.locator('.file-viewed-checkbox').check();
+      await setViewedBox(wrapper);
       await expect(wrapper).toHaveClass(/collapsed/);
       // The sidebar shows the context entry as viewed, not a changed file.
       await expect(page.locator(`.file-item.context-file-item[data-path="${MIDDLE}"]`)).toHaveClass(/viewed/);
@@ -571,7 +571,7 @@ for (const mode of MODES) {
 
       // Un-viewing expands it again. (Wait for PR mode's save: the page
       // closing under it at the end of the test is a failed fetch.)
-      await reloaded.locator('.file-viewed-checkbox').uncheck();
+      await setViewedBox(reloaded, false);
       await expect(reloaded).not.toHaveClass(/collapsed/);
       if (mode.reviewId === 1) {
         await expect.poll(() => viewedApi.files).toEqual([]);

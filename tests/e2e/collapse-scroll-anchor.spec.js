@@ -17,7 +17,7 @@
 import { test, expect } from './fixtures.js';
 import { waitForDiffToRender } from './helpers.js';
 import {
-  scrollState, ensureMounted, filesInPane, waitForDiffSettled, gapBelowFile, spacingBelowFile, scrollPaneToEntry
+  scrollState, ensureMounted, filesInPane, waitForDiffSettled, gapBelowFile, spacingBelowFile, scrollPaneToEntry, setViewedBox
 } from './diff-dom.js';
 
 const MODES = [
@@ -161,7 +161,7 @@ for (const mode of MODES) {
     test('marking a file viewed keeps its collapsed header where it was stuck', async ({ page }) => {
       const stuckTop = await scrollPartwayInto(page, FIRST_ENTRY);
 
-      await page.locator(FIRST_ENTRY).locator('.file-viewed-checkbox').check();
+      await setViewedBox(page.locator(FIRST_ENTRY));
 
       await expect(page.locator(FIRST_ENTRY)).toHaveClass(/collapsed/);
       expect(await headerTop(page, FIRST_ENTRY)).toBeCloseTo(stuckTop, 0);
@@ -188,7 +188,7 @@ for (const mode of MODES) {
       expect(await headerIsStuck(page, secondEntry)).toBe(false);
       const scrollTopBefore = (await scrollState(page)).top;
 
-      await page.locator(secondEntry).locator('.file-viewed-checkbox').check();
+      await setViewedBox(page.locator(secondEntry));
 
       await expect(page.locator(secondEntry)).toHaveClass(/collapsed/);
       expect((await scrollState(page)).top).toBe(scrollTopBefore);
@@ -209,7 +209,7 @@ for (const mode of MODES) {
     test('marking a context entry viewed keeps its collapsed header where it was stuck', async ({ page }) => {
       const stuckTop = await scrollPartwayInto(page, CONTEXT_ENTRY);
 
-      await page.locator(CONTEXT_ENTRY).locator('.file-viewed-checkbox').check();
+      await setViewedBox(page.locator(CONTEXT_ENTRY));
 
       await expect(page.locator(CONTEXT_ENTRY)).toHaveClass(/collapsed/);
       expect(await headerTop(page, CONTEXT_ENTRY)).toBeCloseTo(stuckTop, 0);

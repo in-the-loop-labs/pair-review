@@ -11,7 +11,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, expandReviewPanel } from './helpers.js';
 
 /**
  * Helper to seed an analysis run by triggering the analyze endpoint
@@ -74,7 +74,7 @@ test.describe('Analysis History - Empty State', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Note: In a full test suite run, previous tests may have already run analysis,
     // so we check for the expected behavior based on the current state
@@ -101,7 +101,7 @@ test.describe('Analysis History - Empty State', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const emptyState = page.locator('#analysis-context-empty');
 
@@ -124,7 +124,7 @@ test.describe('Analysis History - Selector Display', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     const emptyState = page.locator('#analysis-context-empty');
     const selector = page.locator('#analysis-context-selector');
@@ -174,7 +174,7 @@ test.describe('Analysis History - Selector Display', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -196,7 +196,7 @@ test.describe('Analysis History - Preview Panel', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis first
     await seedAnalysis(page);
@@ -224,7 +224,7 @@ test.describe('Analysis History - Preview Panel', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -251,7 +251,7 @@ test.describe('Analysis History - Preview Panel', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run multiple analyses to have more than one item
     await seedAnalysis(page);
@@ -300,7 +300,7 @@ test.describe('Analysis History - Preview Panel', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -330,7 +330,7 @@ test.describe('Analysis History - Copy Button', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis with custom instructions
     await seedAnalysis(page);
@@ -375,7 +375,7 @@ test.describe('Analysis History - Copy Button', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis with custom instructions
     await seedAnalysis(page);
@@ -413,7 +413,7 @@ test.describe('Analysis History - Dropdown', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -440,7 +440,7 @@ test.describe('Analysis History - Dropdown', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -465,7 +465,7 @@ test.describe('Analysis History - Dropdown', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -486,7 +486,7 @@ test.describe('Analysis History - Dropdown', () => {
     await waitForDiffToRender(page);
 
     // Panel starts collapsed by default; expand it so analysis context elements are visible
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     // Run analysis
     await seedAnalysis(page);
@@ -512,7 +512,7 @@ test.describe('Analysis History - Dropdown', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    await page.evaluate(() => window.aiPanel?.expand());
+    await expandReviewPanel(page);
 
     await seedAnalysis(page);
     await seedAnalysis(page);

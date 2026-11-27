@@ -32,7 +32,7 @@
  */
 
 import { test, expect } from './fixtures.js';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, openDiffOptions } from './helpers.js';
 import { fileWrapper, rows, rowCount, assertNoOrphanHosts } from './diff-dom.js';
 import { customCorpus, routeDiff } from './fixtures/diffs.js';
 
@@ -330,7 +330,7 @@ test.describe('Lazy / budgeted diff rendering — whitespace toggle (PR mode)', 
     // Open the diff-options gear and toggle "Hide whitespace changes".
     // handleWhitespaceToggle() re-fetches the diff (?w=1) and fully rebuilds
     // the diff DOM, then re-anchors all overlays.
-    await page.locator('#diff-options-btn').click();
+    await openDiffOptions(page);
     const popover = page.locator('.diff-options-popover');
     await expect(popover).toBeVisible();
     const wsCheckbox = popover

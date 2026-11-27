@@ -162,6 +162,13 @@
   const END_FOLLOW_STILL_FRAMES = 20;
   const END_FOLLOW_MAX_MS = 2000;
   const SCROLL_DOWN_KEYS = new Set(['End', 'PageDown', 'ArrowDown', ' ', 'Spacebar']);
+  // The end of the pane after a collapse (_holdEndAfterCollapse). The pane is
+  // kept at its end while a file that is drawn still awaits its contents or
+  // their display, and for this long at most. The longest such wait the page
+  // makes on purpose is the ten seconds it holds a file's contents back while
+  // the pointer rests on that file (PRManager.PIERRE_POINTER_UPGRADE_DELAY_MS);
+  // the rest is for the request before it and the highlighter after it.
+  const END_HOLD_MAX_MS = 15000;
   // A release of the pane's scrollbar (_followEndAfterScrollbarRelease): the
   // pointer went down the track by at least this much during the press, and
   // the strip at the pane's edge a scrollbar may be in where the browser
@@ -223,6 +230,9 @@
      *   phase 'mount' | 'update' | 'unmount'
      * @param {Function} [options.hooks.resolvePath] - (path) => the id of the
      *   file a path in another form names, or null
+     * @param {Function} [options.hooks.contentsAwaited] - () => boolean,
+     *   whether a file that is drawn is still to be given its contents by the
+     *   page (a request in flight, or contents held back for the pointer)
      * @param {Object|Function} [options.collaborators] - what the card
      *   renderers need (see pierre-annotations.js); an object, or a function
      *   returning one that is called whenever something is needed
@@ -328,7 +338,8 @@
       this._onRootScroll = () => this._handleRootScroll();
       // The reader's last scroll input toward the end of the pane, with the
       // end of the pane at that moment; the follow that is running
-      // (_followEndAfterReaderScroll); the press in progress when it began
+      // (_followEndAfterReaderScroll), or the hold after a collapse
+      // (_holdEndAfterCollapse: `hold` is set); the press in progress when it began
       // on the pane's own scrollbar (where, whether the pane moved under it
       // and whether the thumb has been at the end of its track); and where
       // the finger of a touch was.
@@ -1782,6 +1793,7 @@
       this._queueSplitLayout(record);
       this._queueHoverRestore(id);
       this._queueTrimmedCardCheck(record);
+      this._queueEndHoldLook();
       this._notifyLifecycle(record, phase);
     }
 
@@ -2196,7 +2208,8 @@
      * scrolls down pressed outside a text field. The scroll it causes is
      * followed when it reaches that end (_followEndAfterReaderScroll); a
      * follow that is already running goes on, it is where this scroll is
-     * going too.
+     * going too. (The hold after a collapse, _holdEndAfterCollapse, is not
+     * such a follow: it ends here, at any input.)
      *
      * Everything else ends a follow that is running and forgets the last
      * scroll toward the end: a wheel step up, a touch dragged down, any
@@ -2241,6 +2254,10 @@
         this._readerScroll = null;
         return;
       }
+      // The hold after a collapse ends at any input of the reader's, a
+      // scroll toward the end included: from here on the pane is theirs,
+      // and what that scroll does at the end is _followEndAfterReaderScroll's.
+      if (this._endFollow?.hold) this._endFollow = null;
       this._readerScroll = { at: performance.now(), end: root.scrollHeight - root.clientHeight };
     }
 
@@ -2697,6 +2714,9 @@
      * pane it had (_stuckHeaderOffset), with the files after it below; a
      * pane that is too short for that now is at its end. A file whose
      * header is not stuck and a file that is not mounted move nothing.
+     * When the pane's end kept the collapsed header below the place it had,
+     * the pane is held at its end while the files that came into view above
+     * it are given their contents (_holdEndAfterCollapse).
      *
      * An expand is not anchored: when the file is in the pane or reaches
      * into it from above, the pane's scroll position stays the number it
@@ -2711,10 +2731,16 @@
       const record = this._record(fileName);
       if (!record) return false;
       if (record.collapsed === !!collapsed) return true;
+      // A collapse or an expand decides where the pane is: a follow of the
+      // pane's end, or the hold of an earlier collapse, ends here.
+      this._endFollow = null;
       // Read before the publish: collapsed, the file is its header alone.
       // (Left to itself the viewer anchors on a row that no longer exists
       // and the pane ends up somewhere else.)
       const headerOffset = collapsed ? this._stuckHeaderOffset(record) : null;
+      // Where the header is now, stuck or in view: the place a collapse
+      // keeps it at when the pane is long enough for that.
+      const headerPlace = !collapsed ? null : headerOffset !== null ? headerOffset : this._headerTop(record);
       // Left to itself the viewer moves the pane by a few pixels when the
       // file that expands is at the pane's top edge.
       const expandAt = !collapsed && this._reachesIntoPane(record) ? this.root.scrollTop : null;
@@ -2729,6 +2755,7 @@
         }
       });
       if (expandAt !== null && this.root && this.root.scrollTop !== expandAt) this.root.scrollTop = expandAt;
+      if (headerPlace !== null) this._holdEndAfterCollapse(record, headerPlace);
       return true;
     }
 
@@ -2762,6 +2789,166 @@
       const element = record._element;
       if (!element?.isConnected || !this.root) return false;
       return element.getBoundingClientRect().bottom > this.root.getBoundingClientRect().top;
+    }
+
+    /**
+     * Where a mounted file's header is, in pixels from the pane's top edge
+     * (negative above it). Null for a file that is not mounted.
+     * @private
+     */
+    _headerTop(record) {
+      const element = record._element;
+      if (!element?.isConnected || !this.root) return null;
+      const header = record._headerSlot?.isConnected ? record._headerSlot : element;
+      return header.getBoundingClientRect().top - this.root.getBoundingClientRect().top;
+    }
+
+    /**
+     * Keep the pane at its end after a collapse that its end cut short.
+     *
+     * A collapse keeps the file's header at the place it had (setCollapsed)
+     * when the pane is long enough below that header. When it is not, the
+     * pane is at its end and the header is further down: the last file of a
+     * review collapsed from inside it ends with its header 503 px below the
+     * pane's top in the measured review, and the files before it come into
+     * view above it. Those files were not mounted before. They are drawn
+     * from their patches, their contents are asked for now and arrive later
+     * (0.03 to 0.1 s; ten seconds while the pointer rests on such a file,
+     * which is where it is after a click on a header that was at the pane's
+     * top), and each grows by the lines its contents add (144 px for the
+     * file above, measured). The viewer keeps the line at the pane's top
+     * where it is when a file grows, so the pane was then 92 px short of
+     * its end and the collapsed header at 595 px in a pane of 597 px, out
+     * of view. With one renderer per file those files had their contents
+     * before the collapse and nothing moved.
+     *
+     * So after such a collapse the pane is held at its end: whenever its
+     * end has moved away from it, it is put there again before the frame
+     * is drawn, but never further than the collapsed header's own place
+     * (once the pane is long enough for the header to be where it was, the
+     * collapse is what it would have been, and the hold is over).
+     *
+     * Nothing is held when the header is where it was: the pane's end did
+     * not come into it, and what the pane does next is not the collapse's.
+     *
+     * The hold ends
+     *  - at any input of the reader's: a wheel step, a key, a touch move,
+     *    a press on the pane, its scrollbar included (_noteReaderScrollInput);
+     *  - at a scroll target or a view restore of the application's, and at
+     *    the next collapse or expand;
+     *  - when something else has moved the pane up (a scroll made by a
+     *    script; a pane that got shorter and is still at its end is not that);
+     *  - when the header is back at its place;
+     *  - when the collapsed file is no longer the pane's;
+     *  - when nothing is awaited (_awaitsContents) and the pane has not
+     *    changed for END_FOLLOW_STILL_FRAMES frames;
+     *  - after END_HOLD_MAX_MS, whatever is still awaited.
+     * It writes a position only when the pane's end has moved away since
+     * it last saw the pane at its end; a pane that is short of its end for
+     * any other reason is left where it is.
+     * @param {Object} record - the file that was collapsed
+     * @param {number} headerPlace - where its header was before the
+     *   collapse, in px from the pane's top edge
+     * @private
+     */
+    _holdEndAfterCollapse(record, headerPlace) {
+      const root = this.root;
+      // Not when the collapse is not drawn yet (asked for inside a batch,
+      // from a viewer callback, or with a list write waiting).
+      if (!root || this._destroyed || this._batchDepth > 0 || this._callbackDepth > 0) return;
+      if (this._listWriteQueued || this._listWriteRunning) return;
+      const end = Math.max(0, root.scrollHeight - root.clientHeight);
+      if (root.scrollTop < end - 1) return;
+      const now = this._headerTop(record);
+      if (now === null || now - headerPlace <= 1) return;
+      const hold = {
+        hold: true, record, headerPlace, until: performance.now() + END_HOLD_MAX_MS, still: 0, top: root.scrollTop, end, queued: false,
+      };
+      // Look at the pane: put it at its end when its end has moved away,
+      // and say whether the hold goes on. `frame`: this look is the one of
+      // a new frame (the frames at rest are counted; a look after a draw
+      // is not one).
+      hold.look = (frame) => {
+        if (this._endFollow !== hold) return false;
+        const over = () => {
+          this._endFollow = null;
+          return false;
+        };
+        if (this._destroyed || this.root !== root || this._listed.get(record.id) !== record) return over();
+        const top = root.scrollTop;
+        const endNow = Math.max(0, root.scrollHeight - root.clientHeight);
+        const atEnd = top >= endNow - 0.5;
+        // Something moved the pane up: that was not this hold.
+        if (top < hold.top - 1 && !atEnd) return over();
+        if (atEnd) {
+          // At its end, as it was or because it got shorter.
+          if (endNow !== hold.end || top !== hold.top || this._awaitsContents()) hold.still = 0;
+          else if (frame) hold.still++;
+          hold.top = top;
+          hold.end = endNow;
+        } else if (endNow > hold.end + 0.5) {
+          // The pane grew under a reader who was at its end.
+          const header = this._headerTop(record);
+          const room = header === null ? 0 : header - hold.headerPlace;
+          // The header is where it was (or the file is not drawn): done.
+          if (room <= 0.5) return over();
+          root.scrollTop = Math.min(endNow, top + room);
+          hold.top = root.scrollTop;
+          hold.end = endNow;
+          hold.still = 0;
+          // The pane is long enough for the header's place now.
+          if (hold.top < endNow - 0.5) return over();
+        }
+        if (hold.still >= END_FOLLOW_STILL_FRAMES || performance.now() > hold.until) return over();
+        return true;
+      };
+      this._endFollow = hold;
+      const tick = () => {
+        if (hold.look(true)) schedule(tick);
+      };
+      schedule(tick);
+    }
+
+    /**
+     * A file was drawn while the pane is held at its end
+     * (_holdEndAfterCollapse): look at the pane as soon as the viewer's
+     * pass is over, which is before the frame is painted. The viewer draws
+     * a file's new diff, and moves the pane for it, in a frame callback of
+     * its own; the hold's look of that frame has run by then, and without
+     * this one the pane was painted 92 px short of its end for one frame.
+     * @private
+     */
+    _queueEndHoldLook() {
+      const hold = this._endFollow;
+      if (!hold || !hold.hold || hold.queued) return;
+      hold.queued = true;
+      queueMicrotask(() => {
+        hold.queued = false;
+        hold.look(false);
+      });
+    }
+
+    /**
+     * Whether a file that is drawn may still change its height by itself:
+     * the page is still to give it its contents (hooks.contentsAwaited), or
+     * the viewer draws an older diff of it while the one the bridge last
+     * published is being highlighted (isDiffDisplayed).
+     * @private
+     */
+    _awaitsContents() {
+      if (typeof this.hooks.contentsAwaited === 'function') {
+        try {
+          if (this.hooks.contentsAwaited()) return true;
+        } catch (err) {
+          console.error('[PierreBridge] contentsAwaited hook failed:', err);
+        }
+      }
+      for (const record of this._listed.values()) {
+        if (record.collapsed || !record._element?.isConnected) continue;
+        if (typeof record._instance?.getRenderedDiff !== 'function') continue;
+        if (record._instance.getRenderedDiff() !== record.metadata) return true;
+      }
+      return false;
     }
 
     // ─── Contents, ranges, visibility ────────────────────────────────
