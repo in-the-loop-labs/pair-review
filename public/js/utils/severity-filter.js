@@ -22,9 +22,29 @@
 
   const SORT_MODES = ['file', 'severity'];
 
+  /**
+   * Other names providers use for the three levels. Severity is free text
+   * from the provider (executable providers pass a tool's own value through),
+   * so "high" must not fall into "none" with praise.
+   */
+  const SEVERITY_ALIASES = {
+    blocker: 'critical',
+    severe: 'critical',
+    high: 'critical',
+    major: 'critical',
+    error: 'critical',
+    moderate: 'medium',
+    warning: 'medium',
+    low: 'minor',
+    trivial: 'minor',
+    info: 'minor',
+    nit: 'minor'
+  };
+
   /** @returns {'critical'|'medium'|'minor'|'none'} */
   function normalizeSeverity(severity) {
     const value = typeof severity === 'string' ? severity.trim().toLowerCase() : '';
+    if (Object.hasOwn(SEVERITY_ALIASES, value)) return SEVERITY_ALIASES[value];
     return SEVERITY_LEVELS.includes(value) && value !== 'none' ? value : 'none';
   }
 
