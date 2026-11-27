@@ -38,6 +38,7 @@ beforeEach(() => {
           </div>
         </div>
       </div>
+      <div id="findings-nav"></div>
       <div id="findings-list"></div>
     </div>`;
   filterEvents = [];
@@ -436,6 +437,54 @@ describe('AI suggestion severity sort and filter', () => {
     localStorage.setItem(`pair-review-severity-filter_acme/widget#9`, '{oops');
     panel.setPR('acme', 'widget', 9);
     expect(panel.severityState).toEqual({ sort: 'file', hidden: [] });
+  });
+
+  it.each([
+    ['sorting', { sort: 'severity' }],
+    ['filtering', { hidden: ['none'] }]
+  ])('preserves the navigated selection when %s', (_label, updates) => {
+    const panel = panelWithFindings();
+    vi.spyOn(panel, 'scrollToCurrentItem').mockImplementation(() => {});
+    panel.goToNext();
+    expect(panel.getFilteredItems()[panel.currentIndex].id).toBe(2);
+
+    panel.setSeverityState(updates);
+
+    expect(panel.getFilteredItems()[panel.currentIndex].id).toBe(2);
+    expect(panel.selectedItemKey).toBe(panel.getItemKey(panel.getFilteredItems()[panel.currentIndex]));
+    expect(document.querySelector('.finding-item.active').dataset.id).toBe('2');
+    expect(panel.findingsCount.textContent).toBe(
+      `${panel.currentIndex + 1} of ${panel.getFilteredItems().length}`);
+  });
+
+  it('selects the first remaining item when the selected severity is hidden', () => {
+    const panel = panelWithFindings();
+    const lastItem = document.querySelector('.finding-item[data-id="4"]');
+    vi.spyOn(panel, 'scrollToFinding').mockImplementation(() => {});
+    lastItem.click();
+
+    panel.setSeverityState({ hidden: ['medium'] });
+
+    expect(panel.currentIndex).toBe(0);
+    expect(panel.selectedItemKey).toBe(panel.getItemKey(panel.getFilteredItems()[0]));
+    expect(document.querySelector('.finding-item.active').dataset.id).toBe('1');
+    expect(panel.findingsCount.textContent).toBe('1 of 3');
+  });
+
+  it('clears selection when everything is hidden and reselects when shown again', () => {
+    const panel = panelWithFindings();
+    panel.setSeverityState({ hidden: ['critical', 'medium', 'minor', 'none'] });
+
+    expect(panel.currentIndex).toBe(-1);
+    expect(panel.selectedItemKey).toBeNull();
+    expect(document.querySelector('.finding-item.active')).toBeNull();
+    expect(document.getElementById('findings-nav').textContent).toBe('');
+
+    panel.showAllSeverities();
+
+    expect(panel.currentIndex).toBe(0);
+    expect(document.querySelector('.finding-item.active').dataset.id).toBe('1');
+    expect(panel.findingsCount.textContent).toBe('1 of 4');
   });
 
   it('setSeverityState reports whether anything changed', () => {
