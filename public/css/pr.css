@@ -995,7 +995,9 @@
   height: 12px;
 }
 
-.file-group.expanded .file-group-chevron {
+/* Child combinators: only a folder's own chevron follows its expanded state,
+   not the chevrons of nested subfolders */
+.file-group.expanded > .file-group-header > .file-group-chevron {
   transform: rotate(90deg);
 }
 

@@ -286,6 +286,55 @@ test.describe('PR Page', () => {
     });
   });
 
+  test.describe('File Navigator Tree', () => {
+    // Render a known nested file list so the tree shape does not depend on the fixture PR
+    async function renderNestedFileList(page) {
+      await page.goto('/pr/test-owner/test-repo/1');
+      await waitForDiffToRender(page);
+      await page.evaluate(() => {
+        window.prManager.updateFileList([
+          { file: 'root/foo/README.md', insertions: 1, deletions: 0 },
+          { file: 'root/foo/bar/index.md', insertions: 1, deletions: 0 },
+          { file: 'root/foo/bar/xyz/example.rb', insertions: 1, deletions: 0 },
+        ]);
+      });
+    }
+
+    const group = (page, path) => page.locator(`#file-list .file-group[data-path="${path}"]`);
+    const chevronTransform = (page, path) => group(page, path)
+      .locator(':scope > .file-group-header > .file-group-chevron')
+      .evaluate(el => getComputedStyle(el).transform);
+
+    test('collapses shared prefixes and nests subfolders', async ({ page }) => {
+      await renderNestedFileList(page);
+
+      const labels = await page.locator('#file-list .file-group-name').allTextContents();
+      expect(labels).toEqual(['root/foo', 'bar', 'xyz']);
+
+      // bar is nested inside root/foo, and xyz inside bar
+      await expect(group(page, 'root/foo').locator('.file-group[data-path="root/foo/bar"]')).toHaveCount(1);
+      await expect(group(page, 'root/foo/bar').locator('.file-group[data-path="root/foo/bar/xyz"]')).toHaveCount(1);
+    });
+
+    test('collapsing a subfolder hides its files and resets only its own chevron', async ({ page }) => {
+      await renderNestedFileList(page);
+
+      const expandedTransform = await chevronTransform(page, 'root/foo');
+      expect(expandedTransform).not.toBe('none');
+
+      await group(page, 'root/foo/bar').locator(':scope > .file-group-header').click();
+
+      await expect(page.locator('.file-item[data-path="root/foo/bar/index.md"]')).toBeHidden();
+      await expect(page.locator('.file-item[data-path="root/foo/bar/xyz/example.rb"]')).toBeHidden();
+      await expect(page.locator('.file-item[data-path="root/foo/README.md"]')).toBeVisible();
+
+      // The collapsed subfolder's chevron points right even though its parent is
+      // expanded. Poll because the chevron rotation is animated with a transition.
+      await expect.poll(() => chevronTransform(page, 'root/foo/bar')).toBe('none');
+      await expect.poll(() => chevronTransform(page, 'root/foo')).toBe(expandedTransform);
+    });
+  });
+
   test.describe('Error Handling', () => {
     test('should show error for non-existent PR', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/999');

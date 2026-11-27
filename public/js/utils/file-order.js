@@ -106,9 +106,13 @@ function buildDirectoryTree(items, getPath = item => item.file) {
       only.name = `${current.name}/${only.name}`;
       current = only;
     }
+    // Sort before collapsing: each child's name is still a single path segment
+    // here, matching how compareFilePaths orders directories. Sorting collapsed
+    // labels like "foo/bar" would put "foo-x" first, since '-' sorts before '/'.
+    // Collapsing never reorders siblings: a collapsed node keeps its first segment.
     current.dirs = [...current._children.values()]
-      .map(child => finalize(child, false))
-      .sort((a, b) => byName(a.name, b.name));
+      .sort((a, b) => byName(a.name, b.name))
+      .map(child => finalize(child, false));
     current.files.sort((a, b) => byName(fileName(a), fileName(b)));
     delete current._children;
     return current;

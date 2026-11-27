@@ -417,6 +417,28 @@ describe('FileOrderUtils', () => {
       }
     });
 
+    it('orders merged folders like sortFilesByPath next to punctuated siblings', () => {
+      // foo/bar, src/main and lib/core are merged into one row each. Their
+      // siblings share a prefix followed by '-', '.' or '_', which sort before
+      // '/', so comparing merged labels would put the siblings first.
+      const paths = [
+        'src/main/a.js',
+        'src-tauri/b.rs',
+        'foo.d/x',
+        'foo/bar/y',
+        'foo-x/b.js',
+        'lib_utils/c.js',
+        'lib/core/d.js'
+      ];
+      const flatten = node => [...node.files, ...node.dirs.flatMap(flatten)];
+      const result = tree(paths);
+
+      expect(result.dirs.map(d => d.name)).toEqual([
+        'foo/bar', 'foo-x', 'foo.d', 'lib/core', 'lib_utils', 'src/main', 'src-tauri'
+      ]);
+      expect(flatten(result)).toEqual(sortFilesByPath(paths.map(file => ({ file }))).map(f => f.file));
+    });
+
     it('produces the same order as sortFilesByPath', () => {
       const paths = [
         'public/js/pr.js',
