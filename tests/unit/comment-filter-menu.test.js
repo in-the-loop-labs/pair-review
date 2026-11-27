@@ -78,8 +78,13 @@ describe('comment filter menu', () => {
     expect(menu().hidden).toBe(false);
     expect(funnel().getAttribute('aria-expanded')).toBe('true');
     const labels = [...menu().querySelectorAll('label')].map(l => l.textContent.trim());
-    expect(labels).toEqual(['Show dismissed', 'Show posted']);
-    expect(document.activeElement).toBe(option('showDismissed'));
+    expect(labels).toEqual([
+      'File order', 'Severity',
+      'Critical', 'Medium', 'Minor', 'No severity',
+      'Show dismissed', 'Show posted'
+    ]);
+    // Focus lands on the first option (the sort choice)
+    expect(document.activeElement).toBe(document.querySelector('input[data-severity-sort="file"]'));
   });
 
   it('closes on Escape (returning focus to the funnel) and on an outside click', () => {
@@ -336,5 +341,107 @@ describe('PRManager filter wiring', () => {
 
     expect(window.aiPanel.hiddenCommentCounts).toEqual({ posted: 0, dismissed: 2 });
     expect(window.aiPanel.comments.map(c => c.id)).not.toContain(1);
+  });
+});
+
+describe('AI suggestion severity sort and filter', () => {
+  const SEVERITY_KEY = `pair-review-severity-filter_${PR_KEY}`;
+  const sortOption = (mode) => document.querySelector(`input[data-severity-sort="${mode}"]`);
+  const severityOption = (level) => document.querySelector(`input[data-severity="${level}"]`);
+  const severityNotice = () => document.querySelector('.hidden-severity-notice');
+
+  const FINDINGS = [
+    { id: 1, file: 'a.js', line_start: 1, type: 'bug', title: 'one', severity: 'minor' },
+    { id: 2, file: 'a.js', line_start: 5, type: 'bug', title: 'two', severity: 'critical' },
+    { id: 3, file: 'a.js', line_start: 9, type: 'praise', title: 'three' },
+    { id: 4, file: 'b.js', line_start: 2, type: 'bug', title: 'four', severity: 'medium' }
+  ];
+
+  function panelWithFindings() {
+    const panel = makePanel();
+    panel.setFileOrder(new Map([['a.js', 0], ['b.js', 1]]));
+    panel.addFindings(FINDINGS);
+    return panel;
+  }
+
+  function choose(input, checked = true) {
+    input.checked = checked;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  const itemIds = (panel) => panel.getFilteredItems().map(i => i.id);
+
+  it('defaults to file order with every severity shown', () => {
+    const panel = panelWithFindings();
+    expect(sortOption('file').checked).toBe(true);
+    expect(sortOption('severity').checked).toBe(false);
+    ['critical', 'medium', 'minor', 'none'].forEach(l => expect(severityOption(l).checked).toBe(true));
+    expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
+    expect(severityNotice()).toBeNull();
+  });
+
+  it('sorts by severity, most severe first, and persists it without a comment reload', () => {
+    const panel = panelWithFindings();
+    choose(sortOption('severity'));
+    expect(itemIds(panel)).toEqual([2, 4, 1, 3]);
+    expect(JSON.parse(localStorage.getItem(SEVERITY_KEY))).toEqual({ sort: 'severity', hidden: [] });
+    expect(funnel().classList.contains('has-active-filter')).toBe(true);
+    expect(filterEvents).toHaveLength(0);
+
+    choose(sortOption('file'));
+    expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
+    expect(localStorage.getItem(SEVERITY_KEY)).toBeNull();
+    expect(funnel().classList.contains('has-active-filter')).toBe(false);
+  });
+
+  it('hides unchecked severities and shows a notice that restores them', () => {
+    const panel = panelWithFindings();
+    choose(severityOption('minor'), false);
+    choose(severityOption('none'), false);
+    expect(itemIds(panel)).toEqual([2, 4]);
+    expect(severityNotice().textContent).toMatch(/2 AI suggestions hidden by severity/);
+
+    document.querySelector('.hidden-severity-show').click();
+    expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
+    expect(severityNotice()).toBeNull();
+    expect(severityOption('minor').checked).toBe(true);
+  });
+
+  it('shows an explanatory empty state when every AI suggestion is hidden', () => {
+    panelWithFindings();
+    ['critical', 'medium', 'minor', 'none'].forEach(l => choose(severityOption(l), false));
+    expect(document.querySelector('.empty-state-title').textContent).toBe('No suggestions shown');
+    expect(severityNotice().textContent).toMatch(/4 AI suggestions hidden/);
+  });
+
+  it('never hides user comments, and sorts them after AI suggestions', () => {
+    const panel = panelWithFindings();
+    panel.comments = [{ id: 99, file: 'a.js', line_start: 0, body: 'mine', status: 'active' }];
+    panel.selectedSegment = 'all';
+    panel.setSeverityState({ sort: 'severity', hidden: ['minor', 'none'] });
+    expect(itemIds(panel)).toEqual([2, 4, 99]);
+  });
+
+  it('restores the saved state per review and ignores corrupt storage', () => {
+    localStorage.setItem(SEVERITY_KEY, JSON.stringify({ sort: 'severity', hidden: ['minor'] }));
+    const panel = panelWithFindings();
+    expect(sortOption('severity').checked).toBe(true);
+    expect(severityOption('minor').checked).toBe(false);
+    expect(itemIds(panel)).toEqual([2, 4, 3]);
+
+    // Another review has its own (default) state
+    panel.setPR('acme', 'widget', 8);
+    expect(panel.severityState).toEqual({ sort: 'file', hidden: [] });
+
+    localStorage.setItem(`pair-review-severity-filter_acme/widget#9`, '{oops');
+    panel.setPR('acme', 'widget', 9);
+    expect(panel.severityState).toEqual({ sort: 'file', hidden: [] });
+  });
+
+  it('setSeverityState reports whether anything changed', () => {
+    const panel = panelWithFindings();
+    expect(panel.setSeverityState({ sort: 'file' })).toBe(false);
+    expect(panel.setSeverityState({ hidden: ['minor'] })).toBe(true);
+    expect(panel.setSeverityState({ hidden: ['minor'] })).toBe(false);
   });
 });

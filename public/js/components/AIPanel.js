@@ -25,6 +25,15 @@ class AIPanel {
         </svg>`
     };
 
+    /** The SeverityFilter helpers (window global in the browser, require in tests). */
+    static severityFilter() {
+        if (typeof window !== 'undefined' && window.SeverityFilter) return window.SeverityFilter;
+        if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+            return require('../utils/severity-filter.js');
+        }
+        throw new Error('SeverityFilter is not loaded');
+    }
+
     constructor() {
         this.panel = document.getElementById('ai-panel');
         // Check actual DOM state for collapsed status
@@ -53,6 +62,10 @@ class AIPanel {
         this.showDismissedComments = false;
         // User comments the filters hide, counted by PRManager from its data
         this.hiddenCommentCounts = { posted: 0, dismissed: 0 };
+        // Severity sort/filter for AI suggestions (per review, see
+        // restoreSeverityState). AI suggestions it hides, for the list notice.
+        this.severityState = AIPanel.severityFilter().defaultSeverityState();
+        this.severityHiddenCount = 0;
 
         this.initElements();
         this.bindEvents();
@@ -146,13 +159,29 @@ class AIPanel {
         menu.className = 'comment-filter-menu';
         menu.id = 'comment-filter-menu';
         menu.setAttribute('role', 'group');
-        menu.setAttribute('aria-label', 'User comment filters');
+        menu.setAttribute('aria-label', 'Review filters');
         menu.hidden = true;
         const postedOption = this._isLocalMode() ? '' : `
             <label class="comment-filter-option">
                 <input type="checkbox" data-filter="showPosted"> Show posted
             </label>`;
+        const { SEVERITY_LEVELS, SEVERITY_LABELS } = AIPanel.severityFilter();
+        const severityOptions = SEVERITY_LEVELS.map(level => `
+            <label class="comment-filter-option">
+                <input type="checkbox" data-severity="${level}"> <span class="severity-option-label severity-option-${level}">${SEVERITY_LABELS[level]}</span>
+            </label>`).join('');
         menu.innerHTML = `
+            <div class="comment-filter-section" data-section="severity">
+                <div class="comment-filter-menu-title">Sort AI suggestions</div>
+                <label class="comment-filter-option">
+                    <input type="radio" name="severity-sort" data-severity-sort="file"> File order
+                </label>
+                <label class="comment-filter-option">
+                    <input type="radio" name="severity-sort" data-severity-sort="severity"> Severity
+                </label>
+                <div class="comment-filter-menu-title">Show severity</div>${severityOptions}
+            </div>
+            <div class="comment-filter-menu-divider" role="separator"></div>
             <div class="comment-filter-menu-title">User comments</div>
             <label class="comment-filter-option">
                 <input type="checkbox" data-filter="showDismissed"> Show dismissed
@@ -174,6 +203,17 @@ class AIPanel {
         });
         menu.addEventListener('change', (e) => {
             const input = e.target;
+            if (input?.dataset?.severitySort) {
+                if (input.checked) this.setSeverityState({ sort: input.dataset.severitySort });
+                return;
+            }
+            if (input?.dataset?.severity) {
+                const level = input.dataset.severity;
+                const hidden = this.severityState.hidden.filter(l => l !== level);
+                if (!input.checked) hidden.push(level);
+                this.setSeverityState({ hidden });
+                return;
+            }
             if (!input?.dataset?.filter) return;
             this.setCommentFilter({ [input.dataset.filter]: input.checked });
         });
@@ -332,9 +372,10 @@ class AIPanel {
      */
     updateFilterMenuVisual() {
         if (!this.filterMenuBtn) return;
-        const nonDefault = this.isCommentFilterNonDefault();
+        const nonDefault = this.isCommentFilterNonDefault()
+            || !AIPanel.severityFilter().isSeverityStateDefault(this.severityState);
         this.filterMenuBtn.classList.toggle('has-active-filter', nonDefault);
-        const label = nonDefault ? 'Filter user comments (filters on)' : 'Filter user comments';
+        const label = nonDefault ? 'Sort and filter (filters on)' : 'Sort and filter';
         this.filterMenuBtn.title = label;
         this.filterMenuBtn.setAttribute('aria-label', label);
 
@@ -343,6 +384,58 @@ class AIPanel {
         if (dismissedInput) dismissedInput.checked = state.includeDismissed;
         const postedInput = this.filterMenu?.querySelector('input[data-filter="showPosted"]');
         if (postedInput) postedInput.checked = state.showPosted;
+
+        const { sort, hidden } = this.severityState;
+        this.filterMenu?.querySelectorAll('input[data-severity-sort]').forEach(input => {
+            input.checked = input.dataset.severitySort === sort;
+        });
+        this.filterMenu?.querySelectorAll('input[data-severity]').forEach(input => {
+            input.checked = !hidden.includes(input.dataset.severity);
+        });
+    }
+
+    /**
+     * Change the AI suggestion severity sort/filter as the user asked: persist
+     * it, update the menu and re-render the list. AI suggestions are already
+     * loaded, so nothing reloads.
+     * @param {{sort?: 'file'|'severity', hidden?: string[]}} updates
+     * @returns {boolean} Whether anything changed
+     */
+    setSeverityState(updates = {}) {
+        const lib = AIPanel.severityFilter();
+        const next = lib.parseSeverityState({ ...this.severityState, ...updates });
+        const prev = this.severityState;
+        const changed = next.sort !== prev.sort || next.hidden.join() !== prev.hidden.join();
+        this.severityState = next;
+        this.updateFilterMenuVisual();
+        if (!changed) return false;
+
+        this.saveSeverityState();
+        this.renderFindings();
+        if (!this.restoreSelection()) {
+            this.autoSelectFirst();
+        }
+        return true;
+    }
+
+    /** Show every severity again (the notice's Show button). Keeps the sort. */
+    showAllSeverities() {
+        return this.setSeverityState({ hidden: [] });
+    }
+
+    /**
+     * The muted "N AI suggestions hidden by severity — Show all" line, or ''
+     * when the severity filter hides nothing in this segment.
+     */
+    renderHiddenSeverityNotice() {
+        const count = this.severityHiddenCount;
+        if (!count || (this.selectedSegment !== 'ai' && this.selectedSegment !== 'all')) return '';
+        const noun = count === 1 ? 'AI suggestion' : 'AI suggestions';
+        return `
+            <div class="hidden-severity-notice">
+                <span>${count} ${noun} hidden by severity</span> —
+                <button type="button" class="hidden-severity-show" aria-label="Show AI suggestions of every severity">Show all</button>
+            </div>`;
     }
 
     /**
@@ -485,6 +578,34 @@ class AIPanel {
     }
 
     /**
+     * Get the localStorage key for the AI suggestion severity sort/filter (per-review)
+     * @returns {string|null} Storage key or null if no PR context
+     */
+    getSeverityStorageKey() {
+        if (!this.currentPRKey) return null;
+        return `pair-review-severity-filter_${this.currentPRKey}`;
+    }
+
+    /** Save the severity sort/filter; the default state removes the entry. */
+    saveSeverityState() {
+        const key = this.getSeverityStorageKey();
+        if (!key) return;
+        if (AIPanel.severityFilter().isSeverityStateDefault(this.severityState)) {
+            localStorage.removeItem(key);
+        } else {
+            localStorage.setItem(key, JSON.stringify(this.severityState));
+        }
+    }
+
+    /** Restore the severity sort/filter for this review (default when none saved). */
+    restoreSeverityState() {
+        const key = this.getSeverityStorageKey();
+        const lib = AIPanel.severityFilter();
+        const stored = key ? localStorage.getItem(key) : null;
+        this.severityState = stored ? lib.parseSeverityState(stored) : lib.defaultSeverityState();
+    }
+
+    /**
      * Save the "Show dismissed" filter to localStorage (per-review)
      */
     saveFilterState() {
@@ -509,6 +630,7 @@ class AIPanel {
         const key = this.getFilterStorageKey();
         // Default to false (hidden) for new reviews
         this.showDismissedComments = key ? localStorage.getItem(key) === 'true' : false;
+        this.restoreSeverityState();
 
         // "Show posted": this review's override, if any. Local mode has no
         // posted comments and so no override.
@@ -908,8 +1030,13 @@ class AIPanel {
                 break;
         }
 
-        // Sort by canonical file order, then file-level first, then line number
-        return this.sortItemsByFileOrder(items);
+        // Sort by canonical file order, then file-level first, then line
+        // number; then apply the severity filter and (optional) severity sort,
+        // which is stable so equal severities stay in file order.
+        const result = AIPanel.severityFilter().applySeverityState(
+            this.sortItemsByFileOrder(items), this.severityState);
+        this.severityHiddenCount = result.hiddenCount;
+        return result.items;
     }
 
     /**
@@ -976,7 +1103,7 @@ class AIPanel {
 
         const items = this.getFilteredItems();
         // "N posted · M dismissed hidden — Show", or '' when nothing is hidden
-        const hiddenNotice = this.renderHiddenCommentsNotice();
+        const hiddenNotice = this.renderHiddenSeverityNotice() + this.renderHiddenCommentsNotice();
 
         // Show empty state based on segment and analysis state
         if (items.length === 0) {
@@ -992,6 +1119,12 @@ class AIPanel {
                     <div class="empty-state-icon">${this.getEmptyStateIcon('comment')}</div>
                     <div class="empty-state-title">No comments yet</div>
                     <div class="empty-state-description">Click the <strong>+</strong> button next to any line to add a comment.</div>
+                `;
+            } else if (this.selectedSegment === 'ai' && this.severityHiddenCount > 0) {
+                emptyContent = `
+                    <div class="empty-state-icon">${this.getEmptyStateIcon('sparkle')}</div>
+                    <div class="empty-state-title">No suggestions shown</div>
+                    <div class="empty-state-description">The severity filter hides every AI suggestion.</div>
                 `;
             } else if (this.selectedSegment === 'ai') {
                 // Show different states based on analysis status
@@ -1138,6 +1271,13 @@ class AIPanel {
             showBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.showHiddenComments();
+            });
+        }
+        const severityBtn = this.findingsList?.querySelector('.hidden-severity-show');
+        if (severityBtn) {
+            severityBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showAllSeverities();
             });
         }
     }
