@@ -9174,15 +9174,28 @@ body.resizing * {
   accent-color: var(--comment-primary);
 }
 
+/* Line between the AI suggestion (severity) and user comment sections */
+.comment-filter-menu-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--color-border-primary);
+}
+
+.comment-filter-section .comment-filter-option + .comment-filter-menu-title {
+  padding-top: 8px;
+}
+
 /* Muted line at the end of the user comment list when filters hide some */
-.hidden-comments-notice {
+.hidden-comments-notice,
+.hidden-severity-notice {
   padding: 8px 12px;
   font-size: 12px;
   color: var(--color-text-tertiary);
   text-align: center;
 }
 
-.hidden-comments-show {
+.hidden-comments-show,
+.hidden-severity-show {
   padding: 0;
   background: none;
   border: none;
@@ -9191,7 +9204,8 @@ body.resizing * {
   cursor: pointer;
 }
 
-.hidden-comments-show:hover {
+.hidden-comments-show:hover,
+.hidden-severity-show:hover {
   text-decoration: underline;
 }
 
