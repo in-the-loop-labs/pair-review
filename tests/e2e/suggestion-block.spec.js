@@ -10,10 +10,10 @@
  * (vendor fact F32: parsed lines keep theirs). Before, a block of three
  * lines had an empty line after each (on main too), and a range across
  * drawn lines outside the hunks lost them. A range with a line the diff
- * does not show (a drag across a separator; a comment saved over a gap)
- * gets no block: a warning, and the text is left as it was. Before, it got
- * the lines of the hunks only: applied on GitHub, the block deleted the
- * others.
+ * does not show (a comment saved over a gap; a drag stops at a separator
+ * since H184) gets no block: a warning, and the text is left as it was.
+ * Before, it got the lines of the hunks only: applied on GitHub, the block
+ * deleted the others.
  *
  * The corpus is `reviewFixesCorpus` (tests/e2e/fixtures/diffs.js), and a
  * registered context file.
@@ -25,7 +25,7 @@ import {
 } from './helpers.js';
 import { reviewFixesCorpus, routeDiff, fileLinesFor } from './fixtures/diffs.js';
 import {
-  fileWrapper, fileSelector, contextFileSelector, lineCards, openLineCommentForm, selectLineRange,
+  fileWrapper, fileSelector, contextFileSelector, lineCards, openLineCommentForm, selectLineRange, dragLineNumbers,
   waitForContentUpgrade, waitForDiffSettled, expandHunkBy, isLineVisible, scrollFileIntoView
 } from './diff-dom.js';
 
@@ -105,17 +105,16 @@ for (const mode of MODES) {
       await expect(form.locator('textarea')).toHaveValue(block(range(72, 77).map(alpha)));
     });
 
-    test('a range dragged across a separator gets no block: a warning, and the form as it was', async ({ page }) => {
-      // The drag crosses the hidden lines 18-76 (on main a drag stopped at a separator).
-      await selectLineRange(page, { file: ALPHA, start: 15, end: 79 });
-      await openLineCommentForm(page, { file: ALPHA, line: 79 });
+    test('a range dragged across a separator stops at it: the form and the block are the lines above it', async ({ page }) => {
+      // The drag reaches past the hidden lines 18-76 and stops at them (ledger H184).
+      const drag = await dragLineNumbers(page, { file: ALPHA, from: 15, to: 79 });
+      expect(drag.released).toEqual({ start: 15, end: 17, side: 'RIGHT' });
+      await openLineCommentForm(page, { file: ALPHA, line: 17 });
       const form = fileWrapper(page, ALPHA).locator('.user-comment-form');
-      await expect(form.locator('.line-range-indicator')).toHaveText('Lines 15-79');
-      await form.locator('textarea').fill('Typed first');
+      await expect(form.locator('.line-range-indicator')).toHaveText('Lines 15-17');
       await form.locator('.suggestion-btn').click();
-      await expect(page.locator('.toast-warning')).toHaveText(REFUSAL(15, 79));
-      await expect(form.locator('textarea')).toHaveValue('Typed first');
-      await expect(form.locator('.suggestion-btn')).toBeEnabled();
+      await expect(form.locator('textarea')).toHaveValue(block(range(15, 17).map(alpha)));
+      await expect(page.locator('.toast-warning')).toHaveCount(0);
     });
 
     test('a comment over lines the diff does not show gets no block from its edit form: a warning, and the text as it was', async ({ page }) => {

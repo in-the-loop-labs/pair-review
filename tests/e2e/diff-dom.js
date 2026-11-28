@@ -1124,6 +1124,244 @@ async function selectLineRange(page, { file, start, end, side = 'additions', wai
   }).toPass({ timeout: 15000 });
 }
 
+/** Wait `count` animation frames of the page. */
+async function animationFrames(page, count = 1) {
+  await page.evaluate((n) => new Promise((resolve) => {
+    let left = n;
+    const step = () => (--left <= 0 ? resolve() : requestAnimationFrame(step));
+    requestAnimationFrame(step);
+  }), count);
+}
+
+/** The bounding box of `locator` once it is the same in two frames running (null when it has none). */
+async function steadyBox(page, locator, { timeout = 5000 } = {}) {
+  const until = Date.now() + timeout;
+  let box = await locator.boundingBox();
+  while (box && Date.now() < until) {
+    await animationFrames(page, 2);
+    const again = await locator.boundingBox();
+    if (again && Math.abs(again.x - box.x) < 0.5 && Math.abs(again.y - box.y) < 0.5) return again;
+    box = again;
+  }
+  return box;
+}
+
+/**
+ * Drag down or up the line-number column with a real pointer, from one line
+ * to another, and report what the application selected. Unlike
+ * selectLineRange, whatever the application makes of the drag is the
+ * answer: a drag across lines the diff does not show stops at them (ledger
+ * H184).
+ *
+ * The press must land on `from`. Rows can move under a resting pointer (a
+ * file's contents or cards arriving, the pane settling after a scroll: seen
+ * one row off on the first drag after a scroll), so the boxes are taken once
+ * they are steady and the press is checked: when the application does not
+ * report `from` alone on its side, the pointer is let go and the gesture is
+ * made again, as a reader would.
+ *
+ * @param {Object} options
+ * @param {string} options.file
+ * @param {number} options.from - the line the drag starts on
+ * @param {number} options.to - the line the pointer is let go on
+ * @param {('additions'|'deletions')} [options.side='additions'] - of `from`:
+ *   its column in split layout, deleted or other row in unified layout
+ * @param {('additions'|'deletions')} [options.toSide=side] - of `to`
+ * @param {boolean} [options.context=false] - `file` is a context file
+ * @param {boolean} [options.waitForUpgrade] - default: not for a context
+ *   file; false for a file whose contents are held by the test
+ * @param {Function} [options.whileHeld] - async () => void, run with the
+ *   pointer held on `to`, before the release
+ * @returns {Promise<{held: Object|null, released: Object|null}>} the
+ *   application's selection (lineSelection) with the pointer held on `to`,
+ *   and after the release
+ */
+async function dragLineNumbers(page, { file, from, to, side = 'additions', toSide = side, context = false, waitForUpgrade = !context, whileHeld }) {
+  const scope = context ? contextFile(page, file) : fileWrapper(page, file);
+  const cellFor = (line, s) => lineNumberCell(scope, line, { side: s }).first();
+  if (waitForUpgrade) await waitForContentUpgrade(page, file);
+  const pressedSide = sideColumn(side) === 'deletions' ? 'LEFT' : 'RIGHT';
+  let result = null;
+  await expect(async () => {
+    await cellFor(from, side).scrollIntoViewIfNeeded({ timeout: 2000 });
+    const a = await steadyBox(page, cellFor(from, side));
+    const b = await steadyBox(page, cellFor(to, toSide));
+    if (!a || !b) throw new Error(`dragLineNumbers: lines ${from} and ${to} of ${file} must both be on screen`);
+    await page.mouse.move(a.x + 6, a.y + a.height / 2);
+    await page.mouse.down();
+    const outcome = {};
+    try {
+      const pressed = await lineSelection(page, file);
+      if (!pressed || pressed.start !== from || pressed.end !== from || pressed.side !== pressedSide) {
+        throw new Error(`dragLineNumbers: the press meant for line ${from} (${pressedSide}) selected ${JSON.stringify(pressed)}`);
+      }
+      await page.mouse.move(b.x + 6, b.y + b.height / 2, { steps: 12 });
+      await animationFrames(page, 2);
+      outcome.held = await lineSelection(page, file);
+      if (whileHeld) await whileHeld();
+    } finally {
+      await page.mouse.up();
+    }
+    outcome.released = await lineSelection(page, file);
+    result = outcome;
+  }).toPass({ timeout: 15000 });
+  return result;
+}
+
+/**
+ * Shift-click a line number: the gesture that extends the selection there
+ * is to the clicked line. Returns the application's selection afterwards.
+ * @param {Object} options - `{file, line, side}` as for dragLineNumbers
+ */
+async function shiftClickLineNumber(page, { file, line, side = 'additions' }) {
+  const box = await steadyBox(page, lineNumberCell(fileWrapper(page, file), line, { side }).first());
+  if (!box) throw new Error(`shiftClickLineNumber: line ${line} of ${file} must be on screen`);
+  await page.keyboard.down('Shift');
+  try {
+    await page.mouse.click(box.x + 6, box.y + box.height / 2);
+  } finally {
+    await page.keyboard.up('Shift');
+  }
+  return lineSelection(page, file);
+}
+
+/**
+ * Drag that starts on the comment button of the gutter (the application's
+ * own drag, `wrapButton` in pierre-gutter.js): point at `from`'s number,
+ * press on the button that appears, drag to `to`'s number, let go. The
+ * vendor limits it to two lines (ledger H45, H130). Made again when the
+ * button was another row's (the selection then holds neither `from` as an
+ * end nor nothing).
+ * @returns {Promise<{held: Object|null, released: Object|null}>}
+ */
+async function dragFromCommentButton(page, { file, from, to }) {
+  const scope = fileWrapper(page, file);
+  let result = null;
+  await expect(async () => {
+    await clearSelection(page, file);
+    await page.mouse.move(0, 0);
+    const fromCell = lineNumberCell(scope, from, { side: 'additions' }).first();
+    await fromCell.scrollIntoViewIfNeeded({ timeout: 2000 });
+    await fromCell.hover({ timeout: 2000 });
+    const button = scope.locator('.pierre-comment-btn').first();
+    await expect(button).toBeVisible({ timeout: 2000 });
+    const a = await steadyBox(page, button);
+    const b = await steadyBox(page, lineNumberCell(scope, to, { side: 'additions' }).first());
+    if (!a || !b) throw new Error(`dragFromCommentButton: the button and line ${to} must be on screen`);
+    await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+    await page.mouse.down();
+    const outcome = {};
+    try {
+      await page.mouse.move(a.x + a.width / 2, b.y + b.height / 2, { steps: 12 });
+      await animationFrames(page, 2);
+      outcome.held = await lineSelection(page, file);
+    } finally {
+      await page.mouse.up();
+    }
+    outcome.released = await lineSelection(page, file);
+    const s = outcome.released;
+    if (s && s.start !== from && s.end !== from) {
+      throw new Error(`dragFromCommentButton: the button was another row's (selection ${JSON.stringify(s)}, from ${from})`);
+    }
+    result = outcome;
+  }).toPass({ timeout: 15000 });
+  return result;
+}
+
+/** Clear the line selection of `file`, if it has one. */
+async function clearSelection(page, file) {
+  await page.evaluate((f) => window.prManager.pierreBridge.clearLineSelection(f), file);
+}
+
+/**
+ * Start recording which rows of `file` are highlighted as selected: at every
+ * microtask checkpoint at which the set changed (nothing can be painted
+ * between two of them) and at every animation frame, until
+ * selectedRowsWatched. One watch per page at a time.
+ */
+async function watchSelectedRows(page, file) {
+  await inPage(page, (D, f) => {
+    const rootOf = () => {
+      const host = D.hostOf(D.wrapper(f) || D.contextWrapper(f));
+      return (host && host.shadowRoot) || null;
+    };
+    const highlighted = () => {
+      const pre = rootOf() && rootOf().querySelector('pre[data-diff-type]');
+      if (!pre) return [];
+      return [...pre.querySelectorAll('[data-column-number][data-selected-line]')].map((cell) => {
+        const code = cell.closest('code');
+        const deletion = code.hasAttribute('data-deletions')
+          || (!code.hasAttribute('data-additions') && cell.getAttribute('data-line-type') === 'change-deletion');
+        return { side: deletion ? 'LEFT' : 'RIGHT', line: Number(cell.getAttribute('data-column-number')) };
+      });
+    };
+    const watch = { states: [], stopped: false, last: null };
+    const note = () => {
+      const state = highlighted();
+      const key = JSON.stringify(state);
+      if (key !== watch.last) { watch.states.push(state); watch.last = key; }
+    };
+    watch.observer = new MutationObserver(note);
+    // The file's rows can be drawn again (its contents arriving): observed from its root down.
+    const observe = () => { const root = rootOf(); if (root) watch.observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-selected-line'] }); };
+    observe();
+    const frame = () => {
+      if (watch.stopped) return;
+      observe();
+      note();
+      requestAnimationFrame(frame);
+    };
+    note();
+    requestAnimationFrame(frame);
+    window.__selectedRowsWatch = watch;
+  }, file);
+}
+
+/**
+ * Stop the watch of watchSelectedRows (after two more frames) and return
+ * what it saw: each state a list of `{side: 'LEFT'|'RIGHT', line}`, in order.
+ */
+async function selectedRowsWatched(page) {
+  return page.evaluate(async () => {
+    const watch = window.__selectedRowsWatch;
+    if (!watch) throw new Error('selectedRowsWatched: no watch (call watchSelectedRows first)');
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    watch.stopped = true;
+    watch.observer.disconnect();
+    delete window.__selectedRowsWatch;
+    return watch.states;
+  });
+}
+
+/**
+ * The line whose number cell the visible gutter buttons of `file` sit in,
+ * by where they are drawn: `{line, side}`, or null when none is shown.
+ */
+async function gutterButtonsLine(page, file) {
+  return inPage(page, (D, f) => {
+    const wrapper = D.wrapper(f) || D.contextWrapper(f);
+    const host = D.hostOf(wrapper);
+    if (!wrapper || !host || !host.shadowRoot) return null;
+    const shown = [...wrapper.querySelectorAll('.pierre-gutter-buttons')].find((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
+    });
+    if (!shown) return null;
+    const r = shown.getBoundingClientRect();
+    const y = r.top + r.height / 2;
+    const x = r.left + r.width / 2;
+    const cell = [...host.shadowRoot.querySelectorAll('[data-column-number]')].find((c) => {
+      const b = c.getBoundingClientRect();
+      return b.height > 0 && y >= b.top && y < b.bottom && x >= b.left - 1 && x <= b.right + 1;
+    });
+    if (!cell) return null;
+    const code = cell.closest('code');
+    const deletion = code.hasAttribute('data-deletions')
+      || (!code.hasAttribute('data-additions') && cell.getAttribute('data-line-type') === 'change-deletion');
+    return { line: Number(cell.getAttribute('data-column-number')), side: deletion ? 'LEFT' : 'RIGHT' };
+  }, file);
+}
+
 /**
  * State of every gutter-button container on the page, judged the way a user
  * would: is it showing, and if so is it on the row the pointer is over?
@@ -1951,6 +2189,12 @@ module.exports = {
   hoverDiffLine,
   openLineCommentForm,
   selectLineRange,
+  dragLineNumbers,
+  shiftClickLineNumber,
+  dragFromCommentButton,
+  watchSelectedRows,
+  selectedRowsWatched,
+  gutterButtonsLine,
   lineSelection,
   gutterButtonsState,
   additionsContentPoint,

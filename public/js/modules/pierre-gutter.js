@@ -73,7 +73,8 @@
    *   the row the viewer reports as hovered, in the app's sides
    * @param {Function} deps.getLineSelection - () => { start, end, side } | null
    * @param {Function} deps.clearLineSelection - () => void
-   * @param {Function} deps.selectLines - (start, end, side) => void; side is 'LEFT'|'RIGHT'
+   * @param {Function} deps.selectLines - (start, end, side) => void; side is 'LEFT'|'RIGHT';
+   *   `start` is the line the drag started on (it may be the higher one)
    * @param {Function} [deps.onChatClick] - (start, side, target) => void; no
    *   chat button without it
    * @param {Function} [deps.onCommentClick] - (start, side, target) => void
@@ -123,11 +124,9 @@
           const cur = getHoveredRow();
           if (!cur || cur.lineNumber === dragInfo.startLine) return;
           dragInfo.dragged = true;
-          selectLines(
-            Math.min(dragInfo.startLine, cur.lineNumber),
-            Math.max(dragInfo.startLine, cur.lineNumber),
-            dragInfo.side
-          );
+          // The line the drag started on first, as in the viewer's own
+          // ranges: the bridge cuts a range at hidden lines from it.
+          selectLines(dragInfo.startLine, cur.lineNumber, dragInfo.side);
         };
 
         const onUp = (ue) => {

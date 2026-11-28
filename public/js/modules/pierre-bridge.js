@@ -742,13 +742,25 @@
             element: props.lineElement,
           });
         },
+        // Every range the viewer reports is cut back at hidden lines before
+        // anything uses it (_cutViewerSelection): the press (a shift-click
+        // extends a selection there), each row the pointer reaches, the
+        // release. The page is told the cut range only.
+        onLineSelectionStart: (range, context) => {
+          this._cutViewerSelection(this._listedRecord(context?.item?.id)?.id, range);
+        },
+        onLineSelectionChange: (range, context) => {
+          this._cutViewerSelection(this._listedRecord(context?.item?.id)?.id, range);
+        },
         onLineSelected: (range, context) => {
           const record = this._listedRecord(context?.item?.id);
-          if (this._isCurrent(record) && this.options.onLineSelect) this.options.onLineSelect(record.id, range);
+          const cut = this._cutViewerSelection(record?.id, range);
+          if (this._isCurrent(record) && this.options.onLineSelect) this.options.onLineSelect(record.id, cut);
         },
         onLineSelectionEnd: (range, context) => {
           const record = this._listedRecord(context?.item?.id);
-          if (this._isCurrent(record) && this.options.onLineSelectionEnd) this.options.onLineSelectionEnd(record.id, range);
+          const cut = this._cutViewerSelection(record?.id, range);
+          if (this._isCurrent(record) && this.options.onLineSelectionEnd) this.options.onLineSelectionEnd(record.id, cut);
         },
       };
     }
@@ -1579,7 +1591,9 @@
         this.root.scrollTop = view.scrollTop;
       }
       if (selection && selection.id != null && this._listed.has(selection.id)) {
-        this.codeView.setSelectedLines(selection);
+        // The file may have another diff now: what it hides is cut off.
+        const range = this._cutForList(selection.id, selection.range);
+        if (range) this.codeView.setSelectedLines(range === selection.range ? selection : { id: selection.id, range });
       }
       if (focus && focus.element.isConnected && document.activeElement !== focus.element) {
         focus.element.focus({ preventScroll: true });
@@ -1615,6 +1629,10 @@
       // The viewer ignores an item whose version it has already seen.
       record.version++;
       this.codeView.updateItem({ ...item, ...this._itemFor(record) });
+      // The viewer put its selection back on the new diff without a
+      // callback (CodeView syncSelection); what the new diff hides is cut.
+      const selection = this.codeView.getSelectedLines?.();
+      if (selection?.id === id && selection.range) this._cutViewerSelection(id, selection.range);
       this._requestFlush();
       return true;
     }
@@ -2672,8 +2690,218 @@
       // is in the file it replaced.
       const selection = this._isListed(record) ? this.codeView?.getSelectedLines?.() : null;
       if (!selection || selection.id !== record.id || !selection.range) return null;
-      const { start, end, side } = selection.range;
+      // The bridge keeps the viewer's selection cut (_cutViewerSelection);
+      // asked again here so that no reader ever gets a hidden line.
+      const range = this._cutForList(record.id, selection.range);
+      if (!range) return null;
+      const { start, end, side } = range;
       return { start: Math.min(start, end), end: Math.max(start, end), side: this._appSide(record, side) };
+    }
+
+    /**
+     * A line range cut back to the run of shown lines (_shownRuns) that
+     * holds its first line: nothing beyond the nearest hidden lines in the
+     * direction of the drag. The viewer's ranges have the line a gesture
+     * started on (its anchor) as `start` and the line under the pointer as
+     * `end`, whichever is higher; `endSide` when the end is in the other
+     * column of a split layout. Hidden lines are unchanged lines, the same
+     * lines on both sides, so the n-th run of one side is the n-th run of
+     * the other: an end in the other column is cut at that column's run.
+     * A diff where a run has lines on one side only (hunks without context
+     * lines; neither GitHub's patches nor the local diff make them) keeps
+     * the one line the gesture started on. A cut end is the run's first or
+     * last row, named as _addressCutEnd says.
+     * @param {Object} record
+     * @param {Object} metadata - the diff the range is a range of
+     * @param {{start: number, end: number, side?: string, endSide?: string}|null} range
+     *   - the viewer's
+     * @param {Map|null} [map] - the expansion map drawn with `metadata`
+     *   (default: the one that belongs to the record's metadata,
+     *   _expansionMap)
+     * @returns {Object|null} the range itself when it crosses no hidden
+     *   line, a cut copy, or null when its first line is not shown
+     * @private
+     */
+    _cutToShownRun(record, metadata, range, map) {
+      if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end)) return range;
+      const side = range.side || 'additions';
+      const runs = this._shownRuns(record, metadata, side, map);
+      const index = runs.findIndex((run) => range.start >= run.startLine && range.start <= run.endLine);
+      if (index < 0) return null;
+      let run = runs[index];
+      const endSide = range.endSide || side;
+      if (record.kind !== 'context' && PierreBridge.toPierreSide(endSide) !== PierreBridge.toPierreSide(side)) {
+        const other = this._shownRuns(record, metadata, endSide, map);
+        if (other.length !== runs.length) {
+          const single = { start: range.start, end: range.start };
+          if (range.side) single.side = range.side;
+          return single;
+        }
+        run = other[index];
+      }
+      const end = Math.min(Math.max(range.end, run.startLine), run.endLine);
+      return end === range.end ? range : this._addressCutEnd(record, metadata, range, end);
+    }
+
+    /**
+     * The range cut at `end`, a boundary row of the run, with that row named
+     * on the side the viewer and the page can use. The row is normally an
+     * unchanged line (a hunk's context or a line drawn outside the hunks),
+     * which has a number on both sides, and is named:
+     *
+     * - on the side the range started on, so that the whole range is in one
+     *   side's numbers: getLineSelection answers `start` and `end` under the
+     *   start's side, and an end left in the other side's numbers names
+     *   another line wherever old and new numbers differ (a comment on new
+     *   64 up to the old 56 would post new 56-64, three hidden lines);
+     * - except in unified layout for a range that started on a deleted row
+     *   and is cut at its bottom: unified layout draws an unchanged line
+     *   once, as an additions row, and the viewer places the gutter's
+     *   buttons on the bottom row of a selection by that row's own side
+     *   (InteractionManager.targetForSelectionPoint); named on the deletions
+     *   side, the row is found by its index and highlighted, but no button
+     *   is placed on it, nor, while the selection lasts, on any other row of
+     *   the file. Named on the additions side, it is what the viewer reports
+     *   for a release on that row.
+     *
+     * A boundary row that is not an unchanged line (a run that ends in a
+     * change; no patch GitHub or the local diff makes has one next to
+     * hidden lines) keeps the side it was cut on.
+     * @param {Object} record
+     * @param {Object} metadata - the diff the range is a range of
+     * @param {{start: number, end: number, side?: string, endSide?: string}} range
+     * @param {number} end - the boundary row, on the side the range ends on
+     * @returns {Object} a copy of `range`
+     * @private
+     */
+    _addressCutEnd(record, metadata, range, end) {
+      const cut = { ...range, end };
+      if (record.kind === 'context') return cut;
+      const startSide = PierreBridge.toPierreSide(range.side || 'additions');
+      const endSide = PierreBridge.toPierreSide(range.endSide || range.side || 'additions');
+      const bottom = range.end > end;
+      const named = this.diffStyle !== 'split' && startSide === 'deletions' && bottom ? 'additions' : startSide;
+      if (named === endSide) return cut;
+      const twin = PierreBridge._unchangedTwin(metadata, end, endSide);
+      if (twin == null) return cut;
+      cut.end = twin;
+      if (named === startSide) delete cut.endSide;
+      else cut.endSide = named;
+      return cut;
+    }
+
+    /**
+     * The number on the other side of a line of `metadata` that is
+     * unchanged: in a context block of a hunk, or outside the hunks (hidden
+     * or drawn by an expansion). Null for a deleted or added line.
+     * @param {Object} metadata
+     * @param {number} line
+     * @param {string} side - the viewer's side `line` is on
+     * @returns {number|null}
+     * @private
+     */
+    static _unchangedTwin(metadata, line, side) {
+      const hunks = Array.isArray(metadata?.hunks) ? metadata.hunks : [];
+      const from = side === 'deletions' ? 'deletion' : 'addition';
+      const to = side === 'deletions' ? 'addition' : 'deletion';
+      // Other side minus this side, for the lines between the hunks so far.
+      let offset = 0;
+      for (const hunk of hunks) {
+        const start = hunk[`${from}Start`];
+        const count = hunk[`${from}Count`];
+        // A hunk with no line on this side (a new or deleted file: no hidden
+        // lines) only moves the numbers after it.
+        if (count > 0) {
+          if (line < start) return line + offset;
+          if (line < start + count) {
+            for (const block of hunk.hunkContent || []) {
+              const at = start + block[`${from}LineIndex`] - hunk[`${from}LineIndex`];
+              if (block.type === 'context') {
+                if (line >= at && line < at + block.lines) {
+                  return hunk[`${to}Start`] + block[`${to}LineIndex`] - hunk[`${to}LineIndex`] + (line - at);
+                }
+              } else if (line >= at && line < at + block[`${from}s`]) {
+                return null;
+              }
+            }
+            return null;
+          }
+        }
+        offset += side === 'deletions'
+          ? hunk.additionLines - hunk.deletionLines
+          : hunk.deletionLines - hunk.additionLines;
+      }
+      return line + offset;
+    }
+
+    /**
+     * _cutToShownRun against the item the viewer holds for `id`: what is
+     * sent to the viewer is decided from its list (H103 rule 5). A range of
+     * an item the viewer's list does not have is answered as it is: there
+     * is nothing to cut it against.
+     *
+     * And against the diff the file draws, when that is another one: a
+     * mounted file goes on drawing its present diff until the new one has
+     * been highlighted (F28; a content upgrade, a reveal that loads the
+     * contents first, the frame before the viewer's next pass). The item
+     * then shows lines the screen does not, and a drag across a separator
+     * that is still drawn would hold rows on both sides of it, and a cut
+     * end on a row that is not drawn would leave the gutter's buttons with
+     * no row to sit on. The diff that replaces the one on screen shows the
+     * lines of both cuts, so the selection stays right when it is drawn.
+     * @private
+     */
+    _cutForList(id, range) {
+      const record = this._listedRecord(id);
+      const item = record ? this.codeView?.getItem?.(id) : null;
+      if (!item) return range;
+      const cut = this._cutToShownRun(record, item.fileDiff, range);
+      const drawn = record._element?.isConnected ? record._instance?.getRenderedDiff?.() : null;
+      if (!cut || !drawn || drawn === item.fileDiff) return cut;
+      return this._cutToShownRun(record, drawn, cut, this._drawnExpansionMap(record, drawn));
+    }
+
+    /**
+     * The expansion map the viewer draws `drawn` with: the map itself while
+     * it is not retired, or while it is retired for `drawn` (_retireExpansions
+     * keeps it for the diff on screen); no map when it was retired for
+     * another diff.
+     * @private
+     */
+    _drawnExpansionMap(record, drawn) {
+      const map = record._instance?.hunksRenderer?.expandedHunks || null;
+      if (record._expansionsOf && record._expansionsOf !== drawn) return null;
+      return map;
+    }
+
+    /**
+     * Keep the viewer's selection within what its item shows. Called by each
+     * of the viewer's selection callbacks (the press, every row the pointer
+     * reaches, the release), after the viewer's own wrapper has made the
+     * uncut range its selection, and after a publish (the viewer puts its
+     * selection back on the new diff without a callback). A cut range
+     * replaces the viewer's selection at once, without a callback: the
+     * viewer draws a selection that changed with the pointer in the next
+     * frame, and draws a range it is given at once, so the uncut range is
+     * never drawn. Not deferred to the list write (_onList): it corrects
+     * the item the viewer has now, and a waiting write keeps the corrected
+     * selection (_captureView). The pointer's next row is reported from the
+     * anchor again and cut again.
+     * @param {string} id
+     * @param {Object|null} range - the viewer's
+     * @returns {Object|null} the range every consumer is to see
+     * @private
+     */
+    _cutViewerSelection(id, range) {
+      if (!range || id == null || !this.codeView) return range;
+      const cut = this._cutForList(id, range);
+      if (cut === range) return range;
+      if (cut) {
+        this.codeView.setSelectedLines({ id, range: cut }, { notify: false });
+      } else if (this.codeView.getSelectedLines?.()?.id === id) {
+        this.codeView.clearSelectedLines({ notify: false });
+      }
+      return cut;
     }
 
     /**
@@ -2689,7 +2917,9 @@
     }
 
     /**
-     * Select lines of a file.
+     * Select lines of a file, cut back at hidden lines from `start`
+     * (_cutToShownRun): `start` is the line a gesture started on, and may be
+     * the higher one. Nothing is selected when `start` is not shown.
      * @param {string} fileName
      * @param {number} start
      * @param {number} end
@@ -2698,9 +2928,12 @@
     selectLines(fileName, start, end, side) {
       const record = this._record(fileName);
       if (!record || !this.codeView) return;
-      const selection = { id: record.id, range: { start, end, side: this._annotationSide(record, side) } };
+      const id = record.id;
+      const range = { start, end, side: this._annotationSide(record, side) };
       this._onList(() => {
-        if (this._listed.has(selection.id)) this.codeView.setSelectedLines(selection);
+        if (!this._listed.has(id)) return;
+        const cut = this._cutForList(id, range);
+        if (cut) this.codeView.setSelectedLines({ id, range: cut });
       });
     }
 
@@ -3257,13 +3490,15 @@
     /**
      * Lines of a record that are on screen without being in a hunk of its
      * metadata: revealed with the viewer's expand controls, or in a gap small
-     * enough for the viewer to paint in full.
+     * enough for the viewer to paint in full. `map` is the viewer's
+     * expansion map drawn with `metadata`; by default the one that belongs
+     * to the record's metadata (_expansionMap: none while it is retired).
      * @private
      */
-    _expandedRanges(record, side, metadata = record.metadata) {
+    _expandedRanges(record, side, metadata = record.metadata, map = this._expansionMap(record)) {
       const fromMap = window.PierreContext?.rangesFromExpansionMap;
       if (!fromMap || !metadata) return [];
-      return fromMap(metadata, this._expansionMap(record), {
+      return fromMap(metadata, map, {
         side: record.kind === 'context' ? 'additions' : PierreBridge.toPierreSide(side),
         threshold: COLLAPSED_CONTEXT_THRESHOLD,
       });
@@ -3388,18 +3623,42 @@
      * @private
      */
     _showsLine(record, metadata, lineNumber, side) {
+      return this._shownRuns(record, metadata, side)
+        .some((run) => lineNumber >= run.startLine && lineNumber <= run.endLine);
+    }
+
+    /**
+     * The lines `metadata`, drawn for `record`, shows on one side, as runs:
+     * its hunks and the lines drawn outside them (_expandedRanges), merged
+     * where they touch, so that two runs are always parted by at least one
+     * hidden line (a separator on screen). In line order. The one
+     * definition of what a file shows: _showsLine asks it about one line,
+     * the line selection about the run its first line is in
+     * (_cutToShownRun).
+     * @param {Object} record
+     * @param {Object} metadata
+     * @param {string} side - 'LEFT'/'RIGHT' or the viewer's; ignored for a
+     *   context file
+     * @param {Map|null} [map] - the expansion map drawn with `metadata`
+     *   (default: _expandedRanges's, the one of the record's metadata)
+     * @returns {Array<{startLine: number, endLine: number}>}
+     * @private
+     */
+    _shownRuns(record, metadata, side, map) {
       const hunks = metadata?.hunks;
-      if (!Array.isArray(hunks) || hunks.length === 0) return false;
+      if (!Array.isArray(hunks) || hunks.length === 0) return [];
       const deletions = record.kind !== 'context' && PierreBridge.toPierreSide(side) === 'deletions';
       const sideKey = deletions ? 'deletion' : 'addition';
+      const ranges = [];
       for (const hunk of hunks) {
         const count = hunk[`${sideKey}Count`];
         if (!count) continue;
         const start = hunk[`${sideKey}Start`];
-        if (lineNumber >= start && lineNumber < start + count) return true;
+        ranges.push({ startLine: start, endLine: start + count - 1 });
       }
-      return this._expandedRanges(record, side, metadata)
-        .some((range) => lineNumber >= range.startLine && lineNumber <= range.endLine);
+      ranges.push(...this._expandedRanges(record, side, metadata, map));
+      const merge = window.PierreContext?.mergeOverlapping;
+      return merge ? merge(ranges) : ranges.sort((a, b) => a.startLine - b.startLine);
     }
 
     /**
