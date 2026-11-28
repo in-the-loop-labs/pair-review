@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.5.0
+
+### Minor Changes
+
+- 63d8ffc: Show the file navigator as a nested folder tree. Folders that only contain a single subfolder are collapsed into one row (e.g. `src/js/utils`), so shared path prefixes are shown once instead of being repeated on every directory group.
+- 2b705c0: Sort and filter AI suggestions by severity in the Review panel. The filter menu now has a "Sort AI suggestions" choice (file order or severity, most severe first) and "Show in panel" checkboxes for Critical, Medium, Minor and no-severity suggestions. The filter only affects the panel; inline suggestions in the diff still show. The sort is remembered across reviews, the hidden severities are saved per review, and a notice at the end of the list counts the suggestions hidden from it. The menu now scrolls when it would not fit below its button.
+
+### Patch Changes
+
+- 14719ce: Polish the Review panel's severity sort and filter. The funnel dot now shows only when a review hides severities, not for the browser-wide sort. Changing the sort or the hidden severities in one tab no longer overwrites the other setting saved by another tab. Keyboard focus enters the filter menu on the checked sort option. A provider's "major" severity now counts as Medium.
+
 ## 5.4.4
 
 ### Patch Changes
