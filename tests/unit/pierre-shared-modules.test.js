@@ -407,7 +407,9 @@ describe('PierreGutter.createGutterButtons', () => {
     comment.dispatchEvent(pointer('pointerdown'));
     row = { lineNumber: 4, side: 'LEFT' };
     document.dispatchEvent(pointer('pointermove'));
-    expect(deps.selectLines).toHaveBeenLastCalledWith(4, 7, 'LEFT');
+    // The line the drag started on first, as the viewer's own ranges have
+    // their anchor first: the bridge cuts a range at hidden lines from it.
+    expect(deps.selectLines).toHaveBeenLastCalledWith(7, 4, 'LEFT');
     row = { lineNumber: 10, side: 'LEFT' };
     document.dispatchEvent(pointer('pointermove'));
     expect(deps.selectLines).toHaveBeenLastCalledWith(7, 10, 'LEFT');

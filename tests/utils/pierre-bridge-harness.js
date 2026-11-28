@@ -127,6 +127,57 @@ function loadCodeViewBridge(vendor, { into = null } = {}) {
   };
 }
 
+/**
+ * One selection callback of the viewer for an item, sent as the real
+ * viewer sends it: its wrapper of each selection callback (@pierre/diffs
+ * 1.6.4, CodeView defineItemSelectionCallback) first makes the range the
+ * viewer's selection (or drops the selection when the range is null and the
+ * selection is this item's), then calls the callback with the item's
+ * options, whose `item` is the item.
+ * @param {RecordingViewer} viewer
+ * @param {string} key - onLineSelectionStart | onLineSelectionChange | onLineSelectionEnd | onLineSelected
+ * @param {string} id
+ * @param {Object|null} range
+ */
+function viewerSelectionCallback(viewer, key, id, range) {
+  if (range) viewer.selection = { id, range };
+  else if (viewer.selection?.id === id) viewer.selection = null;
+  viewer.options[key]?.(range, { item: viewer.getItem(id) });
+}
+
+/**
+ * A pointer gesture on the line numbers of one item, as the viewer reports
+ * it (@pierre/diffs 1.6.4, InteractionManager: startLineSelectionFromPointerDown,
+ * handleDocumentPointerMove, handleDocumentPointerUp): the press
+ * (onLineSelectionStart), each row the pointer reaches (onLineSelectionChange,
+ * the range from the anchor to that row), the release (onLineSelectionEnd,
+ * then onLineSelected, both with the range the viewer holds at that moment,
+ * which a correction sent in between has replaced). A range's `start` is
+ * the anchor and `end` the row under the pointer; `endSide` is set when that
+ * row is in the other column of a split layout. With `extendFrom`, the
+ * press is a shift-click that extends that selection from its start (the
+ * viewer anchors at the start when the click is below it).
+ * @param {RecordingViewer} viewer
+ * @param {string} id
+ * @param {Array<number|[number, string]>} points - line numbers on the
+ *   additions side, or `[line, side]`; the first is the press
+ * @param {Object} [options]
+ * @param {{start: number, end: number, side: string}} [options.extendFrom]
+ * @returns {Object|null} the range the gesture ended with
+ */
+function selectionGesture(viewer, id, points, { extendFrom = null } = {}) {
+  const [first, ...rest] = points.map((p) => (Array.isArray(p) ? { lineNumber: p[0], side: p[1] } : { lineNumber: p, side: 'additions' }));
+  const anchor = extendFrom ? { lineNumber: extendFrom.start, side: extendFrom.side } : first;
+  const to = (p) => ({ start: anchor.lineNumber, end: p.lineNumber, side: anchor.side, ...(p.side !== anchor.side ? { endSide: p.side } : {}) });
+  if (extendFrom) viewer.selection = { id, range: extendFrom };
+  viewerSelectionCallback(viewer, 'onLineSelectionStart', id, to(first));
+  for (const p of rest) viewerSelectionCallback(viewer, 'onLineSelectionChange', id, to(p));
+  const held = viewer.selection?.id === id ? viewer.selection.range : null;
+  viewerSelectionCallback(viewer, 'onLineSelectionEnd', id, held);
+  viewerSelectionCallback(viewer, 'onLineSelected', id, held);
+  return held;
+}
+
 /** `count` numbered lines. */
 function numberedLines(count, tag = 'line') {
   return Array.from({ length: count }, (_, i) => `${tag} ${i + 1}`);
@@ -250,4 +301,7 @@ function restoreBridgeHarnesses() {
   liveHarnesses.clear();
 }
 
-module.exports = { loadCodeViewBridge, createBridgeHarness, restoreBridgeHarnesses, hunk, RecordingViewer, numberedLines, changedFileFixture };
+module.exports = {
+  loadCodeViewBridge, createBridgeHarness, restoreBridgeHarnesses, hunk, RecordingViewer, numberedLines, changedFileFixture,
+  viewerSelectionCallback, selectionGesture,
+};
