@@ -805,9 +805,16 @@ async function paintProbe(page, file, targetSelector, insideSelector) {
 
 /**
  * Wait until `file`'s diff has been upgraded with its full contents, or, with
- * no file, until no upgrade is queued or in flight. After this the file's
- * rows are stable (no pending re-layout) and expand controls exist where
- * there is hidden context.
+ * no file, until no upgrade is queued or in flight. After this no re-layout
+ * for the contents is pending and expand controls exist where there is
+ * hidden context.
+ *
+ * The rows may still be drawn once more: when the contents arrive before the
+ * patch-only diff was highlighted, the upgraded diff is drawn at once with
+ * plain rows and drawn again, every row re-created, when its highlight
+ * arrives (measured after this returned: 33 to 53 ms on macOS, 176 to
+ * 714 ms on the Linux CI runner). A test that holds a row through a gesture
+ * (a drag, a text selection) also waits for `waitForHighlightedDisplay`.
  */
 async function waitForContentUpgrade(page, file, { timeout = 15000 } = {}) {
   if (file) {
