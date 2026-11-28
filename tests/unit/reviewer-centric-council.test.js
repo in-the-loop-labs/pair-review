@@ -7,7 +7,7 @@
  * - Multi-voice consolidation always runs (even for few suggestions)
  * - custom_instructions column stores only request-level instructions (regression)
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock dependencies before importing
 vi.mock('../../src/ai/index', () => ({
@@ -274,6 +274,50 @@ describe('runReviewerCentricCouncil', () => {
       // runReviewerCentricCouncil should NOT update the run status itself;
       // analyzeAllLevels is responsible for that (and it's mocked here)
       expect(mockRunRepoUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('multi-voice with a single enabled level', () => {
+    // Earlier tests leave Analyzer.prototype.analyzeAllLevels spied; this test
+    // needs the real implementation
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('skips per-reviewer consolidation but still runs cross-voice consolidation', async () => {
+      const { reviewContext, councilConfig, options } = buildTestContext({
+        extraVoices: [{ provider: 'antigravity', model: 'pro', tier: 'balanced' }]
+      });
+      councilConfig.levels = { '1': false, '2': false, '3': true };
+
+      // Per-voice analyzers are fresh instances, so stub on the prototype.
+      // analyzeAllLevels itself runs for real.
+      vi.spyOn(Analyzer.prototype, 'loadGeneratedFilePatterns').mockResolvedValue([]);
+      vi.spyOn(Analyzer.prototype, 'storeSuggestions').mockResolvedValue(undefined);
+      vi.spyOn(Analyzer.prototype, 'validateAndFinalizeSuggestions').mockImplementation((s) => s || []);
+      const level1Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel1Isolated');
+      const level3Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel3Isolated')
+        .mockResolvedValue({ suggestions: buildMockSuggestions(2), summary: 'L3 summary' });
+      const orchestrateSpy = vi.spyOn(Analyzer.prototype, 'orchestrateWithAI');
+
+      const consolidateSpy = vi.spyOn(analyzer, '_crossVoiceConsolidate').mockResolvedValue({
+        suggestions: buildMockSuggestions(3),
+        summary: 'Cross-voice summary'
+      });
+
+      const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      expect(level1Spy).not.toHaveBeenCalled();
+      expect(level3Spy).toHaveBeenCalledTimes(2);
+      // One input per reviewer, so no per-reviewer consolidation AI call
+      expect(orchestrateSpy).not.toHaveBeenCalled();
+      // Cross-reviewer consolidation still merges the two reviewers
+      expect(consolidateSpy).toHaveBeenCalledOnce();
+      expect(result.summary).toBe('Cross-voice summary');
     });
   });
 
