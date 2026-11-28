@@ -58,13 +58,31 @@ async function scrollSettled(page) {
  * Page Ups pressed in the frame the End key's scroll arrived did nothing; 30
  * of 30 pressed after the `scrollend` moved the pane), and a position that
  * has not changed between two looks does not say that scroll is over.
+ *
+ * A `scroll` that comes after the `scrollend` and reports the position the
+ * `scrollend` reported is not a scroll in flight: it is the late report of
+ * the scroll that ended. Chromium on Linux sends the last `scroll` of a
+ * smooth key scroll after its `scrollend`, in the same task (measured on the
+ * CI runner after a Page Up: 29 of 32 times, at most 0.3 ms apart, with the
+ * position unchanged and nothing writing it; on macOS 0 of 32). Counted as a
+ * scroll, it left the pane "in flight" for good whenever the clock read later
+ * for it than for the `scrollend` (21 of those 32).
  */
 async function watchPaneScrolls(page) {
   const pane = page.locator('#diff-container');
   await pane.evaluate((element) => {
-    const seen = { scroll: 0, end: 0 };
-    element.addEventListener('scroll', () => { seen.scroll = performance.now(); }, { passive: true });
-    element.addEventListener('scrollend', () => { seen.end = performance.now(); });
+    const seen = { scroll: 0, end: 0, endTop: null };
+    element.addEventListener('scroll', () => {
+      // The late report of the scroll that ended; once the pane has moved
+      // away from that position, every scroll counts again.
+      if (element.scrollTop === seen.endTop) return;
+      seen.endTop = null;
+      seen.scroll = performance.now();
+    }, { passive: true });
+    element.addEventListener('scrollend', () => {
+      seen.end = performance.now();
+      seen.endTop = element.scrollTop;
+    });
     window.__paneScrolls = seen;
   });
   return () => pane.evaluate(async () => {

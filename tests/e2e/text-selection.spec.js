@@ -9,7 +9,7 @@
 
 import { test, expect } from './fixtures.js';
 import { MODES, waitForDiffToRender, seedComment, reloadComments, cleanupAllComments } from './helpers.js';
-import { inlineComment, lineSelection, rowBox, selectedText, waitForContentUpgrade } from './diff-dom.js';
+import { inlineComment, lineSelection, rowBox, selectedText, waitForContentUpgrade, waitForHighlightedDisplay } from './diff-dom.js';
 
 const FILE = 'src/main.js';
 const LINE = 12;
@@ -25,9 +25,18 @@ const clipboardText = (page) => page.evaluate(() => navigator.clipboard.readText
  * again; what must hold is that the gesture selects text and that the copy
  * made of that selection is that text. The copy is part of the attempt: a
  * selection lost between the gesture and the copy copies nothing.
+ *
+ * A drag whose rows are re-created under it leaves a selection behind that
+ * reaches from the pressed row to the file's comment zone. A press inside a
+ * selection drags that selection instead of starting a new one: at once in
+ * Chromium on Linux, and on macOS only when the press is held a moment before
+ * the pointer moves (measured: no drag at 0 ms, a drag at 200 ms), which a
+ * test's press is not. So an attempt starts with no selection, as a reader's
+ * would after a click; the first attempt has none to clear.
  */
-async function gesture(attempt) {
+async function gesture(page, attempt) {
   await expect(async () => {
+    await page.evaluate(() => document.getSelection().removeAllRanges());
     await attempt();
   }).toPass({ timeout: 15000 });
 }
@@ -40,6 +49,9 @@ for (const mode of MODES) {
       await page.goto(mode.path);
       await waitForDiffToRender(page);
       await waitForContentUpgrade(page, FILE);
+      // The upgraded rows are drawn again when their highlight arrives; a
+      // drag made across that draw loses the row it was made on.
+      await waitForHighlightedDisplay(page, FILE);
     });
 
     test.afterEach(async ({ page }) => {
@@ -47,7 +59,7 @@ for (const mode of MODES) {
     });
 
     test('a word of code can be selected by double-click and copied', async ({ page }) => {
-      await gesture(async () => {
+      await gesture(page, async () => {
         const row = await rowBox(page, FILE, LINE);
         expect(row.text).toContain(LINE_TEXT);
         // Inside the first word of the line ("function").
@@ -63,7 +75,7 @@ for (const mode of MODES) {
 
     test('a drag across a line of code selects its text, not the line', async ({ page }) => {
       let selected = '';
-      await gesture(async () => {
+      await gesture(page, async () => {
         const row = await rowBox(page, FILE, LINE);
         const y = row.top + row.height / 2;
         // Press on the text itself (a press in the padding before it selects nothing).
@@ -91,7 +103,7 @@ for (const mode of MODES) {
       const text = inlineComment(page, id).locator('.user-comment-body');
       await expect(text).toBeVisible();
 
-      await gesture(async () => {
+      await gesture(page, async () => {
         const box = await text.boundingBox();
         const y = box.y + box.height / 2;
         await page.mouse.move(box.x + 1, y);
