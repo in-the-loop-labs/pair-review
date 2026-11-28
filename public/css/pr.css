@@ -9135,6 +9135,9 @@ body.resizing * {
   z-index: 100;
   min-width: 160px;
   padding: 6px 0;
+  /* max-height is set when the menu opens (AIPanel._fitFilterMenuToViewport) so it
+     scrolls instead of running past the window */
+  overflow-y: auto;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: var(--radius-sm);
