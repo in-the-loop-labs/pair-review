@@ -388,13 +388,76 @@ describe('AI suggestion severity sort and filter', () => {
     expect(itemIds(panel)).toEqual([2, 4, 1, 3]);
     expect(localStorage.getItem(SORT_KEY)).toBe('severity');
     expect(localStorage.getItem(HIDDEN_KEY)).toBeNull();
-    expect(funnel().classList.contains('has-active-filter')).toBe(true);
     expect(filterEvents).toHaveLength(0);
 
     choose(sortOption('file'));
     expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
     expect(localStorage.getItem(SORT_KEY)).toBeNull();
+  });
+
+  it('lights the funnel dot for hidden severities only, not for the browser-wide sort', () => {
+    panelWithFindings();
     expect(funnel().classList.contains('has-active-filter')).toBe(false);
+
+    choose(sortOption('severity'));
+    expect(funnel().classList.contains('has-active-filter')).toBe(false);
+    expect(funnel().getAttribute('aria-label')).toBe('Sort and filter');
+
+    choose(severityOption('minor'), false);
+    expect(funnel().classList.contains('has-active-filter')).toBe(true);
+    expect(funnel().getAttribute('aria-label')).toMatch(/filters on/);
+
+    choose(severityOption('minor'), true);
+    expect(funnel().classList.contains('has-active-filter')).toBe(false);
+  });
+
+  it('opens the menu on the checked sort radio', () => {
+    localStorage.setItem(SORT_KEY, 'severity');
+    makePanel();
+    funnel().click();
+    expect(document.activeElement).toBe(sortOption('severity'));
+  });
+
+  it('only writes the setting that changed, so another tab\'s choice survives', () => {
+    const panel = panelWithFindings();
+
+    // Another tab picks the browser-wide sort after this tab loaded
+    localStorage.setItem(SORT_KEY, 'severity');
+    choose(severityOption('minor'), false);
+    expect(localStorage.getItem(SORT_KEY)).toBe('severity');
+    expect(JSON.parse(localStorage.getItem(HIDDEN_KEY))).toEqual(['minor']);
+
+    // Another tab hides a different level for this review; this tab only changes the sort
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(['none']));
+    choose(sortOption('severity'));
+    expect(localStorage.getItem(SORT_KEY)).toBe('severity');
+    expect(JSON.parse(localStorage.getItem(HIDDEN_KEY))).toEqual(['none']);
+    expect(panel.severityState.sort).toBe('severity');
+  });
+
+  it('saveSeverityState writes both settings by default', () => {
+    const panel = makePanel();
+    panel.severityState = { sort: 'severity', hidden: ['minor'] };
+    panel.saveSeverityState();
+    expect(localStorage.getItem(SORT_KEY)).toBe('severity');
+    expect(JSON.parse(localStorage.getItem(HIDDEN_KEY))).toEqual(['minor']);
+  });
+
+  it('setPR renders the list with the restored severity sort and filter', () => {
+    const panel = panelWithFindings();
+    const rendered = () => [...document.querySelectorAll('#findings-list .finding-item')].map(el => Number(el.dataset.id));
+    expect(rendered()).toEqual([1, 2, 3, 4]);
+
+    localStorage.setItem(SORT_KEY, 'severity');
+    localStorage.setItem('pair-review-severity-hidden_acme/widget#8', JSON.stringify(['minor']));
+    panel.setPR('acme', 'widget', 8);
+    expect(rendered()).toEqual([2, 4, 3]);
+    expect(severityNotice().textContent).toMatch(/1 AI suggestion hidden from this list/);
+
+    // Back to a review with nothing hidden: the notice goes and the item returns
+    panel.setPR('acme', 'widget', 7);
+    expect(rendered()).toEqual([2, 4, 1, 3]);
+    expect(severityNotice()).toBeNull();
   });
 
   it('hides unchecked severities and shows a notice that restores them', () => {

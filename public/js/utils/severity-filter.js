@@ -4,8 +4,8 @@
  *
  * AI suggestions carry `severity` of "critical", "medium" or "minor"; praise
  * and older suggestions have none, which this module treats as "none".
- * The state is plain data so AIPanel can persist it per review:
- *   { sort: 'file' | 'severity', hidden: ['minor', 'none', ...] }
+ * The state is plain data: { sort: 'file' | 'severity', hidden: ['minor', 'none', ...] }.
+ * AIPanel saves the sort browser-wide and the hidden levels per review.
  * Only AI suggestions are filtered; user comments and external threads always
  * pass, and sort after every AI suggestion when sorting by severity.
  */
@@ -31,8 +31,8 @@
     blocker: 'critical',
     severe: 'critical',
     high: 'critical',
-    major: 'critical',
     error: 'critical',
+    major: 'medium',
     moderate: 'medium',
     warning: 'medium',
     low: 'minor',
@@ -54,32 +54,19 @@
   }
 
   /**
-   * Validate state from storage or callers: unknown sort modes fall back to
-   * 'file', unknown or repeated levels are dropped.
-   * @param {*} raw - Object or JSON string
+   * Validate a state object (e.g. built from storage): unknown sort modes fall
+   * back to 'file', unknown or repeated levels are dropped. Anything that is
+   * not an object gives the default state.
+   * @param {{sort?: string, hidden?: string[]}} value
    * @returns {{sort: string, hidden: string[]}}
    */
-  function parseSeverityState(raw) {
-    let value = raw;
-    if (typeof raw === 'string') {
-      try {
-        value = JSON.parse(raw);
-      } catch {
-        return defaultSeverityState();
-      }
-    }
+  function parseSeverityState(value) {
     if (!value || typeof value !== 'object') return defaultSeverityState();
     const sort = SORT_MODES.includes(value.sort) ? value.sort : 'file';
     const hiddenInput = Array.isArray(value.hidden) ? value.hidden : [];
     // Keep canonical order so equal states serialize the same way
     const hidden = SEVERITY_LEVELS.filter(level => hiddenInput.includes(level));
     return { sort, hidden };
-  }
-
-  /** True when the state differs from the default (file order, nothing hidden). */
-  function isSeverityStateDefault(state) {
-    const parsed = parseSeverityState(state);
-    return parsed.sort === 'file' && parsed.hidden.length === 0;
   }
 
   function isFinding(item) {
@@ -138,7 +125,6 @@
     normalizeSeverity,
     defaultSeverityState,
     parseSeverityState,
-    isSeverityStateDefault,
     filterBySeverity,
     sortBySeverity,
     applySeverityState

@@ -6,7 +6,6 @@ const {
   normalizeSeverity,
   defaultSeverityState,
   parseSeverityState,
-  isSeverityStateDefault,
   filterBySeverity,
   sortBySeverity,
   applySeverityState
@@ -33,38 +32,37 @@ describe('normalizeSeverity', () => {
   });
 
   it('maps other names providers use onto the three levels', () => {
-    ['blocker', 'severe', 'High', 'major', 'error'].forEach(s => expect(normalizeSeverity(s)).toBe('critical'));
-    ['moderate', ' Warning '].forEach(s => expect(normalizeSeverity(s)).toBe('medium'));
+    ['blocker', 'severe', 'High', 'error'].forEach(s => expect(normalizeSeverity(s)).toBe('critical'));
+    // "major" is the tier below critical on the critical > major > minor > info scale
+    ['major', 'Major', 'moderate', ' Warning '].forEach(s => expect(normalizeSeverity(s)).toBe('medium'));
     ['low', 'trivial', 'INFO', 'nit'].forEach(s => expect(normalizeSeverity(s)).toBe('minor'));
   });
 });
 
 describe('parseSeverityState', () => {
-  it('accepts a valid object or JSON string', () => {
+  it('accepts a valid state object and keeps hidden levels in canonical order', () => {
     expect(parseSeverityState({ sort: 'severity', hidden: ['minor'] }))
       .toEqual({ sort: 'severity', hidden: ['minor'] });
-    expect(parseSeverityState('{"sort":"file","hidden":["none","critical"]}'))
+    expect(parseSeverityState({ sort: 'file', hidden: ['none', 'critical'] }))
       .toEqual({ sort: 'file', hidden: ['critical', 'none'] });
   });
 
   it('drops unknown and repeated levels, and unknown sort modes', () => {
     expect(parseSeverityState({ sort: 'random', hidden: ['minor', 'minor', 'bogus'] }))
       .toEqual({ sort: 'file', hidden: ['minor'] });
+    expect(parseSeverityState({ sort: null, hidden: [] })).toEqual(defaultSeverityState());
   });
 
-  it('falls back to the default for invalid input', () => {
-    expect(parseSeverityState('not json')).toEqual(defaultSeverityState());
+  it('falls back to the default for anything that is not a state object', () => {
     expect(parseSeverityState(null)).toEqual(defaultSeverityState());
+    expect(parseSeverityState(undefined)).toEqual(defaultSeverityState());
     expect(parseSeverityState(42)).toEqual(defaultSeverityState());
+    expect(parseSeverityState('{"sort":"severity"}')).toEqual(defaultSeverityState());
     expect(parseSeverityState({ hidden: 'minor' })).toEqual(defaultSeverityState());
   });
-});
 
-describe('isSeverityStateDefault', () => {
-  it('is true only for file order with nothing hidden', () => {
-    expect(isSeverityStateDefault(defaultSeverityState())).toBe(true);
-    expect(isSeverityStateDefault({ sort: 'severity', hidden: [] })).toBe(false);
-    expect(isSeverityStateDefault({ sort: 'file', hidden: ['none'] })).toBe(false);
+  it('returns a fresh object each time', () => {
+    expect(parseSeverityState(null)).not.toBe(parseSeverityState(null));
   });
 });
 
