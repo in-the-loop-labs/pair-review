@@ -162,13 +162,14 @@ const mockChatProviders = {
       'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
       'cursor-acp': { id: 'cursor-acp', name: 'Cursor (ACP)', type: 'acp', command: 'agent', args: ['acp'], env: {} },
       'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
+      'antigravity-acp': { id: 'antigravity-acp', name: 'Antigravity (ACP)', type: 'acp', models_from: 'antigravity', command: 'agy', args: ['acp'], env: {} },
       claude: { id: 'claude', name: 'Claude (NDJSON)', type: 'claude', command: 'claude', args: [], env: {} },
       codex: { id: 'codex', name: 'Codex', type: 'codex', command: 'codex', args: ['app-server'], env: {} },
     };
     return providers[id] || null;
   }),
   isAcpProvider: vi.fn((id) => {
-    return ['copilot-acp', 'cursor-acp', 'opencode-acp'].includes(id);
+    return ['copilot-acp', 'cursor-acp', 'opencode-acp', 'antigravity-acp'].includes(id);
   }),
   isOmpProvider: vi.fn((id) => id === 'omp'),
   isClaudeCodeProvider: vi.fn((id) => id === 'claude'),
@@ -1175,6 +1176,13 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.acpArgs).toEqual(['acp']);
     });
 
+    it('should pass antigravity-acp command and args to AcpBridge', async () => {
+      await manager.createSession({ provider: 'antigravity-acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      expect(bridge._constructorOptions.acpCommand).toBe('agy');
+      expect(bridge._constructorOptions.acpArgs).toEqual(['acp']);
+    });
+
     it('should return ClaudeCodeBridge for claude provider', async () => {
       await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
@@ -1378,6 +1386,22 @@ describe('ChatSessionManager', () => {
       // Should pass resumeSessionId to bridge constructor
       const resumedBridge = _createdAcpBridges[_createdAcpBridges.length - 1];
       expect(resumedBridge._constructorOptions.resumeSessionId).toBe('acp-session-xyz');
+    });
+
+    it('should resume an antigravity-acp session with resumeSessionId and the agy command', async () => {
+      const session = await manager.createSession({ provider: 'antigravity-acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      bridge.emit('session', { sessionId: 'agy-session-123' });
+      await manager.closeSession(session.id);
+
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+      expect(result).toMatchObject({ id: session.id, status: 'active' });
+
+      const resumedBridge = _createdAcpBridges[_createdAcpBridges.length - 1];
+      expect(resumedBridge).not.toBe(bridge);
+      expect(resumedBridge._constructorOptions.resumeSessionId).toBe('agy-session-123');
+      expect(resumedBridge._constructorOptions.acpCommand).toBe('agy');
+      expect(resumedBridge._constructorOptions.acpArgs).toEqual(['acp']);
     });
 
     it('should resume ACP session without agent_session_id (fresh session)', async () => {

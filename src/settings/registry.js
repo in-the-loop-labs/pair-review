@@ -252,7 +252,7 @@ const REGISTRY = [
   {
     key: 'chat_provider',
     label: 'Chat provider',
-    description: "Chat provider ('pi', 'copilot-acp', 'opencode-acp', 'cursor-acp', 'codex').",
+    description: "Chat provider ('pi', 'copilot-acp', 'opencode-acp', 'cursor-acp', 'antigravity-acp', 'codex').",
     group: 'chat',
     type: 'string',
     default: 'pi',

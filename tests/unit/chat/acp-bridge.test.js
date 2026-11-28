@@ -1108,6 +1108,123 @@ describe('AcpBridge', () => {
     });
   });
 
+  describe('loadSession history replay', () => {
+    /** Updates an ACP agent replays during loadSession: an old reply plus its tool calls. */
+    const REPLAYED_UPDATES = [
+      { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'old question' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old answer' } },
+      { sessionUpdate: 'tool_call', toolCallId: 'tc-old', title: 'Read file', kind: 'read' },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'tc-old', title: 'Read file', status: 'completed' },
+      { sessionUpdate: 'plan', entries: [] },
+    ];
+
+    /**
+     * A resumable bridge whose loadSession replays `updates` through the real
+     * client handler (the same path the ACP SDK uses) before settling.
+     */
+    function createReplayingBridge({ updates = REPLAYED_UPDATES, loadError = null } = {}) {
+      const deps = createMockDeps();
+      const { mockConnection, mockAcp } = deps;
+      mockConnection.initialize.mockResolvedValue({ agentCapabilities: { loadSession: true } });
+      mockConnection.loadSession.mockImplementation(async () => {
+        const handler = mockAcp.ClientSideConnection.mock.calls[0][0]({ name: 'agent' });
+        for (const update of updates) {
+          handler.sessionUpdate({ sessionId: 'prev-session', update });
+        }
+        if (loadError) throw loadError;
+        return {};
+      });
+      const bridge = new AcpBridge({ resumeSessionId: 'prev-session', _deps: deps.mockDeps });
+      const events = [];
+      for (const name of ['delta', 'tool_use', 'status']) {
+        bridge.on(name, (data) => events.push({ name, data }));
+      }
+      return { ...deps, bridge, events };
+    }
+
+    it('emits nothing for chunks and tool calls replayed during loadSession', async () => {
+      const { bridge, events } = createReplayingBridge();
+      await bridge.start();
+
+      expect(events).toEqual([]);
+      expect(bridge._accumulatedText).toBe('');
+      expect(bridge.isReady()).toBe(true);
+    });
+
+    it('keeps replayed text out of the next turn\'s fullText', async () => {
+      const { bridge, mockConnection, mockAcp } = createReplayingBridge();
+      await bridge.start();
+
+      let resolvePrompt;
+      mockConnection.prompt.mockReturnValue(new Promise((r) => { resolvePrompt = r; }));
+      const completed = new Promise((resolve) => bridge.once('complete', resolve));
+      await bridge.sendMessage('new question');
+
+      const handler = mockAcp.ClientSideConnection.mock.calls[0][0]({ name: 'agent' });
+      handler.sessionUpdate({
+        sessionId: 'prev-session',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new answer' } },
+      });
+      resolvePrompt({ stopReason: 'end_turn' });
+
+      expect(await completed).toEqual({ fullText: 'new answer' });
+    });
+
+    it('emits updates normally once the resume has finished', async () => {
+      const { bridge, events, mockAcp } = createReplayingBridge();
+      await bridge.start();
+
+      const handler = mockAcp.ClientSideConnection.mock.calls[0][0]({ name: 'agent' });
+      handler.sessionUpdate({
+        sessionId: 'prev-session',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'live' } },
+      });
+      handler.sessionUpdate({
+        sessionId: 'prev-session',
+        update: { sessionUpdate: 'tool_call', toolCallId: 'tc-new', title: 'Run', kind: 'execute' },
+      });
+      handler.sessionUpdate({ sessionId: 'prev-session', update: { sessionUpdate: 'plan', entries: [] } });
+
+      expect(events).toEqual([
+        { name: 'delta', data: { text: 'live' } },
+        { name: 'tool_use', data: { toolCallId: 'tc-new', toolName: 'Run', status: 'start', kind: 'execute' } },
+        { name: 'status', data: { status: 'working' } },
+      ]);
+    });
+
+    it('clears the replay gate even when loadSession rejects', async () => {
+      const { bridge, events } = createReplayingBridge({ loadError: new Error('session not found') });
+
+      await expect(bridge.start()).rejects.toThrow('ACP initialization failed: session not found');
+      expect(events).toEqual([]);
+      expect(bridge._replayingHistory).toBe(false);
+
+      // A late update on the dead bridge is no longer swallowed by the gate.
+      bridge._handleSessionUpdate({
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } },
+      });
+      expect(events).toEqual([{ name: 'delta', data: { text: 'after' } }]);
+    });
+
+    it('does not gate a fresh session (newSession)', async () => {
+      const { mockDeps, mockConnection, mockAcp } = createMockDeps();
+      const deltas = [];
+      mockConnection.newSession.mockImplementation(async () => {
+        const handler = mockAcp.ClientSideConnection.mock.calls[0][0]({ name: 'agent' });
+        handler.sessionUpdate({
+          sessionId: 'session-abc-123',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
+        });
+        return { sessionId: 'session-abc-123' };
+      });
+      const bridge = new AcpBridge({ _deps: mockDeps });
+      bridge.on('delta', (d) => deltas.push(d));
+      await bridge.start();
+
+      expect(deltas).toEqual([{ text: 'hello' }]);
+    });
+  });
+
   describe('client handler integration', () => {
     it('should wire sessionUpdate through the client handler factory', async () => {
       const { mockDeps, mockAcp } = createMockDeps();

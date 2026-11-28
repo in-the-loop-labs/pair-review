@@ -1875,6 +1875,21 @@ describe('Chat Routes', () => {
       );
     });
 
+    it('maps antigravity-acp onto the antigravity catalog', async () => {
+      const res = await request(server).get('/api/chat/providers');
+
+      const antigravity = res.body.data.providers.find(p => p.id === 'antigravity-acp');
+      expect(antigravity.name).toBe('Antigravity (ACP)');
+      expect(antigravity.type).toBe('acp');
+      expect(antigravity.hasCatalog).toBe(true);
+      expect(antigravity.models.map(m => m.id)).toEqual(
+        getProviderClass('antigravity').getModels().map(m => m.id)
+      );
+      for (const model of antigravity.models) {
+        expect(model).not.toHaveProperty('cliName');
+      }
+    });
+
     it('reports hasCatalog: false with an empty list for a provider with no catalog', async () => {
       applyChatConfigOverrides({ mystery: { type: 'acp', command: 'mystery-agent' } });
 

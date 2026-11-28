@@ -36,8 +36,10 @@
  *     on prompt engineering (the analysis prompts instruct read-only,
  *     no-mutation behaviour) and on running inside the throwaway git worktree
  *     (cwd) to bound blast radius.
- *   - NO ACP MODE, so there is no Antigravity chat-provider counterpart to the
- *     old `gemini-acp`.
+ *   - CHAT IS SEPARATE. Interactive chat runs `agy acp` (agy 1.5+) through the
+ *     `antigravity-acp` chat provider (src/chat/chat-providers.js), which borrows
+ *     this catalog for its model picker. ACP takes the kebab `id` as its session
+ *     model id; `cliName` is only the print-mode `--model` display string.
  *
  * The JSON-extraction fallback (getExtractionConfig) does NOT enable tools or
  * skip permissions — it is a pure text->JSON reformat that needs no repo access.
