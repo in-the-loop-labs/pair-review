@@ -25,6 +25,12 @@ class AIPanel {
         </svg>`
     };
 
+    /** Browser-wide key for the severity sort; the hidden levels are saved per review. */
+    static SEVERITY_SORT_STORAGE_KEY = 'pair-review-severity-sort';
+
+    /** Smallest max-height (px) for the filter menu, so a low funnel still shows a few rows. */
+    static FILTER_MENU_MIN_HEIGHT = 120;
+
     /** The SeverityFilter helpers (window global in the browser, require in tests). */
     static severityFilter() {
         if (typeof window !== 'undefined' && window.SeverityFilter) return window.SeverityFilter;
@@ -179,7 +185,7 @@ class AIPanel {
                 <label class="comment-filter-option">
                     <input type="radio" name="severity-sort" data-severity-sort="severity"> Severity
                 </label>
-                <div class="comment-filter-menu-title">Show severity</div>${severityOptions}
+                <div class="comment-filter-menu-title">Show in panel</div>${severityOptions}
             </div>
             <div class="comment-filter-menu-divider" role="separator"></div>
             <div class="comment-filter-menu-title">User comments</div>
@@ -252,8 +258,22 @@ class AIPanel {
         this.filterMenuBtn.setAttribute('aria-expanded', 'true');
         // Lift the segment row above the panel sections below it (pr.css)
         this.segmentControl?.classList.add('comment-filter-open');
+        this._fitFilterMenuToViewport();
         document.addEventListener('pointerdown', this._onFilterMenuOutsidePointer, true);
         this.filterMenu.querySelector('input')?.focus();
+    }
+
+    /**
+     * Limit the open menu to the space below the funnel so it scrolls instead
+     * of running off the window (the page itself cannot scroll, and stacked
+     * layouts put the funnel low on the screen).
+     * @private
+     */
+    _fitFilterMenuToViewport() {
+        if (!this.filterMenu || !this.filterMenuBtn || typeof window === 'undefined') return;
+        const gap = 4 + 8; // menu offset below the button + breathing room at the window edge
+        const available = window.innerHeight - this.filterMenuBtn.getBoundingClientRect().bottom - gap;
+        this.filterMenu.style.maxHeight = `${Math.max(AIPanel.FILTER_MENU_MIN_HEIGHT, Math.floor(available))}px`;
     }
 
     /**
@@ -429,7 +449,7 @@ class AIPanel {
     }
 
     /**
-     * The muted "N AI suggestions hidden by severity — Show all" line, or ''
+     * The muted "N AI suggestions hidden from this list — Show all" line, or ''
      * when the severity filter hides nothing in this segment.
      */
     renderHiddenSeverityNotice() {
@@ -438,7 +458,7 @@ class AIPanel {
         const noun = count === 1 ? 'AI suggestion' : 'AI suggestions';
         return `
             <div class="hidden-severity-notice">
-                <span>${count} ${noun} hidden by severity</span> —
+                <span>${count} ${noun} hidden from this list</span> —
                 <button type="button" class="hidden-severity-show" aria-label="Show AI suggestions of every severity">Show all</button>
             </div>`;
     }
@@ -583,31 +603,57 @@ class AIPanel {
     }
 
     /**
-     * Get the localStorage key for the AI suggestion severity sort/filter (per-review)
+     * Get the localStorage key for this review's hidden severities (per-review).
+     * The sort is browser-wide instead (AIPanel.SEVERITY_SORT_STORAGE_KEY): it
+     * is how the reviewer likes to work, while which severities to hide
+     * depends on the review.
      * @returns {string|null} Storage key or null if no PR context
      */
     getSeverityStorageKey() {
         if (!this.currentPRKey) return null;
-        return `pair-review-severity-filter_${this.currentPRKey}`;
+        return `pair-review-severity-hidden_${this.currentPRKey}`;
     }
 
-    /** Save the severity sort/filter; the default state removes the entry. */
+    /**
+     * Save the severity sort (browser-wide, last choice wins) and this
+     * review's hidden severities. Default values remove the entries.
+     */
     saveSeverityState() {
+        const { sort, hidden } = this.severityState;
+        if (sort === 'file') {
+            localStorage.removeItem(AIPanel.SEVERITY_SORT_STORAGE_KEY);
+        } else {
+            localStorage.setItem(AIPanel.SEVERITY_SORT_STORAGE_KEY, sort);
+        }
+
         const key = this.getSeverityStorageKey();
         if (!key) return;
-        if (AIPanel.severityFilter().isSeverityStateDefault(this.severityState)) {
+        if (hidden.length === 0) {
             localStorage.removeItem(key);
         } else {
-            localStorage.setItem(key, JSON.stringify(this.severityState));
+            localStorage.setItem(key, JSON.stringify(hidden));
         }
     }
 
-    /** Restore the severity sort/filter for this review (default when none saved). */
+    /**
+     * Restore the severity sort (browser-wide) and this review's hidden
+     * severities. Missing or corrupt entries fall back to the defaults.
+     */
     restoreSeverityState() {
-        const key = this.getSeverityStorageKey();
         const lib = AIPanel.severityFilter();
-        const stored = key ? localStorage.getItem(key) : null;
-        this.severityState = stored ? lib.parseSeverityState(stored) : lib.defaultSeverityState();
+        const sort = localStorage.getItem(AIPanel.SEVERITY_SORT_STORAGE_KEY);
+
+        let hidden = [];
+        const key = this.getSeverityStorageKey();
+        const storedHidden = key ? localStorage.getItem(key) : null;
+        if (storedHidden) {
+            try {
+                hidden = JSON.parse(storedHidden);
+            } catch {
+                hidden = [];
+            }
+        }
+        this.severityState = lib.parseSeverityState({ sort, hidden });
     }
 
     /**

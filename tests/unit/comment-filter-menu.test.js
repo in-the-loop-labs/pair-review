@@ -346,7 +346,8 @@ describe('PRManager filter wiring', () => {
 });
 
 describe('AI suggestion severity sort and filter', () => {
-  const SEVERITY_KEY = `pair-review-severity-filter_${PR_KEY}`;
+  const SORT_KEY = 'pair-review-severity-sort';
+  const HIDDEN_KEY = `pair-review-severity-hidden_${PR_KEY}`;
   const sortOption = (mode) => document.querySelector(`input[data-severity-sort="${mode}"]`);
   const severityOption = (level) => document.querySelector(`input[data-severity="${level}"]`);
   const severityNotice = () => document.querySelector('.hidden-severity-notice');
@@ -385,13 +386,14 @@ describe('AI suggestion severity sort and filter', () => {
     const panel = panelWithFindings();
     choose(sortOption('severity'));
     expect(itemIds(panel)).toEqual([2, 4, 1, 3]);
-    expect(JSON.parse(localStorage.getItem(SEVERITY_KEY))).toEqual({ sort: 'severity', hidden: [] });
+    expect(localStorage.getItem(SORT_KEY)).toBe('severity');
+    expect(localStorage.getItem(HIDDEN_KEY)).toBeNull();
     expect(funnel().classList.contains('has-active-filter')).toBe(true);
     expect(filterEvents).toHaveLength(0);
 
     choose(sortOption('file'));
     expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
-    expect(localStorage.getItem(SEVERITY_KEY)).toBeNull();
+    expect(localStorage.getItem(SORT_KEY)).toBeNull();
     expect(funnel().classList.contains('has-active-filter')).toBe(false);
   });
 
@@ -400,7 +402,7 @@ describe('AI suggestion severity sort and filter', () => {
     choose(severityOption('minor'), false);
     choose(severityOption('none'), false);
     expect(itemIds(panel)).toEqual([2, 4]);
-    expect(severityNotice().textContent).toMatch(/2 AI suggestions hidden by severity/);
+    expect(severityNotice().textContent).toMatch(/2 AI suggestions hidden from this list/);
 
     document.querySelector('.hidden-severity-show').click();
     expect(itemIds(panel)).toEqual([1, 2, 3, 4]);
@@ -442,20 +444,63 @@ describe('AI suggestion severity sort and filter', () => {
     expect(itemIds(panel)).toEqual([2, 4, 99]);
   });
 
-  it('restores the saved state per review and ignores corrupt storage', () => {
-    localStorage.setItem(SEVERITY_KEY, JSON.stringify({ sort: 'severity', hidden: ['minor'] }));
+  it('saves the hidden severities per review, not browser-wide', () => {
+    const panel = panelWithFindings();
+    choose(severityOption('minor'), false);
+    expect(JSON.parse(localStorage.getItem(HIDDEN_KEY))).toEqual(['minor']);
+    expect(localStorage.getItem(SORT_KEY)).toBeNull();
+
+    // Another review starts with nothing hidden
+    panel.setPR('acme', 'widget', 8);
+    expect(panel.severityState.hidden).toEqual([]);
+    expect(severityOption('minor').checked).toBe(true);
+
+    // Back on the first review the filter returns
+    panel.setPR('acme', 'widget', 7);
+    expect(panel.severityState.hidden).toEqual(['minor']);
+
+    // Showing everything again drops the entry
+    panel.showAllSeverities();
+    expect(localStorage.getItem(HIDDEN_KEY)).toBeNull();
+  });
+
+  it('remembers the severity sort across reviews (last choice wins)', () => {
+    const panel = panelWithFindings();
+    choose(sortOption('severity'));
+    expect(localStorage.getItem(SORT_KEY)).toBe('severity');
+
+    panel.setPR('acme', 'widget', 8);
+    expect(panel.severityState.sort).toBe('severity');
+    expect(sortOption('severity').checked).toBe(true);
+
+    // Choosing file order on this review is what the next review gets
+    choose(sortOption('file'));
+    panel.setPR('acme', 'widget', 9);
+    expect(panel.severityState.sort).toBe('file');
+  });
+
+  it('restores the saved sort and hidden severities and ignores corrupt storage', () => {
+    localStorage.setItem(SORT_KEY, 'severity');
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(['minor']));
     const panel = panelWithFindings();
     expect(sortOption('severity').checked).toBe(true);
     expect(severityOption('minor').checked).toBe(false);
     expect(itemIds(panel)).toEqual([2, 4, 3]);
 
-    // Another review has its own (default) state
-    panel.setPR('acme', 'widget', 8);
-    expect(panel.severityState).toEqual({ sort: 'file', hidden: [] });
-
-    localStorage.setItem(`pair-review-severity-filter_acme/widget#9`, '{oops');
+    localStorage.setItem('pair-review-severity-hidden_acme/widget#9', '{oops');
     panel.setPR('acme', 'widget', 9);
-    expect(panel.severityState).toEqual({ sort: 'file', hidden: [] });
+    expect(panel.severityState).toEqual({ sort: 'severity', hidden: [] });
+
+    localStorage.setItem(SORT_KEY, 'sideways');
+    localStorage.setItem('pair-review-severity-hidden_acme/widget#9', JSON.stringify(['bogus', 'none']));
+    panel.setPR('acme', 'widget', 9);
+    expect(panel.severityState).toEqual({ sort: 'file', hidden: ['none'] });
+  });
+
+  it('labels the severity checkboxes as panel-only', () => {
+    makePanel();
+    const titles = [...menu().querySelectorAll('.comment-filter-menu-title')].map(t => t.textContent);
+    expect(titles).toEqual(['Sort AI suggestions', 'Show in panel', 'User comments']);
   });
 
   it.each([
@@ -511,5 +556,36 @@ describe('AI suggestion severity sort and filter', () => {
     expect(panel.setSeverityState({ sort: 'file' })).toBe(false);
     expect(panel.setSeverityState({ hidden: ['minor'] })).toBe(true);
     expect(panel.setSeverityState({ hidden: ['minor'] })).toBe(false);
+  });
+});
+
+describe('filter menu height', () => {
+  function openWithButtonBottom(bottom, innerHeight) {
+    vi.stubGlobal('innerHeight', innerHeight);
+    const panel = makePanel();
+    vi.spyOn(funnel(), 'getBoundingClientRect').mockReturnValue({ bottom });
+    funnel().click();
+    return panel;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('limits the open menu to the space below the funnel', () => {
+    openWithButtonBottom(500, 800);
+    // 800 - 500 - (4px offset + 8px edge gap)
+    expect(menu().style.maxHeight).toBe('288px');
+  });
+
+  it('never shrinks below the minimum, even with a very low funnel', () => {
+    openWithButtonBottom(790, 800);
+    expect(menu().style.maxHeight).toBe(`${AIPanel.FILTER_MENU_MIN_HEIGHT}px`);
+  });
+
+  it('recomputes on every open', () => {
+    openWithButtonBottom(500, 800);
+    funnel().click(); // close
+    vi.stubGlobal('innerHeight', 1000);
+    funnel().click();
+    expect(menu().style.maxHeight).toBe('488px');
   });
 });
