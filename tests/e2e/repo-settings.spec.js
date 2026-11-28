@@ -11,6 +11,12 @@
 import { test, expect } from './fixtures.js';
 
 test.describe('Repo Settings - Toast', () => {
+  // The provider load this test makes fail: the browser reports the 500 and
+  // the page logs the failure it then shows as the toast.
+  test.use({ expectedConsoleErrors: [
+    /\[console\.error\] (Failed to load resource: the server responded with a status of 500 .*\/api\/providers|Error loading providers: Error: Failed to fetch providers)/
+  ] });
+
   test('error toast slides fully on-screen and is opaque', async ({ page }) => {
     // A failed provider load is the one toast the page raises on its own
     // during startup, with no writes to the shared worker database.
