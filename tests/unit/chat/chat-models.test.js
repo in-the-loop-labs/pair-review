@@ -61,6 +61,7 @@ describe('chat-models', () => {
       expect(resolveChatCatalogProviderId(getChatProvider('cursor-acp'))).toBe('cursor-agent');
       expect(resolveChatCatalogProviderId(getChatProvider('copilot-acp'))).toBe('copilot');
       expect(resolveChatCatalogProviderId(getChatProvider('opencode-acp'))).toBe('opencode');
+      expect(resolveChatCatalogProviderId(getChatProvider('antigravity-acp'))).toBe('antigravity');
     });
 
     it('falls back to type when it names a registered review provider', () => {
@@ -325,15 +326,60 @@ describe('chat-models', () => {
     });
 
     it('ignores cliName — only cli_model and the id are chat rungs', () => {
-      // `cliName` is antigravity-only, and antigravity has no chat provider (no ACP
-      // mode), so the chat ladder is cli_model > id. Pinned so the rung is not
-      // reintroduced by accident.
+      // `cliName` is antigravity's print-mode `--model` display string. Chat reaches
+      // agy over ACP, whose session model ids are the kebab ids, so the chat ladder is
+      // cli_model > id. Pinned so the rung is not reintroduced by accident.
       applyProviderConfigOverrides({
         providers: { claude: { models: [{ id: 'named-model', tier: 'balanced', cliName: 'Fancy Name' }] } },
       });
       const resolved = resolveChatModel('claude', 'named-model');
       expect(resolved.cliModel).toBe('named-model');
       expect(resolved.known).toBe(true);
+    });
+
+    it('resolves antigravity-acp models to the kebab ids agy acp accepts', () => {
+      // Built-in antigravity models carry `cliName`, not `cli_model`, so the ladder
+      // falls back to the canonical id — exactly the modelId `agy acp` lists.
+      const { models, hasCatalog } = getChatModelCatalog('antigravity-acp');
+      expect(hasCatalog).toBe(true);
+      expect(models.map(m => m.id)).toEqual(builtIns('antigravity').map(m => m.id));
+
+      const model = firstWith('antigravity', m => typeof m.cliName === 'string' && !m.cli_model);
+      expect(resolveChatModel('antigravity-acp', model.id)).toMatchObject({
+        id: model.id,
+        cliModel: model.id,
+        known: true,
+      });
+    });
+
+    it('resolves an antigravity alias to its canonical kebab id for ACP', () => {
+      const target = firstWith('antigravity', m => Array.isArray(m.aliases) && m.aliases.includes('gemini-4-neon'));
+      const resolved = resolveChatModel('antigravity-acp', 'gemini-4-neon');
+      expect(resolved.id).toBe(target.id);
+      expect(resolved.cliModel).toBe(target.id);
+      expect(resolved.known).toBe(true);
+    });
+
+    it('passes an antigravity cli_model override (agy display string) through to ACP', () => {
+      // The antigravity provider docs reach unlisted models (e.g. Gemini 4 Carbon)
+      // via a `cli_model` display string. `agy acp` accepts that string in
+      // unstable_setSessionModel exactly like the kebab id (verified against agy
+      // 1.5.19: "Gemini 4 Carbon (Low)" -> model=gemini-4-carbon, thought_level=low),
+      // so chat sends it verbatim rather than special-casing antigravity-acp.
+      applyProviderConfigOverrides({
+        providers: {
+          antigravity: {
+            models: [{ id: 'gemini-4-carbon-high', tier: 'thorough', cli_model: 'Gemini 4 Carbon (High)' }],
+          },
+        },
+      });
+      const { models } = getChatModelCatalog('antigravity-acp');
+      expect(models.map(m => m.id)).toContain('gemini-4-carbon-high');
+      expect(resolveChatModel('antigravity-acp', 'gemini-4-carbon-high')).toMatchObject({
+        id: 'gemini-4-carbon-high',
+        cliModel: 'Gemini 4 Carbon (High)',
+        known: true,
+      });
     });
 
     it('falls back to the canonical id when cli_model is not set', () => {

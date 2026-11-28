@@ -79,6 +79,12 @@ class AcpBridge extends EventEmitter {
     // agentCapabilities.loadSession from the initialize response. ACP agents
     // that omit it do not support loading (resuming) a session.
     this._canLoadSession = false;
+    // True while loadSession is in flight. Per the ACP spec the agent replays
+    // the whole prior conversation as session/update notifications before
+    // loadSession resolves; those are history, not live output, so
+    // _handleSessionUpdate drops them instead of emitting delta/tool_use/status.
+    this._replayingHistory = false;
+    this._replayedUpdateCount = 0;
   }
 
   /**
@@ -222,14 +228,25 @@ class AcpBridge extends EventEmitter {
         // replacement session instead of resuming into a blank one.
         throw new Error(`${this.acpCommand} does not support resuming ACP sessions (no loadSession capability)`);
       }
-      // Resume a previous session — agent restores conversation history
-      await this._connection.loadSession({
-        sessionId: this.resumeSessionId,
-        cwd: this.cwd,
-        mcpServers: [],
-      });
+      // Resume a previous session — the agent restores conversation history
+      // and replays it as session/update notifications before resolving.
+      // Gate those so the replay is not re-streamed as a live reply.
+      this._replayingHistory = true;
+      this._replayedUpdateCount = 0;
+      try {
+        await this._connection.loadSession({
+          sessionId: this.resumeSessionId,
+          cwd: this.cwd,
+          mcpServers: [],
+        });
+      } finally {
+        this._replayingHistory = false;
+      }
       this._sessionId = this.resumeSessionId;
-      logger.info(`[AcpBridge] Session resumed: ${this.resumeSessionId}`);
+      logger.info(
+        `[AcpBridge] Session resumed: ${this.resumeSessionId}` +
+        ` (${this._replayedUpdateCount} replayed history update(s) suppressed)`
+      );
     } else {
       const { sessionId } = await this._connection.newSession({
         cwd: this.cwd,
@@ -389,6 +406,13 @@ class AcpBridge extends EventEmitter {
   _handleSessionUpdate(params) {
     const update = params.update;
     if (!update) return;
+
+    // History replayed during loadSession is already in the transcript (the
+    // DB holds it); surfacing it would re-stream old replies and tool badges.
+    if (this._replayingHistory) {
+      this._replayedUpdateCount++;
+      return;
+    }
 
     const type = update.sessionUpdate;
 

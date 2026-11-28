@@ -103,6 +103,29 @@ describe('chat-providers', () => {
       });
     });
 
+    it('should return antigravity-acp provider with correct defaults', () => {
+      const antigravity = getChatProvider('antigravity-acp');
+      expect(antigravity).toEqual({
+        id: 'antigravity-acp',
+        name: 'Antigravity (ACP)',
+        type: 'acp',
+        models_from: 'antigravity',
+        command: 'agy',
+        args: ['acp'],
+        env: {},
+      });
+    });
+
+    it('should merge antigravity-acp command and extra_args overrides', () => {
+      applyConfigOverrides({
+        'antigravity-acp': { command: '/opt/agy/bin/agy', extra_args: ['--verbose'] },
+      });
+      const provider = getChatProvider('antigravity-acp');
+      expect(provider.command).toBe('/opt/agy/bin/agy');
+      expect(provider.args).toEqual(['acp', '--verbose']);
+      expect(provider.models_from).toBe('antigravity');
+    });
+
     it('should return null for unknown provider', () => {
       expect(getChatProvider('unknown')).toBeNull();
     });
@@ -305,9 +328,9 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all seven providers', () => {
+    it('should return all eight providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(7);
+      expect(providers).toHaveLength(8);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('omp');
@@ -315,6 +338,7 @@ describe('chat-providers', () => {
       expect(ids).toContain('opencode-acp');
       expect(ids).toContain('cursor-acp');
       expect(ids).toContain('claude');
+      expect(ids).toContain('antigravity-acp');
       expect(ids).toContain('codex');
     });
 
@@ -343,6 +367,10 @@ describe('chat-providers', () => {
 
     it('should return true for cursor-acp', () => {
       expect(isAcpProvider('cursor-acp')).toBe(true);
+    });
+
+    it('should return true for antigravity-acp', () => {
+      expect(isAcpProvider('antigravity-acp')).toBe(true);
     });
 
     it('should return false for unknown provider', () => {
@@ -519,6 +547,18 @@ describe('chat-providers', () => {
       const result = await promise;
       expect(result).toEqual({ available: true });
       expect(mockSpawn).toHaveBeenCalledWith('copilot', ['--version'], expect.any(Object));
+    });
+
+    it('should probe antigravity-acp with agy --version', async () => {
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('antigravity-acp', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+
+      expect(await promise).toEqual({ available: true });
+      expect(mockSpawn).toHaveBeenCalledWith('agy', ['--version'], expect.any(Object));
     });
 
     it('should resolve unavailable when spawn exits with non-zero code', async () => {
@@ -838,6 +878,7 @@ describe('chat-providers', () => {
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
       expect(cache['cursor-acp']).toEqual({ available: true });
+      expect(cache['antigravity-acp']).toEqual({ available: true });
       expect(cache['claude']).toEqual({ available: true });
       expect(cache.codex).toEqual({ available: true });
     });

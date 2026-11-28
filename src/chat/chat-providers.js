@@ -2,8 +2,8 @@
 /**
  * Chat Provider Registry
  *
- * Defines named chat providers (Pi, OMP, Copilot, OpenCode, Claude, Codex, Cursor) with
- * their default commands/args, config overrides, and availability checks.
+ * Defines named chat providers (Pi, OMP, Copilot, OpenCode, Cursor, Antigravity, Claude,
+ * Codex) with their default commands/args, config overrides, and availability checks.
  *
  * `models_from` names the **review** provider (`src/ai/*-provider.js`, e.g. `claude`,
  * `cursor-agent`) whose model catalog this chat provider borrows for the chat model
@@ -69,6 +69,21 @@ const CHAT_PROVIDERS = {
     type: 'acp',
     models_from: 'cursor-agent',
     command: 'agent',
+    args: ['acp'],
+    env: {},
+  },
+  // Antigravity's `agy acp` (agy 1.5+) is a stdio ACP server. Its session model
+  // ids are the kebab ids the antigravity review provider uses as canonical ids
+  // (e.g. `gemini-3.8-flash-low`), so borrowing that catalog needs no mapping.
+  // It also accepts the print-mode display strings (`Gemini 4 Carbon (High)`,
+  // effort included), so a `providers.antigravity.models[].cli_model` override
+  // works unchanged in chat; an unknown string is rejected with "Unknown model ID".
+  'antigravity-acp': {
+    id: 'antigravity-acp',
+    name: 'Antigravity (ACP)',
+    type: 'acp',
+    models_from: 'antigravity',
+    command: 'agy',
     args: ['acp'],
     env: {},
   },

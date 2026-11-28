@@ -306,8 +306,11 @@ unaffected); its entries were removed on 2026-11-12.
   built in. The `gemini-pro-orchestrator-*` rows (a Neon/Argon/Carbon planner plus a
   Hydrogen implementer at fixed effort) are an editing workflow, not a review
   model; do not build them in.
-  agy 1.5.x also added `acp`, `--output-format json|stream-json`, and `--effort`;
-  the provider still treats agy as plain-text, analysis-only (separate follow-up)
+  agy 1.5.x also added `acp`, `--output-format json|stream-json`, and `--effort`.
+  The review provider still drives agy as plain-text print mode; `agy acp` backs the
+  `antigravity-acp` chat provider, which borrows this catalog and sends the kebab `id`
+  as the ACP session model id (agy 1.5.19 lists the same kebab ids in
+  `newSession().models.availableModels`). When adding a model, check it appears there too
 - Codex retires models per sign-in type: a slug can be dead for ChatGPT accounts while
   still documented for API keys. Probe with the account the user actually uses
 - Muse's built-in model ids are **not** raw CLI model ids. Each one pairs an underlying CLI

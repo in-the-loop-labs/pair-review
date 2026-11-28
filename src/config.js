@@ -95,7 +95,7 @@ const DEFAULT_CONFIG = {
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   enable_chat: true,  // When true, enables the chat panel feature (uses chat_provider)
-  chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'opencode-acp', 'cursor-acp', 'codex'
+  chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'opencode-acp', 'cursor-acp', 'antigravity-acp', 'codex'
   comment_format: "legacy",  // Comment format preset or custom template for adopted suggestions
   chat: { enable_shortcuts: true, enter_to_send: true, idle_timeout_minutes: 10 },  // Chat panel settings (enable_shortcuts: show action shortcut buttons, enter_to_send: Enter sends message instead of newline, idle_timeout_minutes: shut down a chat agent process after this many idle minutes — resumed transparently on the next message; 0 disables)
   providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)
