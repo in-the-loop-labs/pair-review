@@ -68,8 +68,10 @@ class AIPanel {
         this.showDismissedComments = false;
         // User comments the filters hide, counted by PRManager from its data
         this.hiddenCommentCounts = { posted: 0, dismissed: 0 };
-        // Severity sort/filter for AI suggestions (per review, see
-        // restoreSeverityState). AI suggestions it hides, for the list notice.
+        // Severity sort/filter for AI suggestions: the sort is browser-wide and
+        // the hidden severities are per review (see restoreSeverityState).
+        // severityHiddenCount is how many AI suggestions the filter hides, for
+        // the list notice.
         this.severityState = AIPanel.severityFilter().defaultSeverityState();
         this.severityHiddenCount = 0;
 
@@ -145,10 +147,11 @@ class AIPanel {
     }
 
     /**
-     * Create the comment filter menu: a funnel button at the right of the
-     * segment row that opens a small popover of labeled options. The options
-     * only affect user comments. Local mode has no posted comments, so it
-     * gets no "Show posted" option.
+     * Create the filter menu: a funnel button at the right of the segment row
+     * that opens a small popover of labeled options. The severity options sort
+     * and filter AI suggestions in the panel; the other options affect user
+     * comments. Local mode has no posted comments, so it gets no "Show posted"
+     * option.
      */
     createFilterMenu() {
         const wrapper = document.createElement('div');
@@ -260,7 +263,8 @@ class AIPanel {
         this.segmentControl?.classList.add('comment-filter-open');
         this._fitFilterMenuToViewport();
         document.addEventListener('pointerdown', this._onFilterMenuOutsidePointer, true);
-        this.filterMenu.querySelector('input')?.focus();
+        // Enter the menu on the checked radio, as native radio groups do
+        (this.filterMenu.querySelector('input:checked') || this.filterMenu.querySelector('input'))?.focus();
     }
 
     /**
@@ -392,8 +396,11 @@ class AIPanel {
      */
     updateFilterMenuVisual() {
         if (!this.filterMenuBtn) return;
+        // The dot means "this review hides something". The severity sort is a
+        // browser-wide preference, so like the browser-wide "hide posted"
+        // setting it never lights the dot; hidden severities do.
         const nonDefault = this.isCommentFilterNonDefault()
-            || !AIPanel.severityFilter().isSeverityStateDefault(this.severityState);
+            || this.severityState.hidden.length > 0;
         this.filterMenuBtn.classList.toggle('has-active-filter', nonDefault);
         const label = nonDefault ? 'Sort and filter (filters on)' : 'Sort and filter';
         this.filterMenuBtn.title = label;
@@ -425,7 +432,9 @@ class AIPanel {
         const lib = AIPanel.severityFilter();
         const next = lib.parseSeverityState({ ...this.severityState, ...updates });
         const prev = this.severityState;
-        const changed = next.sort !== prev.sort || next.hidden.join() !== prev.hidden.join();
+        const sortChanged = next.sort !== prev.sort;
+        const hiddenChanged = next.hidden.join() !== prev.hidden.join();
+        const changed = sortChanged || hiddenChanged;
         // Navigation updates the index, so capture its identity using the old
         // sort/filter before changing which items that index refers to.
         if (changed) this.saveCurrentSelection();
@@ -433,7 +442,7 @@ class AIPanel {
         this.updateFilterMenuVisual();
         if (!changed) return false;
 
-        this.saveSeverityState();
+        this.saveSeverityState({ sort: sortChanged, hidden: hiddenChanged });
         this.renderFindings();
         if (!this.restoreSelection()) {
             this.selectedItemKey = null;
@@ -615,23 +624,30 @@ class AIPanel {
     }
 
     /**
-     * Save the severity sort (browser-wide, last choice wins) and this
-     * review's hidden severities. Default values remove the entries.
+     * Save what the reviewer changed: the severity sort (browser-wide, last
+     * choice wins) and/or this review's hidden severities. A tab only writes
+     * the setting it changed, so another tab's choice for the other one is
+     * never overwritten with this tab's stale copy. Default values remove the
+     * entry.
+     * @param {{sort?: boolean, hidden?: boolean}} [scope] - What to write (both by default)
      */
-    saveSeverityState() {
+    saveSeverityState({ sort: saveSort = true, hidden: saveHidden = true } = {}) {
         const { sort, hidden } = this.severityState;
-        if (sort === 'file') {
-            localStorage.removeItem(AIPanel.SEVERITY_SORT_STORAGE_KEY);
-        } else {
-            localStorage.setItem(AIPanel.SEVERITY_SORT_STORAGE_KEY, sort);
+        if (saveSort) {
+            if (sort === 'file') {
+                localStorage.removeItem(AIPanel.SEVERITY_SORT_STORAGE_KEY);
+            } else {
+                localStorage.setItem(AIPanel.SEVERITY_SORT_STORAGE_KEY, sort);
+            }
         }
 
         const key = this.getSeverityStorageKey();
-        if (!key) return;
-        if (hidden.length === 0) {
-            localStorage.removeItem(key);
-        } else {
-            localStorage.setItem(key, JSON.stringify(hidden));
+        if (saveHidden && key) {
+            if (hidden.length === 0) {
+                localStorage.removeItem(key);
+            } else {
+                localStorage.setItem(key, JSON.stringify(hidden));
+            }
         }
     }
 
@@ -738,8 +754,10 @@ class AIPanel {
     setPR(owner, repo, number) {
         this.currentPRKey = `${owner}/${repo}#${number}`;
         this._restoreOrCollapsePanel();
-        this.restoreSegmentSelection();
+        // Restore the filters first: restoreSegmentSelection renders the list,
+        // and the render must see this review's severity sort and filter.
         this.restoreFilterState();
+        this.restoreSegmentSelection();
 
         // If the external-comment manager finished its initial fetch BEFORE
         // the panel was wired up (race on slow loads), pull the threads it

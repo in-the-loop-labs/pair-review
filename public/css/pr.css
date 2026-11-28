@@ -9073,8 +9073,9 @@ body.resizing * {
   display: none;
 }
 
-/* Comment filter menu: a funnel at the right of the segment row that opens
-   labeled options for user comments (show dismissed, show posted). */
+/* Filter menu: a funnel at the right of the segment row that opens labeled
+   options: sort and severity filter for AI suggestions, and show dismissed /
+   show posted for user comments. The dot means this review hides something. */
 .comment-filter {
   position: relative;
   flex-shrink: 0;
